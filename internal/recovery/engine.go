@@ -164,7 +164,7 @@ func (e *Engine) Prepare(next uint64, candidateID string) error {
 	if candidateID == "" {
 		return errors.New("candidate id is required")
 	}
-	e.point("prepare_before_lock")
+	e.point("prepare_before_lock:" + candidateID)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.currentEpoch == math.MaxUint64 {

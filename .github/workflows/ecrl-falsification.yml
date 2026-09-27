@@ -55,7 +55,7 @@ jobs:
             local test_name="$2"
             echo "===== MUTANT ${mutant} -> ${test_name} (expected FAIL) ====="
             set +e
-            output="$(ECRL_ENGINE_MUTANT="${mutant}" go test ./internal/recovery -run "^${test_name}$" -count=1 -v 2>&1)"
+            output="$(ECRL_MUTANT="${mutant}" go test ./internal/recovery -run "^${test_name}$" -count=1 -v 2>&1)"
             status=$?
             set -e
             printf '%s\n' "$output"
@@ -93,7 +93,7 @@ jobs:
             local test_name="$2"
             echo "===== ENGINE MUTANT ${mutant} -> ${test_name} (expected FAIL) ====="
             set +e
-            output="$(ECRL_MUTANT="${mutant}" go test ./internal/recovery -run "^${test_name}$" -count=1 -v 2>&1)"
+            output="$(ECRL_ENGINE_MUTANT="${mutant}" go test ./internal/recovery -run "^${test_name}$" -count=1 -v 2>&1)"
             status=$?
             set -e
             printf '%s\n' "$output"

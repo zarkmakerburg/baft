@@ -37,11 +37,36 @@ func TestEngineECRLF09DeterministicSnapshotSweep(t *testing.T){for k:=uint64(0);
 func TestEngineAIdentityVectorFrozenAcrossPrepareCommit(t *testing.T){e:=engineForMutation(t,9,"old",nil);l,p:=stage1Snapshots(9);armFlows(t,e,l);_ = e.Prepare(10,"new");for _,x:=range []struct{k TransitionKind;id uint64;n string}{{TransitionOpen,2,"x"},{TransitionData,1,""},{TransitionFIN,1,""}}{if er:=e.TransitionAllowed(x.k,x.id,x.n);!errors.Is(er,ErrResumeFrozen){t.Fatalf("%s escaped freeze: %v",x.k,er)}};extra:=l;extra.Flows=append(append([]FlowSnapshot{},l.Flows...),FlowSnapshot{StreamID:2,OpenNonce:"x",RxCredit:1});if _,er:=e.Reconcile("new",extra,p,"peer-boot");!errors.Is(er,ErrStateMismatch){t.Fatalf("extra OPEN accepted: %v",er)};pl,er:=e.Reconcile("new",l,p,"peer-boot");if er!=nil{t.Fatal(er)};if er=e.Commit(10,"new",pl);er!=nil{t.Fatal(er)};if er=e.TransitionAllowed(TransitionOpen,2,"x");er!=nil{t.Fatal(er)}}
 
 type diffTrace struct{K,D,A,S,C uint64;BootOK bool}
-func runDiff(tr diffTrace)(string,Plan,string,Plan){l:=Snapshot{SessionID:"s",BootID:"l",Epoch:1,Flows:[]FlowSnapshot{{StreamID:1,OpenNonce:"n",TxNext:tr.S,TxAcked:tr.K,RxCredit:8}}};p:=Snapshot{SessionID:"s",BootID:"p",Epoch:1,Flows:[]FlowSnapshot{{StreamID:1,OpenNonce:"n",RxAccepted:tr.A,RxDelivered:tr.D,RxCredit:tr.C}}};b:="p";if !tr.BootOK{b="wrong"};r:=newReferenceStage1Engine(1,"old");e,_:=NewEngine(1,"old",EngineOptions{});_ = r.SetActiveFlows(flowIdentities(l));_ = e.SetActiveFlows(flowIdentities(l));rr:=normalizeErr(r.Prepare(2,"new"));ee:=normalizeErr(e.Prepare(2,"new"));if rr!=ee{return rr,Plan{},ee,Plan{}};rp,re:=r.Reconcile("new",l,p,b);ep,er:=e.Reconcile("new",l,p,b);return normalizeErr(re),rp,normalizeErr(er),ep}
-func diverges(tr diffTrace)bool{re,rp,ee,ep:=runDiff(tr);return re!=ee||(re==""&&!reflect.DeepEqual(rp,ep))}
-func minimizeTrace(tr diffTrace)diffTrace{sets:=[]func(*diffTrace,uint64){func(x *diffTrace,v uint64){x.K=v},func(x *diffTrace,v uint64){x.D=v},func(x *diffTrace,v uint64){x.A=v},func(x *diffTrace,v uint64){x.S=v},func(x *diffTrace,v uint64){x.C=v}};for _,set:=range sets{c:=tr;set(&c,0);if diverges(c){tr=c}};return tr}
-func assertNoDiff(t *testing.T,tr diffTrace,seed int64,i int){t.Helper();re,rp,ee,ep:=runDiff(tr);if re!=ee||(re==""&&!reflect.DeepEqual(rp,ep)){t.Fatalf("DIFF seed=%d index=%d trace=%+v minimized=%+v refErr=%s engErr=%s ref=%#v eng=%#v",seed,i,tr,minimizeTrace(tr),re,ee,rp,ep)}}
-func TestStage1DifferentialGenerated(t *testing.T){ex:=0;for k:=uint64(0);k<4;k++{for d:=uint64(0);d<4;d++{for a:=uint64(0);a<4;a++{for s:=uint64(0);s<4;s++{for c:=uint64(0);c<4;c++{assertNoDiff(t,diffTrace{k,d,a,s,c,true},generatedDifferentialSeed,-1);ex++}}}}};r:=rand.New(rand.NewSource(generatedDifferentialSeed));for i:=0;i<generatedDifferentialCount;i++{assertNoDiff(t,diffTrace{uint64(r.Intn(33)),uint64(r.Intn(33)),uint64(r.Intn(33)),uint64(r.Intn(33)),uint64(r.Intn(33)),r.Intn(8)!=0},generatedDifferentialSeed,i)};t.Logf("DIFFERENTIAL seed=%d exhaustive=%d generated=%d total=%d",generatedDifferentialSeed,ex,generatedDifferentialCount,ex+generatedDifferentialCount)}
+type diffOutcome struct{ReconcileErr string;Plan Plan;CommitErr string;Epoch uint64;Owner string;OldAuth,NewAuth bool}
+func runDiffSide(e ReconcileCommitEngine,tr diffTrace)diffOutcome{
+	l:=Snapshot{SessionID:"s",BootID:"l",Epoch:1,Flows:[]FlowSnapshot{{StreamID:1,OpenNonce:"n",TxNext:tr.S,TxAcked:tr.K,RxCredit:8}}}
+	p:=Snapshot{SessionID:"s",BootID:"p",Epoch:1,Flows:[]FlowSnapshot{{StreamID:1,OpenNonce:"n",RxAccepted:tr.A,RxDelivered:tr.D,RxCredit:tr.C}}}
+	b:="p";if !tr.BootOK{b="wrong"}
+	if er:=e.SetActiveFlows(flowIdentities(l));er!=nil{return diffOutcome{ReconcileErr:normalizeErr(er)}}
+	if er:=e.Prepare(2,"new");er!=nil{return diffOutcome{ReconcileErr:normalizeErr(er)}}
+	pl,er:=e.Reconcile("new",l,p,b)
+	o:=diffOutcome{ReconcileErr:normalizeErr(er),Plan:pl,Epoch:e.CurrentEpoch(),Owner:e.Owner()}
+	if er!=nil{return o}
+	o.CommitErr=normalizeErr(e.Commit(2,"new",pl))
+	o.Epoch=e.CurrentEpoch();o.Owner=e.Owner();o.OldAuth=e.Authorize(1,"old");o.NewAuth=e.Authorize(2,"new")
+	return o
+}
+func runDiff(tr diffTrace)(diffOutcome,diffOutcome){return runDiffSide(newReferenceStage1Engine(1,"old"),tr),func()diffOutcome{e,_:=NewEngine(1,"old",EngineOptions{});return runDiffSide(e,tr)}()}
+func diverges(tr diffTrace)bool{a,b:=runDiff(tr);return !reflect.DeepEqual(a,b)}
+func minimizeTrace(tr diffTrace)diffTrace{
+	sets:=[]func(*diffTrace,uint64){func(x *diffTrace,v uint64){x.K=v},func(x *diffTrace,v uint64){x.D=v},func(x *diffTrace,v uint64){x.A=v},func(x *diffTrace,v uint64){x.S=v},func(x *diffTrace,v uint64){x.C=v}}
+	for _,set:=range sets{c:=tr;set(&c,0);if diverges(c){tr=c}}
+	if !tr.BootOK{c:=tr;c.BootOK=true;if diverges(c){tr=c}}
+	return tr
+}
+func assertNoDiff(t *testing.T,tr diffTrace,seed int64,i int){t.Helper();a,b:=runDiff(tr);if !reflect.DeepEqual(a,b){t.Fatalf("DIFF seed=%d index=%d trace=%+v minimized=%+v ref=%#v engine=%#v",seed,i,tr,minimizeTrace(tr),a,b)}}
+func TestStage1DifferentialGenerated(t *testing.T){
+	ex:=0
+	for _,boot:=range []bool{false,true}{for k:=uint64(0);k<4;k++{for d:=uint64(0);d<4;d++{for a:=uint64(0);a<4;a++{for s:=uint64(0);s<4;s++{for c:=uint64(0);c<4;c++{assertNoDiff(t,diffTrace{k,d,a,s,c,boot},generatedDifferentialSeed,-1);ex++}}}}}}
+	r:=rand.New(rand.NewSource(generatedDifferentialSeed))
+	for i:=0;i<generatedDifferentialCount;i++{assertNoDiff(t,diffTrace{uint64(r.Intn(33)),uint64(r.Intn(33)),uint64(r.Intn(33)),uint64(r.Intn(33)),uint64(r.Intn(33)),r.Intn(8)!=0},generatedDifferentialSeed,i)}
+	t.Logf("DIFFERENTIAL seed=%d exhaustive=%d generated=%d total=%d",generatedDifferentialSeed,ex,generatedDifferentialCount,ex+generatedDifferentialCount)
+}
 
 type blockingScheduler struct{target string;reached,release chan struct{};once sync.Once}
 func newBlockingScheduler(x string)*blockingScheduler{return &blockingScheduler{x,make(chan struct{}),make(chan struct{}),sync.Once{}}}
@@ -52,7 +77,31 @@ type inspectScheduler struct{e *Engine;mixed bool}
 func(s *inspectScheduler)Point(n string){if n=="commit_nonatomic_mid"&&s.e!=nil&&s.e.Authorize(9,"new"){s.mixed=true}}
 func TestEngineCommitAtomicNoMixedAuthority(t *testing.T){s:=&inspectScheduler{};e:=engineForMutation(t,9,"old",s);s.e=e;l,p:=stage1Snapshots(9);armFlows(t,e,l);_ = e.Prepare(10,"new");pl,er:=e.Reconcile("new",l,p,"peer-boot");if er!=nil{t.Fatal(er)};if er=e.Commit(10,"new",pl);er!=nil{t.Fatal(er)};if s.mixed{t.Fatal("mixed authority observed: (old_epoch,new_owner)")}}
 
-func TestEngineConcurrentPrepareCommitInterleavings(t *testing.T){for _,first:=range []string{"a","b"}{t.Run(first,func(t *testing.T){e:=engineForMutation(t,1,"old",nil);l,p:=stage1Snapshots(1);armFlows(t,e,l);second:="b";if first=="b"{second="a"};if er:=e.Prepare(2,first);er!=nil{t.Fatal(er)};if er:=e.Prepare(2,second);!errors.Is(er,ErrLeaseConflict){t.Fatalf("loser err=%v",er)};pl,er:=e.Reconcile(first,l,p,"peer-boot");if er!=nil{t.Fatal(er)};if er=e.Commit(2,first,pl);er!=nil{t.Fatal(er)};if e.Owner()!=first||e.CurrentEpoch()!=2{t.Fatal("wrong winner")}})}}
+func TestEngineConcurrentPrepareCommitInterleavings(t *testing.T){
+	for _,winner:=range []string{"a","b"}{
+		for _,loserTiming:=range []string{"before-commit","after-commit"}{
+			t.Run(winner+"-"+loserTiming,func(t *testing.T){
+				loser:="b";if winner=="b"{loser="a"}
+				s:=newBlockingScheduler("prepare_before_lock:"+loser)
+				e:=engineForMutation(t,1,"old",s);l,p:=stage1Snapshots(1);armFlows(t,e,l)
+				loserDone:=make(chan error,1);go func(){loserDone<-e.Prepare(2,loser)}();<-s.reached
+				if er:=e.Prepare(2,winner);er!=nil{t.Fatal(er)}
+				pl,er:=e.Reconcile(winner,l,p,"peer-boot");if er!=nil{t.Fatal(er)}
+				if loserTiming=="before-commit"{
+					close(s.release)
+					if er:=<-loserDone;!errors.Is(er,ErrLeaseConflict){t.Fatalf("loser before commit err=%v",er)}
+					if er=e.Commit(2,winner,pl);er!=nil{t.Fatal(er)}
+				}else{
+					if er=e.Commit(2,winner,pl);er!=nil{t.Fatal(er)}
+					close(s.release)
+					if er:=<-loserDone;!errors.Is(er,ErrStaleEpoch){t.Fatalf("loser after commit err=%v",er)}
+				}
+				if e.Owner()!=winner||e.CurrentEpoch()!=2{t.Fatalf("wrong winner owner=%s epoch=%d",e.Owner(),e.CurrentEpoch())}
+				if e.Authorize(1,"old")||!e.Authorize(2,winner){t.Fatal("authority overlap or missing new authority")}
+			})
+		}
+	}
+}
 
 func TestDurableSnapshotFlagDefaultsOff(t *testing.T){p,er:=NewReplayPolicy(EngineOptions{});if er!=nil{t.Fatal(er)};if p.DurableSnapshot(){t.Fatal("default on")};if p.ReleaseThrough(17,9)!=17{t.Fatal("release not K")};if _,er=NewReplayPolicy(EngineOptions{RReplay:64});!errors.Is(er,ErrDurableSnapshotConfig){t.Fatal("RReplay escaped flag")}}
 func TestDurableSnapshotPolicyOnlyWhenExplicitlyEnabled(t *testing.T){p,er:=NewReplayPolicy(EngineOptions{DurableSnapshot:true,RReplay:64});if er!=nil{t.Fatal(er)};if p.ReleaseThrough(40,24)!=24{t.Fatal("release not K_release")};if p.EffectiveCredit(200,24)!=88{t.Fatal("credit")}}
