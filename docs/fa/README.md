@@ -15,6 +15,8 @@
 9. [09 — نقشه راه و مراحل A تا H](09-roadmap.md)
 10. [10 — ساختار کد و مسئولیت ماژول‌ها](10-repository-layout.md)
 11. [11 — فرهنگ واژگان](11-glossary.md)
+12. [12 — روش‌شناسی نوآوری](12-innovation-method.md)
+13. [13 — TWRL در Stage C](13-stage-c-twrl.md)
 
 ## سلسله‌مراتب منابع
 

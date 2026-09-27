@@ -15,6 +15,8 @@ This documentation is written for readers with no prior BAFT context. Recommende
 9. [09 — Roadmap and Stages A–H](09-roadmap.md)
 10. [10 — Repository layout and module responsibilities](10-repository-layout.md)
 11. [11 — Glossary](11-glossary.md)
+12. [12 — Innovation methodology](12-innovation-method.md)
+13. [13 — Stage-C TWRL hypothesis](13-stage-c-twrl.md)
 
 ## Source hierarchy
 

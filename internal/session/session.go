@@ -96,6 +96,9 @@ type flow struct {
 	rxWritten       uint64
 	rxMax           uint64
 	receiveReserved int64
+	rxRing          *receiveRing
+	finRecvFinal    uint64
+	finAckSent      bool
 	replay          []replayChunk
 	creditWait      chan struct{}
 	finSent         bool
@@ -272,6 +275,7 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 		return err
 	}
 	p.startPump(ctx, fl)
+	p.startTargetPump(ctx, fl)
 	return nil
 }
 
@@ -619,6 +623,7 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 		return err
 	}
 	p.startPump(ctx, fl)
+	p.startTargetPump(ctx, fl)
 	return nil
 }
 
@@ -656,7 +661,7 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 		return 0, errors.New("flow closed")
 	}
 	need := int64(defaultWindow)
-	if fl.receiveReserved >= need {
+	if fl.receiveReserved >= need && fl.rxRing != nil {
 		max := fl.rxWritten + uint64(fl.receiveReserved)
 		if max < fl.rxWritten {
 			fl.mu.Unlock()
@@ -669,31 +674,38 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 		fl.mu.Unlock()
 		return out, nil
 	}
-	delta := need - fl.receiveReserved
+	if fl.receiveReserved != 0 || fl.rxRing != nil {
+		fl.mu.Unlock()
+		return 0, errors.New("partial receive reservation state")
+	}
 	fl.mu.Unlock()
 
-	if err := fl.allocator.Reserve(fl.resourceID, resources.Receive, delta); err != nil {
+	if err := fl.allocator.Reserve(fl.resourceID, resources.Receive, need); err != nil {
+		return 0, err
+	}
+	ring, err := newReceiveRing(int(need))
+	if err != nil {
+		_ = fl.allocator.Release(fl.resourceID, resources.Receive, need)
 		return 0, err
 	}
 
 	fl.mu.Lock()
 	if fl.closed {
 		fl.mu.Unlock()
-		_ = fl.allocator.Release(fl.resourceID, resources.Receive, delta)
+		ring.Close()
+		_ = fl.allocator.Release(fl.resourceID, resources.Receive, need)
 		return 0, errors.New("flow closed")
 	}
-	fl.receiveReserved += delta
+	fl.receiveReserved = need
+	fl.rxRing = ring
 	max := fl.rxWritten + uint64(fl.receiveReserved)
 	if max < fl.rxWritten {
 		fl.mu.Unlock()
 		return 0, errors.New("receive window overflow")
 	}
-	if max > fl.rxMax {
-		fl.rxMax = max
-	}
-	out := fl.rxMax
+	fl.rxMax = max
 	fl.mu.Unlock()
-	return out, nil
+	return max, nil
 }
 
 func (p *Peer) grantReceive(fl *flow) error {
@@ -705,7 +717,7 @@ func (p *Peer) grantReceive(fl *flow) error {
 }
 
 func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
-	data, ack, duplicate, err := fl.acceptData(fr.Offset, fr.Payload)
+	ack, duplicate, err := fl.acceptData(fr.Offset, fr.Payload)
 	if err != nil {
 		return p.sendReset(fl, protocol.ErrorFlowControl)
 	}
@@ -715,29 +727,50 @@ func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
 	if duplicate {
 		return nil
 	}
-	if err := writeConnFull(fl.conn, data); err != nil {
-		return p.sendReset(fl, protocol.ErrorTargetUnreachable)
-	}
-	fl.mu.Lock()
-	fl.rxWritten += uint64(len(data))
-	fl.mu.Unlock()
-	return p.grantReceive(fl)
+	return nil
 }
 
 func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 	fl.mu.Lock()
 	if finalOffset != fl.rxNext {
 		fl.mu.Unlock()
-		return errors.New("FIN final_offset does not match received data")
+		return errors.New("FIN final_offset does not match accepted data")
+	}
+	if fl.finRecv && fl.finRecvFinal != finalOffset {
+		fl.mu.Unlock()
+		return errors.New("conflicting FIN final_offset")
 	}
 	fl.finRecv = true
+	fl.finRecvFinal = finalOffset
+	ready := fl.rxWritten == finalOffset
 	fl.mu.Unlock()
+
+	if ready {
+		return p.ackRemoteFin(fl)
+	}
+	return nil
+}
+
+func (p *Peer) ackRemoteFin(fl *flow) error {
+	fl.mu.Lock()
+	if fl.finAckSent {
+		fl.mu.Unlock()
+		return nil
+	}
+	if !fl.finRecv || fl.rxWritten != fl.finRecvFinal {
+		fl.mu.Unlock()
+		return nil
+	}
+	final := fl.finRecvFinal
+	fl.finAckSent = true
+	fl.mu.Unlock()
+
 	if cw, ok := fl.conn.(interface{ CloseWrite() error }); ok {
 		if err := cw.CloseWrite(); err != nil {
-			return err
+			return p.sendReset(fl, protocol.ErrorTargetUnreachable)
 		}
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: finalOffset}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final}); err != nil {
 		return err
 	}
 	p.finishIfComplete(fl)
@@ -746,7 +779,7 @@ func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 
 func (p *Peer) finishIfComplete(fl *flow) {
 	fl.mu.Lock()
-	done := fl.finRecv && fl.finAcked
+	done := fl.finAckSent && fl.finAcked
 	fl.mu.Unlock()
 	if !done {
 		return
@@ -761,6 +794,56 @@ func (p *Peer) startPump(ctx context.Context, fl *flow) {
 		defer p.wg.Done()
 		p.pumpLocal(ctx, fl)
 	}()
+}
+
+func (p *Peer) startTargetPump(ctx context.Context, fl *flow) {
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.pumpTarget(ctx, fl)
+	}()
+}
+
+func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
+	fl.mu.Lock()
+	ring := fl.rxRing
+	fl.mu.Unlock()
+	if ring == nil {
+		return
+	}
+
+	for {
+		segment, err := ring.Peek(ctx, dataChunk)
+		if err != nil {
+			return
+		}
+		if len(segment) == 0 {
+			continue
+		}
+		if err := writeConnFull(fl.conn, segment); err != nil {
+			_ = p.sendReset(fl, protocol.ErrorTargetUnreachable)
+			return
+		}
+		if err := ring.Consume(len(segment)); err != nil {
+			_ = p.sendReset(fl, protocol.ErrorProtocol)
+			return
+		}
+
+		fl.mu.Lock()
+		fl.rxWritten += uint64(len(segment))
+		delivered := fl.rxWritten
+		finalReady := fl.finRecv && !fl.finAckSent && delivered == fl.finRecvFinal
+		fl.mu.Unlock()
+
+		if err := p.grantReceive(fl); err != nil {
+			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
+			return
+		}
+		if finalReady {
+			_ = p.ackRemoteFin(fl)
+			return
+		}
+	}
 }
 
 func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
@@ -907,32 +990,37 @@ func (f *flow) onAck(ack uint64) error {
 	return nil
 }
 
-func (f *flow) acceptData(offset uint64, payload []byte) ([]byte, uint64, bool, error) {
+func (f *flow) acceptData(offset uint64, payload []byte) (uint64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.openOK {
-		return nil, 0, false, errors.New("DATA before OPEN_OK")
+		return 0, false, errors.New("DATA before OPEN_OK")
 	}
 	if uint64(len(payload)) > ^uint64(0)-offset {
-		return nil, 0, false, errors.New("DATA offset overflow")
+		return 0, false, errors.New("DATA offset overflow")
 	}
 	end := offset + uint64(len(payload))
 	if end > f.rxMax {
-		return nil, 0, false, errors.New("FLOW_CONTROL_ERROR")
+		return 0, false, errors.New("FLOW_CONTROL_ERROR")
 	}
 	if offset > f.rxNext {
-		return nil, 0, false, errors.New("DATA gap is not allowed")
+		return 0, false, errors.New("DATA gap is not allowed")
 	}
 	if end <= f.rxNext {
-		return nil, f.rxNext, true, nil
+		return f.rxNext, true, nil
 	}
 	skip := uint64(0)
 	if offset < f.rxNext {
 		skip = f.rxNext - offset
 	}
-	data := append([]byte(nil), payload[skip:]...)
+	if f.rxRing == nil {
+		return 0, false, errors.New("receive ring is not initialized")
+	}
+	if err := f.rxRing.Write(payload[skip:]); err != nil {
+		return 0, false, fmt.Errorf("receive ring overflow: %w", err)
+	}
 	f.rxNext = end
-	return data, f.rxNext, false, nil
+	return f.rxNext, false, nil
 }
 
 func (f *flow) onFinAck(off uint64) error {
@@ -959,7 +1047,11 @@ func (f *flow) close() {
 	conn := f.conn
 	allocator := f.allocator
 	resourceID := f.resourceID
+	ring := f.rxRing
 	f.mu.Unlock()
+	if ring != nil {
+		ring.Close()
+	}
 	if conn != nil {
 		_ = conn.Close()
 	}
