@@ -1,0 +1,32 @@
+name: cor01-1gib
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/correctness/**'
+      - '.github/workflows/cor01.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  correctness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: COR-01 1 GiB bidirectional hash gate
+        env:
+          BAFT_COR01_1GIB: "1"
+        run: go test ./tests/correctness -run '^TestCOR01OneGiBBidirectional$' -count=1 -timeout 20m -v
