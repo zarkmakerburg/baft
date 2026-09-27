@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # BAFT — بافت
 
 > **زبان:** فارسی | [English](README.en.md)
@@ -21,6 +23,8 @@ BAFT هنوز نرم‌افزار پژوهشی است و برای استقرار
 
 فرض کنید روی سرور IR یک برنامه محلی باید به یک سرویس مشخص در EX دسترسی TCP داشته باشد. به‌جای اینکه peer بتواند هر مقصدی را دلخواه اعلام کند، اپراتور از قبل یک Route مانند `service-main` تعریف می‌کند:
 
+<div dir="ltr" align="left">
+
 ```text
 برنامه محلی
     │
@@ -41,6 +45,8 @@ Route ثابت و مجاز: 127.0.0.1:2443
     ▼
 سرویس مقصد
 ```
+
+</div>
 
 Peer فقط `route_id` را درخواست می‌کند. مقصد نهایی از جدول Route محلی EX گرفته می‌شود و از داخل فریم شبکه مقصد دلخواه پذیرفته نمی‌شود.
 
@@ -84,6 +90,8 @@ BAFT در مسیر پایه این قواعد را رعایت می‌کند:
 
 Carrier پایه روی HTTP/2 واقعی قرار دارد:
 
+<div dir="ltr" align="left">
+
 ```text
 IR Node
   ├─ Shard 0 ─ TCP/TLS ─ H2 POST ─┐
@@ -102,6 +110,8 @@ HELLO → HELLO_ACK → READY
                   └─ RESET
 ```
 
+</div>
+
 هر Shard در baseline مالک Transport مستقل است تا چهار Shard به‌طور تصادفی روی یک اتصال TCP واحد تجمیع نشوند.
 
 ## شروع سریع برای توسعه
@@ -110,13 +120,19 @@ HELLO → HELLO_ACK → READY
 
 نسخه Go از خود مخزن خوانده می‌شود:
 
+<div dir="ltr" align="left">
+
 ```bash
 cat go.mod
 ```
 
+</div>
+
 در حال حاضر پروژه روی Go 1.27.1 تنظیم شده است.
 
 ### 2. دریافت و ساخت
+
+<div dir="ltr" align="left">
 
 ```bash
 git clone https://github.com/zarkmakerburg/baft.git
@@ -124,7 +140,11 @@ cd baft
 go build ./cmd/baft
 ```
 
+</div>
+
 ### 3. اجرای آزمون‌ها
+
+<div dir="ltr" align="left">
 
 ```bash
 go test ./...
@@ -132,14 +152,20 @@ go test -race ./...
 go vet ./...
 ```
 
+</div>
+
 آزمون COR-01 یک GiB workflow جدا دارد و برای هر اجرای عادی محلی فعال نیست.
 
 ### 4. اعتبارسنجی پیکربندی
+
+<div dir="ltr" align="left">
 
 ```bash
 ./baft config validate --file configs/example-ir.yaml
 ./baft config validate --file configs/example-ex.yaml
 ```
+
+</div>
 
 این دستور فقط ساختار و قوانین پیکربندی را بررسی می‌کند؛ وجود واقعی فایل‌های گواهی برای فرمان `run` لازم است.
 
@@ -149,21 +175,31 @@ go vet ./...
 
 روی EX:
 
+<div dir="ltr" align="left">
+
 ```bash
 ./baft run --file /etc/baft/ex.yaml
 ```
 
+</div>
+
 روی IR:
+
+<div dir="ltr" align="left">
 
 ```bash
 ./baft run --file /etc/baft/ir.yaml
 ```
+
+</div>
 
 کلید خصوصی باید دسترسی محدود داشته باشد؛ Runtime فایل کلیدی که برای group/other قابل خواندن یا نوشتن باشد رد می‌کند.
 
 ## نمونه Route
 
 IR:
+
+<div dir="ltr" align="left">
 
 ```yaml
 routes:
@@ -174,7 +210,11 @@ routes:
     traffic_class: interactive
 ```
 
+</div>
+
 EX:
+
+<div dir="ltr" align="left">
 
 ```yaml
 routes:
@@ -184,6 +224,8 @@ routes:
     allowed_peers:
       - urn:baft:node:ir-01
 ```
+
+</div>
 
 در این مثال اتصال به `127.0.0.1:1443` روی IR فقط به Route نام‌گذاری‌شده `service-main` نگاشت می‌شود و EX مقصد واقعی را از پیکربندی محلی خودش می‌خواند.
 
@@ -231,3 +273,5 @@ BAFT در وضعیت فعلی:
 ## مجوز و مشارکت
 
 پیش از هر مشارکت، ابتدا Blueprint، ADRهای مرتبط و تست‌های همان بخش را بخوانید. تغییرات امنیتی، wire protocol و resource limits باید همراه با تست و توضیح تصمیم باشند. نتیجه‌ای که اجرا نشده نباید در STATUS یا TEST-RESULTS به‌عنوان موفق ثبت شود.
+
+</div>
