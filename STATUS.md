@@ -136,4 +136,40 @@ prototype موجود تا زمان ساخت falsification suite و carrier-repla
 
 این فایل فقط چیزی را «انجام‌شده» اعلام می‌کند که کد و شواهد اجرای آن وجود داشته باشد. برنامه Blueprint به‌تنهایی وضعیت پیاده‌سازی نیست.
 
+
+## R2 v0.1 — Installer + SecurityInternal
+
+شاخه‌ی آزمایشی: `r2-noise-v01`
+
+شواهد اجرای واقعی:
+
+- code head پیش از مستندسازی: `77724ee9eaa69fbec459b41896c3abbb04408e37`
+- GitHub Actions run: `36352142629`
+- Go: `1.27.1`
+- `TestIKPSK0PairThenPinnedIK`: **PASS**
+- `TestNoiseIKOverHTTP2TerminatingIntermediary`: **PASS**
+- race detector برای Noise/unit+integration: **PASS**
+- `bash -n install.sh`: **PASS**
+- build ابزار `baft-pair`: **PASS**
+
+در تست intermediary، outer TLS روی HTTP/2 endpoint خاتمه یافت و Noise IK/IKpsk0 داخل stream اجرا شد. capture خام واسطه شامل plaintext کاربردی BAFT نبود؛ تست در صورت مشاهده plaintext fail می‌شود.
+
+### وضعیت Pairing
+
+- EX: X25519 static key + pairing code با prefix `BAFTPAIR1:` و PSK یک‌بارمصرف کوتاه‌عمر.
+- IR: تولید کلید مستقل، decode و apply اتمیک descriptor.
+- اولین enrollment: `IKpsk0` برای اثبات possession کد pairing و یادگیری static key سمت IR.
+- اتصال‌های بعدی: Noise `IK` با static keyهای pin‌شده.
+- private key داخل pairing code قرار نمی‌گیرد.
+
+### محدودیت مهم v0.1
+
+`SecurityInternal` و تست H2 آن پیاده‌سازی و validate شده‌اند، اما هنوز به data path اصلی `node.Runtime` متصل نشده‌اند. بنابراین این مرحله «لایه امنیت داخلی validated» است، نه ادعای اینکه تمام BAFT production tunnel هم‌اکنون Noise-enabled شده است.
+
+Stage D/Replay همچنان **متوقف** است.
+
+### Stealth
+
+random packet-size/timing morphing با هدف شکست سامانه‌های تحلیل یا فیلترینگ در این implementation وجود ندارد. R2 فعلی روی نصب‌پذیری، pairing، هویت رمزنگاری‌شده و confidentiality داخلی تمرکز دارد.
+
 </div>
