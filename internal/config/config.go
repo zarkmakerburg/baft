@@ -52,6 +52,8 @@ func Validate(c Config) error {
 	if c.Limits.MaxFlows<1||c.Limits.MaxFlows>65535{return errors.New("limits.max_flows is out of supported range")}
 	if c.Limits.DataMemoryMiB<16||c.Limits.DataMemoryMiB>4096{return errors.New("limits.data_memory_mib is unreasonable")}
 	if c.Limits.ReceiveInitialKiB<1||c.Limits.ReceiveMaxMiB<1||c.Limits.ReplayMaxMiB<1{return errors.New("receive/replay limits must be positive")}
+	poolMiB:=c.Limits.DataMemoryMiB/2
+	if c.Limits.ReceiveMaxMiB>poolMiB||c.Limits.ReplayMaxMiB>c.Limits.DataMemoryMiB-poolMiB{return errors.New("per-flow receive/replay cap exceeds its non-borrowing global pool")}
 	if c.Recovery.Enabled{return errors.New("recovery.enabled=true is unsupported before BAFT 0.3")}
 	if c.Recovery.RetentionSeconds<0||c.Recovery.RetentionSeconds>300{return errors.New("recovery.retention_seconds is out of range")}
 	if c.Logging.Payload{return errors.New("logging.payload must be false")}

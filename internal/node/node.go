@@ -18,12 +18,14 @@ import (
 	carrierh2 "github.com/zarkmakerburg/baft/internal/carrier/h2"
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/identity"
+	"github.com/zarkmakerburg/baft/internal/resources"
 	"github.com/zarkmakerburg/baft/internal/routes"
 	"github.com/zarkmakerburg/baft/internal/session"
 )
 
 type Runtime struct {
 	Revocations *identity.RevocationSet
+	Resources   *resources.Allocator
 }
 
 func NewRuntime() *Runtime {
@@ -37,6 +39,13 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 	if err := requirePrivateKeyPermissions(cfg.TLS.KeyFile); err != nil {
 		return err
 	}
+	if r.Resources == nil {
+		a, err := allocatorFromConfig(cfg)
+		if err != nil {
+			return err
+		}
+		r.Resources = a
+	}
 	switch cfg.Node.Role {
 	case "listener":
 		return r.runListener(ctx, cfg)
@@ -45,6 +54,19 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 	default:
 		return fmt.Errorf("unsupported node role %q", cfg.Node.Role)
 	}
+}
+
+func allocatorFromConfig(cfg config.Config) (*resources.Allocator, error) {
+	total := int64(cfg.Limits.DataMemoryMiB) * resources.MiB
+	receive := total / 2
+	replay := total - receive
+	return resources.NewAllocator(resources.Limits{
+		Total: total,
+		Receive: receive,
+		Replay: replay,
+		PerFlowReceive: int64(cfg.Limits.ReceiveMaxMiB) * resources.MiB,
+		PerFlowReplay: int64(cfg.Limits.ReplayMaxMiB) * resources.MiB,
+	})
 }
 
 func requirePrivateKeyPermissions(path string) error {
@@ -71,13 +93,9 @@ func loadTLSMaterial(c config.TLS) (*identityMaterial, error) {
 }
 
 type identityMaterial struct {
-	ca   interfaceCertPool
-	cert interfaceTLSCertificate
+	ca   *x509.CertPool
+	cert tls.Certificate
 }
-
-// Small aliases keep the runtime implementation independent from file parsing.
-type interfaceCertPool = *x509.CertPool
-type interfaceTLSCertificate = tls.Certificate
 
 func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 	mat, err := loadTLSMaterial(cfg.TLS)
@@ -118,11 +136,9 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			return err
 		}
 		p, err := session.New(session.Listener, session.Carrier{In: in, Out: out}, peer.Identity, table, session.Options{
-			NodeID:             cfg.Node.ID,
-			ExpectedPeerNodeID: expected,
-			ProfileID:          cfg.Transport.Profile,
-			ProfileVersion:     1,
-			ConfigRevision:     "config-v1",
+			NodeID: cfg.Node.ID, ExpectedPeerNodeID: expected,
+			ProfileID: cfg.Transport.Profile, ProfileVersion: 1, ConfigRevision: "config-v1",
+			Resources: r.Resources,
 		})
 		if err != nil {
 			return err
@@ -130,12 +146,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		return p.Run(hctx)
 	}, r.Revocations)
 
-	srv := &http.Server{
-		Handler:           handler,
-		TLSConfig:         tlsCfg,
-		ReadHeaderTimeout: 10 * time.Second,
-		MaxHeaderBytes:    16 << 10,
-	}
+	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10*time.Second, MaxHeaderBytes: 16<<10}
 	ln, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Server.Listen, err)
@@ -150,7 +161,6 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		}
 		done <- err
 	}()
-
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -206,12 +216,9 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			return fmt.Errorf("open shard %d: %w", i, err)
 		}
 		p, err := session.New(session.Dialer, session.Carrier{In: resp.Body, Out: pw}, cfg.Peer.AllowedIdentity, nil, session.Options{
-			NodeID:             cfg.Node.ID,
-			ExpectedPeerNodeID: expectedPeerNode,
-			ShardID:            uint8(i),
-			ProfileID:          cfg.Transport.Profile,
-			ProfileVersion:     1,
-			ConfigRevision:     "config-v1",
+			NodeID: cfg.Node.ID, ExpectedPeerNodeID: expectedPeerNode, ShardID: uint8(i),
+			ProfileID: cfg.Transport.Profile, ProfileVersion: 1, ConfigRevision: "config-v1",
+			Resources: r.Resources,
 		})
 		if err != nil {
 			_ = pw.Close()
@@ -220,91 +227,65 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			closeShards(shards)
 			return err
 		}
-		sh := &dialerShard{peer: p, client: client, pw: pw, body: resp.Body}
+		sh := &dialerShard{peer:p,client:client,pw:pw,body:resp.Body}
 		shards = append(shards, sh)
 		go func(index int, sh *dialerShard) {
 			err := sh.peer.Run(ctx)
-			if ctx.Err() == nil && err != nil {
-				runErr <- fmt.Errorf("shard %d: %w", index, err)
-			}
-		}(i, sh)
+			if ctx.Err()==nil && err!=nil { runErr<-fmt.Errorf("shard %d: %w",index,err) }
+		}(i,sh)
 	}
 	defer closeShards(shards)
 
 	var listeners []net.Listener
-	defer func() {
-		for _, ln := range listeners {
-			_ = ln.Close()
-		}
-	}()
+	defer func(){for _,ln:=range listeners{_ = ln.Close()}}()
 
 	var rr atomic.Uint64
 	var wg sync.WaitGroup
 	for _, cr := range cfg.Routes {
-		if cr.Direction != "outbound" {
-			continue
-		}
-		ln, err := net.Listen("tcp", cr.Listen)
-		if err != nil {
-			return fmt.Errorf("route %s listen: %w", cr.ID, err)
-		}
-		listeners = append(listeners, ln)
-		route := cr
+		if cr.Direction!="outbound" { continue }
+		ln,err:=net.Listen("tcp",cr.Listen)
+		if err!=nil { return fmt.Errorf("route %s listen: %w",cr.ID,err) }
+		listeners=append(listeners,ln)
+		route:=cr
 		wg.Add(1)
-		go func() {
+		go func(){
 			defer wg.Done()
 			for {
-				conn, err := ln.Accept()
-				if err != nil {
-					if ctx.Err() != nil {
-						return
-					}
-					runErr <- fmt.Errorf("route %s accept: %w", route.ID, err)
+				conn,err:=ln.Accept()
+				if err!=nil {
+					if ctx.Err()!=nil { return }
+					runErr<-fmt.Errorf("route %s accept: %w",route.ID,err)
 					return
 				}
-				idx := int((rr.Add(1) - 1) % uint64(len(shards)))
-				go func(c net.Conn, sh *dialerShard) {
-					if err := sh.peer.OpenFlow(ctx, route.RemoteRoute, c); err != nil {
-						_ = c.Close()
-					}
-				}(conn, shards[idx])
+				idx:=int((rr.Add(1)-1)%uint64(len(shards)))
+				go func(c net.Conn, sh *dialerShard){
+					if err:=sh.peer.OpenFlow(ctx,route.RemoteRoute,c);err!=nil { _ = c.Close() }
+				}(conn,shards[idx])
 			}
 		}()
 	}
-	if len(listeners) == 0 {
-		return errors.New("dialer requires at least one outbound route")
-	}
+	if len(listeners)==0 { return errors.New("dialer requires at least one outbound route") }
 
 	select {
 	case <-ctx.Done():
-		for _, ln := range listeners {
-			_ = ln.Close()
-		}
+		for _,ln:=range listeners{_ = ln.Close()}
 		wg.Wait()
 		return nil
-	case err := <-runErr:
-		for _, ln := range listeners {
-			_ = ln.Close()
-		}
+	case err:=<-runErr:
+		for _,ln:=range listeners{_ = ln.Close()}
 		wg.Wait()
 		return err
 	}
 }
 
 func closeShards(shards []*dialerShard) {
-	for _, sh := range shards {
-		sh.close()
-	}
+	for _,sh:=range shards { sh.close() }
 }
 
-func nodeIDFromIdentity(identity string) (string, error) {
-	const prefix = "urn:baft:node:"
-	if !strings.HasPrefix(identity, prefix) {
-		return "", fmt.Errorf("unsupported peer identity format")
-	}
-	id := strings.TrimPrefix(identity, prefix)
-	if id == "" || len(id) > 64 {
-		return "", fmt.Errorf("invalid peer node identity")
-	}
-	return id, nil
+func nodeIDFromIdentity(identity string) (string,error) {
+	const prefix="urn:baft:node:"
+	if !strings.HasPrefix(identity,prefix) { return "",fmt.Errorf("unsupported peer identity format") }
+	id:=strings.TrimPrefix(identity,prefix)
+	if id==""||len(id)>64 { return "",fmt.Errorf("invalid peer node identity") }
+	return id,nil
 }

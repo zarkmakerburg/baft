@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - 'tests/correctness/**'
+      - 'internal/session/**'
+      - 'internal/resources/**'
+      - 'internal/protocol/**'
+      - 'internal/carrier/**'
       - '.github/workflows/cor01.yml'
   workflow_dispatch:
 
