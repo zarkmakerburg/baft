@@ -45,9 +45,9 @@
 - [x] multi-Flow integration test
 - [x] تثبیت slow-receiver liveness gate با TWRL و تست deterministic
 - [ ] تست طولانی slow receiver / soak
-- [ ] تست فشار چند Shard با memory budget مشترک
-- [ ] metrics لازم برای allocator/queue/Flow
-- [ ] بستن Stage C فقط بعد از CI کاملاً سبز و بدون OOM/race
+- [x] تست فشار چند Shard با memory budget مشترک و reuse بدون leak
+- [x] conservation metrics برای allocator/Flow بدون label حساس و پرکاردینالیتی
+- [ ] بستن Stage C بعد از PASS شدن workflow مستقل Stage-C soak بدون OOM/race/deadlock
 
 ## Stage D — resume دقیق
 

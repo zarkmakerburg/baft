@@ -5,9 +5,9 @@
 > English: [KNOWN-LIMITATIONS.en.md](KNOWN-LIMITATIONS.en.md)
 
 - BAFT هنوز research software است و production-ready اعلام نشده است.
-- Stage C کامل نیست؛ slow-receiver liveness gate هنوز failure دارد.
+- Stage C هنوز رسماً بسته نشده؛ slow-receiver، PADL، shared-budget و metrics سبزند، اما workflow مستقل soak باید PASS شود.
 - COR-01 پاس‌شده correctness روی runner/local networking است و benchmark اینترنت عمومی نیست.
-- allocator، DRR و control scheduling وارد data path شده‌اند، اما soak طولانی و فشار چند Shard هنوز کامل نیست.
+- allocator، TWRL، PADL و control scheduling وارد data path شده‌اند؛ shared-budget چند Shard تست شده، اما soak تکرارشونده هنوز گیت باز است.
 - resume، epoch fencing، snapshot، replay روی Carrier جایگزین و tombstone پیاده‌سازی کامل ندارند.
 - resume بعد از Process restart وعده داده نشده است.
 - endpoint pool/relay production path کامل نشده است.

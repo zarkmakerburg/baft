@@ -22,11 +22,11 @@ Completed/integrated:
 - [x] concurrent multi-Flow integration test
 
 Remaining:
-- [ ] stabilize slow-receiver liveness gate
+- [x] stabilize slow-receiver liveness gate with TWRL
 - [ ] longer slow-receiver/soak tests
-- [ ] multi-Shard shared-budget stress
-- [ ] allocator/queue/Flow metrics
-- [ ] close Stage C only with fully green CI and no OOM/race
+- [x] multi-Shard shared-budget exhaustion/reuse gate
+- [x] privacy-bounded conservation metrics
+- [ ] close Stage C after the independent Stage-C soak workflow passes without OOM/race/deadlock
 
 ## Stage D
 Boot/session/epoch fencing, snapshots, replay, tombstones, duplicate-free Carrier replacement, state-machine fuzz, and recovery correctness gates.

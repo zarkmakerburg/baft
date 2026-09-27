@@ -22,9 +22,13 @@ Latest COR-01 run `36338439622` on `b1ddb445...` passed with Go 1.27.1, 1,073,74
 
 The global receive/replay allocator, replay release on ACK, memory/credit backpressure, byte-based DRR, bounded control scheduling, and multi-Flow integration work are in the data path.
 
-Stage C remains incomplete because the slow-receiver liveness gate is not yet stable. CI run `36338439633` failed `TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory`. In that run source progress moved from 65536 to 98304 bytes after drain, but the test's liveness acceptance condition was not met.
+The historical slow-receiver failure triggered the TWRL redesign. TWRL now separates Accepted, Delivered, and Credit watermarks and passes the slow-receiver gate, race detector, and 1 GiB COR-01.
 
-This is intentionally recorded as an unresolved Stage-C result rather than being hidden behind the passing COR-01 gate.
+The active DATA scheduler is now PADL (Pressure-Aged Deficit Leasing), with classic DRR retained as a comparison baseline. Consolidated CI run `36341912070` and COR-01 run `36341912044` both pass on the PADL path.
+
+Shared multi-Shard allocator exhaustion/reuse and conservation snapshots pass in CI run `36341666646`. Privacy-bounded conservation metrics pass in CI run `36341810504`.
+
+Stage C is still formally open only because the dedicated repeated soak workflow must pass.
 
 ## Not complete
 

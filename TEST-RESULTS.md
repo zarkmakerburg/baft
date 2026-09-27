@@ -69,21 +69,9 @@ commit `0d70f1f...` integration test چند Flow را اضافه کرد و CI ru
 
 commit `eaefc310...` bounded control scheduling را اضافه کرد. CI عادی run `36317760598` PASS شد، اما COR-01 همان commit timeout شد؛ بنابراین implementation بعداً تغییر کرد و regression دوباره اجرا شد.
 
-## slow receiver — مسئله باز
+## slow receiver — بسته‌شده با TWRL
 
-آخرین CI ثبت‌شده روی commit `b1ddb445...`:
-
-- run: `36338439633`
-- test: `TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory`
-- result: **FAIL**
-
-مشاهده ثبت‌شده:
-
-- source قبل از drain: `65536` بایت؛
-- پس از drain در مهلت تست: `98304` بایت؛
-- forward progress رخ داد، ولی شرط liveness تست برآورده نشد.
-
-تا حل و تکرارپذیری این gate، Stage C کامل نیست.
+failure تاریخی run `36338439633` باعث بازطراحی receive path شد. پس از TWRL، slow-receiver integration و تست deterministic credit replenishment در run `36340860552` **PASS** شدند و COR-01 run `36340860568` نیز PASS ماند.
 
 ## آزمون‌هایی که هنوز لازم‌اند
 
@@ -119,3 +107,36 @@ The receive path now distinguishes protocol acceptance (A), target delivery (D),
 This remains a correctness result on GitHub-hosted local networking, not a public-network throughput benchmark.
 
 </div>
+
+
+## PADL و Stage-C scheduler
+- Commit code: `eb89ea5d...`
+- Consolidated gate commit: `fc64ef6b...`
+- Standard CI run: `36341912070` — **PASS**
+- COR-01 run: `36341912044` — **PASS**
+- high-volume PADL liveness: 64 Flow × 256 item — PASS
+- pressure preference / aging starvation bound / equal-pressure fairness — PASS
+
+PADL هنوز performance claim ندارد؛ Stage E باید هزینه انتخاب prototype را با DRR baseline مقایسه کند.
+
+## shared multi-Shard budget / conservation telemetry
+- Commit: `efe837fb...`
+- CI run: `36341666646` — **PASS**
+- shared receive pool exhaustion: PASS
+- capacity reuse after Flow release: PASS
+- conservation snapshot invariant checks: PASS
+
+## conservation metrics
+- Commit: `692ec4e3...`
+- CI run: `36341810504` — **PASS**
+- loopback-only configuration contract: retained
+- no peer/route/target/stream labels in baseline metrics: verified
+- A-D / C-D / replay outstanding / invariant violation gauges: exported
+
+## Stage-C soak
+- Workflow: `.github/workflows/stagec-soak.yml`
+- Current first run: `36342169299`
+- Status at this report revision: **in progress**
+- Gate: 25 repeated real-path integration cycles + 5 race-detector cycles
+
+Stage C remains open until this workflow produces a clean PASS.

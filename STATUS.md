@@ -15,7 +15,7 @@
 
 - **Stage A:** کامل برای scope تعریف‌شده.
 - **Stage B:** کامل برای secure vertical slice تعریف‌شده.
-- **Stage C:** در حال توسعه و تثبیت؛ کامل نیست.
+- **Stage C:** از نظر پیاده‌سازی اصلی نزدیک به بسته‌شدن است؛ فقط soak مستقل باید PASS شود.
 - **Stage D به بعد:** هنوز کامل نشده‌اند.
 
 ## Stage A
@@ -91,7 +91,25 @@ GitHub Actions run `36340860552` همه‌ی unit/integration tests، race detec
 
 COR-01 روی همین commit در run `36340860568` نیز **PASS** شد.
 
-نتیجه: slow-receiver liveness gate فعلی بسته شده است. **Stage C هنوز کامل نیست** چون soak طولانی، فشار چند Shard و metrics باقی مانده‌اند.
+نتیجه: slow-receiver liveness gate فعلی بسته شده است.
+
+### PADL، چند Shard و conservation observability
+
+مسیر فعال DATA از DRR ساده به **PADL (Pressure-Aged Deficit Leasing)** ارتقا یافته است. PADL accounting بایتی DRR را حفظ می‌کند، اما انتخاب Flow واجدشرایط را با replay-memory debt و aging ضد-starvation ترکیب می‌کند. DRR کلاسیک در مخزن به‌عنوان baseline مقایسه‌ای باقی مانده است.
+
+روی commit `fc64ef6b...`:
+- CI run `36341912070`: **PASS**
+- COR-01 run `36341912044`: **PASS**
+- high-volume PADL liveness test: PASS
+- race detector / vet / fuzz smoke: PASS
+
+همچنین shared allocator چند Shard و reuse ظرفیت بدون leak در commit `efe837fb...` وارد gate شده و CI run `36341666646` **PASS** است.
+
+Conservation Telemetry و metrics روی loopback نیز پیاده شده‌اند. metrics به‌صورت aggregate رابطه‌های A-D، C-D، replay outstanding و invariant violations را بدون peer/route/target/stream label حساس منتشر می‌کنند. CI run `36341810504` برای این مسیر **PASS** است.
+
+### تنها گیت باز Stage C
+
+workflow مستقل `stagec-soak` اضافه شده است. این workflow multi-Flow و slow-receiver واقعی را ۲۵ بار تکرار و ۵ دور زیر race detector اجرا می‌کند. تا PASS شدن این gate، Stage C کامل اعلام نمی‌شود.
 
 ## Stage D و بعد
 

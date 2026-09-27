@@ -23,8 +23,23 @@ This is a correctness regression gate, not a public-network performance result.
 
 Commit `0d70f1f...` added concurrent multi-Flow integration coverage; CI run `36317438771` passed.
 
-## Open slow-receiver failure
+## Slow receiver / TWRL
 
-CI run `36338439633` failed `TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory`. Source progress moved from 65536 to 98304 bytes after drain but did not satisfy the liveness condition within the test window. Stage C therefore remains incomplete.
+The historical slow-receiver failure is closed by the TWRL receive-path redesign. CI run `36340860552` passes the slow-receiver integration, race detector, vet, and fuzz smoke. COR-01 run `36340860568` also passes with the same 1 GiB hash.
+
+## PADL / shared budgets / metrics
+
+Consolidated PADL gate:
+- CI `36341912070`: PASS
+- COR-01 `36341912044`: PASS
+- high-volume PADL liveness: PASS
+
+Shared multi-Shard allocator/conservation gate:
+- CI `36341666646`: PASS
+
+Privacy-bounded conservation metrics:
+- CI `36341810504`: PASS
+
+The remaining Stage-C gate is the dedicated repeated soak workflow.
 
 Long soak, multi-Shard stress, recovery-state tests, formal benchmarks, operations tests, and real-path pilot work are still outstanding.
