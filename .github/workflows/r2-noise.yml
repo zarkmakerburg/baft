@@ -35,3 +35,21 @@ jobs:
         run: bash -n install.sh
       - name: Pair helper build
         run: go build ./cmd/baft-pair
+      - name: Persian docs RTL gate
+        run: go test ./tests/docs -count=1
+      - name: Package R2 bundle
+        run: |
+          zip -r baft-r2-v0.1.zip \
+            install.sh \
+            cmd/baft-pair \
+            internal/securityinternal \
+            tests/integration/noise_h2_intermediary_test.go \
+            docs/fa/16-reachability-innovation.md \
+            STATUS.md PLAN.md go.mod go.sum \
+            .github/workflows/r2-noise.yml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baft-r2-v0.1
+          path: baft-r2-v0.1.zip
+          if-no-files-found: error
+          retention-days: 14
