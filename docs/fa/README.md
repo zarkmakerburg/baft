@@ -35,3 +35,5 @@
 15. [15 — Conservation Telemetry و چند Shard](15-conservation-telemetry.md)
 
 16. [16 — Metrics حفاظتی و conservation](16-conservation-metrics.md)
+
+17. [17 — گیت‌های صحت single-flight](17-correctness-gates.md)

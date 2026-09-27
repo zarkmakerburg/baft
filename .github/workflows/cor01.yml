@@ -7,10 +7,15 @@ on:
       - 'tests/correctness/**'
       - 'internal/session/**'
       - 'internal/resources/**'
+      - 'internal/scheduler/**'
       - 'internal/protocol/**'
       - 'internal/carrier/**'
       - '.github/workflows/cor01.yml'
   workflow_dispatch:
+
+concurrency:
+  group: cor01-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
