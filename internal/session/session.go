@@ -52,7 +52,7 @@ type Peer struct {
 	routes             *routes.Table
 	dial               func(context.Context, string, string) (net.Conn, error)
 	allocator          *resources.Allocator
-	dataSender         *dataSender
+	sender             *outboundSender
 	nodeID             string
 	expectedPeerNodeID string
 	bootID             string
@@ -176,7 +176,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		p.nextID = 2
 	}
 	p.dial = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
-	p.dataSender = newDataSender(&p.writer)
+	p.sender = newOutboundSender(&p.writer)
 	return p, nil
 }
 
@@ -193,7 +193,7 @@ func (p *Peer) Run(ctx context.Context) error {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		p.dataSender.run(runCtx)
+		p.sender.run(runCtx)
 	}()
 	defer func() {
 		cancel()
@@ -246,7 +246,7 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 	if err != nil {
 		return err
 	}
-	if err := p.writer.send(protocol.Frame{Type: protocol.TypeOpen, StreamID: id, Payload: payload}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpen, StreamID: id, Payload: payload}); err != nil {
 		fl.close()
 		p.removeFlow(id)
 		return err
@@ -263,7 +263,7 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 		p.removeFlow(id)
 		return ctx.Err()
 	}
-	if err := p.dataSender.addFlow(fl.id); err != nil {
+	if err := p.sender.addFlow(fl.id); err != nil {
 		_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
 		return err
 	}
@@ -413,7 +413,7 @@ func (p *Peer) sendHello() error {
 	if err != nil {
 		return err
 	}
-	return p.writer.send(protocol.Frame{Type: protocol.TypeHello, Payload: payload})
+	return p.sender.sendControl(protocol.Frame{Type: protocol.TypeHello, Payload: payload})
 }
 
 func (p *Peer) handleHello(fr protocol.Frame) error {
@@ -456,7 +456,7 @@ func (p *Peer) handleHello(fr protocol.Frame) error {
 	if err != nil {
 		return err
 	}
-	if err := p.writer.send(protocol.Frame{Type: protocol.TypeHelloAck, Payload: payload}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeHelloAck, Payload: payload}); err != nil {
 		return err
 	}
 	return p.sendReady()
@@ -489,7 +489,7 @@ func (p *Peer) sendReady() error {
 	if err != nil {
 		return err
 	}
-	if err := p.writer.send(protocol.Frame{Type: protocol.TypeReady, Payload: payload}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeReady, Payload: payload}); err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -563,19 +563,19 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 		if !openOK {
 			return errors.New("duplicate OPEN before original completed")
 		}
-		return p.writer.send(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")})
+		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")})
 	}
 	p.mu.Unlock()
 
 	target, err := p.routes.Resolve(p.peerID, req.RouteID)
 	if err != nil {
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorCode(err.Error())})
-		return p.writer.send(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
 	conn, err := p.dial(ctx, "tcp", target)
 	if err != nil {
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: targetDialErrorCode(err)})
-		return p.writer.send(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
 	fl := newFlow(fr.StreamID, req.RouteID, req.OpenNonce, conn, p.allocator)
 	p.mu.Lock()
@@ -597,23 +597,23 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 		fl.close()
 		p.removeFlow(fr.StreamID)
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
-		return p.writer.send(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
 	fl.mu.Lock()
 	fl.openOK = true
 	fl.mu.Unlock()
-	if err := p.dataSender.addFlow(fl.id); err != nil {
+	if err := p.sender.addFlow(fl.id); err != nil {
 		fl.close()
 		p.removeFlow(fr.StreamID)
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
-		return p.writer.send(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
-	if err := p.writer.send(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")}); err != nil {
 		fl.close()
 		p.removeFlow(fr.StreamID)
 		return err
 	}
-	if err := p.writer.send(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: window}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: window}); err != nil {
 		fl.close()
 		p.removeFlow(fr.StreamID)
 		return err
@@ -638,7 +638,7 @@ func (p *Peer) sendReset(fl *flow, code protocol.ErrorCode) error {
 	if err != nil {
 		return err
 	}
-	if err := p.writer.send(protocol.Frame{Type: protocol.TypeReset, StreamID: fl.id, Payload: payload}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeReset, StreamID: fl.id, Payload: payload}); err != nil {
 		return err
 	}
 	fl.mu.Lock()
@@ -701,7 +701,7 @@ func (p *Peer) grantReceive(fl *flow) error {
 	if err != nil {
 		return err
 	}
-	return p.writer.send(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: max})
+	return p.sender.sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: max})
 }
 
 func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
@@ -709,7 +709,7 @@ func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
 	if err != nil {
 		return p.sendReset(fl, protocol.ErrorFlowControl)
 	}
-	if err := p.writer.send(protocol.Frame{Type: protocol.TypeAck, StreamID: fl.id, Offset: ack}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeAck, StreamID: fl.id, Offset: ack}); err != nil {
 		return err
 	}
 	if duplicate {
@@ -737,7 +737,7 @@ func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 			return err
 		}
 	}
-	if err := p.writer.send(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: finalOffset}); err != nil {
+	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: finalOffset}); err != nil {
 		return err
 	}
 	p.finishIfComplete(fl)
@@ -780,7 +780,7 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(n))
 				return
 			}
-			if err := p.dataSender.send(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
+			if err := p.sender.sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
 				return
 			}
 		}
@@ -790,7 +790,7 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				final := fl.txNext
 				fl.finSent = true
 				fl.mu.Unlock()
-				_ = p.writer.send(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
+				_ = p.sender.sendControl(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
 			}
 			return
 		}
