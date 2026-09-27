@@ -14,14 +14,25 @@ import (
 // survives the listed attacks/failures.
 
 type ecrlMarks struct {
-	K uint64
-	D uint64
-	A uint64
-	S uint64
-	C uint64
+	F        uint64
+	K        uint64
+	KRelease uint64
+	D        uint64
+	A        uint64
+	S        uint64
+	C        uint64
 }
 
 func validateIntegratedMarks(m ecrlMarks) error {
+	if m.F > m.D {
+		return errors.New("F>D")
+	}
+	if m.KRelease > m.D {
+		return errors.New("K_release>D")
+	}
+	if m.KRelease > m.K {
+		return errors.New("K_release>K")
+	}
 	if m.D > m.A {
 		return errors.New("D>A")
 	}
@@ -33,6 +44,41 @@ func validateIntegratedMarks(m ecrlMarks) error {
 	}
 	if m.S > m.C {
 		return errors.New("S>C")
+	}
+	return nil
+}
+
+type dualAckReference struct {
+	K        uint64
+	KRelease uint64
+	Release  uint64
+}
+
+func (s *dualAckReference) observe(accepted, delivered uint64) error {
+	if delivered > accepted {
+		return errors.New("delivery watermark exceeds acceptance watermark")
+	}
+	if accepted > s.K {
+		s.K = accepted
+	}
+	if delivered > s.KRelease {
+		s.KRelease = delivered
+	}
+	// The only safe normal-operation replay release frontier is the
+	// sender-observed delivery watermark, never the acceptance watermark.
+	s.Release = s.KRelease
+	return nil
+}
+
+func (s dualAckReference) validateAgainst(m ecrlMarks) error {
+	if s.K > m.A {
+		return errors.New("observed acceptance ACK exceeds peer A")
+	}
+	if s.KRelease > m.D {
+		return errors.New("replay-release knowledge exceeds peer D")
+	}
+	if s.Release > s.KRelease || s.Release > m.D {
+		return errors.New("replay freed beyond delivered watermark")
 	}
 	return nil
 }
@@ -164,7 +210,7 @@ func TestECRLF03LostACK(t *testing.T) {
 
 func TestECRLF04AcceptedNotDeliveredPartition(t *testing.T) {
 	source := []byte("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-	m := ecrlMarks{K: 8, D: 10, A: 18, S: 30, C: 36}
+	m := ecrlMarks{F: 4, K: 8, KRelease: 6, D: 10, A: 18, S: 30, C: 36}
 	prefix, ring, replay, combined, err := partitionHandoff(source, m)
 	if err != nil { t.Fatal(err) }
 	if len(prefix) != 10 || len(ring) != 8 || len(replay) != 12 {
@@ -172,6 +218,26 @@ func TestECRLF04AcceptedNotDeliveredPartition(t *testing.T) {
 	}
 	if !bytes.Equal(combined, source[:m.S]) {
 		t.Fatalf("F04: handoff produced gap/overlap: got=%q want=%q", combined, source[:m.S])
+	}
+}
+
+func TestECRLF04DltKReplayReleaseSafety(t *testing.T) {
+	m := ecrlMarks{F:4, K:12, KRelease:6, D:8, A:16, S:20, C:24}
+	if err := validateIntegratedMarks(m); err != nil {
+		t.Fatalf("F04: baseline D<K state must be valid: %v", err)
+	}
+	ack := dualAckReference{}
+	if err := ack.observe(m.K, m.KRelease); err != nil {
+		t.Fatal(err)
+	}
+	if err := ack.validateAgainst(m); err != nil {
+		t.Fatalf("F04: dual-level ACK baseline was unsafe: %v", err)
+	}
+
+	mutated := ack
+	mutated.Release = m.K // mutation: free replay through acceptance K while D<K.
+	if err := mutated.validateAgainst(m); err == nil {
+		t.Fatal("F04: releasing replay through K while D<K was not detected")
 	}
 }
 
@@ -185,6 +251,22 @@ func TestECRLF05TombstoneResurrection(t *testing.T) {
 	}
 	if !ts.canReopen(13, 10) {
 		t.Fatal("F05: unrelated stream was incorrectly blocked")
+	}
+}
+
+func TestECRLF06LostFIN(t *testing.T) {
+	local, peer := validBaseSnapshotsForHarness()
+	local.Flows[0].FinSent = true
+	peer.Flows[0].FinRecv = false // FIN was lost with the old Carrier.
+
+	// Reference rule: a sent FIN that the peer has not observed is a
+	// terminal-control replay obligation, not permission to advance state.
+	replayFIN := local.Flows[0].FinSent && !peer.Flows[0].FinRecv
+	if !replayFIN {
+		t.Fatal("F06: lost FIN was not identified as a replay obligation")
+	}
+	if peer.Flows[0].FinAckSent {
+		t.Fatal("F06: peer cannot acknowledge a FIN it never received")
 	}
 }
 
@@ -209,10 +291,10 @@ func TestECRLF07PeerRestart(t *testing.T) {
 
 func TestECRLF08InconsistentSnapshot(t *testing.T) {
 	invalid := []ecrlMarks{
-		{K: 11, D: 2, A: 10, S: 12, C: 20}, // K>A
-		{K: 2, D: 11, A: 10, S: 12, C: 20}, // D>A
-		{K: 2, D: 3, A: 13, S: 12, C: 20}, // A>S
-		{K: 2, D: 3, A: 10, S: 21, C: 20}, // S>C
+		{F: 0, K: 11, KRelease: 0, D: 2, A: 10, S: 12, C: 20}, // K>A
+		{F: 0, K: 2, KRelease: 0, D: 11, A: 10, S: 12, C: 20}, // D>A
+		{F: 0, K: 2, KRelease: 0, D: 3, A: 13, S: 12, C: 20}, // A>S
+		{F: 0, K: 2, KRelease: 0, D: 3, A: 10, S: 21, C: 20}, // S>C
 	}
 	for i, m := range invalid {
 		if err := validateIntegratedMarks(m); err == nil {
@@ -233,23 +315,27 @@ func TestECRLF09DeterministicPropertySweep(t *testing.T) {
 			for a := uint64(0); a <= 5; a++ {
 				for s := uint64(0); s <= 5; s++ {
 					for c := uint64(0); c <= 5; c++ {
-						m := ecrlMarks{K:k,D:d,A:a,S:s,C:c}
-						wantValid := d <= a && k <= a && a <= s && s <= c
-						err := validateIntegratedMarks(m)
-						if (err == nil) != wantValid {
-							t.Fatalf("F09: classifier mismatch for %#v err=%v wantValid=%v", m, err, wantValid)
-						}
-						if !wantValid {
-							continue
-						}
-						source := []byte("abcdef")
-						_, ring, replay, combined, err := partitionHandoff(source, m)
-						if err != nil { t.Fatalf("F09: valid state rejected %#v: %v", m, err) }
-						if uint64(len(ring)+len(replay)) != s-d {
-							t.Fatalf("F09: conservation length failed %#v", m)
-						}
-						if !bytes.Equal(combined, source[:s]) {
-							t.Fatalf("F09: conservation bytes failed %#v", m)
+						for f := uint64(0); f <= d; f++ {
+							for kr := uint64(0); kr <= d; kr++ {
+								m := ecrlMarks{F:f,K:k,KRelease:kr,D:d,A:a,S:s,C:c}
+								wantValid := f <= d && kr <= d && kr <= k && d <= a && k <= a && a <= s && s <= c
+								err := validateIntegratedMarks(m)
+								if (err == nil) != wantValid {
+									t.Fatalf("F09: classifier mismatch for %#v err=%v wantValid=%v", m, err, wantValid)
+								}
+								if !wantValid {
+									continue
+								}
+								source := []byte("abcdef")
+								_, ring, replay, combined, err := partitionHandoff(source, m)
+								if err != nil { t.Fatalf("F09: valid state rejected %#v: %v", m, err) }
+								if uint64(len(ring)+len(replay)) != s-d {
+									t.Fatalf("F09: conservation length failed %#v", m)
+								}
+								if !bytes.Equal(combined, source[:s]) {
+									t.Fatalf("F09: conservation bytes failed %#v", m)
+								}
+							}
 						}
 					}
 				}
@@ -272,7 +358,7 @@ func TestECRLF10ExactByteStream(t *testing.T) {
 		k := uint64(rng.Intn(int(a + 1)))
 		c := s + uint64(rng.Intn(4096))
 
-		m := ecrlMarks{K:k,D:d,A:a,S:s,C:c}
+		m := ecrlMarks{F:0,K:k,KRelease:0,D:d,A:a,S:s,C:c}
 		prefix, ring, replay, combined, err := partitionHandoff(source, m)
 		if err != nil { t.Fatalf("F10 case %d: %v", i, err) }
 		if !bytes.Equal(combined, source[:s]) {
@@ -284,7 +370,7 @@ func TestECRLF10ExactByteStream(t *testing.T) {
 	}
 
 	// Full-stream terminal case: exact byte count and hash must match.
-	full := ecrlMarks{K:n/3,D:n/2,A:3*n/4,S:n,C:n}
+	full := ecrlMarks{F:n/4,K:n/3,KRelease:n/3,D:n/2,A:3*n/4,S:n,C:n}
 	_, _, _, got, err := partitionHandoff(source, full)
 	if err != nil { t.Fatal(err) }
 	gotHash := sha256.Sum256(got)

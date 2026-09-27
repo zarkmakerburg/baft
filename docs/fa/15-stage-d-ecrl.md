@@ -214,7 +214,9 @@ peer معتبر ولی buggy/stale مقدار `rx_accepted` بزرگ‌تر از
 برای هر Flow `f` و هر جهت `d`:
 
 - `S` = `tx_next` sender؛
-- `K` = `tx_acked` که sender محلی دیده است؛
+- `K` = آخرین acceptance ACK مشاهده‌شده توسط sender؛
+- `K_release` = آخرین delivery watermark مشاهده‌شده که اجازه آزادسازی replay را می‌دهد؛
+- `F` = کف معتبر snapshot/tombstone؛
 - `A` = `rx_accepted` متناظر در peer؛
 - `D` = `rx_delivered` متناظر در peer؛
 - `C` = receive credit متناظر در peer؛
@@ -331,6 +333,101 @@ K <= A
 
 بنابراین هر implementation یا test که `K<=D` را invariant بگیرد، بخشی از رفتار صحیح TWRL را اشتباه رد خواهد کرد.
 
+#### ACK دوسطحی و شکاف [D,K)
+
+ECRL مسیر **ACK دوسطحی** را انتخاب می‌کند.
+
+هر ACK منطقی دو watermark مستقل حمل می‌کند:
+
+- `A_ack`: آخرین offset پذیرفته‌شده در حافظه bounded؛ sender آن را در `K` ثبت می‌کند.
+- `D_ack`: آخرین offset واقعاً تحویل‌شده به target؛ sender آن را در `K_release` ثبت می‌کند.
+
+قواعد:
+
+<div dir="ltr" align="left">
+
+```text
+K_release <= D
+K_release <= K <= A
+ReplayFreeFloor <= K_release
+
+D <= A <= S <= C
+```
+
+</div>
+
+اگر target کند باشد ممکن است:
+
+<div dir="ltr" align="left">
+
+```text
+D < K <= A
+```
+
+</div>
+
+اما این دیگر اجازه‌ی آزادسازی `[D,K)` را نمی‌دهد، چون replay فقط تا `K_release` آزاد می‌شود و:
+
+<div dir="ltr" align="left">
+
+```text
+K_release <= D
+```
+
+</div>
+
+در wire design آینده، credit همچنان admission-control است: `A` frontier پذیرش است و credit از free receive capacity مشتق می‌شود. برای ring با ظرفیت R:
+
+<div dir="ltr" align="left">
+
+```text
+occupancy = A - D
+free      = R - occupancy
+C         = A + free
+          = D + R
+```
+
+</div>
+
+پس «credit بر اساس A» به معنی استفاده از frontier پذیرش همراه با ظرفیت آزاد است؛ نه اینکه بدون توجه به D، پنجره نامحدود جلو برود.
+
+**قانون توقف [D,K):** هر implementation که replay را صرفاً با `K` آزاد کند، در حالت `D<K` مردود است.
+
+#### نماد F — کف معتبر snapshot/tombstone
+
+`F` = **بزرگ‌ترین offsetی که یک snapshot/tombstone معتبر و retained تضمین می‌کند prefix `[0,F)` دیگر برای بازسازی به state ناپایدار قدیمی وابسته نیست.**
+
+برای Flow فعال:
+
+<div dir="ltr" align="left">
+
+```text
+F <= D <= A
+K <= A
+K_release <= D
+```
+
+</div>
+
+بین `F` و `K` ترتیب ثابت وجود ندارد:
+
+- با ACK گم‌شده ممکن است `K < F <= D`؛
+- با target کند ممکن است `F <= D < K <= A`.
+
+برای tombstone پایانی که همه‌ی bytes تا `final_offset` تحویل شده‌اند:
+
+<div dir="ltr" align="left">
+
+```text
+F = D = A = S = final_offset
+```
+
+</div>
+
+و reopen در دوره retention ممنوع است.
+
+F «مجوز آزادسازی replay» نیست؛ replay release در حالت عادی فقط از `K_release` پیروی می‌کند. F در reconciliation/tombstone مشخص می‌کند از چه prefixی به عقب rollback یا resurrection مجاز نیست.
+
 #### اثر بر ECRL
 
 ECRL هنگام resume نباید K را جای D یا A استفاده کند:
@@ -362,8 +459,9 @@ candidate پیش از commit فقط control مربوط به resume دارد و �
 <div dir="ltr" align="left">
 
 ```text
-K <= A
-D <= A <= S <= C
+F <= D <= A <= S <= C
+K_release <= D
+K_release <= K <= A
 ```
 
 </div>
@@ -514,6 +612,51 @@ ECRL با «کارکردن معمولی» تأیید نمی‌شود. تست‌�
 در آن حالت حق نداریم صرفاً timeout یا buffer را تغییر دهیم و طراحی را «موفق» بنامیم؛ باید invariant یا معماری handoff بازطراحی شود.
 
 ---
+
+## 5A. تطبیق یک‌به‌یک F01 تا F10 با harness
+
+هیچ معیار F حذف نشده است.
+
+| معیار | تست deterministic | پوشش دقیق |
+|---|---|---|
+| F01 | `TestECRLF01ZombieCarrier` | Carrier قدیمی بعد از commit هیچ اثر کاربردی ندارد |
+| F02 | `TestECRLF02DualCandidate` | فقط یک candidate برای epoch بعدی مالک مؤثر می‌شود |
+| F03 | `TestECRLF03LostACK` | replay frontier از A است، نه K |
+| F04 | `TestECRLF04AcceptedNotDeliveredPartition` + `TestECRLF04DltKReplayReleaseSafety` | partition بدون gap/overlap و ایمنی شکاف `[D,K)` |
+| F05 | `TestECRLF05TombstoneResurrection` | OPEN روی tombstone رد می‌شود |
+| F06 | `TestECRLF06LostFIN` + `TestECRLF06LostFINACK` | Lost FIN و Lost FIN_ACK مستقل آزموده می‌شوند |
+| F07 | `TestECRLF07PeerRestart` | تغییر boot_id resume را رد می‌کند |
+| F08 | `TestECRLF08InconsistentSnapshot` | snapshot متناقض از جمله A>S رد می‌شود |
+| F09 | `TestECRLF09DeterministicPropertySweep` | روابط F/K/K_release/D/A/S/C روی فضای کوچک exhaustively sweep می‌شوند |
+| F10 | `TestECRLF10ExactByteStream` | byte-count/hash exact؛ هیچ duplicate/missing مجاز نیست |
+
+**چرا F06 دو تست دارد؟** سناریویی حذف یا ادغام مفهومی نشده است. Lost FIN و Lost FIN_ACK دو جهت متفاوتِ از دست‌رفتن control در invariant terminal monotonicity (I6) هستند؛ به همین دلیل هر دو زیر شناسه F06 باقی مانده‌اند ولی با دو تست مستقل اجرا می‌شوند.
+
+## 5B. Mutation gate
+
+هر mutant باید حداقل توسط یک F مشخص گرفته شود:
+
+| جهش عمدی | oracle / تست گیرنده | اگر گرفته نشود |
+|---|---|---|
+| پذیرش frame از epoch قدیمی بعد از commit | F01 | gate باز؛ zombie Carrier می‌تواند state را تغییر دهد |
+| replay از K به‌جای A | F03 (و overlap قابل‌مشاهده در F04) | gate باز؛ duplicate محتمل |
+| آزادسازی replay تا K وقتی D<K | F04 / `K_release<=D` | gate باز؛ crash gap `[D,K)` می‌تواند از دست برود |
+| OPEN روی stream tombstone‌شده | F05 | gate باز؛ resurrection ممکن |
+| اعمال دوباره FIN | F06 | gate باز؛ terminal side effect غیر-idempotent |
+| پذیرش snapshot با A>S | F08 | gate باز؛ peer bytes اختراع کرده است |
+| resume به‌جای RESET بعد از تغییر boot_id | F07 | gate باز؛ state volatile از Process قبلی فرض می‌شود |
+
+فایل mutation harness:
+
+<div dir="ltr" align="left">
+
+```text
+internal/recovery/ecrl_mutation_test.go
+```
+
+</div>
+
+وجود PASS برای mutation test یعنی mutant **به‌درستی رد شده است**، نه اینکه رفتار خراب پذیرفته شده باشد.
 
 ## 6. تصمیم فعلی درباره novelty
 

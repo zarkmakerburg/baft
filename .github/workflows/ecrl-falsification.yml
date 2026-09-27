@@ -35,5 +35,5 @@ jobs:
       - name: ECRL F01-F10 deterministic falsification harness
         run: |
           go test ./internal/recovery \
-            -run '^TestECRLF(0[1-9]|10)' \
+            -run '^(TestECRLF(0[1-9]|10)|TestECRLMutation)' \
             -count=1 -v

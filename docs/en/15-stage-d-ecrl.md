@@ -131,7 +131,9 @@ For the Session:
 For each Flow and direction:
 
 - `S` = sender `tx_next`;
-- `K` = sender-observed `tx_acked`;
+- `K` = sender-observed acceptance ACK;
+- `K_release` = sender-observed delivery watermark that permits replay release;
+- `F` = valid snapshot/tombstone floor;
 - `A` = peer `rx_accepted`;
 - `D` = peer `rx_delivered`;
 - `C` = peer receive credit;
@@ -226,6 +228,62 @@ but `K <= D` is not guaranteed.
 
 Any implementation that treats `K<=D` as mandatory would reject valid TWRL states.
 
+#### Two-level ACK and the [D,K) gap
+
+ECRL selects the **two-level ACK** design.
+
+Each logical ACK carries two independent watermarks:
+
+- `A_ack`: accepted into bounded receive state; stored by the sender as `K`.
+- `D_ack`: actually delivered to the target; stored as `K_release`.
+
+Rules:
+
+```text
+K_release <= D
+K_release <= K <= A
+ReplayFreeFloor <= K_release
+
+D <= A <= S <= C
+```
+
+When the target is slow, `D < K <= A` is valid, but replay may still only be freed through `K_release`, preventing loss of `[D,K)`.
+
+Future credit semantics remain admission-control based: with receive capacity R,
+
+```text
+occupancy = A - D
+free      = R - occupancy
+C         = A + free
+          = D + R
+```
+
+So acceptance frontier A participates in credit computation without allowing the window to outrun real free capacity.
+
+**[D,K) stop rule:** any implementation that frees replay directly through K while `D<K` is rejected.
+
+#### F — valid snapshot/tombstone floor
+
+`F` = **the greatest offset for which a retained valid snapshot/tombstone guarantees that prefix `[0,F)` no longer depends on older volatile reconstruction state.**
+
+For an active Flow:
+
+```text
+F <= D <= A
+K <= A
+K_release <= D
+```
+
+There is no fixed ordering between F and K. A lost ACK can yield `K<F<=D`; a slow target can yield `F<=D<K<=A`.
+
+For a fully delivered terminal tombstone:
+
+```text
+F = D = A = S = final_offset
+```
+
+F is not the normal replay-release permission; normal replay release follows `K_release`. F constrains rollback/resurrection during reconciliation.
+
 #### Consequence for ECRL
 
 K must never substitute for D or A:
@@ -251,8 +309,9 @@ A pre-commit candidate may exchange resume control only.
 ### I1 — correlated sender/receiver bounds
 
 ```text
-K <= A
-D <= A <= S <= C
+F <= D <= A <= S <= C
+K_release <= D
+K_release <= K <= A
 ```
 
 The first inequality prevents invented or rolled-back receive state; the second preserves TWRL.
@@ -354,6 +413,39 @@ If any valid fault-injection execution causes **one duplicated or missing target
 Changing timeouts or buffers is not an acceptable way to relabel such a failure as success; the handoff invariant or architecture must be redesigned.
 
 ---
+
+## 5A. One-to-one F01–F10 harness mapping
+
+No F criterion is removed.
+
+| criterion | deterministic test | exact coverage |
+|---|---|---|
+| F01 | `TestECRLF01ZombieCarrier` | stale Carrier cannot affect application state after commit |
+| F02 | `TestECRLF02DualCandidate` | one effective owner for the next epoch |
+| F03 | `TestECRLF03LostACK` | replay frontier is A, never K |
+| F04 | `TestECRLF04AcceptedNotDeliveredPartition` + `TestECRLF04DltKReplayReleaseSafety` | no partition gap/overlap; [D,K) release safety |
+| F05 | `TestECRLF05TombstoneResurrection` | OPEN on a retained tombstone is rejected |
+| F06 | `TestECRLF06LostFIN` + `TestECRLF06LostFINACK` | Lost FIN and Lost FIN_ACK tested independently |
+| F07 | `TestECRLF07PeerRestart` | Boot-ID change rejects resume |
+| F08 | `TestECRLF08InconsistentSnapshot` | contradictory snapshots, including A>S, are rejected |
+| F09 | `TestECRLF09DeterministicPropertySweep` | exhaustive small-space F/K/K_release/D/A/S/C invariant sweep |
+| F10 | `TestECRLF10ExactByteStream` | exact byte count/hash; no duplicate or missing byte |
+
+F06 retains one criterion because both cases test terminal monotonicity I6, but **no scenario is merged away**: Lost FIN and Lost FIN_ACK are separate tests.
+
+## 5B. Mutation gate
+
+| injected mutant | catching criterion |
+|---|---|
+| accept old-epoch frame after commit | F01 |
+| replay from K instead of A | F03 (also creates F04 overlap) |
+| free replay through K while D<K | F04 / `K_release<=D` |
+| accept OPEN on tombstoned stream | F05 |
+| apply FIN side effect twice | F06 |
+| accept snapshot with A>S | F08 |
+| resume instead of reset after Boot-ID change | F07 |
+
+Mutation tests live in `internal/recovery/ecrl_mutation_test.go`. A PASS means the deliberately broken mutant was successfully rejected.
 
 ## 6. Current novelty decision
 
