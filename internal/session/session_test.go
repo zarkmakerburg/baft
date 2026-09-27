@@ -167,3 +167,39 @@ func TestTWRLTargetDrainAdvancesCreditTwiceWithoutCarrierWriteBlocking(t *testin
 	if err:=<-readDone;err!=nil{t.Fatal(err)}
 	cancel();f.close();p.removeFlow(1);p.wg.Wait()
 }
+
+func TestLateTerminalControlForKnownClosedFlowIsAbsorbed(t *testing.T) {
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01"});if err!=nil{t.Fatal(err)}
+	local,remote:=net.Pipe();defer remote.Close()
+	f:=newFlow(1,"main","00112233445566778899aabbccddeeff",local,p.allocator);f.openOK=true
+	p.mu.Lock();p.flows[1]=f;p.localReady=true;p.peerReady=true;p.markReadyLocked();p.mu.Unlock()
+	f.close();p.removeFlow(1)
+
+	resetPayload,err:=protocol.EncodeControl(protocol.Reset{Code:protocol.ErrorAdminDrain});if err!=nil{t.Fatal(err)}
+	for _,fr:=range []protocol.Frame{
+		{Type:protocol.TypeAck,StreamID:1,Offset:0},
+		{Type:protocol.TypeWindow,StreamID:1,Offset:0},
+		{Type:protocol.TypeFinAck,StreamID:1,Offset:0},
+		{Type:protocol.TypeReset,StreamID:1,Payload:resetPayload},
+	}{
+		if err:=p.handleFrame(context.Background(),fr);err!=nil{t.Fatalf("late %v was not absorbed: %v",fr.Type,err)}
+	}
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeReset,StreamID:3,Payload:resetPayload});err==nil{
+		t.Fatal("truly unknown stream must remain a protocol error")
+	}
+}
+
+func TestClosedFlowTombstonesAreBounded(t *testing.T) {
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01"});if err!=nil{t.Fatal(err)}
+	for i:=0;i<maxClosedFlowTombstones+32;i++{
+		id:=uint64(i*2+1)
+		f:=newFlow(id,"main","00112233445566778899aabbccddeeff",nil,p.allocator);f.openOK=true
+		p.mu.Lock();p.flows[id]=f;p.mu.Unlock()
+		f.close();p.removeFlow(id)
+	}
+	p.mu.Lock();n:=len(p.closedFlows);order:=len(p.closedOrder);p.mu.Unlock()
+	if n!=maxClosedFlowTombstones||order!=maxClosedFlowTombstones{t.Fatalf("tombstones map=%d order=%d",n,order)}
+	if p.isClosedFlow(1){t.Fatal("oldest tombstone should have been evicted")}
+}

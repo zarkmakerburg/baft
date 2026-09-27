@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	defaultWindow uint64 = 64 * 1024
-	dataChunk            = 32 * 1024
+	defaultWindow           uint64 = 64 * 1024
+	dataChunk                      = 32 * 1024
+	maxClosedFlowTombstones         = 256
 )
 
 type Role uint8
@@ -68,6 +69,8 @@ type Peer struct {
 	helloSeen          bool
 	mu                 sync.Mutex
 	flows              map[uint64]*flow
+	closedFlows        map[uint64]struct{}
+	closedOrder        []uint64
 	nextID             uint64
 	closed             bool
 	wg                 sync.WaitGroup
@@ -164,6 +167,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 	p := &Peer{
 		role: role, carrier: c, writer: frameWriter{w: c.Out}, peerID: peerID,
 		routes: table, allocator: opts.Resources, flows: make(map[uint64]*flow),
+		closedFlows: make(map[uint64]struct{}),
 		nodeID: opts.NodeID, expectedPeerNodeID: opts.ExpectedPeerNodeID,
 		bootID: bootID, shardID: opts.ShardID, profileID: opts.ProfileID,
 		profileVersion: opts.ProfileVersion, configRevision: opts.ConfigRevision,
@@ -353,12 +357,18 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 	case protocol.TypeWindow:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		return fl.onWindow(fr.Offset)
 	case protocol.TypeAck:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		if err := fl.onAck(fr.Offset); err != nil {
@@ -381,6 +391,9 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 	case protocol.TypeFinAck:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		if err := fl.onFinAck(fr.Offset); err != nil {
@@ -391,6 +404,9 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 	case protocol.TypeReset:
 		fl, err := p.getFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		rst, err := protocol.DecodeReset(fr.Payload)
@@ -837,14 +853,32 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 		fl.rxWritten += uint64(len(segment))
 		delivered := fl.rxWritten
 		finalReady := fl.finRecv && !fl.finAckSent && delivered == fl.finRecvFinal
+		closed := fl.closed
 		fl.mu.Unlock()
 
-		if err := p.grantReceive(fl); err != nil {
-			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
+		if closed {
 			return
 		}
 		if finalReady {
 			_ = p.ackRemoteFin(fl)
+			return
+		}
+		if err := p.grantReceive(fl); err != nil {
+			// FIN completion can race the credit refresh. A Flow that became
+			// terminal while this goroutine was between delivery and WINDOW
+			// must absorb that late credit intent instead of emitting RESET.
+			fl.mu.Lock()
+			closed = fl.closed
+			finalReady = fl.finRecv && !fl.finAckSent && fl.rxWritten == fl.finRecvFinal
+			fl.mu.Unlock()
+			if closed {
+				return
+			}
+			if finalReady {
+				_ = p.ackRemoteFin(fl)
+				return
+			}
+			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
 			return
 		}
 	}
@@ -1099,11 +1133,30 @@ func (p *Peer) getOpenFlow(id uint64) (*flow, error) {
 
 func (p *Peer) removeFlow(id uint64) {
 	p.mu.Lock()
+	_, existed := p.flows[id]
 	delete(p.flows, id)
+	if existed {
+		if _, ok := p.closedFlows[id]; !ok {
+			p.closedFlows[id] = struct{}{}
+			p.closedOrder = append(p.closedOrder, id)
+			if len(p.closedOrder) > maxClosedFlowTombstones {
+				evict := p.closedOrder[0]
+				p.closedOrder = p.closedOrder[1:]
+				delete(p.closedFlows, evict)
+			}
+		}
+	}
 	p.mu.Unlock()
 	if p.sender != nil {
 		p.sender.removeFlow(id, errors.New("flow closed"))
 	}
+}
+
+func (p *Peer) isClosedFlow(id uint64) bool {
+	p.mu.Lock()
+	_, ok := p.closedFlows[id]
+	p.mu.Unlock()
+	return ok
 }
 
 func (p *Peer) closeAll() {

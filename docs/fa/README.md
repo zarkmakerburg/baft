@@ -42,4 +42,6 @@
 
 18. [18 — گیت Soak برای Stage C](18-stage-c-soak.md)
 
+19. [19 — قرنطینه محدود وضعیت پایانی Flow](19-terminal-quarantine.md)
+
 </div>

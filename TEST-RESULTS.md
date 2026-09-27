@@ -106,8 +106,6 @@ The receive path now distinguishes protocol acceptance (A), target delivery (D),
 
 This remains a correctness result on GitHub-hosted local networking, not a public-network throughput benchmark.
 
-</div>
-
 
 ## PADL و Stage-C scheduler
 - Commit code: `eb89ea5d...`
@@ -140,3 +138,5 @@ PADL هنوز performance claim ندارد؛ Stage E باید هزینه انت�
 - Gate: 25 repeated real-path integration cycles + 5 race-detector cycles
 
 Stage C remains open until this workflow produces a clean PASS.
+
+</div>

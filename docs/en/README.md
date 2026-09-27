@@ -39,3 +39,5 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 17. [17 — Single-flight correctness gates](17-correctness-gates.md)
 
 18. [18 — Stage-C soak gate](18-stage-c-soak.md)
+
+19. [19 — Bounded terminal quarantine](19-terminal-quarantine.md)
