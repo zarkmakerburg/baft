@@ -23,9 +23,9 @@
 - [x] idempotent OPEN بدون target redial دوم
 - [x] deny/revocation روی carrier فعال
 - [x] RESET و error mapping پایه/فهرست ثابت
-- [ ] آزمون 1GiB دوطرفه COR-01
+- [x] آزمون 1GiB دوطرفه COR-01
 - [x] config YAML loader سخت‌گیرانه + dependency/checksum pin
-- [ ] production node CLI برای اجرای IR/EX خارج از integration harness
+- [x] production node CLI برای اجرای IR/EX خارج از integration harness
 
 ## Stage C — resources & multi-flow
 - [ ] global allocator و reservation واحد

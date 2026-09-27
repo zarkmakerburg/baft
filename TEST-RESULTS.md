@@ -70,3 +70,31 @@ The same integration package also passed in the Go 1.27.1 CI run.
 - Resume/epoch/replay tests.
 - Benchmark 60 s × 5 repeats.
 - Iran↔EX real-path pilot.
+
+
+## COR-01 — 1 GiB bidirectional correctness
+- Workflow: `cor01-1gib`
+- GitHub Actions run: `36316645627`
+- Commit: `54f539cebfd919e6bac28560bbe8b0b0cc97c94e`
+- Go: `go1.27.1 linux/amd64`
+- Command: `go test ./tests/correctness -run '^TestCOR01OneGiBBidirectional$' -count=1 -timeout 20m -v`
+- Result: **PASS**
+- Useful bytes IR→EX target: `1073741824`
+- Useful bytes EX target→IR: `1073741824`
+- SHA-256 both directions: `1efd9d3aab21f9e312a2a0b5a6886b2a640c810ecb1fbe33f64614b26cfb27e3`
+- Go test duration: `10.72s`
+
+This is a correctness gate on GitHub-hosted loopback/local networking. It is not used as a public-network performance benchmark.
+
+## Stage-B security/operations additions
+- Active carrier revocation tests: PASS in CI run `36316283267`.
+- Production IR/EX node CLI and config validation tests: PASS in CI run `36316481799`.
+- Strict YAML loader, dependency pin and checksums: PASS.
+- Fixed RESET/error-code validation: PASS.
+
+## Still not completed
+- long fuzz/soak campaigns;
+- Stage-C slow receiver/backpressure gate;
+- resume/epoch/replay tests;
+- 60 s × 5 benchmark campaign;
+- real Iran↔EX pilot.

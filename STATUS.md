@@ -5,44 +5,54 @@ Date: 2026-09-27
 ## Repository
 - GitHub: `zarkmakerburg/baft`
 - Branch: `main`
-- Current Stage-B commit before this status update: `fc24c53a3ec0552793a60bd5ab2b7a30c71c0d86`
-- CI run 36312312847: **PASS**
+- Stage B evidence commit: `54f539cebfd919e6bac28560bbe8b0b0cc97c94e`
+- COR-01 workflow run: `36316645627` — **PASS**
+- Production CLI CI run: `36316481799` — **PASS**
+- Active revocation CI run: `36316283267` — **PASS**
 
-## Verified on pinned toolchain
-GitHub Actions selected **Go 1.27.1 linux/amd64** from `go.mod` and passed:
+## Verified toolchain and gates
+GitHub Actions uses **Go 1.27.1 linux/amd64** from `go.mod`.
+
+The standard CI gate passes:
 - `go test ./...`
 - `go test -race ./...`
 - `go vet ./...`
-- protocol fuzz smoke for `FuzzDecode`
+- module lock/tidy verification
+- protocol fuzz smoke
 
-## Implemented
-- BAFT/1 bounded frame codec and golden vectors.
-- Strict HELLO / HELLO_ACK / READY validation for new sessions.
-- TLS 1.3 mTLS with certificate-chain, hostname and URI-SAN identity checks.
-- Explicit peer allowlist independent from CA trust.
-- Full-duplex HTTP/2 carrier with flush/cancellation behavior.
-- One independently owned H2 transport per Shard.
-- Fixed allowlisted route table; OPEN carries no arbitrary destination.
-- OPEN/OPEN_OK/OPEN_ERR, DATA, ACK, WINDOW, FIN/FIN_ACK and baseline RESET handling.
-- Duplicate DATA suppression and idempotent OPEN behavior.
-- Real TCP → BAFT/H2+mTLS → fixed TCP target integration path with half-close and deterministic hash verification.
-- H2 negative security tests for unauthorized peer, expired certificate, server-name mismatch and wrong server CA.
+## Stage A
+Complete for the implemented contract/spike scope: protocol codec/golden vectors, strict configuration contract, test PKI, H2+mTLS full-duplex, cancellation and four independently-owned Shard transports are implemented and tested.
 
-## Current stage
-Stage A gate is complete for the implemented scope. Stage B has a working secure vertical slice, but is not complete.
+## Stage B
+**Complete for the secure vertical-slice scope defined by the implementation plan.**
 
-Remaining Stage-B work includes:
-- active certificate revocation for established carriers;
-- complete RESET/error-code semantics;
-- production IR/EX CLI path outside the integration harness;
-- larger correctness run (including the planned 1 GiB test).
+Implemented and tested:
+- HELLO / HELLO_ACK / two-sided READY for new sessions.
+- fixed allowlisted routes; OPEN cannot inject arbitrary destinations.
+- OPEN/OPEN_OK/OPEN_ERR, DATA, ACK, WINDOW, FIN/FIN_ACK and fixed-code RESET.
+- duplicate DATA suppression, stale/invalid ACK/WINDOW rejection and idempotent OPEN.
+- TLS 1.3 mTLS with chain, hostname, EKU and URI-SAN peer identity checks.
+- independent peer/route allowlists.
+- runtime active revocation by peer identity, certificate serial or SHA-256 fingerprint; existing carrier is terminated.
+- strict YAML loader with pinned `go.yaml.in/yaml/v3 v3.0.5` checksums.
+- production `baft config validate --file ...` and `baft run --file ...` path for listener/dialer roles.
+- real TCP → BAFT/H2+mTLS → fixed TCP target vertical transfer.
+- COR-01 streaming 1 GiB each direction with exact SHA-256 equality.
 
-Stage C resource allocator / DRR / multi-flow resource policy has not started yet.
+## COR-01
+GitHub Actions run `36316645627` transferred **1,073,741,824 bytes in each direction**.
 
+SHA-256:
+`1efd9d3aab21f9e312a2a0b5a6886b2a640c810ecb1fbe33f64614b26cfb27e3`
 
-## YAML configuration gate
-Strict YAML loading is implemented with `go.yaml.in/yaml/v3 v3.0.5`. Anchors/aliases, merge keys, duplicate mapping keys, custom tags, multiple documents, oversized input and unknown configuration fields are rejected. GitHub Actions run 36312919871 passed test/race/vet/fuzz with this dependency.
+The test completed in **10.72 s** on the GitHub runner. This is a correctness measurement on loopback CI infrastructure, not an Internet throughput claim.
 
+## Stage C
+Started. Standalone resource primitives now exist:
+- 256 MiB total data allocator;
+- independent 128 MiB receive and replay pools with no borrowing;
+- 16 MiB default per-flow caps;
+- bounded control queue: 256 messages or 1 MiB;
+- byte-based DRR primitive.
 
-## Active revocation
-Runtime peer revocation is implemented for identity, certificate serial and SHA-256 certificate fingerprint. The H2 carrier registers active watchers; a new revocation cancels the established carrier context and closes the request body so the active stream is terminated rather than waiting for a future reconnect. New carriers from already-revoked peers are rejected before the stream handler starts.
+These primitives are not yet fully connected to the Session send/receive path, so Stage C remains incomplete.
