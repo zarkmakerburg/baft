@@ -1,0 +1,15 @@
+goos: linux
+goarch: amd64
+pkg: github.com/zarkmakerburg/baft/internal/recordshape
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkMorphing/disabled-8         	   44024	      2408 ns/op	6810.67 MB/s	   18432 B/op	       1 allocs/op
+BenchmarkMorphing/disabled-8         	   53812	      2311 ns/op	7096.46 MB/s	   18432 B/op	       1 allocs/op
+BenchmarkMorphing/disabled-8         	   54798	      2378 ns/op	6896.62 MB/s	   18432 B/op	       1 allocs/op
+BenchmarkMorphing/padding-only-8     	   25867	      4952 ns/op	3311.47 MB/s	   18440 B/op	       2 allocs/op
+BenchmarkMorphing/padding-only-8     	   22030	      5163 ns/op	3176.40 MB/s	   18440 B/op	       2 allocs/op
+BenchmarkMorphing/padding-only-8     	   25516	      4933 ns/op	3324.60 MB/s	   18440 B/op	       2 allocs/op
+BenchmarkMorphing/padding-and-jitter-8         	     100	   1063838 ns/op	  15.42 MB/s	   18696 B/op	       6 allocs/op
+BenchmarkMorphing/padding-and-jitter-8         	     100	   1095295 ns/op	  14.97 MB/s	   18696 B/op	       6 allocs/op
+BenchmarkMorphing/padding-and-jitter-8         	     100	   1092624 ns/op	  15.01 MB/s	   18696 B/op	       6 allocs/op
+PASS
+ok  	github.com/zarkmakerburg/baft/internal/recordshape	1.299s

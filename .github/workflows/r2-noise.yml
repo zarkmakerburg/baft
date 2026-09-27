@@ -1,8 +1,10 @@
-name: r3-record-shaping-safe
+name: r3.1-probabilistic-morphing
 
 on:
   push:
-    branches: [r3-record-shaping-safe]
+    branches: [r3-record-shaping-safe, r3.1-probabilistic-morphing]
+  pull_request:
+    branches: [r3-record-shaping-safe, main]
   workflow_dispatch:
 
 permissions:
@@ -23,36 +25,27 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: Record shaping unit gate
-        run: go test ./internal/recordshape -count=1 -v
-      - name: Noise and intermediary integration
+      - name: Complete correctness gate
+        run: go test ./... -count=1
+      - name: Statistical evidence and ECRL differential
         run: |
-          go test ./internal/securityinternal ./tests/integration \
-            -run 'NoiseIK|IKPSK' -count=1 -v
-      - name: Race sample
+          go test ./internal/recordshape -run 'Statistics1000|StatisticalGate' -count=1 -v
+          go test ./internal/recovery -run 'TestStage1DifferentialGenerated|TestEngine' -count=1 -v
+      - name: Race and static analysis
         run: |
-          go test -race ./internal/recordshape ./internal/securityinternal ./tests/integration \
-            -run 'Bucketed|NoiseIK|IKPSK' -count=1
-      - name: Installer syntax
-        run: bash -n install.sh
-      - name: Pair helper build
-        run: go build ./cmd/baft-pair
-      - name: Persian docs RTL gate
-        run: go test ./tests/docs -count=1
-      - name: Package R3 safe bundle
+          go test -race ./... -count=1
+          go vet ./...
+      - name: Bounded record parser fuzz smoke
+        run: go test ./internal/recordshape -run '^$' -fuzz FuzzMorphingReadFrame -fuzztime=5s
+      - name: Installer and builds
         run: |
-          zip -r baft-r3-record-shaping-safe.zip \
-            install.sh \
-            cmd/baft-pair \
-            internal/recordshape \
-            internal/securityinternal \
-            tests/integration/noise_h2_intermediary_test.go \
-            docs/fa/16-reachability-innovation.md \
-            STATUS.md PLAN.md go.mod go.sum \
-            .github/workflows/r2-noise.yml
+          bash -n install.sh
+          go build ./cmd/baft ./cmd/baft-pair
+      - name: Package complete R3.1 source
+        run: git archive --format=zip --output=baft-r3.1-pro.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: baft-r3-record-shaping-safe
-          path: baft-r3-record-shaping-safe.zip
+          name: baft-r3.1-pro
+          path: baft-r3.1-pro.zip
           if-no-files-found: error
           retention-days: 14

@@ -1,0 +1,14 @@
+=== RUN   TestMorphingStatistics1000
+=== RUN   TestMorphingStatistics1000/normal
+    recordshape_test.go:77: n=1000 mean=1231.51 sd=91.01 length_entropy=8.131 unique=345 max_abs_autocorrelation=0.095 padding_byte_entropy=7.999
+    recordshape_test.go:104: discrete KS distance=0.0237
+=== RUN   TestMorphingStatistics1000/laplace
+    recordshape_test.go:77: n=1000 mean=1229.37 sd=79.45 length_entropy=7.929 unique=313 max_abs_autocorrelation=0.068 padding_byte_entropy=7.999
+    recordshape_test.go:104: discrete KS distance=0.0266
+--- PASS: TestMorphingStatistics1000 (0.03s)
+    --- PASS: TestMorphingStatistics1000/normal (0.02s)
+    --- PASS: TestMorphingStatistics1000/laplace (0.02s)
+=== RUN   TestStatisticalGateRejectsFixedBucketAndPeriodicMutants
+--- PASS: TestStatisticalGateRejectsFixedBucketAndPeriodicMutants (0.00s)
+PASS
+ok  	github.com/zarkmakerburg/baft/internal/recordshape	0.035s

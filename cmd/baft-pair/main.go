@@ -53,7 +53,7 @@ func exCode(args []string) {
 	caFile := fs.String("ca-file", "", "outer TLS CA PEM")
 	pskOut := fs.String("psk-out", "", "one-time PSK file")
 	ttl := fs.Duration("ttl", 15*time.Minute, "pairing lifetime")
-	recordShaping := fs.Bool("record-shaping", false, "enable deterministic bounded record shaping")
+	recordShaping := fs.Bool("record-shaping", false, "mark legacy pairing descriptor for record shaping (runtime uses explicit noise config)")
 	_ = fs.Parse(args)
 	if *keyPath == "" || *address == "" || *serverName == "" || *identity == "" || *caFile == "" || *pskOut == "" {
 		die("missing required flag")

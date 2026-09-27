@@ -2,8 +2,12 @@ package integration_test
 
 import (
 	"context"
+	"crypto/tls"
+	"github.com/zarkmakerburg/baft/internal/recordshape"
+	"github.com/zarkmakerburg/baft/internal/securityinternal"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
@@ -31,11 +35,11 @@ func (r *countingZeroReader) Read(p []byte) (int, error) {
 func smallAllocator(t *testing.T) *resources.Allocator {
 	t.Helper()
 	a, err := resources.NewAllocator(resources.Limits{
-		Total: 128 * 1024,
-		Receive: 64 * 1024,
-		Replay: 64 * 1024,
+		Total:          128 * 1024,
+		Receive:        64 * 1024,
+		Replay:         64 * 1024,
 		PerFlowReceive: 64 * 1024,
-		PerFlowReplay: 64 * 1024,
+		PerFlowReplay:  64 * 1024,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +48,10 @@ func smallAllocator(t *testing.T) *resources.Allocator {
 }
 
 func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
+	runSlowReceiver(t, false)
+}
+func TestNoiseMorphingBackpressureBounded(t *testing.T) { runSlowReceiver(t, true) }
+func runSlowReceiver(t *testing.T, stealth bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -63,6 +71,10 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 			return
 		}
 		defer c.Close()
+		// This fixture is an external target: TCP FIN may follow a long drain of
+		// kernel-buffered bytes. Stop its blocking copy when the test is cancelled.
+		stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+		defer stop()
 		if tcp, ok := c.(*net.TCPConn); ok {
 			_ = tcp.SetReadBuffer(1024)
 		}
@@ -83,8 +95,8 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 	}()
 
 	table, err := routes.New([]routes.Route{{
-		ID: "service-main",
-		Target: targetLn.Addr().String(),
+		ID:           "service-main",
+		Target:       targetLn.Addr().String(),
 		AllowedPeers: map[string]struct{}{"urn:baft:node:ir-01": {}},
 	}})
 	if err != nil {
@@ -100,7 +112,7 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 	}
 
 	serverErr := make(chan error, 1)
-	hs := httptest.NewUnstartedServer(carrierh2.Handler(func(hctx context.Context, in io.Reader, out io.Writer, peer carrierh2.PeerInfo) error {
+	stream := func(hctx context.Context, in io.Reader, out io.Writer, peer carrierh2.PeerInfo) error {
 		ex, err := session.New(session.Listener, session.Carrier{In: in, Out: out}, peer.Identity, table, session.Options{
 			NodeID: "ex-01", ExpectedPeerNodeID: "ir-01", ShardID: 0,
 			ProfileID: "secure-fast", ProfileVersion: 1, ConfigRevision: "slow-receiver",
@@ -115,7 +127,28 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 		default:
 		}
 		return err
-	}))
+	}
+	var handler http.Handler = carrierh2.Handler(stream)
+	var initCfg securityinternal.HandshakeConfig
+	if stealth {
+		ik, e := securityinternal.GenerateKeyPair()
+		if e != nil {
+			t.Fatal(e)
+		}
+		rk, e := securityinternal.GenerateKeyPair()
+		if e != nil {
+			t.Fatal(e)
+		}
+		shape := recordshape.DefaultConfig(true)
+		initCfg = securityinternal.HandshakeConfig{Static: ik, PeerStatic: rk.Public, RecordShaping: shape}
+		handler, err = carrierh2.HandlerWithNoise(stream, carrierh2.NoiseOptions{Handshake: securityinternal.HandshakeConfig{Static: rk, PeerStatic: ik.Public, RecordShaping: shape}, PeerIdentity: "urn:baft:node:ir-01"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		serverTLS.ClientAuth = tls.NoClientCert
+		serverTLS.VerifyConnection = nil
+	}
+	hs := httptest.NewUnstartedServer(handler)
 	hs.EnableHTTP2 = true
 	hs.TLS = serverTLS
 	hs.StartTLS()
@@ -131,14 +164,28 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 	}
 	defer h2c.CloseIdleConnections()
 
-	reqR, reqW := io.Pipe()
-	resp, err := h2c.Open(ctx, reqR)
-	if err != nil {
-		t.Fatal(err)
+	var reqW *io.PipeWriter
+	var resp *http.Response
+	var carrier session.Carrier
+	if stealth {
+		var conn *securityinternal.Conn
+		resp, reqW, conn, err = h2c.OpenNoise(ctx, initCfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		carrier = session.Carrier{In: conn, Out: conn}
+	} else {
+		reqR, pw := io.Pipe()
+		reqW = pw
+		resp, err = h2c.Open(ctx, reqR)
+		if err != nil {
+			t.Fatal(err)
+		}
+		carrier = session.Carrier{In: resp.Body, Out: reqW}
 	}
 	defer resp.Body.Close()
-
-	ir, err := session.New(session.Dialer, session.Carrier{In: resp.Body, Out: reqW}, "urn:baft:node:ex-01", nil, session.Options{
+	defer reqW.Close()
+	ir, err := session.New(session.Dialer, carrier, "urn:baft:node:ex-01", nil, session.Options{
 		NodeID: "ir-01", ExpectedPeerNodeID: "ex-01", ShardID: 0,
 		ProfileID: "secure-fast", ProfileVersion: 1, ConfigRevision: "slow-receiver",
 		Resources: irAlloc,

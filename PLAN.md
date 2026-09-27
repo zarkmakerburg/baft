@@ -152,4 +152,11 @@ probabilistic timing/packet morphing برای دورزدن traffic analysis یا
 
 random packet-size morphing و timing jitter برای شکست تحلیل آماری یا سامانه‌های فیلترینگ در این شاخه پیاده‌سازی نمی‌شوند.
 
+
+## R3.1 — نامزد بررسی v0.2-Pro
+
+Padding احتمالی نرمال/لاپلاس، jitter قابل تنظیم و پاسخ HTML پیش از ورود به Session پیاده شد. حالت صریح Noise با peer pin‌شده اکنون به Runtime متصل است. آزمون‌های محلی و Differential مدل/موتور ECRL پاس شدند؛ Stage D و recovery همچنان متوقف‌اند.
+
+[گزارش سه‌بخشی هوشا و شواهد](reports/HOOSHA-R3.1.md). این بخش وضعیت فعلی شاخه R3.1 است و توضیحات R2/R3 بالا سوابق تاریخی‌اند. نسخه نهایی v0.2-Pro، نصب VM تازه، حفظ سرعت با jitter و اثبات مقاومت فیلترینگ هنوز تأیید نشده‌اند.
+
 </div>

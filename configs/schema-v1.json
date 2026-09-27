@@ -6,6 +6,72 @@
   "additionalProperties": false,
   "required": ["schema_version", "node", "tls", "transport", "limits", "recovery", "routes", "management", "logging"],
   "properties": {
+    "noise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key_file",
+        "peer_public_key"
+      ],
+      "properties": {
+        "key_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "peer_public_key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "cover_html_file": {
+          "type": "string"
+        },
+        "record_shaping": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "distribution": {
+              "enum": [
+                "normal",
+                "laplace"
+              ]
+            },
+            "mean_bytes": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "stddev_bytes": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 65536
+            },
+            "max_padding_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            },
+            "max_padding_ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 16
+            },
+            "jitter_min_us": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000
+            },
+            "jitter_max_us": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000
+            }
+          }
+        }
+      }
+    },
     "schema_version": {"const": 1},
     "node": {
       "type": "object", "additionalProperties": false,
@@ -108,6 +174,7 @@
   },
   "allOf": [
     {"if": {"properties": {"node": {"properties": {"role": {"const": "dialer"}}}}}, "then": {"required": ["peer"], "not": {"required": ["server"]}}},
-    {"if": {"properties": {"node": {"properties": {"role": {"const": "listener"}}}}}, "then": {"required": ["server"], "not": {"required": ["peer"]}}}
+    {"if": {"properties": {"node": {"properties": {"role": {"const": "listener"}}}}}, "then": {"required": ["server"], "not": {"required": ["peer"]}}},
+    {"if": {"required": ["noise"], "properties": {"node": {"properties": {"role": {"const": "listener"}}}}}, "then": {"properties": {"server": {"properties": {"allowed_peer_identities": {"maxItems": 1}}}}}}
   ]
 }

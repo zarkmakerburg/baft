@@ -14,7 +14,7 @@ import (
 	"github.com/zarkmakerburg/baft/internal/node"
 )
 
-const version = "0.0.0-dev"
+var version = "0.2.0-pro-rc1"
 
 type versionInfo struct {
 	Name    string `json:"name"`
@@ -63,6 +63,9 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 }
 
 func runConfig(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "stealth-pro" {
+		return runStealthConfig(args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || args[0] != "validate" {
 		fmt.Fprintln(stderr, "usage: baft config validate --file <config.yaml>")
 		return 2
@@ -107,5 +110,6 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "usage:")
 	fmt.Fprintln(w, "  baft version [--json]")
 	fmt.Fprintln(w, "  baft config validate --file <config.yaml>")
+	fmt.Fprintln(w, "  baft config stealth-pro --file <config.yaml> [padding/jitter flags]")
 	fmt.Fprintln(w, "  baft run --file <config.yaml>")
 }

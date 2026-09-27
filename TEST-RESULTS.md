@@ -139,4 +139,9 @@ PADL هنوز performance claim ندارد؛ Stage E باید هزینه انت�
 
 Stage C remains open until this workflow produces a clean PASS.
 
+
+## R3.1 — شواهد محلی
+
+[گزارش هوشا](reports/HOOSHA-R3.1.md) و لاگ‌های همان پوشه شامل آزمون‌های آماری، Differential، race و هزینه واقعی jitter است. نتایج این مرحله نباید با CI یا پایلوت واقعی ایران اشتباه گرفته شود.
+
 </div>

@@ -2,6 +2,7 @@ package securityinternal
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -77,6 +78,7 @@ func DecodePublicKey(s string) ([]byte, error) {
 }
 
 type HandshakeConfig struct {
+	Context           context.Context
 	Static            KeyPair
 	PeerStatic        []byte
 	OneTimePairingPSK []byte
@@ -85,10 +87,14 @@ type HandshakeConfig struct {
 }
 
 func (c HandshakeConfig) prologue() []byte {
-	if len(c.Prologue) != 0 {
-		return c.Prologue
+	p := c.Prologue
+	if len(p) == 0 {
+		p = []byte(DefaultPrologue)
 	}
-	return []byte(DefaultPrologue)
+	if c.RecordShaping.Enabled {
+		return append(append([]byte(nil), p...), []byte("/probabilistic-records-v2")...)
+	}
+	return p
 }
 
 func (c HandshakeConfig) validatePairingPSK() error {
@@ -105,13 +111,19 @@ type Conn struct {
 	send *noise.CipherState
 	recv *noise.CipherState
 
-	readMu  sync.Mutex
-	writeMu sync.Mutex
-	readBuf []byte
-	shape   recordshape.Codec
+	readMu   sync.Mutex
+	writeMu  sync.Mutex
+	readBuf  []byte
+	shape    recordshape.Codec
+	ctx      context.Context
+	writeErr error
+	readErr  error
 }
 
 func Initiator(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, error) {
+	if cfg.Context == nil {
+		cfg.Context = context.Background()
+	}
 	if err := cfg.validatePairingPSK(); err != nil {
 		return nil, err
 	}
@@ -148,6 +160,9 @@ func Initiator(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("securityinternal: write IK message 1: %w", err)
 	}
+	if err := shape.Wait(cfg.Context); err != nil {
+		return nil, err
+	}
 	if err := writeHandshakeFrame(w, msg1); err != nil {
 		return nil, err
 	}
@@ -163,7 +178,7 @@ func Initiator(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, error) {
 	if cs1 == nil || cs2 == nil {
 		return nil, errors.New("securityinternal: IK handshake did not enter transport mode")
 	}
-	return &Conn{r: r, w: w, send: cs1, recv: cs2, shape: shape}, nil
+	return &Conn{r: r, w: w, send: cs1, recv: cs2, shape: shape, ctx: cfg.Context}, nil
 }
 
 // Responder performs IK or IKpsk0. If PeerStatic is empty,
@@ -171,6 +186,9 @@ func Initiator(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, error) {
 // authenticated initiator static public key and can be pinned atomically by
 // the caller before the one-time PSK is deleted.
 func Responder(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, []byte, error) {
+	if cfg.Context == nil {
+		cfg.Context = context.Background()
+	}
 	if err := cfg.validatePairingPSK(); err != nil {
 		return nil, nil, err
 	}
@@ -228,6 +246,9 @@ func Responder(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, []byte, er
 	if cs1 == nil || cs2 == nil {
 		return nil, nil, errors.New("securityinternal: IK handshake did not enter transport mode")
 	}
+	if err := shape.Wait(cfg.Context); err != nil {
+		return nil, nil, err
+	}
 	if err := writeHandshakeFrame(w, msg2); err != nil {
 		return nil, nil, err
 	}
@@ -235,14 +256,21 @@ func Responder(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, []byte, er
 	// Noise Split returns initiator->responder first and
 	// responder->initiator second. The responder therefore sends with cs2 and
 	// receives with cs1.
-	return &Conn{r: r, w: w, send: cs2, recv: cs1, shape: shape}, peerStatic, nil
+	return &Conn{r: r, w: w, send: cs2, recv: cs1, shape: shape, ctx: cfg.Context}, peerStatic, nil
 }
 
-func (c *Conn) Write(p []byte) (int, error) {
+func (c *Conn) Write(p []byte) (total int, retErr error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
-	total := 0
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
+	defer func() {
+		if retErr != nil {
+			c.writeErr = retErr
+		}
+	}()
 	for len(p) > 0 {
 		n := len(p)
 		if n > MaxPlaintextRecord {
@@ -255,7 +283,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 		if len(ciphertext) > MaxCiphertextRecord {
 			return total, ErrFrameTooLarge
 		}
-		if err := c.shape.WriteFrame(c.w, ciphertext, MaxCiphertextRecord); err != nil {
+		if err := c.shape.WriteFrameContext(c.ctx, c.w, ciphertext, MaxCiphertextRecord); err != nil {
 			return total, err
 		}
 		total += n
@@ -264,13 +292,21 @@ func (c *Conn) Write(p []byte) (int, error) {
 	return total, nil
 }
 
-func (c *Conn) Read(p []byte) (int, error) {
+func (c *Conn) Read(p []byte) (n int, retErr error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 
 	if len(p) == 0 {
 		return 0, nil
 	}
+	if c.readErr != nil {
+		return 0, c.readErr
+	}
+	defer func() {
+		if retErr != nil {
+			c.readErr = retErr
+		}
+	}()
 	if len(c.readBuf) == 0 {
 		ciphertext, err := c.shape.ReadFrame(c.r, MaxCiphertextRecord)
 		if err != nil {
@@ -282,7 +318,7 @@ func (c *Conn) Read(p []byte) (int, error) {
 		}
 		c.readBuf = plain
 	}
-	n := copy(p, c.readBuf)
+	n = copy(p, c.readBuf)
 	c.readBuf = c.readBuf[n:]
 	return n, nil
 }
@@ -291,12 +327,10 @@ func writeHandshakeFrame(w io.Writer, msg []byte) error {
 	if len(msg) == 0 || len(msg) > maxHandshakeFrameSize {
 		return ErrFrameTooLarge
 	}
-	var hdr [2]byte
-	binary.BigEndian.PutUint16(hdr[:], uint16(len(msg)))
-	if err := writeFull(w, hdr[:]); err != nil {
-		return err
-	}
-	return writeFull(w, msg)
+	wire := make([]byte, 2+len(msg))
+	binary.BigEndian.PutUint16(wire, uint16(len(msg)))
+	copy(wire[2:], msg)
+	return writeFull(w, wire)
 }
 
 func readHandshakeFrame(r io.Reader) ([]byte, error) {

@@ -1,0 +1,18 @@
+ok  	github.com/zarkmakerburg/baft/cmd/baft	0.008s
+?   	github.com/zarkmakerburg/baft/cmd/baft-pair	[no test files]
+ok  	github.com/zarkmakerburg/baft/internal/carrier/h2	0.111s
+ok  	github.com/zarkmakerburg/baft/internal/config	0.007s
+ok  	github.com/zarkmakerburg/baft/internal/identity	0.003s
+ok  	github.com/zarkmakerburg/baft/internal/metrics	0.004s
+ok  	github.com/zarkmakerburg/baft/internal/node	0.005s
+ok  	github.com/zarkmakerburg/baft/internal/protocol	0.004s
+ok  	github.com/zarkmakerburg/baft/internal/recordshape	0.073s
+ok  	github.com/zarkmakerburg/baft/internal/recovery	0.153s
+ok  	github.com/zarkmakerburg/baft/internal/resources	0.033s
+ok  	github.com/zarkmakerburg/baft/internal/routes	0.005s
+ok  	github.com/zarkmakerburg/baft/internal/scheduler	0.075s
+ok  	github.com/zarkmakerburg/baft/internal/securityinternal	0.012s
+ok  	github.com/zarkmakerburg/baft/internal/session	0.007s
+ok  	github.com/zarkmakerburg/baft/tests/correctness	0.003s
+ok  	github.com/zarkmakerburg/baft/tests/docs	0.005s
+ok  	github.com/zarkmakerburg/baft/tests/integration	4.364s
