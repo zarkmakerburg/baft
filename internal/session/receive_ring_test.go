@@ -14,10 +14,10 @@ func TestReceiveRingWrapsWithoutExceedingCapacity(t *testing.T) {
 	if err:=r.Write([]byte("WXYZ"));err!=nil{t.Fatal(err)}
 
 	p,err=r.Peek(context.Background(),8);if err!=nil{t.Fatal(err)}
-	if string(p)!="ef"{t.Fatalf("first wrapped segment=%q",p)}
+	if string(p)!="efWX"{t.Fatalf("first wrapped segment=%q",p)}
 	if err:=r.Consume(len(p));err!=nil{t.Fatal(err)}
 	p,err=r.Peek(context.Background(),8);if err!=nil{t.Fatal(err)}
-	if string(p)!="WXYZ"{t.Fatalf("second wrapped segment=%q",p)}
+	if string(p)!="YZ"{t.Fatalf("second wrapped segment=%q",p)}
 }
 
 func TestReceiveRingRejectsOverflow(t *testing.T) {

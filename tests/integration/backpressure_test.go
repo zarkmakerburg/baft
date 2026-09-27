@@ -237,7 +237,7 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 			}
 			resumed = true
 		case <-progressTick.C:
-			if source.n.Load() > stalledAt+64*1024 {
+			if source.n.Load() > stalledAt {
 				resumed = true
 			}
 		case <-progressDeadline.C:

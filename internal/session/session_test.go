@@ -3,9 +3,11 @@ package session
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/resources"
@@ -111,4 +113,57 @@ func TestTWRLInvariantCreditTracksDeliveredNotAccepted(t *testing.T) {
 	f.mu.Lock();accepted,delivered,credit:=f.rxNext,f.rxWritten,f.rxMax;f.mu.Unlock()
 	if accepted!=32*1024||delivered!=0||credit!=64*1024{t.Fatalf("A=%d D=%d C=%d",accepted,delivered,credit)}
 	if credit-delivered>uint64(f.receiveReserved){t.Fatal("credit exceeds reserved receive capacity")}
+}
+
+func TestTWRLTargetDrainAdvancesCreditTwiceWithoutCarrierWriteBlocking(t *testing.T) {
+	l:=resources.Limits{Total:256*1024,Receive:128*1024,Replay:128*1024,PerFlowReceive:128*1024,PerFlowReplay:128*1024}
+	a,err:=resources.NewAllocator(l);if err!=nil{t.Fatal(err)}
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",Resources:a});if err!=nil{t.Fatal(err)}
+	local,remote:=net.Pipe()
+	defer remote.Close()
+
+	f:=newFlow(1,"main","00112233445566778899aabbccddeeff",local,a)
+	f.openOK=true
+	p.mu.Lock();p.flows[1]=f;p.mu.Unlock()
+	if _,err:=p.reserveReceiveWindow(f);err!=nil{t.Fatal(err)}
+
+	ctx,cancel:=context.WithCancel(context.Background())
+	defer cancel()
+	p.startTargetPump(ctx,f)
+
+	chunk:=make([]byte,32*1024)
+	if err:=p.handleData(f,protocol.Frame{Type:protocol.TypeData,StreamID:1,Offset:0,Payload:chunk});err!=nil{t.Fatal(err)}
+	if err:=p.handleData(f,protocol.Frame{Type:protocol.TypeData,StreamID:1,Offset:32*1024,Payload:chunk});err!=nil{t.Fatal(err)}
+
+	f.mu.Lock()
+	if f.rxNext!=64*1024||f.rxWritten!=0||f.rxMax!=64*1024{
+		a0,d0,c0:=f.rxNext,f.rxWritten,f.rxMax
+		f.mu.Unlock()
+		t.Fatalf("before drain A=%d D=%d C=%d",a0,d0,c0)
+	}
+	f.mu.Unlock()
+
+	readDone:=make(chan error,1)
+	go func(){
+		buf:=make([]byte,64*1024)
+		_,err:=io.ReadFull(remote,buf)
+		readDone<-err
+	}()
+
+	deadline:=time.Now().Add(time.Second)
+	for {
+		f.mu.Lock()
+		accepted,delivered,credit,reserved:=f.rxNext,f.rxWritten,f.rxMax,f.receiveReserved
+		f.mu.Unlock()
+		if delivered==64*1024 && credit==128*1024 {
+			if accepted!=64*1024{t.Fatalf("accepted changed unexpectedly: %d",accepted)}
+			if credit-delivered>uint64(reserved){t.Fatalf("credit invariant violated C=%d D=%d R=%d",credit,delivered,reserved)}
+			break
+		}
+		if time.Now().After(deadline){t.Fatalf("target drain did not replenish two chunks: A=%d D=%d C=%d",accepted,delivered,credit)}
+		time.Sleep(time.Millisecond)
+	}
+	if err:=<-readDone;err!=nil{t.Fatal(err)}
+	cancel();f.close();p.removeFlow(1);p.wg.Wait()
 }
