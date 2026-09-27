@@ -1,22 +1,29 @@
-# ADR-0003: Baseline H2 + mTLS carrier
+# ADR-0003 — Carrier پایه HTTP/2 + mTLS
 
-Status: accepted
-Date: 2026-09-27
+> English: [en/0003-h2-mtls-carrier.md](en/0003-h2-mtls-carrier.md)  
+> وضعیت: پذیرفته‌شده  
+> تاریخ: 2026-09-27
 
-## Decision
+## تصمیم
 
-Use Go standard-library TLS and `net/http` HTTP/2 for the baseline carrier spike.
+Carrier پایه از TLS کتابخانه استاندارد Go و HTTP/2 در `net/http` استفاده می‌کند.
 
-- TLS minimum is 1.3.
-- mTLS is mandatory; no plaintext or HTTP/1 fallback exists in the BAFT carrier client.
-- Server certificate hostname validation remains enabled.
-- Client identity is one URI SAN; the verified URI must also be present in the explicit peer allowlist.
-- Redirects and environment HTTP proxies are disabled for the carrier client.
-- `/baft/v1/carrier` is a fixed path and is not treated as a secret.
-- Each Shard owns its own `http.Transport`, limiting that carrier to one TCP/TLS connection. Four Shards therefore use four independent TCP connections in the Stage-A smoke test.
-- Server response headers are flushed before the long-lived request body completes, and each server-side carrier write is flushed.
-- Cancellation is part of the carrier contract.
+قواعد:
 
-## Rationale
+- TLS حداقل 1.3؛
+- mTLS اجباری؛
+- hostname verification فعال؛
+- identity سمت client از URI SAN گواهی تأییدشده؛
+- peer allowlist جدا از CA trust؛
+- redirect غیرفعال؛
+- environment proxy برای Carrier غیرفعال؛
+- HTTP/1 fallback خودکار وجود ندارد؛
+- مسیر `/baft/v1/carrier` ثابت است و secret نیست؛
+- هر Shard `http.Transport` مستقل دارد؛
+- response header پیش از تکمیل request body flush می‌شود؛
+- server-side Carrier write نیز flush می‌شود؛
+- cancellation بخشی از قرارداد است.
 
-This keeps the baseline dependency-minimal and makes the security boundary explicit. H3 remains experimental and cannot be enabled until the H2 gate is complete.
+## دلیل
+
+این انتخاب baseline را dependency-minimal و قابل‌آزمون نگه می‌دارد و قبل از ورود H3 یا relay، correctness دوطرفه را روی transport ساده‌تر ثابت می‌کند.

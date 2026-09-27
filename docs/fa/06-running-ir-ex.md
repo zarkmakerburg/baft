@@ -1,0 +1,125 @@
+# 06 — ساخت و اجرای IR و EX
+
+## هشدار وضعیت
+
+این بخش مسیر اجرای فعلی کد را توضیح می‌دهد، نه دستور production deployment نهایی. systemd، rotation کامل، admin transaction و packaging نهایی در مراحل بعدی تکمیل می‌شوند.
+
+## ساخت
+
+```bash
+git clone https://github.com/zarkmakerburg/baft.git
+cd baft
+go build -o baft ./cmd/baft
+./baft version
+./baft version --json
+```
+
+## آماده‌سازی فایل‌ها
+
+روی هر Node به‌صورت مفهومی نیاز است:
+
+```text
+/etc/baft/
+├── ir.yaml یا ex.yaml
+└── pki/
+    ├── ca.pem
+    ├── node.pem
+    └── node.key
+```
+
+کلید private را محدود کنید؛ برای نمونه روی Linux:
+
+```bash
+chmod 600 /etc/baft/pki/node.key
+```
+
+BAFT فایل کلیدی با permission باز برای group/other را رد می‌کند.
+
+## ترتیب راه‌اندازی پیشنهادی آزمایشگاهی
+
+### 1. EX را configure کنید
+
+- `role: listener`
+- `server.listen` را تعیین کنید.
+- `server_name` با SAN گواهی server هماهنگ باشد.
+- identityهای مجاز IR را در `allowed_peer_identities` ثبت کنید.
+- Routeهای inbound و target ثابت را تعریف کنید.
+
+### 2. IR را configure کنید
+
+- `role: dialer`
+- `peer.address` را به EX تنظیم کنید.
+- `peer.server_name` را با certificate hostname هماهنگ کنید.
+- `allowed_identity` را identity گواهی EX بگذارید.
+- Route محلی outbound را روی loopback تعریف کنید.
+
+### 3. هر دو config را validate کنید
+
+```bash
+./baft config validate --file /etc/baft/ex.yaml
+./baft config validate --file /etc/baft/ir.yaml
+```
+
+### 4. ابتدا EX را اجرا کنید
+
+```bash
+./baft run --file /etc/baft/ex.yaml
+```
+
+### 5. سپس IR را اجرا کنید
+
+```bash
+./baft run --file /etc/baft/ir.yaml
+```
+
+### 6. برنامه محلی را به listener IR وصل کنید
+
+اگر Route نمونه روی `127.0.0.1:1443` است، برنامه فقط به همان port وصل می‌شود. BAFT این Flow را به Route نام‌گذاری‌شده در EX می‌فرستد.
+
+## چه اتفاقی هنگام اتصال می‌افتد؟
+
+1. IR Shard Carrier را به EX dial می‌کند.
+2. TLS 1.3 و mTLS اعتبارسنجی می‌شوند.
+3. H2 full-duplex روی مسیر ثابت Carrier شکل می‌گیرد.
+4. HELLO/HELLO_ACK مبادله می‌شود.
+5. دو طرف READY می‌شوند.
+6. وقتی local TCP روی IR پذیرفته شد، OPEN برای Route ارسال می‌شود.
+7. EX peer و Route را authorize می‌کند.
+8. EX target ثابت را dial می‌کند.
+9. OPEN_OK و WINDOW مبادله می‌شوند.
+10. DATA دوطرفه منتقل می‌شود.
+11. ACK/WINDOW backpressure را هدایت می‌کنند.
+12. EOF یک سمت با FIN/FIN_ACK به half-close تبدیل می‌شود.
+
+## shutdown
+
+CLI از signalهای `SIGINT` و `SIGTERM` context cancellation می‌سازد. Runtime باید listenerها، Carrierها و Flowها را بدون باقی‌گذاشتن goroutine دائمی آزاد کند.
+
+## خطاهای متداول
+
+### invalid config
+ابتدا `config validate` را اجرا کنید. unknown field و YAML ambiguity عمداً خطا هستند.
+
+### TLS hostname mismatch
+`peer.server_name` باید با SAN گواهی EX تطبیق داشته باشد؛ IP اتصال جای آن را نمی‌گیرد.
+
+### unauthorized peer
+CA-valid بودن گواهی کافی نیست. identity باید در peer allowlist و در Route مربوط نیز مجاز باشد.
+
+### route not found / denied
+IR فقط Route ID می‌فرستد. وجود Route و مجوز peer را در EX بررسی کنید.
+
+### private key permission
+permission فایل key را محدود کنید. هدف این check جلوگیری از شروع Node با secret file بیش‌ازحد قابل‌دسترسی است.
+
+## آنچه هنوز عملیات production محسوب نمی‌شود
+
+در وضعیت فعلی، این بخش‌ها کامل اعلام نشده‌اند:
+
+- installer و package نهایی؛
+- systemd hardening نهایی؛
+- admin Unix-socket API کامل؛
+- atomic config transaction/rollback؛
+- certificate rotation workflow کامل؛
+- support bundle؛
+- real-path pilot و rollback عملیاتی.

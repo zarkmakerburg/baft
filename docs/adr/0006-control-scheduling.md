@@ -1,16 +1,20 @@
-# ADR-0006: Bounded control scheduling
+# ADR-0006 — زمان‌بندی محدود Control
 
-Status: accepted
-Date: 2026-09-27
+> English: [en/0006-control-scheduling.md](en/0006-control-scheduling.md)  
+> وضعیت: پذیرفته‌شده  
+> تاریخ: 2026-09-27
 
-The BAFT Blueprint requires a per-Shard control queue capped at 256 messages or 1 MiB, control priority above DATA, and a rate cap that prevents DATA starvation.
+## مسئله
 
-Implementation:
-- all outbound control frames use the bounded control queue once the Session sender is running;
-- outbound DATA uses byte-based Deficit Round Robin;
-- control is normally selected before DATA;
-- when DATA is waiting, at most 32 consecutive control frames are emitted before one eligible DATA frame is forced.
+اگر ACK/WINDOW/FIN پشت DATA حجیم بمانند، data path می‌تواند خودش را قفل کند. اگر از طرف دیگر Control اولویت مطلق و نامحدود داشته باشد، DATA ممکن است starve شود.
 
-The value 32 is an implementation policy, not a wire-protocol constant and not a value mandated by the Blueprint. It can be tuned only with tests/measurements; the 256-message and 1 MiB queue caps remain hard baseline limits.
+## تصمیم
 
-Before the Session sender goroutine starts, direct control writes remain available only so isolated unit tests can exercise state handlers without constructing a full running Session. Production `Peer.Run` starts the sender before HELLO.
+- Control queue در هر sender محدود است.
+- سقف baseline: 256 message یا 1 MiB.
+- DATA از byte-based DRR عبور می‌کند.
+- Control به‌طور عادی اولویت دارد.
+- وقتی DATA منتظر است، پس از burst محدود Control یک DATA واجد شرایط سرویس می‌گیرد.
+- مقدار فعلی burst برابر 32 است.
+
+عدد 32 wire constant نیست و فقط با تست/اندازه‌گیری قابل تغییر است. سقف queue امنیتی/منبعی باقی می‌ماند.

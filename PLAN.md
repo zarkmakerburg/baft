@@ -1,51 +1,102 @@
-# PLAN
+# برنامه توسعه
 
-## Stage A — contract & spike
-- [x] ثبت مراجع و hash مورد انتظار Blueprint
-- [x] ایجاد ساختار repository و فایل‌های وضعیت
-- [x] pin نسخه هدف Go از منبع رسمی
-- [x] ایجاد skeleton باینری و parser اولیه BAFT/1
-- [x] golden vectors protocol
-- [x] config schema سخت‌گیرانه
-- [x] PKI آزمایشی ephemeral در تست‌ها
-- [x] prototype واقعی full-duplex HTTP/2 + mTLS + cancellation
-- [x] اثبات 4 TCP مستقل برای 4 shard در smoke test
-- [x] اجرای gate نهایی با Go 1.27.1
+> نسخه انگلیسی: [PLAN.en.md](PLAN.en.md)
+
+## Stage A — قرارداد و spike
+
+- [x] ثبت مرجع Blueprint/Master Prompt
+- [x] ساخت repository و فایل‌های وضعیت
+- [x] pin نسخه Go
+- [x] BAFT/1 parser و golden vectors
+- [x] schema پیکربندی سخت‌گیرانه
+- [x] test PKI
+- [x] H2 full-duplex + mTLS + cancellation
+- [x] اثبات چهار اتصال مستقل برای چهار Shard
+- [x] CI روی Go 1.27.1
 
 ## Stage B — secure vertical slice
-- [x] BAFT/1 HELLO / HELLO_ACK / READY برای نشست جدید
-- [x] یک route ثابت allowlisted به‌صورت end-to-end
-- [x] OPEN/DATA/ACK/WINDOW/FIN/FIN_ACK پایه
-- [x] انتقال دوطرفه واقعی با half-close و hash انتهایی برابر
-- [x] negative certificate tests: allowlist / expired / SAN / CA
-- [x] route target injection و duplicate JSON key rejection
-- [x] duplicate DATA و invalid ACK/WINDOW unit tests
-- [x] idempotent OPEN بدون target redial دوم
-- [x] deny/revocation روی carrier فعال
-- [x] RESET و error mapping پایه/فهرست ثابت
-- [x] آزمون 1GiB دوطرفه COR-01
-- [x] config YAML loader سخت‌گیرانه + dependency/checksum pin
-- [x] production node CLI برای اجرای IR/EX خارج از integration harness
 
-## Stage C — resources & multi-flow
-- [ ] global allocator و reservation واحد
-- [ ] DRR scheduler
-- [ ] control queue bounded
-- [ ] multi-Flow / multi-Shard production path
-- [ ] bounded receive/replay memory budgets
-- [ ] slow receiver / backpressure soak tests
+- [x] HELLO / HELLO_ACK / READY
+- [x] Route ثابت allowlisted
+- [x] OPEN / DATA / ACK / WINDOW / FIN
+- [x] half-close و hash end-to-end
+- [x] negative certificate tests
+- [x] duplicate key / target injection rejection
+- [x] duplicate DATA و invalid ACK/WINDOW tests
+- [x] idempotent OPEN
+- [x] active peer/certificate revocation
+- [x] RESET و error code ثابت
+- [x] COR-01 یک GiB دوطرفه
+- [x] strict YAML loader و dependency lock
+- [x] CLI واقعی IR/EX
 
-## Stage D — resume
-- [ ] session/boot/epoch fencing کامل
-- [ ] snapshots/replay/tombstones
-- [ ] duplicate-free carrier replacement
+## Stage C — منابع، fairness و چند Flow
+
+- [x] allocator سراسری data memory
+- [x] pool مستقل receive/replay
+- [x] per-flow reservation
+- [x] آزادسازی replay با ACK
+- [x] backpressure قبل از read اضافی source
+- [x] DRR برحسب byte در data path
+- [x] bounded control queue
+- [x] control priority + data anti-starvation burst cap
+- [x] multi-Flow integration test
+- [ ] تثبیت slow-receiver liveness gate
+- [ ] تست طولانی slow receiver / soak
+- [ ] تست فشار چند Shard با memory budget مشترک
+- [ ] metrics لازم برای allocator/queue/Flow
+- [ ] بستن Stage C فقط بعد از CI کاملاً سبز و بدون OOM/race
+
+## Stage D — resume دقیق
+
+- [ ] boot/session/epoch fencing
+- [ ] ownership دقیق Carrier
+- [ ] snapshot state
+- [ ] replay روی Carrier جایگزین
+- [ ] tombstone
+- [ ] duplicate-free replacement
+- [ ] state-machine fuzz
+- [ ] COR-04 تا COR-11
 
 ## Stage D2 — endpoint pool / relay
-- [ ] direct + relay endpoint pool
-- [ ] fixed-upstream baft relay
 
-## Stage E/F/G/H
-- [ ] correlated-state + digest experiments
-- [ ] benchmark
-- [ ] research lab
-- [ ] packaging/operations
+- [ ] endpoint model با dial address جدا از identity
+- [ ] health / retry / hysteresis / cooldown محدود
+- [ ] fixed-upstream relay
+- [ ] عدم پذیرش arbitrary destination
+- [ ] Worker path فقط experimental و جدا از core
+
+## Stage E — performance
+
+- [ ] benchmark manifest
+- [ ] 60 ثانیه × 5 تکرار
+- [ ] profiler
+- [ ] baseline comparison
+- [ ] raw results
+- [ ] گزارش صریح pass/fail
+
+## Stage F — operations
+
+- [ ] systemd hardening
+- [ ] installer idempotent
+- [ ] config transaction + rollback
+- [ ] drain/stop semantics
+- [ ] certificate rotation
+- [ ] support bundle بدون payload/secret
+- [ ] packaging
+
+## Stage G — research
+
+- [ ] H3 تحت flag
+- [ ] A/B experiments
+- [ ] resource-bounded research policy
+- [ ] detectability study با ادعای محدود و قابل‌اندازه‌گیری
+
+## Stage H — پایلوت واقعی
+
+- [ ] نصب کنار مسیر موجود
+- [ ] یک Route آزمایشی
+- [ ] health واقعی
+- [ ] چند بازه آزمایش
+- [ ] rollback
+- [ ] گزارش محدودیت و نتیجه

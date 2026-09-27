@@ -1,8 +1,24 @@
-# ADR-0002: Go toolchain
+# ADR-0002 — Toolchain زبان Go
 
-Status: accepted
-Date: 2026-09-27
+> English: [en/0002-toolchain.md](en/0002-toolchain.md)  
+> وضعیت: پذیرفته‌شده  
+> تاریخ: 2026-09-27
 
-Pin the source tree to Go 1.27.1. Official Go release history lists Go 1.27.1 as released on 2026-09-01; the official Linux amd64 archive SHA-256 is recorded in `dependency-lock.md`.
+## تصمیم
 
-The current sandbox has Go 1.23.2 and cannot retrieve the official 1.27.1 archive. Compatibility smoke, race and vet checks are therefore executed from a temporary copy with only the `go` directive lowered to 1.23.2. Those results are useful engineering evidence but do not replace the final pinned-toolchain gate.
+نسخه هدف مخزن `Go 1.27.1` است و از `go.mod` خوانده می‌شود.
+
+GitHub Actions نسخه pin‌شده را نصب و تست‌ها را روی همان toolchain اجرا می‌کند. بنابراین نتیجه compatibility smoke روی نسخه‌های قدیمی‌تر جای gate اصلی را نمی‌گیرد.
+
+## کنترل dependency
+
+`go.mod` و `go.sum` باید reproducible بمانند. CI:
+
+```bash
+go mod tidy
+git diff --exit-code -- go.mod go.sum
+```
+
+را اجرا می‌کند تا drift dependency وارد branch نشود.
+
+جزئیات checksum در [dependency-lock.md](../../dependency-lock.md) ثبت شده است.

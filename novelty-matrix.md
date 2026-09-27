@@ -1,6 +1,12 @@
-# novelty matrix
+# ماتریس ادعاهای پژوهشی
 
-| claim_id | mechanism | closest_prior_art | shared_components | specific_difference | experiment | status | limitations |
-|---|---|---|---|---|---|---|---|
-| C-001 | bounded correlated peer-accepted state | pending literature mapping | ACK/state tracking | BAFT-specific state contract and recovery semantics | correlated-state acceptance suite | planned | not a third-party possession proof |
-| C-002 | recovery-aware traffic policy | pending literature mapping | traffic shaping/recovery | constrained policy evaluated jointly for detectability and performance | held-out research pipeline | planned | no undetectability claim |
+> English: [novelty-matrix.en.md](novelty-matrix.en.md)
+
+این فایل **اثبات novelty نیست**؛ فقط ادعاهای پژوهشی احتمالی، نزدیک‌ترین prior art که باید بررسی شود، آزمایش لازم و محدودیت ادعا را ثبت می‌کند.
+
+| شناسه | مکانیزم | تفاوت مورد بررسی | آزمایش | وضعیت | محدودیت |
+|---|---|---|---|---|---|
+| C-001 | correlated peer-accepted state | قرارداد state/recovery مخصوص BAFT | correlated-state acceptance suite | برنامه‌ریزی‌شده | اثبات possession شخص ثالث نیست |
+| C-002 | recovery-aware traffic policy | ارزیابی مشترک performance/detectability با policy محدود | held-out research pipeline | برنامه‌ریزی‌شده | ادعای undetectability مجاز نیست |
+
+هر ادعای novelty باید بعداً با prior-art review مستند و evidence واقعی محدود شود.

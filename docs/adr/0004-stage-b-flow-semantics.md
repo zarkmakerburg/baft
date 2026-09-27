@@ -1,12 +1,20 @@
-# ADR-0004: Stage-B vertical flow semantics
+# ADR-0004 — semantics مسیر Flow در Stage B
 
-Status: provisional
-Date: 2026-09-27
+> English: [en/0004-stage-b-flow-semantics.md](en/0004-stage-b-flow-semantics.md)  
+> وضعیت: پذیرفته‌شده برای Stage B؛ بعضی جزئیات در Stage C توسعه یافته‌اند  
+> تاریخ: 2026-09-27
 
-The Stage-B vertical slice implements the BAFT/1 new-session ordering `HELLO → HELLO_ACK → READY` before application frames.
+## تصمیم‌های Stage B
 
-OPEN contains only `route_id` and a random 128-bit `open_nonce`. The listener resolves the route from a fixed in-memory allowlist and never accepts a target address from the peer.
+- Session جدید قبل از application frame از `HELLO → HELLO_ACK → READY` عبور می‌کند.
+- OPEN فقط `route_id` و `open_nonce` دارد.
+- مقصد واقعی از Route table محلی resolve می‌شود.
+- DATA دارای offset مستقل در هر جهت است.
+- duplicate DATA دوباره روی target نوشته نمی‌شود.
+- ACK با target-written یکی نیست.
+- FIN/FIN_ACK half-close را مدل می‌کند.
+- OPEN تکراری همسان idempotent است و target را دوباره dial نمی‌کند.
 
-The current flow path implements DATA/ACK/WINDOW and FIN/FIN_ACK sufficiently for a bounded single-carrier vertical test. Receive acknowledgement is emitted after data is accepted into bounded frame memory and validated, before the target socket write completes. Target-written progress is kept conceptually distinct. Duplicate DATA that is already below `rx_next` is acknowledged without being returned for another target write.
+## تغییر Stage C
 
-The Stage-B window is per-flow and sliding. It is not the final Stage-C global memory reservation allocator, and this distinction is recorded in `KNOWN-LIMITATIONS.md`.
+Window ساده Stage B بعداً با reservation سراسری receive/replay و backpressure واقعی تکمیل شده است. برای وضعیت فعلی [docs/fa/07-resource-control.md](../fa/07-resource-control.md) را ببینید.

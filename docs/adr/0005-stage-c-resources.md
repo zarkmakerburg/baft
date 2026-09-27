@@ -1,10 +1,28 @@
-# Stage C foundation
+# ADR-0005 — منابع و حافظه Stage C
 
-The standalone Stage-C resource primitives are present:
-- one global allocator with separate receive/replay pools (128 MiB each by default, 256 MiB total);
-- 16 MiB default per-flow receive/replay caps;
-- no borrowing between receive and replay pools;
-- bounded control queue (256 messages or 1 MiB, whichever fills first);
-- byte-based Deficit Round Robin primitive with caller-supplied per-flow quantum.
+> English: [en/0005-stage-c-resources.md](en/0005-stage-c-resources.md)  
+> وضعیت: در حال تثبیت  
+> تاریخ: 2026-09-27
 
-These primitives are unit-tested but are not yet wired into the Session data path, so Stage C is not marked complete.
+## تصمیم
+
+Stage C از یک allocator سراسری با poolهای جدا برای receive و replay استفاده می‌کند.
+
+baseline نمونه:
+
+- data memory کل: 256 MiB؛
+- receive pool: 128 MiB؛
+- replay pool: 128 MiB؛
+- per-flow receive cap: 16 MiB؛
+- per-flow replay cap: 16 MiB؛
+- borrowing بین poolها ممنوع.
+
+Replay قبل از read اضافی source رزرو می‌شود و با ACK آزاد می‌شود. Receive credit باید پشتوانه reservation واقعی داشته باشد.
+
+## زمان‌بندی
+
+DATA با DRR برحسب byte و Control با queue محدود زمان‌بندی می‌شود.
+
+## وضعیت
+
+این primitives اکنون به Session data path وصل شده‌اند و COR-01 بعد از اتصال دوباره پاس شده است. با این حال slow-receiver liveness gate هنوز سبز پایدار نیست؛ بنابراین ADR از نظر طراحی پذیرفته شده ولی **Stage C هنوز complete نیست**.

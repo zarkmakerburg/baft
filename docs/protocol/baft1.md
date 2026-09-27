@@ -1,13 +1,25 @@
-# BAFT/1 protocol notes
+# یادداشت پروتکل BAFT/1
 
-Wire frame header is 24 bytes, big-endian:
-- frame_len u32
-- type u8
-- flags u8 = 0
-- reserved u16 = 0
-- stream_id u64
-- offset u64
+> English: [baft1.en.md](baft1.en.md)  
+> راهنمای کامل فارسی: [../fa/04-protocol-baft1.md](../fa/04-protocol-baft1.md)
 
-Maximum total frame size: 65560 bytes. Maximum payload: 65536 bytes. Baseline DATA chunk target: 32768 bytes.
+## header
 
-This document is a working implementation note; the Blueprint 1.4 remains normative.
+BAFT/1 header دقیقاً 24 بایت و big-endian است:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 4 | frame_len |
+| 4 | 1 | type |
+| 5 | 1 | flags |
+| 6 | 2 | reserved |
+| 8 | 8 | stream_id |
+| 16 | 8 | offset |
+
+payload حداکثر 65536 بایت و کل frame حداکثر 65560 بایت است. DATA baseline در chunkهای 32768 بایتی تولید می‌شود.
+
+Golden vectors در [golden-vectors.json](golden-vectors.json) نگهداری می‌شوند.
+
+## قرارداد
+
+این فایل خلاصه implementation است. توضیح state machine، OPEN/DATA/ACK/WINDOW/FIN/RESET و تفکیک «قابلیت فعلی» از «frame رزروشده برای Stage D» در راهنمای کامل پروتکل آمده است.

@@ -1,6 +1,33 @@
-# ADR-0001: Project contract
+# ADR-0001 — قرارداد پروژه
 
-Status: accepted
-Date: 2026-09-27
+> English: [en/0001-project-contract.md](en/0001-project-contract.md)  
+> وضعیت: پذیرفته‌شده  
+> تاریخ: 2026-09-27
 
-BAFT is research software until evidence supports stronger claims. Security/correctness gates precede speed and experimental stealth work. No feature may disable TLS validation, authorization, frame validation, or bounded resource controls.
+## مسئله
+
+پروژه‌ای که transport، security، recovery و performance را هم‌زمان توسعه می‌دهد به‌راحتی می‌تواند «وجود کد» را با «اثبات correctness» اشتباه بگیرد یا برای دسترس‌پذیری، مرزهای امنیتی را تضعیف کند.
+
+## تصمیم
+
+BAFT تا زمانی که شواهد کافی تولید نشده **research software** باقی می‌ماند.
+
+ترتیب اولویت:
+
+1. correctness و security؛
+2. bounded resource behavior؛
+3. recovery دقیق؛
+4. performance قابل‌بازتولید؛
+5. قابلیت‌های آزمایشی.
+
+هیچ feature مجاز نیست برای ساده‌کردن مسیر:
+
+- TLS verification را خاموش کند؛
+- authorization را دور بزند؛
+- frame validation را ضعیف کند؛
+- queue/memory limit را نامحدود کند؛
+- نتیجه تست اجرا‌نشده را موفق گزارش کند.
+
+## پیامد
+
+هر Stage باید gate و evidence داشته باشد. قابلیت experimental از core جدا می‌ماند و fail آن نباید باعث downgrade امنیتی مسیر اصلی شود.

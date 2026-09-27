@@ -1,100 +1,90 @@
-# TEST RESULTS
+# نتایج آزمون
 
-## Pinned CI environment
-- Date: 2026-09-27
-- GitHub Actions run: 36312312847
-- Commit: `fc24c53a3ec0552793a60bd5ab2b7a30c71c0d86`
-- Runner OS/arch: Linux amd64
-- Go: **go1.27.1 linux/amd64**
+> English: [TEST-RESULTS.en.md](TEST-RESULTS.en.md)  
+> تاریخ: 2026-09-27
 
-The job log records `actions/setup-go@v7` selecting and installing 1.27.1, followed by:
+## محیط CI
 
-```text
-go version go1.27.1 linux/amd64
-```
+- GitHub Actions
+- Linux amd64
+- Go 1.27.1
+- dependency lock با `go.mod` و `go.sum`
 
-## Commands passed on Go 1.27.1
+## gate استاندارد
 
-```text
+```bash
+go mod tidy
+git diff --exit-code -- go.mod go.sum
 go test ./...
 go test -race ./...
 go vet ./...
 go test ./internal/protocol -run '^$' -fuzz '^FuzzDecode$' -fuzztime 10s
 ```
 
-Result: **PASS**.
+## Stage B — شواهد اصلی
 
-The normal test phase included:
-- `cmd/baft`
-- `internal/config`
-- `internal/protocol`
-- `internal/routes`
-- `internal/session`
-- `tests/integration`
+مواردی که قبلاً روی CI پاس شده‌اند شامل:
 
-The 10-second protocol fuzz smoke completed with PASS.
+- H2+mTLS full-duplex؛
+- certificate negative tests؛
+- active revocation؛
+- strict YAML؛
+- CLI؛
+- Route/Flow integration؛
+- protocol fuzz smoke.
 
-## Earlier compatibility smoke
-Before GitHub CI was available, the same project was smoke-tested locally using Go 1.23.2 in a temporary compatibility copy. A real race was found in Flow-pump shutdown, fixed, and re-tested. Those results remain useful history but are superseded for the pinned-toolchain gate by the successful Go 1.27.1 GitHub run.
+## COR-01 اولیه Stage B
 
-## End-to-end vertical test
-Topology:
+Run `36316645627`:
 
-```text
-local TCP client
-  → IR local TCP socket
-  → BAFT frames
-  → HTTP/2 over TLS 1.3 mTLS
-  → EX route table
-  → fixed TCP target
-  → delayed echo after half-close
-  → reverse BAFT direction
-  → local TCP client
-```
+- 1 GiB در هر جهت؛
+- SHA-256:
+  `1efd9d3aab21f9e312a2a0b5a6886b2a640c810ecb1fbe33f64614b26cfb27e3`
+- PASS.
 
-Payload: deterministic 262267 bytes.
+## COR-01 بعد از Stage C wiring
 
-Expected/received SHA-256 in the compatibility run:
+Run `36338439622` روی `b1ddb445...`:
 
-```text
-152ceb6d48a8f6028589ed554219e49a6ce29330bf8eb2c2c1adffa2c48523b3
-```
+- Go: 1.27.1
+- bytes_each_direction: `1073741824`
+- SHA-256:
+  `1efd9d3aab21f9e312a2a0b5a6886b2a640c810ecb1fbe33f64614b26cfb27e3`
+- duration: `10.56s`
+- **PASS**
 
-The same integration package also passed in the Go 1.27.1 CI run.
+این regression نشان می‌دهد مسیر حجیم بعد از ورود allocator/DRR هنوز corruption یا deadlock کامل ندارد؛ اما به‌تنهایی Stage C را اثبات نمی‌کند.
 
-## Not yet run / not yet implemented
-- Full 1 GiB correctness run.
-- Active-peer revocation test.
-- Full standardized RESET/error mapping tests.
-- Long fuzz campaign and soak tests.
-- Resume/epoch/replay tests.
-- Benchmark 60 s × 5 repeats.
-- Iran↔EX real-path pilot.
+## multi-Flow
 
+commit `0d70f1f...` integration test چند Flow را اضافه کرد و CI run `36317438771` **PASS** شد.
 
-## COR-01 — 1 GiB bidirectional correctness
-- Workflow: `cor01-1gib`
-- GitHub Actions run: `36316645627`
-- Commit: `54f539cebfd919e6bac28560bbe8b0b0cc97c94e`
-- Go: `go1.27.1 linux/amd64`
-- Command: `go test ./tests/correctness -run '^TestCOR01OneGiBBidirectional$' -count=1 -timeout 20m -v`
-- Result: **PASS**
-- Useful bytes IR→EX target: `1073741824`
-- Useful bytes EX target→IR: `1073741824`
-- SHA-256 both directions: `1efd9d3aab21f9e312a2a0b5a6886b2a640c810ecb1fbe33f64614b26cfb27e3`
-- Go test duration: `10.72s`
+## control scheduling
 
-This is a correctness gate on GitHub-hosted loopback/local networking. It is not used as a public-network performance benchmark.
+commit `eaefc310...` bounded control scheduling را اضافه کرد. CI عادی run `36317760598` PASS شد، اما COR-01 همان commit timeout شد؛ بنابراین implementation بعداً تغییر کرد و regression دوباره اجرا شد.
 
-## Stage-B security/operations additions
-- Active carrier revocation tests: PASS in CI run `36316283267`.
-- Production IR/EX node CLI and config validation tests: PASS in CI run `36316481799`.
-- Strict YAML loader, dependency pin and checksums: PASS.
-- Fixed RESET/error-code validation: PASS.
+## slow receiver — مسئله باز
 
-## Still not completed
-- long fuzz/soak campaigns;
-- Stage-C slow receiver/backpressure gate;
-- resume/epoch/replay tests;
-- 60 s × 5 benchmark campaign;
-- real Iran↔EX pilot.
+آخرین CI ثبت‌شده روی commit `b1ddb445...`:
+
+- run: `36338439633`
+- test: `TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory`
+- result: **FAIL**
+
+مشاهده ثبت‌شده:
+
+- source قبل از drain: `65536` بایت؛
+- پس از drain در مهلت تست: `98304` بایت؛
+- forward progress رخ داد، ولی شرط liveness تست برآورده نشد.
+
+تا حل و تکرارپذیری این gate، Stage C کامل نیست.
+
+## آزمون‌هایی که هنوز لازم‌اند
+
+- slow-receiver پایدار و soak طولانی؛
+- multi-Shard shared-budget stress؛
+- resume/epoch/replay/tombstone؛
+- state-machine fuzz طولانی؛
+- benchmark رسمی 60s × 5؛
+- عملیات certificate rotation/rollback؛
+- real-path pilot.

@@ -1,58 +1,105 @@
-# STATUS
+# وضعیت پروژه
 
-Date: 2026-09-27
+> نسخه انگلیسی: [STATUS.en.md](STATUS.en.md)  
+> تاریخ این گزارش: 2026-09-27
 
-## Repository
-- GitHub: `zarkmakerburg/baft`
-- Branch: `main`
-- Stage B evidence commit: `54f539cebfd919e6bac28560bbe8b0b0cc97c94e`
-- COR-01 workflow run: `36316645627` — **PASS**
-- Production CLI CI run: `36316481799` — **PASS**
-- Active revocation CI run: `36316283267` — **PASS**
+## مخزن
 
-## Verified toolchain and gates
-GitHub Actions uses **Go 1.27.1 linux/amd64** from `go.mod`.
+- مخزن: `zarkmakerburg/baft`
+- شاخه اصلی: `main`
+- آخرین commit کد قبل از بازنویسی مستندات: `b1ddb44512fa0f48ff4629e1faf2f37523a9fe85`
 
-The standard CI gate passes:
-- `go test ./...`
-- `go test -race ./...`
-- `go vet ./...`
-- module lock/tidy verification
-- protocol fuzz smoke
+## خلاصه
+
+- **Stage A:** کامل برای scope تعریف‌شده.
+- **Stage B:** کامل برای secure vertical slice تعریف‌شده.
+- **Stage C:** در حال توسعه و تثبیت؛ کامل نیست.
+- **Stage D به بعد:** هنوز کامل نشده‌اند.
 
 ## Stage A
-Complete for the implemented contract/spike scope: protocol codec/golden vectors, strict configuration contract, test PKI, H2+mTLS full-duplex, cancellation and four independently-owned Shard transports are implemented and tested.
+
+موارد پیاده و آزموده‌شده:
+
+- BAFT/1 frame codec و golden vectors؛
+- strict config contract؛
+- test PKI؛
+- HTTP/2 full-duplex واقعی؛
+- TLS 1.3 + mTLS؛
+- cancellation؛
+- چهار Transport مستقل برای چهار Shard در smoke test.
 
 ## Stage B
-**Complete for the secure vertical-slice scope defined by the implementation plan.**
 
-Implemented and tested:
-- HELLO / HELLO_ACK / two-sided READY for new sessions.
-- fixed allowlisted routes; OPEN cannot inject arbitrary destinations.
-- OPEN/OPEN_OK/OPEN_ERR, DATA, ACK, WINDOW, FIN/FIN_ACK and fixed-code RESET.
-- duplicate DATA suppression, stale/invalid ACK/WINDOW rejection and idempotent OPEN.
-- TLS 1.3 mTLS with chain, hostname, EKU and URI-SAN peer identity checks.
-- independent peer/route allowlists.
-- runtime active revocation by peer identity, certificate serial or SHA-256 fingerprint; existing carrier is terminated.
-- strict YAML loader with pinned `go.yaml.in/yaml/v3 v3.0.5` checksums.
-- production `baft config validate --file ...` and `baft run --file ...` path for listener/dialer roles.
-- real TCP → BAFT/H2+mTLS → fixed TCP target vertical transfer.
-- COR-01 streaming 1 GiB each direction with exact SHA-256 equality.
+موارد پیاده و آزموده‌شده:
 
-## COR-01
-GitHub Actions run `36316645627` transferred **1,073,741,824 bytes in each direction**.
+- HELLO / HELLO_ACK / READY دوطرفه برای Session جدید؛
+- Route ثابت و allowlisted؛
+- OPEN / OPEN_OK / OPEN_ERR؛
+- DATA / ACK / WINDOW؛
+- FIN / FIN_ACK؛
+- RESET با error code ثابت؛
+- duplicate DATA suppression؛
+- idempotent OPEN؛
+- بررسی certificate chain، hostname، EKU و URI SAN؛
+- peer allowlist مستقل از CA trust؛
+- active revocation بر اساس identity، serial و SHA-256 fingerprint؛
+- strict YAML loader؛
+- CLI واقعی `config validate` و `run`؛
+- مسیر واقعی TCP → BAFT/H2+mTLS → TCP؛
+- COR-01 یک GiB دوطرفه.
 
-SHA-256:
-`1efd9d3aab21f9e312a2a0b5a6886b2a640c810ecb1fbe33f64614b26cfb27e3`
+## آخرین شواهد COR-01
 
-The test completed in **10.72 s** on the GitHub runner. This is a correctness measurement on loopback CI infrastructure, not an Internet throughput claim.
+Workflow run `36338439622` روی commit `b1ddb445...`:
 
-## Stage C
-Started. Standalone resource primitives now exist:
-- 256 MiB total data allocator;
-- independent 128 MiB receive and replay pools with no borrowing;
-- 16 MiB default per-flow caps;
-- bounded control queue: 256 messages or 1 MiB;
-- byte-based DRR primitive.
+- Go: `go1.27.1 linux/amd64`
+- بایت در هر جهت: `1073741824`
+- SHA-256 هر دو جهت:
+  `1efd9d3aab21f9e312a2a0b5a6886b2a640c810ecb1fbe33f64614b26cfb27e3`
+- زمان همان اجرای correctness: حدود `10.56s`
+- نتیجه: **PASS**
 
-These primitives are not yet fully connected to the Session send/receive path, so Stage C remains incomplete.
+این عدد performance عمومی اینترنت نیست؛ فقط correctness روی محیط runner/local است.
+
+## Stage C — وضعیت واقعی
+
+### انجام‌شده یا وارد data path شده
+
+- allocator سراسری receive/replay؛
+- poolهای مستقل و bounded؛
+- replay reservation و آزادسازی با ACK؛
+- backpressure مبتنی بر credit و memory؛
+- DRR برحسب byte برای DATA؛
+- control queue محدود؛
+- اولویت control با burst cap محدود برای جلوگیری از starvation؛
+- integration test چند Flow؛
+- COR-01 پس از تغییرات allocator/DRR دوباره پاس شده است.
+
+### هنوز کامل نشده
+
+slow-receiver gate هنوز سبز پایدار نشده است.
+
+آخرین CI run `36338439633` روی commit `b1ddb445...` در تست:
+
+`TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory`
+
+شکست خورد. در آن اجرا source قبل از drain روی 65536 بایت متوقف شد و بعد از drain به 98304 بایت رسید، یعنی مقداری forward progress وجود داشت، اما معیار liveness تست برآورده نشد.
+
+نتیجه: **Stage C هنوز complete نیست** و باید behavior receiver کند و معیار liveness دقیق‌تر تثبیت شوند.
+
+## Stage D و بعد
+
+هنوز به‌عنوان قابلیت کامل وجود ندارند:
+
+- resume کامل؛
+- epoch fencing؛
+- snapshot/replay/tombstone؛
+- duplicate-free Carrier replacement؛
+- endpoint pool/relay production path؛
+- benchmark رسمی 60s × 5؛
+- systemd/packaging/operations کامل؛
+- real-path pilot.
+
+## اصل ثبت وضعیت
+
+این فایل فقط چیزی را «انجام‌شده» اعلام می‌کند که کد و شواهد اجرای آن وجود داشته باشد. برنامه Blueprint به‌تنهایی وضعیت پیاده‌سازی نیست.
