@@ -1,0 +1,39 @@
+name: ecrl-falsification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/recovery/**'
+      - 'docs/fa/15-stage-d-ecrl.md'
+      - 'docs/en/15-stage-d-ecrl.md'
+      - '.github/workflows/ecrl-falsification.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ecrl-falsification-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  falsification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: ECRL F01-F10 deterministic falsification harness
+        run: |
+          go test ./internal/recovery \
+            -run '^TestECRLF(0[1-9]|10)' \
+            -count=1 -v

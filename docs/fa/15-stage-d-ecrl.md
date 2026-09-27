@@ -222,6 +222,127 @@ peer معتبر ولی buggy/stale مقدار `rx_accepted` بزرگ‌تر از
 - `Replay` = bytesی که sender باید بعد از handoff دوباره در دسترس داشته باشد؛
 - `T(f)` = tombstone در صورت پایان Flow.
 
+### رابطه‌ی K با نمادگذاری TWRL
+
+#### تعریف رسمی K
+
+برای یک Flow و یک جهت مشخص:
+
+`K` = **بیشترین offset تجمعی ACK که sender در همان `session_id`، همان `boot_id` peer و همان epoch معتبر واقعاً دریافت کرده و در snapshot حافظه‌ای جاری خودش ثبت کرده است.**
+
+پس K:
+
+- watermark دانسته‌شده‌ی sender درباره‌ی پذیرش peer است؛
+- از روی `ACK(offset)` معتبر به‌دست می‌آید؛
+- به معنی تحویل به target نیست؛
+- به معنی tombstone یا terminal offset نیست؛
+- state پایدار روی دیسک نیست و بعد از Process restart قابل اتکا نیست؛
+- فقط در صورت continuity همان Session/Boot/Epoch معتبر است.
+
+از آنجا که peer فقط بعد از پذیرش پیوسته‌ی bytes در حافظه‌ی bounded خود ACK می‌دهد، K یک **lower bound دانسته‌شده برای A** است:
+
+<div dir="ltr" align="left">
+
+```text
+K <= A
+```
+
+</div>
+
+اما ACK قبل از target delivery صادر می‌شود؛ بنابراین K و D ترتیب ثابت ندارند.
+
+#### مدل یکپارچه‌ی K/D/A/S/C
+
+چهار رابطه‌ی ثابت طراحی:
+
+<div dir="ltr" align="left">
+
+```text
+D <= A <= S <= C
+K <= A
+```
+
+</div>
+
+در این مدل:
+
+- `D` = peer bytes delivered to target؛
+- `A` = peer bytes accepted into bounded BAFT receive state؛
+- `S` = sender bytes already produced/sent into the BAFT stream (`tx_next`)؛
+- `C` = peer absolute receive-credit limit؛
+- `K` = sender's last observed cumulative ACK.
+
+**بین K و D partial order وجود دارد، نه total order.**
+
+دیاگرام واحد صحیح:
+
+<div dir="ltr" align="left">
+
+```text
+0 ─────── [ K and D may appear in either order ] ─────── A ─────── S ─────── C
+            │                                │
+            ├─ valid case 1: K <= D          │
+            └─ valid case 2: D <  K          │
+
+Always:
+    K <= A
+    D <= A <= S <= C
+```
+
+</div>
+
+پس دو linearization معتبر ممکن است:
+
+<div dir="ltr" align="left">
+
+```text
+case 1 — ACK lags target delivery:
+0 ── K ── D ── A ── S ── C
+
+case 2 — ACK leads target delivery:
+0 ── D ── K ── A ── S ── C
+```
+
+</div>
+
+برابری هر دو watermark نیز ممکن است.
+
+#### آیا همیشه `K ≤ D ≤ A ≤ S ≤ C` برقرار است؟
+
+**خیر.**
+
+بخش زیر همیشه برقرار است:
+
+<div dir="ltr" align="left">
+
+```text
+D <= A <= S <= C
+K <= A
+```
+
+</div>
+
+ولی `K <= D` تضمین نمی‌شود.
+
+دو حالت نقض‌کننده‌ی ترتیب کامل:
+
+1. **ACK جلوتر از delivery:** peer bytes را تا A پذیرفته و ACK کرده، اما target کند است. ممکن است `D < K <= A`.
+2. **ACK گم‌شده یا دیررس:** target جلو رفته ولی sender آخرین ACK را ندیده است. ممکن است `K < D <= A`.
+
+بنابراین هر implementation یا test که `K<=D` را invariant بگیرد، بخشی از رفتار صحیح TWRL را اشتباه رد خواهد کرد.
+
+#### اثر بر ECRL
+
+ECRL هنگام resume نباید K را جای D یا A استفاده کند:
+
+- `K` فقط می‌گوید sender **می‌داند** peer حداقل تا کجا accepted کرده است؛
+- `A` از snapshot معتبر peer، authoritative receive frontier برای تعیین replay است؛
+- `D` مرز exact-once target delivery است؛
+- `S` انتهای bytes تولیدشده‌ی sender است؛
+- `C` سقف credit است.
+
+بنابراین replay frontier همچنان `A` است، نه K و نه D.
+
 ### Invariant صفر — یکتایی مالک Carrier
 
 <div dir="ltr" align="left">
@@ -241,8 +362,8 @@ candidate پیش از commit فقط control مربوط به resume دارد و �
 <div dir="ltr" align="left">
 
 ```text
-K <= A <= S
-D <= A <= C
+K <= A
+D <= A <= S <= C
 ```
 
 </div>
@@ -353,8 +474,8 @@ Commit(E+1)
 UniqueOwner(E+1)
 AND
 for every active Flow/direction:
-    K <= A <= S
-    D <= A <= C
+    K <= A
+    D <= A <= S <= C
     Ring   = [D,A)
     Replay = [A,S)
 AND

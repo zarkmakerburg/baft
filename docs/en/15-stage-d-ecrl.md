@@ -139,6 +139,105 @@ For each Flow and direction:
 - `Replay` = sender bytes required after handoff;
 - `T(f)` = tombstone, if the Flow is terminal.
 
+### Relationship of K to TWRL notation
+
+#### Formal definition of K
+
+For one Flow and one direction:
+
+`K` = **the greatest cumulative ACK offset that the sender has actually received and recorded in its current in-memory snapshot for the same `session_id`, the same peer `boot_id`, and the same valid epoch.**
+
+K is therefore:
+
+- the sender's knowledge watermark about peer acceptance;
+- derived from a valid cumulative `ACK(offset)`;
+- not a target-delivery watermark;
+- not a tombstone or terminal offset;
+- not durable process-restart state;
+- valid only while Session/Boot/Epoch continuity holds.
+
+Because BAFT emits ACK only after contiguous bytes have been admitted into bounded receive state, K is a known lower bound for A:
+
+```text
+K <= A
+```
+
+ACK is emitted before target delivery, so K and D have no fixed ordering.
+
+#### Unified K/D/A/S/C model
+
+The fixed relations are:
+
+```text
+D <= A <= S <= C
+K <= A
+```
+
+where:
+
+- `D` = peer bytes delivered to the target;
+- `A` = peer bytes accepted into bounded BAFT receive state;
+- `S` = sender bytes already produced/sent into the BAFT stream (`tx_next`);
+- `C` = peer absolute receive-credit limit;
+- `K` = sender's last observed cumulative ACK.
+
+K and D form a **partial order**, not a total order.
+
+Single-axis representation:
+
+```text
+0 ------- [ K and D may appear in either order ] ------- A ------- S ------- C
+            |                                |
+            +-- valid case 1: K <= D         |
+            +-- valid case 2: D <  K         |
+
+Always:
+    K <= A
+    D <= A <= S <= C
+```
+
+Two valid linearizations are:
+
+```text
+case 1 — ACK lags target delivery:
+0 -- K -- D -- A -- S -- C
+
+case 2 — ACK leads target delivery:
+0 -- D -- K -- A -- S -- C
+```
+
+Equality is also possible.
+
+#### Is `K <= D <= A <= S <= C` always true?
+
+**No.**
+
+The invariant is:
+
+```text
+D <= A <= S <= C
+K <= A
+```
+
+but `K <= D` is not guaranteed.
+
+- With a slow target, peer acceptance and ACK can advance before delivery: `D < K <= A`.
+- With a lost or delayed ACK, target delivery can advance while sender knowledge lags: `K < D <= A`.
+
+Any implementation that treats `K<=D` as mandatory would reject valid TWRL states.
+
+#### Consequence for ECRL
+
+K must never substitute for D or A:
+
+- K is what the sender **knows** the peer has accepted;
+- A from a valid peer snapshot is the authoritative replay frontier;
+- D is the exact-once target-delivery frontier;
+- S is the end of sender-produced bytes;
+- C is the receive-credit ceiling.
+
+Replay therefore still begins at A, not at K or D.
+
 ### I0 — unique Carrier ownership
 
 ```text
@@ -152,8 +251,8 @@ A pre-commit candidate may exchange resume control only.
 ### I1 — correlated sender/receiver bounds
 
 ```text
-K <= A <= S
-D <= A <= C
+K <= A
+D <= A <= S <= C
 ```
 
 The first inequality prevents invented or rolled-back receive state; the second preserves TWRL.
@@ -219,8 +318,8 @@ Commit(E+1)
 UniqueOwner(E+1)
 AND
 for every active Flow/direction:
-    K <= A <= S
-    D <= A <= C
+    K <= A
+    D <= A <= S <= C
     Ring   = [D,A)
     Replay = [A,S)
 AND
