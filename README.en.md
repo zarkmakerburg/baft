@@ -100,6 +100,22 @@ HELLO → HELLO_ACK → READY
 
 Each Shard owns an independent transport in the baseline so multiple Shards are not silently pooled onto one TCP connection.
 
+## Innovation and development method
+
+Important BAFT decisions are evaluated on two explicit tracks:
+
+1. **Baseline:** the smallest secure, bounded, testable mechanism with a rollback path.
+2. **Research:** a conceptually distinct mechanism aimed at a documented gap, with falsifiable experiments and explicit failure criteria.
+
+The 10x/100x rule is used as design pressure, not as a numeric claim. Research hypotheses, engineering results, and legal novelty/patentability are recorded as separate states.
+
+Current examples:
+
+- [TWRL — Tri-Watermark Receive Ledger](docs/en/13-stage-c-twrl.md): engineering result supported in CI.
+- [PADL — Pressure-Aged Deficit Leasing](docs/en/14-stage-c-padl.md): research hypothesis under evaluation.
+
+See [Innovation methodology](docs/en/12-innovation-method.md).
+
 ## Developer quick start
 
 ```bash
@@ -144,6 +160,9 @@ After creating appropriate PKI material and adjusting addresses:
 9. [Roadmap](docs/en/09-roadmap.md)
 10. [Repository layout](docs/en/10-repository-layout.md)
 11. [Glossary](docs/en/11-glossary.md)
+12. [Innovation methodology](docs/en/12-innovation-method.md)
+13. [Stage-C TWRL](docs/en/13-stage-c-twrl.md)
+14. [Stage-C PADL](docs/en/14-stage-c-padl.md)
 
 ## What BAFT is not
 
