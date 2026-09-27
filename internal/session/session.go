@@ -828,12 +828,12 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			_ = p.sendReset(fl, protocol.ErrorTargetUnreachable)
 			return
 		}
+		fl.mu.Lock()
 		if err := ring.Consume(len(segment)); err != nil {
+			fl.mu.Unlock()
 			_ = p.sendReset(fl, protocol.ErrorProtocol)
 			return
 		}
-
-		fl.mu.Lock()
 		fl.rxWritten += uint64(len(segment))
 		delivered := fl.rxWritten
 		finalReady := fl.finRecv && !fl.finAckSent && delivered == fl.finRecvFinal

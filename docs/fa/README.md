@@ -31,3 +31,5 @@
 هر قابلیتی که در Blueprint آمده ولی در STATUS به‌عنوان پیاده‌شده ثبت نشده، **برنامه یا قرارداد آینده** است و نباید قابلیت موجود فرض شود.
 
 14. [14 — PADL در Stage C](14-stage-c-padl.md)
+
+15. [15 — Conservation Telemetry و چند Shard](15-conservation-telemetry.md)
