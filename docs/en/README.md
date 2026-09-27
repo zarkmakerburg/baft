@@ -29,3 +29,5 @@ When documents disagree, use this order:
 5. these guides for explanation.
 
 A feature described by the Blueprint but not recorded as implemented in STATUS is a **planned contract**, not a current capability.
+
+14. [14 — Stage-C PADL hypothesis](14-stage-c-padl.md)

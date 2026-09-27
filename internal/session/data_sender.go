@@ -21,7 +21,7 @@ type outboundRequest struct {
 
 type outboundSender struct {
 	mu           sync.Mutex
-	drr          *scheduler.DRR
+	data         *scheduler.PADL
 	control      *resources.ControlQueue
 	writer       *frameWriter
 	wake         chan struct{}
@@ -34,7 +34,7 @@ type outboundSender struct {
 
 func newOutboundSender(writer *frameWriter) *outboundSender {
 	return &outboundSender{
-		drr:     scheduler.NewDRR(),
+		data:    scheduler.NewPADL(scheduler.DefaultPADLMaxSkips),
 		control: resources.NewDefaultControlQueue(),
 		writer:  writer,
 		wake:    make(chan struct{}, 1),
@@ -48,7 +48,7 @@ func (s *outboundSender) addFlow(flowID uint64) error {
 	if s.stopped {
 		return s.stopErrorLocked()
 	}
-	return s.drr.AddFlow(flowID, dataChunk)
+	return s.data.AddFlow(flowID, dataChunk)
 }
 
 func (s *outboundSender) removeFlow(flowID uint64, cause error) {
@@ -56,7 +56,7 @@ func (s *outboundSender) removeFlow(flowID uint64, cause error) {
 		cause = errors.New("flow removed")
 	}
 	s.mu.Lock()
-	pending := s.drr.RemoveFlow(flowID)
+	pending := s.data.RemoveFlow(flowID)
 	s.mu.Unlock()
 	for _, item := range pending {
 		req, ok := item.Value.(*outboundRequest)
@@ -72,7 +72,7 @@ func (s *outboundSender) removeFlow(flowID uint64, cause error) {
 
 func (s *outboundSender) sendControl(frame protocol.Frame) error {
 	if frame.Type == protocol.TypeData {
-		return errors.New("DATA must use DRR data path")
+		return errors.New("DATA must use PADL data path")
 	}
 	req := &outboundRequest{frame: frame, done: make(chan error, 1), control: true}
 
@@ -129,7 +129,9 @@ func (s *outboundSender) sendData(ctx context.Context, fl *flow, frame protocol.
 		s.mu.Unlock()
 		return s.writer.send(frame)
 	}
-	err := s.drr.Enqueue(scheduler.Item{FlowID: fl.id, Bytes: len(frame.Payload), Value: req})
+	pressure := fl.replayPressure()
+	_ = s.data.UpdatePressure(fl.id, pressure)
+	err := s.data.Enqueue(scheduler.Item{FlowID: fl.id, Bytes: len(frame.Payload), Value: req})
 	s.mu.Unlock()
 	if err != nil {
 		return err
@@ -198,7 +200,7 @@ func (s *outboundSender) run(ctx context.Context) {
 
 func (s *outboundSender) nextLocked() (*outboundRequest, bool) {
 	controlN, _ := s.control.LenBytes()
-	dataN := s.drr.Len()
+	dataN := s.data.Len()
 
 	if controlN > 0 && (s.controlBurst < maxControlBurst || dataN == 0) {
 		item, ok := s.control.Dequeue()
@@ -214,7 +216,7 @@ func (s *outboundSender) nextLocked() (*outboundRequest, bool) {
 	}
 
 	if dataN > 0 {
-		item, ok := s.drr.Next()
+		item, ok := s.data.Next()
 		if !ok {
 			return nil, false
 		}
@@ -263,8 +265,8 @@ func (s *outboundSender) stop(err error) {
 			pending = append(pending, req)
 		}
 	}
-	for s.drr.Len() > 0 {
-		item, ok := s.drr.Next()
+	for s.data.Len() > 0 {
+		item, ok := s.data.Next()
 		if !ok {
 			break
 		}
@@ -295,4 +297,12 @@ func (s *outboundSender) signal() {
 	case s.wake <- struct{}{}:
 	default:
 	}
+}
+
+func (s *outboundSender) updatePressure(flowID uint64, replayBytes uint64) {
+	s.mu.Lock()
+	if !s.stopped {
+		_ = s.data.UpdatePressure(flowID, replayBytes)
+	}
+	s.mu.Unlock()
 }

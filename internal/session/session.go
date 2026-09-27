@@ -361,7 +361,11 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 		if err != nil {
 			return err
 		}
-		return fl.onAck(fr.Offset)
+		if err := fl.onAck(fr.Offset); err != nil {
+			return err
+		}
+		p.sender.updatePressure(fl.id, fl.replayPressure())
+		return nil
 	case protocol.TypeData:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
@@ -952,6 +956,15 @@ func (f *flow) onWindow(max uint64) error {
 	close(f.creditWait)
 	f.creditWait = make(chan struct{})
 	return nil
+}
+
+func (f *flow) replayPressure() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.txAcked >= f.txNext {
+		return 0
+	}
+	return f.txNext - f.txAcked
 }
 
 func (f *flow) onAck(ack uint64) error {
