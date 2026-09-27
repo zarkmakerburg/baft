@@ -88,3 +88,26 @@ commit `eaefc310...` bounded control scheduling را اضافه کرد. CI عا�
 - benchmark رسمی 60s × 5؛
 - عملیات certificate rotation/rollback؛
 - real-path pilot.
+
+
+## TWRL — slow receiver / three-watermark receive ledger
+- Commit: `66c4d06d021f7d77d740017cd5e2f8262c158e9e`
+- Standard CI run: `36340860552`
+- Result: **PASS**
+- `go test ./...`: PASS
+- `go test -race ./...`: PASS
+- `go vet ./...`: PASS
+- protocol fuzz smoke: PASS
+- slow-receiver integration: PASS
+- deterministic two-credit replenishment test using `net.Pipe`: PASS
+
+The receive path now distinguishes protocol acceptance (A), target delivery (D), and advertised credit (C). Target socket writes run in a per-Flow delivery pump backed by a fixed-capacity receive ring rather than blocking the Carrier read loop.
+
+### COR-01 after TWRL
+- Workflow run: `36340860568`
+- Result: **PASS**
+- bytes_each_direction: `1073741824`
+- SHA-256: `1efd9d3aab21f9e312a2a0b5a6886b2a640c810ecb1fbe33f64614b26cfb27e3`
+- test duration: `11.43s`
+
+This remains a correctness result on GitHub-hosted local networking, not a public-network throughput benchmark.

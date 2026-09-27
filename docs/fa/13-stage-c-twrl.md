@@ -62,3 +62,12 @@ C - D ≤ R
 - پیچیدگی lifecycle هنگام RESET/cancel؛
 - parser payload هنوز حافظه bounded جدا از ring مصرف می‌کند؛
 - patentability یا novelty هنوز اثبات نشده است.
+
+
+## نتیجه اجرای فعلی
+
+پیاده‌سازی اولیه TWRL در commit `66c4d06d...` از unit/integration، race detector، vet و fuzz smoke عبور کرده است. slow-receiver gate سبز شد و COR-01 یک GiB نیز بدون تغییر hash پاس شد.
+
+بنابراین وضعیت فعلی مکانیزم: **نتیجه مهندسی پشتیبانی‌شده در محیط CI**.
+
+این نتیجه هنوز به معنی novelty حقوقی یا برتری performance روی اینترنت واقعی نیست.

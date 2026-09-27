@@ -41,7 +41,7 @@
 - [x] bounded control queue
 - [x] control priority + data anti-starvation burst cap
 - [x] multi-Flow integration test
-- [ ] تثبیت slow-receiver liveness gate
+- [x] تثبیت slow-receiver liveness gate با TWRL و تست deterministic
 - [ ] تست طولانی slow receiver / soak
 - [ ] تست فشار چند Shard با memory budget مشترک
 - [ ] metrics لازم برای allocator/queue/Flow

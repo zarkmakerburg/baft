@@ -75,17 +75,21 @@ Workflow run `36338439622` روی commit `b1ddb445...`:
 - integration test چند Flow؛
 - COR-01 پس از تغییرات allocator/DRR دوباره پاس شده است.
 
-### هنوز کامل نشده
+### TWRL و slow-receiver gate
 
-slow-receiver gate هنوز سبز پایدار نشده است.
+در commit `66c4d06d...` طراحی TWRL وارد مسیر واقعی شد. سه watermark مستقل نگه داشته می‌شوند:
 
-آخرین CI run `36338439633` روی commit `b1ddb445...` در تست:
+- A: داده پذیرفته‌شده در حافظه محدود BAFT؛
+- D: داده واقعاً تحویل‌شده به socket مقصد؛
+- C: بیشترین offset اعلام‌شده با WINDOW.
 
-`TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory`
+invariant اصلی: `D ≤ A ≤ C` و `C-D ≤ R` که R ظرفیت receive رزروشده است.
 
-شکست خورد. در آن اجرا source قبل از drain روی 65536 بایت متوقف شد و بعد از drain به 98304 بایت رسید، یعنی مقداری forward progress وجود داشت، اما معیار liveness تست برآورده نشد.
+GitHub Actions run `36340860552` همه‌ی unit/integration tests، race detector، vet و fuzz smoke را **PASS** کرد. تست slow receiver نیز در همین run سبز شد. یک تست deterministic با `net.Pipe` علاوه بر integration test اثبات می‌کند آزادشدن target حداقل دو مرحله credit را جلو می‌برد و Carrier مجبور نیست target write را inline انجام دهد.
 
-نتیجه: **Stage C هنوز complete نیست** و باید behavior receiver کند و معیار liveness دقیق‌تر تثبیت شوند.
+COR-01 روی همین commit در run `36340860568` نیز **PASS** شد.
+
+نتیجه: slow-receiver liveness gate فعلی بسته شده است. **Stage C هنوز کامل نیست** چون soak طولانی، فشار چند Shard و metrics باقی مانده‌اند.
 
 ## Stage D و بعد
 
