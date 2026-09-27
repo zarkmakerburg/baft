@@ -8,7 +8,7 @@
 
 | level | current status | meaning |
 |---|---|---|
-| **Research hypothesis** | **active and narrow** | Falsifiable claim: **an atomic (epoch, A-vector) commit can fence the previous Carrier while fixing each surviving Flow's replay frontier exactly at A, with no reference-model/engine divergence on valid deterministic traces.** |
+| **Claim status** | **engineering, no novelty claim** | Direct prior art already covers generation/view change plus state/history synchronization. BAFT's `(epoch, A-vector)` is currently an engineering specialization for independent TCP Flows. |
 | **Supported engineering result** | **not reached** | A prototype or unit test alone is insufficient. Real carrier replacement, zombie-carrier, lost-ACK, tombstone, and exact-byte gates must pass first. |
 | **Patentability / legal novelty** | **unassessed** | This is an engineering prior-art review, not a patent search or legal opinion. |
 
@@ -67,6 +67,28 @@ For BAFT:
 - even if TLS resumption is enabled later, BAFT byte-ledger reconciliation remains a separate requirement.
 
 ---
+
+## 2A. Direct prior art for epoch + state synchronization
+
+| system | primary source / exact section | related mechanism | BAFT difference | conclusion |
+|---|---|---|---|---|
+| Kafka KIP-101 | official headings **Solution** and **Proposed Changes → Leader Epoch**; the KIP page has no numeric section labels, so the reproducible numeric reference is protocol **steps 4.2–4.6** | LeaderEpoch→StartOffset lineage determines truncation/fetch frontier | BAFT has per-Flow TCP frontiers rather than one partition log lineage | direct prior art for epoch+frontier reconciliation |
+| Kafka KIP-279 | **Proposed Changes, steps 1–5** | `(leader_epoch,end_offset)` exchange finds the latest common lineage before truncation/fetch | BAFT does not truncate a log; each Flow has an independent frontier | direct prior art for common-frontier recovery |
+| Zab | *Dissecting Zab*, **§4.2, Phase 2 Synchronization, steps f.2.1 / leader 2.2 / f.2.2; Invariant 24** | follower atomically adopts the epoch and selected history before broadcast | BAFT is two-endpoint and non-quorum, but generation+state synchronization is the same mechanism family | strong direct prior art |
+| Viewstamped Replication Revisited | **§4.2 View Changes** and **§8.1 Correctness of View Changes** | new view reconstructs log/state before normal operation resumes | BAFT state is a vector of TCP byte watermarks rather than an SMR log | direct prior art for view fencing + state synchronization |
+
+```text
+V_prepare = sorted {(stream_id, open_nonce)}
+A_vector(E) = <(stream_id, open_nonce, A_peer) for flow in V_prepare>
+```
+
+This data model is different, but the difference is **not judged materially novel at the mechanism level**. D-001 is therefore engineering with no novelty claim.
+
+Primary sources:
+- KIP-101: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/67634337/KIP-101+-+Alter+Replication+Protocol+to+use+Leader+Epoch+rather+than+High+Watermark+for+Truncation
+- KIP-279: https://cwiki.apache.org/confluence/display/KAFKA/KIP-279%3A+Fix+log+divergence+between+leader+and+follower+after+fast+leader+fail+over
+- Zab: https://cwiki.apache.org/confluence/download/attachments/24193444/yl-2010-007.pdf
+- VR Revisited: https://dspace.mit.edu/entities/publication/80846d94-fcd3-40e6-87fb-8d91fe99a5d1
 
 ## 3. ECRL threat model
 
@@ -281,6 +303,22 @@ K must never substitute for D or A:
 
 Replay therefore still begins at A, not at K or D.
 
+### Formal A-vector and Prepare→Commit freeze
+
+```text
+V_prepare := snapshot(active flow identities)
+A_vector := <A_f | f in V_prepare, sorted by stream_id>
+
+Prepare => freeze V_prepare
+while candidate exists:
+  OPEN / DATA admission / FIN => RESUME_FROZEN
+Reconcile => local.flow_set = peer.flow_set = V_prepare
+Commit(E+1) => publish epoch, owner, and reconciled A_vector at one linearization point
+Abort => discard candidate state
+```
+
+OPEN/FIN are queued or retried by the caller; DATA admission is also quiesced so the A-vector itself cannot move between reconciliation and commit.
+
 ### I0 — unique Carrier ownership
 
 ```text
@@ -490,9 +528,13 @@ The executable engine and the reference adapter implement the same `ReconcileCom
 
 In step 1, F01/F02/F03/F07/F08/F09 are directly applicable to the executable engine. F04/F10 require replay execution and F05/F06 require FIN/tombstone execution, so they are intentionally **not reported as engine PASS** yet.
 
-`TestStage1DifferentialReferenceVsEngine` compares deterministic reference and engine traces. Any difference fails the gate.
+`TestStage1DifferentialGenerated` replaces the six fixed traces with a full small-state sweep plus **10,000 generated traces using fixed seed `3964471334`**. Prepare/Reconcile/Commit/Authorize outcomes are compared; any divergence prints the original trace and a minimized reproducer.
 
 Current in-memory mode records replay release through K in the reconciliation plan. `durable_snapshot` defaults off; `RReplay` is invalid unless that flag is enabled. K_release/replay-cap behavior remains isolated to the explicitly enabled future durable policy and is not part of the step-1 engine.
+
+### Refinement failure criteria
+
+This gate is not novelty evidence. Stop Stage D on any model/engine divergence, any observable mixed authority tuple such as `(old_epoch,new_owner)`, any OPEN/DATA/FIN transition that crosses the Prepare→Commit freeze, or any surviving `ECRL_ENGINE_MUTANT`.
 
 ## 6. Current novelty decision
 
@@ -506,21 +548,9 @@ Current in-memory mode records replay release through K in the reconciliation pl
 - sequence/offset deduplication;
 - tombstones as a general concept.
 
-### The current research hypothesis
+### Current D-001 status
 
-The potentially distinctive composition is:
-
-1. committed Carrier ownership by epoch;
-2. correlation between sender `K/S` and peer `D/A/C`;
-3. non-overlapping handoff partition:
-   - `Ring=[D,A)`
-   - `Replay=[A,S)`
-4. tombstone monotonicity in the same resume decision;
-5. FIN/half-close correlation;
-6. Boot-ID continuity;
-7. all of the above at an application relay above a newly authenticated H2/TCP Carrier, without custom cryptography.
-
-This is **not proof of novelty or patentability**. It is a precise research hypothesis worthy of deeper prior-art search and falsification.
+**Engineering, no novelty claim.** BAFT's vector state over TCP Flows remains a useful implementation distinction, but after direct comparison with KIP-101/KIP-279, Zab, and Viewstamped Replication it is not described as a novel mechanism.
 
 ---
 

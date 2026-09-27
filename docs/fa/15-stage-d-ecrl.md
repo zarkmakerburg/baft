@@ -10,7 +10,7 @@
 
 | سطح | وضعیت فعلی | معنی |
 |---|---|---|
-| **فرضیه پژوهشی** | **فعال و محدود** | گزاره‌ی قابل‌ابطال: **«commit اتمیکِ جفتِ (epoch، A-vector) می‌تواند Carrier قدیمی را fence کند و هم‌زمان replay frontier هر Flow را دقیقاً روی A تثبیت کند، بدون اینکه model و engine روی trace معتبر اختلاف داشته باشند.»** |
+| **وضعیت ادعا** | **مهندسی، بدون ادعای نوآوری** | prior art مستقیم نشان می‌دهد الگوی «تعویض نسل/view + هم‌ترازی state/history پیش از ادامه» در Kafka، Zab و Viewstamped Replication از قبل وجود دارد. `(epoch, A-vector)` در BAFT فعلاً یک specialization مهندسی برای Flowهای TCP است، نه مکانیزمی که novelty آن اثبات شده باشد. |
 | **نتیجه مهندسی پشتیبانی‌شده** | **هنوز محقق نشده** | وجود prototype یا unit test اولیه به‌تنهایی کافی نیست. تا وقتی carrier replacement واقعی، zombie-carrier، lost-ACK، tombstone و exact-once gate پاس نشوند، این سطح ادعا نمی‌شود. |
 | **Patentability / novelty حقوقی** | **بررسی‌نشده** | این prior-art review فقط مهندسی است. هیچ ادعای ثبت‌پذیری یا novelty حقوقی بدون جست‌وجوی patent/literature تخصصی مجاز نیست. |
 
@@ -19,7 +19,7 @@
 **خودِ epoch fencing نوآوری ECRL نیست.**  
 **خودِ resume یا anti-replay نیز نوآوری ECRL نیست.**
 
-هسته‌ی ادعا فقط یک مکانیزم مشخص است: **atomic epoch + A-vector commit**. اگر engine واقعی در هر trace deterministic با reference model اختلاف داشته باشد، یا commit بتواند epoch را بدون همان plan هم‌بسته جلو ببرد، همین فرضیه رد می‌شود. FIN/tombstone، PADL و durable snapshot اجزای مستقل‌اند و بخشی از ادعای novelty این جمله نیستند.
+جمله‌ی قبلیِ ادعای نوآوری حذف می‌شود. تعریف مهندسی باقی‌مانده این است: **BAFT هنگام تعویض Carrier، epoch و بردار watermark پذیرش Flowهای منجمدشده را در یک commit منتشر می‌کند.** این جمله توصیف behavior است، نه ادعای novelty. «عدم اختلاف model/engine» نیز از جمله‌ی ادعا خارج و فقط به معیار شکست refinement منتقل می‌شود.
 
 ---
 
@@ -69,6 +69,39 @@ TLS 1.3 صریحاً هشدار می‌دهد که anti-replay لایه TLS حف
 - حتی اگر TLS resumption در آینده فعال شود، ledger بایتی BAFT همچنان لازم است.
 
 ---
+
+## 2A. Prior art مستقیم برای epoch + state synchronization
+
+| سیستم | منبع اولیه و بخش دقیق | مکانیزم مرتبط | تفاوت با BAFT | نتیجه |
+|---|---|---|---|---|
+| **Kafka KIP-101** | KIP-101 بخش‌های رسمی **Solution** و **Proposed Changes → Leader Epoch**؛ این صفحه شماره‌بندی بخش ندارد، بنابراین ارجاع قابل‌تکرار به **مراحل 4.2 تا 4.6** پروتکل است | هر replica یک lineage از `LeaderEpoch → StartOffset` دارد؛ follower offset متناظر epoch را از leader می‌گیرد، suffix واگرا را truncate و سپس fetch را ادامه می‌دهد | Kafka state برای هر partition یک log lineage است؛ BAFT یک بردار از frontierهای Flowهای TCP مستقل دارد | prior art مستقیم برای «epoch + frontier reconciliation» |
+| **Kafka KIP-279** | KIP-279، **Proposed Changes، مراحل 1 تا 5** | leader و follower با `(leader_epoch,end_offset)` به عقب می‌روند تا بزرگ‌ترین epoch مشترک را پیدا کنند، سپس truncate/fetch می‌کنند | BAFT truncate log ندارد؛ برای هر Flow frontier مستقل دارد | prior art مستقیم برای «یافتن نقطه مشترک پیش از ادامه» |
+| **Zab** | Junqueira/Reed/Serafini، *Dissecting Zab*، **§4.2 Zab description، Phase 2 (Synchronization)، steps f.2.1 / ℓ.2.2 / f.2.2؛ Invariant 24** | follower epoch جدید و history اولیه را در synchronization می‌پذیرد؛ متن صریحاً set کردن epoch و قبول history را اتمیک تعریف می‌کند و سپس وارد broadcast می‌شود | BAFT quorum/history replication ندارد و فقط دو endpoint دارد، ولی الگوی atomic generation+state transition همان خانواده است | prior art بسیار نزدیک |
+| **Viewstamped Replication Revisited** | Liskov/Cowling، **§4.2 View Changes** و **§8.1 Correctness of View Changes** | view جدید با state/log جمع‌آوری‌شده ساخته می‌شود؛ normal processing بعد از view transition ادامه می‌یابد و old-view state دیگر authoritative نیست | BAFT replicated state machine و quorum ندارد؛ state آن برداری از byte watermarkهاست | prior art مستقیم برای «view fencing + state synchronization» |
+
+### تفاوت دقیق `(epoch, A-vector)`
+
+BAFT یک log سراسری مرتب ندارد. در Prepare:
+
+<div dir="ltr" align="left">
+
+```text
+V_prepare = sorted {(stream_id, open_nonce)}
+
+A_vector(E) =
+  <(stream_id, open_nonce, A_peer)
+   for each flow in V_prepare>
+```
+
+</div>
+
+هر عضو بردار مربوط به یک TCP byte stream مستقل است و `A` آن Flow را نشان می‌دهد. این از نظر data model با Kafka/Zab/VR فرق دارد؛ اما **تفاوت ماهوی مکانیزمی تشخیص داده نشد**. برداری‌کردن frontier برای چند Flow مستقل، در وضعیت فعلی specialization مهندسی محسوب می‌شود.
+
+منابع اولیه:
+- KIP-101: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/67634337/KIP-101+-+Alter+Replication+Protocol+to+use+Leader+Epoch+rather+than+High+Watermark+for+Truncation
+- KIP-279: https://cwiki.apache.org/confluence/display/KAFKA/KIP-279%3A+Fix+log+divergence+between+leader+and+follower+after+fast+leader+fail+over
+- Zab, Yahoo! Labs Technical Report YL-2010-007: https://cwiki.apache.org/confluence/download/attachments/24193444/yl-2010-007.pdf
+- Viewstamped Replication Revisited, MIT-CSAIL-TR-2012-021: https://dspace.mit.edu/entities/publication/80846d94-fcd3-40e6-87fb-8d91fe99a5d1
 
 ## 3. مدل تهدید ECRL
 
@@ -503,6 +536,51 @@ ECRL هنگام resume نباید K را جای D یا A استفاده کند:
 
 بنابراین replay frontier همچنان `A` است، نه K و نه D.
 
+### تعریف رسمی A-vector و freeze بین Prepare و Commit
+
+برای candidate epoch `E+1`، engine در لحظه Prepare مجموعه‌ی Flowهای فعال را منجمد می‌کند:
+
+<div dir="ltr" align="left">
+
+```text
+V_prepare := snapshot(active flow identities)
+
+A_vector :=
+  <A_f | f ∈ V_prepare, sorted by stream_id>
+```
+
+</div>
+
+قانون state transition:
+
+<div dir="ltr" align="left">
+
+```text
+Prepare
+  => freeze V_prepare
+
+while candidate exists:
+  OPEN           => RESUME_FROZEN
+  DATA admission => RESUME_FROZEN
+  FIN            => RESUME_FROZEN
+
+Reconcile
+  => local.flow_set = peer.flow_set = V_prepare
+
+Commit(E+1)
+  => publish (epoch=E+1, owner=candidate, reconciled A_vector)
+     at one linearization point
+  => unfreeze
+
+Abort
+  => discard frozen candidate state
+  => unfreeze
+```
+
+</div>
+
+پس OPEN یا FIN که بین Reconcile و Commit برسد در Stage-1 **اعمال نمی‌شود**؛ caller باید آن را queue/retry کند. DATA admission نیز برای ثابت‌ماندن خود A-vector quiesce می‌شود. این انتخاب عمداً محافظه‌کارانه است.
+
 ### Invariant صفر — یکتایی مالک Carrier
 
 <div dir="ltr" align="left">
@@ -797,9 +875,19 @@ type ReconcileCommitEngine interface {
 
 در مرحله ۱ فقط F01/F02/F03/F07/F08/F09 مستقیماً روی engine واقعی قابل اعمال‌اند. F04/F10 متعلق به replay execution و F05/F06 متعلق به FIN/tombstone execution هستند و تا مراحل بعد **عمداً engine-PASS اعلام نمی‌شوند**.
 
-`TestStage1DifferentialReferenceVsEngine` روی traceهای deterministic، نتیجه Prepare/Reconcile/Commit/Authorize مدل و engine را مقایسه می‌کند. هر اختلاف gate را قرمز می‌کند.
+`TestStage1DifferentialGenerated` جای traceهای ثابت را گرفته است. این تست یک sweep کامل روی فضای کوچک و سپس **۱۰٬۰۰۰ trace مولد با seed ثابت `3964471334`** اجرا می‌کند؛ Prepare/Reconcile/Commit/Authorize در reference model و engine مقایسه می‌شوند. seed و تعداد در لاگ چاپ می‌شوند و هر اختلاف، trace اصلی به‌همراه reproduce trace کوچک‌شده را چاپ می‌کند.
 
 در current in-memory mode، `FlowPlan.LocalReleaseThrough = K` و `PeerReleaseThrough = K_peer` است. `durable_snapshot` در `EngineOptions{}` به‌صورت پیش‌فرض خاموش است؛ `RReplay` بدون فعال‌بودن آن config نامعتبر است. `K_release`/replay cap فقط در policy آزمایشی durable آینده فعال می‌شوند و هنوز engine replay را تغییر نمی‌دهند.
+
+### معیار شکست refinement
+
+این gate مدرک novelty نیست. Stage D باید فوراً متوقف شود اگر:
+
+- reference model و engine روی یک trace واحد خروجی متفاوت بدهند؛
+- Commit حالت authority میانی مثل `(old_epoch,new_owner)` قابل مشاهده کند؛
+- یک frame بتواند در transition هم authority قدیمی و هم authority جدید را دور بزند؛
+- OPEN/DATA/FIN از freeze بین Prepare و Commit عبور کند؛
+- هر mutant در `ECRL_ENGINE_MUTANT` زنده بماند.
 
 ## 6. تصمیم فعلی درباره novelty
 
@@ -813,21 +901,9 @@ type ReconcileCommitEngine interface {
 - sequence/offset-based deduplication؛
 - tombstone به‌عنوان مفهوم عمومی.
 
-### چیزی که **فرضیه‌ی تفاوت ECRL** است
+### وضعیت فعلی D-001
 
-ترکیب زیر، آن هم فقط اگر در تست‌ها invariantها را حفظ کند:
-
-1. Carrier ownership با epoch committed؛
-2. correlation بین sender `K/S` و peer `D/A/C`؛
-3. تقسیم بدون هم‌پوشانی handoff به:
-   - `Ring=[D,A)`
-   - `Replay=[A,S)`
-4. tombstone monotonic در همان resume decision؛
-5. FIN/half-close correlation؛
-6. رد resume در تغییر Boot ID؛
-7. اجرای همه‌ی این‌ها در application relay روی Carrier H2/TCP جدید، بدون custom crypto.
-
-**این هنوز اثبات novelty نیست.** این فقط Gap/Hypothesis دقیق‌تری است که ارزش prior-art search تخصصی‌تر و آزمایش دارد.
+**مهندسی، بدون ادعای نوآوری.** تفاوت BAFT در state برداری روی Flowهای TCP و semantics مخصوص TWRL/FIN/tombstone ثبت می‌شود، اما پس از مقایسه مستقیم با KIP-101/KIP-279، Zab و Viewstamped Replication این تفاوت را مکانیزم novel نمی‌نامیم. هر ادعای پژوهشی آینده باید یک مکانیزم مشخص و prior-art gap تازه داشته باشد.
 
 ---
 
