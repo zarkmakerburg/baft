@@ -1,0 +1,20 @@
+# dependency lock
+
+## Go
+- target: Go 1.27.1
+- official release date: 2026-09-01
+- official Linux amd64 archive: `go1.27.1.linux-amd64.tar.gz`
+- official SHA-256: `63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445`
+- verification source: `go.dev/doc/devel/release` and `go.dev/dl/`, checked 2026-09-27
+- local sandbox installed toolchain: Go 1.23.2
+- target toolchain download: blocked in this environment; direct shell network is unavailable and external archive retrieval failed.
+
+## External dependencies
+None in the current core tree. Baseline TLS and HTTP/2 spike use the Go standard library.
+
+Planned YAML decoder dependency is intentionally not added until it can be fetched, pinned, license-checked and tested with the target toolchain. The current typed model, strict JSON decoder and JSON Schema are sufficient for the Stage-A contract but are not claimed as the final YAML loader.
+
+## GitHub Actions
+- `actions/checkout@v7`
+- `actions/setup-go@v7`
+- versions checked against the upstream action repositories on 2026-09-27.

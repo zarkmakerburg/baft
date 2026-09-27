@@ -1,0 +1,11 @@
+/bin/
+/dist/
+*.out
+*.test
+*.prof
+*.pcap
+*.key
+*.pem
+secrets/
+bench/raw/*.json
+!bench/raw/.gitkeep

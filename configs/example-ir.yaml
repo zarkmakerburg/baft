@@ -1,0 +1,40 @@
+schema_version: 1
+node:
+  id: ir-01
+  role: dialer
+peer:
+  address: 192.0.2.20:443
+  server_name: ex.example
+  allowed_identity: urn:baft:node:ex-01
+tls:
+  min_version: "1.3"
+  ca_file: /etc/baft/pki/ca.pem
+  cert_file: /etc/baft/pki/ir.pem
+  key_file: /etc/baft/pki/ir.key
+  session_tickets: false
+transport:
+  primary: h2
+  h3_enabled: false
+  shards: 4
+  profile: secure-fast
+limits:
+  max_flows: 256
+  data_memory_mib: 256
+  receive_initial_kib: 64
+  receive_max_mib: 16
+  replay_max_mib: 16
+recovery:
+  enabled: false
+  retention_seconds: 30
+routes:
+  - id: service-main
+    listen: 127.0.0.1:1443
+    remote_route: service-main
+    direction: outbound
+    traffic_class: interactive
+management:
+  unix_socket: /run/baft/admin.sock
+  metrics_listen: 127.0.0.1:9191
+logging:
+  level: info
+  payload: false

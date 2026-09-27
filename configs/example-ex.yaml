@@ -1,0 +1,41 @@
+schema_version: 1
+node:
+  id: ex-01
+  role: listener
+server:
+  listen: 0.0.0.0:443
+  server_name: ex.example
+  allowed_peer_identities:
+    - urn:baft:node:ir-01
+tls:
+  min_version: "1.3"
+  ca_file: /etc/baft/pki/ca.pem
+  cert_file: /etc/baft/pki/ex.pem
+  key_file: /etc/baft/pki/ex.key
+  session_tickets: false
+transport:
+  primary: h2
+  h3_enabled: false
+  shards: 4
+  profile: secure-fast
+limits:
+  max_flows: 256
+  data_memory_mib: 256
+  receive_initial_kib: 64
+  receive_max_mib: 16
+  replay_max_mib: 16
+recovery:
+  enabled: false
+  retention_seconds: 30
+routes:
+  - id: service-main
+    direction: inbound
+    target: 127.0.0.1:2443
+    allowed_peers:
+      - urn:baft:node:ir-01
+management:
+  unix_socket: /run/baft/admin.sock
+  metrics_listen: 127.0.0.1:9191
+logging:
+  level: info
+  payload: false
