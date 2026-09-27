@@ -24,7 +24,7 @@
 - [ ] deny/revocation روی carrier فعال
 - [ ] RESET و error mapping کامل
 - [ ] آزمون 1GiB دوطرفه COR-01
-- [ ] config YAML loader سخت‌گیرانه
+- [x] config YAML loader سخت‌گیرانه + dependency/checksum pin
 - [ ] production node CLI برای اجرای IR/EX خارج از integration harness
 
 ## Stage C — resources & multi-flow

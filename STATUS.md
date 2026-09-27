@@ -34,8 +34,11 @@ Stage A gate is complete for the implemented scope. Stage B has a working secure
 Remaining Stage-B work includes:
 - active certificate revocation for established carriers;
 - complete RESET/error-code semantics;
-- strict production YAML loader with pinned dependency;
 - production IR/EX CLI path outside the integration harness;
 - larger correctness run (including the planned 1 GiB test).
 
 Stage C resource allocator / DRR / multi-flow resource policy has not started yet.
+
+
+## YAML configuration gate
+Strict YAML loading is implemented with `go.yaml.in/yaml/v3 v3.0.5`. Anchors/aliases, merge keys, duplicate mapping keys, custom tags, multiple documents, oversized input and unknown configuration fields are rejected. GitHub Actions run 36312919871 passed test/race/vet/fuzz with this dependency.

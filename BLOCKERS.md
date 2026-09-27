@@ -12,7 +12,5 @@ go version go1.27.1 linux/amd64
 
 The run passed unit/integration tests, the race detector, `go vet` and the protocol fuzz smoke. The local sandbox still has Go 1.23.2, but it is no longer a blocker for the pinned-toolchain CI gate.
 
-## B-003 — final YAML loader dependency unavailable locally
-Impact: YAML examples and JSON Schema exist, but the production YAML decoder is not wired yet.
-
-The repository CI runner has network access, so Stage B can now add a pinned YAML dependency through a normal reviewed change. Until that change is implemented and tested, YAML loading remains incomplete.
+## Resolved — strict YAML loader dependency
+The maintained `go.yaml.in/yaml/v3` module is pinned at v3.0.5. GitHub Actions run 36312919871 generated the module checksums and passed unit/integration tests, race detector, vet and fuzz smoke. The committed `go.sum` is now the reproducible dependency lock.
