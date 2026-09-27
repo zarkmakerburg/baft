@@ -31,3 +31,17 @@ func TestFlowDuplicateDataIsNotReturnedForRewrite(t *testing.T) {
 func TestFlowRejectsWindowRegression(t *testing.T){f:=newFlow(1,"main","00112233445566778899aabbccddeeff",nil);if err:=f.onWindow(100);err!=nil{t.Fatal(err)};if err:=f.onWindow(99);err==nil{t.Fatal("expected backwards WINDOW rejection")}}
 
 func TestOpenIsIdempotentAndDoesNotRedial(t *testing.T){tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)};var out bytes.Buffer;p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)};var dials atomic.Int32;var remote net.Conn;p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);a,b:=net.Pipe();remote=b;return a,nil};req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:"00112233445566778899aabbccddeeff"});fr:=protocol.Frame{Type:protocol.TypeOpen,StreamID:1,Payload:req};if err:=p.handleOpen(context.Background(),fr);err!=nil{t.Fatal(err)};if err:=p.handleOpen(context.Background(),fr);err!=nil{t.Fatal(err)};if got:=dials.Load();got!=1{t.Fatalf("dial count=%d",got)};if remote!=nil{_ = remote.Close()};p.closeAll();p.wg.Wait()}
+
+func TestResetClosesOnlyReferencedFlowAndRecordsFixedCode(t *testing.T) {
+	var out bytes.Buffer
+	p, err := New(Dialer, Carrier{In:bytes.NewReader(nil),Out:&out}, "urn:baft:node:ex-01", nil, Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"})
+	if err != nil { t.Fatal(err) }
+	local, remote := net.Pipe(); defer remote.Close()
+	fl := newFlow(1,"main","00112233445566778899aabbccddeeff",local)
+	p.mu.Lock(); p.flows[1]=fl; p.localReady=true; p.peerReady=true; p.markReadyLocked(); p.mu.Unlock()
+	payload, err := protocol.EncodeControl(protocol.Reset{Code:protocol.ErrorAdminDrain}); if err != nil { t.Fatal(err) }
+	if err := p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeReset,StreamID:1,Payload:payload}); err != nil { t.Fatal(err) }
+	if _, err := p.getFlow(1); err == nil { t.Fatal("RESET must remove flow") }
+	fl.mu.Lock(); code,closed := fl.resetCode,fl.closed; fl.mu.Unlock()
+	if !closed || code != protocol.ErrorAdminDrain { t.Fatalf("closed=%v code=%q",closed,code) }
+}

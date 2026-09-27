@@ -25,3 +25,18 @@ func TestDecodeOpenRejectsDuplicateKey(t *testing.T) {
 		t.Fatal("expected duplicate key rejection")
 	}
 }
+
+func TestDecodeOpenErrorRejectsUnknownCode(t *testing.T) {
+	if _, err := DecodeOpenError([]byte(`{"code":"SOMETHING_ELSE"}`)); err == nil {
+		t.Fatal("expected unknown error code rejection")
+	}
+}
+
+func TestDecodeResetAcceptsOnlyFixedCodeList(t *testing.T) {
+	v, err := DecodeReset([]byte(`{"code":"FLOW_CONTROL_ERROR"}`))
+	if err != nil { t.Fatal(err) }
+	if v.Code != ErrorFlowControl { t.Fatalf("code=%q", v.Code) }
+	if _, err := DecodeReset([]byte(`{"code":"FLOW_CONTROL_ERROR","detail":"secret path"}`)); err == nil {
+		t.Fatal("expected unknown reset field rejection")
+	}
+}

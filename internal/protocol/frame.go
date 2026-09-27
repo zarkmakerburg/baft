@@ -65,6 +65,12 @@ func validateFrame(f Frame) error {
 	if uint64(len(f.Payload)) > ^uint64(0)-f.Offset { return errors.New("offset overflow") }
 	if isSessionFrame(f.Type) { if f.StreamID != 0 { return errors.New("session frame requires stream_id=0") } } else if f.StreamID == 0 { return errors.New("flow frame requires non-zero stream_id") }
 	switch f.Type {
+	case TypeHello, TypeHelloAck, TypeOpen, TypeOpenOK, TypeOpenErr, TypeReset,
+		TypeResumeState, TypeResumeDone, TypeReady, TypePing, TypePong, TypeGoAway,
+		TypeProfilePropose, TypeProfileAccept, TypeProfileCommit, TypePadding:
+		if f.Offset != 0 { return errors.New("frame type requires offset=0") }
+	}
+	switch f.Type {
 	case TypeAck, TypeWindow, TypeFin, TypeFinAck:
 		if len(f.Payload) != 0 { return errors.New("frame type requires empty payload") }
 	case TypePing, TypePong:

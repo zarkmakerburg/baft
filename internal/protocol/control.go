@@ -14,8 +14,40 @@ type OpenRequest struct {
 	OpenNonce string `json:"open_nonce"`
 }
 
+type ErrorCode string
+
+const (
+	ErrorAuthFailed         ErrorCode = "AUTH_FAILED"
+	ErrorVersionUnsupported ErrorCode = "VERSION_UNSUPPORTED"
+	ErrorInvalidFrame       ErrorCode = "INVALID_FRAME"
+	ErrorFlowControl        ErrorCode = "FLOW_CONTROL_ERROR"
+	ErrorRouteDenied        ErrorCode = "ROUTE_DENIED"
+	ErrorRouteNotFound      ErrorCode = "ROUTE_NOT_FOUND"
+	ErrorTargetUnreachable  ErrorCode = "TARGET_UNREACHABLE"
+	ErrorTargetTimeout      ErrorCode = "TARGET_TIMEOUT"
+	ErrorResourceExhausted  ErrorCode = "RESOURCE_EXHAUSTED"
+	ErrorSessionExpired     ErrorCode = "SESSION_EXPIRED"
+	ErrorPeerRestarted      ErrorCode = "PEER_RESTARTED"
+	ErrorStaleEpoch         ErrorCode = "STALE_EPOCH"
+	ErrorStateMismatch      ErrorCode = "STATE_MISMATCH"
+	ErrorAdminDrain         ErrorCode = "ADMIN_DRAIN"
+	ErrorProtocol           ErrorCode = "PROTOCOL_ERROR"
+)
+
+var validErrorCodes = map[ErrorCode]struct{}{
+	ErrorAuthFailed: {}, ErrorVersionUnsupported: {}, ErrorInvalidFrame: {},
+	ErrorFlowControl: {}, ErrorRouteDenied: {}, ErrorRouteNotFound: {},
+	ErrorTargetUnreachable: {}, ErrorTargetTimeout: {}, ErrorResourceExhausted: {},
+	ErrorSessionExpired: {}, ErrorPeerRestarted: {}, ErrorStaleEpoch: {},
+	ErrorStateMismatch: {}, ErrorAdminDrain: {}, ErrorProtocol: {},
+}
+
 type OpenError struct {
-	Code string `json:"code"`
+	Code ErrorCode `json:"code"`
+}
+
+type Reset struct {
+	Code ErrorCode `json:"code"`
 }
 
 func EncodeControl(v any) ([]byte, error) {
@@ -58,10 +90,34 @@ func DecodeOpenError(payload []byte) (OpenError, error) {
 	if err := requireEOF(dec); err != nil {
 		return OpenError{}, err
 	}
-	if v.Code == "" || len(v.Code) > 64 {
+	if !ValidErrorCode(v.Code) {
 		return OpenError{}, errors.New("invalid error code")
 	}
 	return v, nil
+}
+
+func DecodeReset(payload []byte) (Reset, error) {
+	if err := rejectDuplicateTopLevelKeys(payload); err != nil {
+		return Reset{}, err
+	}
+	var v Reset
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&v); err != nil {
+		return Reset{}, err
+	}
+	if err := requireEOF(dec); err != nil {
+		return Reset{}, err
+	}
+	if !ValidErrorCode(v.Code) {
+		return Reset{}, errors.New("invalid reset code")
+	}
+	return v, nil
+}
+
+func ValidErrorCode(code ErrorCode) bool {
+	_, ok := validErrorCodes[code]
+	return ok
 }
 
 func requireEOF(dec *json.Decoder) error {

@@ -75,6 +75,7 @@ type flow struct {
 	finRecv bool
 	finAcked bool
 	closed bool
+	resetCode protocol.ErrorCode
 }
 
 type frameWriter struct { mu sync.Mutex; w io.Writer }
@@ -110,13 +111,13 @@ func (p *Peer) handleFrame(ctx context.Context,fr protocol.Frame)error{
 	switch fr.Type{
 	case protocol.TypeOpen:return p.handleOpen(ctx,fr)
 	case protocol.TypeOpenOK:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};select{case fl.openDone<-nil:default:};return nil
-	case protocol.TypeOpenErr:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};oe,err:=protocol.DecodeOpenError(fr.Payload);if err!=nil{return err};select{case fl.openDone<-errors.New(oe.Code):default:};return nil
+	case protocol.TypeOpenErr:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};oe,err:=protocol.DecodeOpenError(fr.Payload);if err!=nil{return err};select{case fl.openDone<-errors.New(string(oe.Code)):default:};return nil
 	case protocol.TypeWindow:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};return fl.onWindow(fr.Offset)
 	case protocol.TypeAck:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};return fl.onAck(fr.Offset)
 	case protocol.TypeData:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};return p.handleData(fl,fr)
 	case protocol.TypeFin:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};return p.handleFin(fl,fr.Offset)
 	case protocol.TypeFinAck:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};return fl.onFinAck(fr.Offset)
-	case protocol.TypeReset:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};fl.close();p.removeFlow(fr.StreamID);return nil
+	case protocol.TypeReset:fl,err:=p.getFlow(fr.StreamID);if err!=nil{return err};rst,err:=protocol.DecodeReset(fr.Payload);if err!=nil{return err};fl.mu.Lock();fl.resetCode=rst.Code;fl.mu.Unlock();fl.close();p.removeFlow(fr.StreamID);return nil
 	default:return fmt.Errorf("unsupported frame in stage B session: 0x%02x",uint8(fr.Type))
 	}
 }
@@ -130,7 +131,11 @@ func (p *Peer) markReadyLocked(){if p.localReady&&p.peerReady{select{case <-p.re
 func (p *Peer) isReady()bool{p.mu.Lock();defer p.mu.Unlock();select{case <-p.readyCh:return true;default:return false}}
 func (p *Peer) waitReady(ctx context.Context)error{select{case <-p.readyCh:return nil;case <-ctx.Done():return ctx.Err()}}
 
-func (p *Peer) handleOpen(ctx context.Context,fr protocol.Frame)error{if p.role!=Listener{return errors.New("dialer received unexpected OPEN")};req,err:=protocol.DecodeOpen(fr.Payload);if err!=nil{return err};p.mu.Lock();if existing:=p.flows[fr.StreamID];existing!=nil{same:=existing.routeID==req.RouteID&&existing.nonce==req.OpenNonce;p.mu.Unlock();if !same{return errors.New("duplicate stream_id with different OPEN identity")};return p.writer.send(protocol.Frame{Type:protocol.TypeOpenOK,StreamID:fr.StreamID,Payload:[]byte("{}")})};p.mu.Unlock();target,err:=p.routes.Resolve(p.peerID,req.RouteID);if err!=nil{code:=err.Error();payload,_:=protocol.EncodeControl(protocol.OpenError{Code:code});return p.writer.send(protocol.Frame{Type:protocol.TypeOpenErr,StreamID:fr.StreamID,Payload:payload})};conn,err:=p.dial(ctx,"tcp",target);if err!=nil{payload,_:=protocol.EncodeControl(protocol.OpenError{Code:"TARGET_UNREACHABLE"});return p.writer.send(protocol.Frame{Type:protocol.TypeOpenErr,StreamID:fr.StreamID,Payload:payload})};fl:=newFlow(fr.StreamID,req.RouteID,req.OpenNonce,conn);p.mu.Lock();if p.closed{p.mu.Unlock();_ = conn.Close();return errors.New("session closed")};if old:=p.flows[fr.StreamID];old!=nil{p.mu.Unlock();_ = conn.Close();return errors.New("concurrent OPEN conflict")};p.flows[fr.StreamID]=fl;p.mu.Unlock();if err:=p.writer.send(protocol.Frame{Type:protocol.TypeOpenOK,StreamID:fr.StreamID,Payload:[]byte("{}")});err!=nil{fl.close();p.removeFlow(fr.StreamID);return err};if err:=p.grantReceive(fl);err!=nil{fl.close();p.removeFlow(fr.StreamID);return err};p.startPump(ctx,fl);return nil}
+func (p *Peer) handleOpen(ctx context.Context,fr protocol.Frame)error{if p.role!=Listener{return errors.New("dialer received unexpected OPEN")};req,err:=protocol.DecodeOpen(fr.Payload);if err!=nil{return err};p.mu.Lock();if existing:=p.flows[fr.StreamID];existing!=nil{same:=existing.routeID==req.RouteID&&existing.nonce==req.OpenNonce;p.mu.Unlock();if !same{return errors.New("duplicate stream_id with different OPEN identity")};return p.writer.send(protocol.Frame{Type:protocol.TypeOpenOK,StreamID:fr.StreamID,Payload:[]byte("{}")})};p.mu.Unlock();target,err:=p.routes.Resolve(p.peerID,req.RouteID);if err!=nil{code:=err.Error();payload,_:=protocol.EncodeControl(protocol.OpenError{Code:protocol.ErrorCode(code)});return p.writer.send(protocol.Frame{Type:protocol.TypeOpenErr,StreamID:fr.StreamID,Payload:payload})};conn,err:=p.dial(ctx,"tcp",target);if err!=nil{payload,_:=protocol.EncodeControl(protocol.OpenError{Code:targetDialErrorCode(err)});return p.writer.send(protocol.Frame{Type:protocol.TypeOpenErr,StreamID:fr.StreamID,Payload:payload})};fl:=newFlow(fr.StreamID,req.RouteID,req.OpenNonce,conn);p.mu.Lock();if p.closed{p.mu.Unlock();_ = conn.Close();return errors.New("session closed")};if old:=p.flows[fr.StreamID];old!=nil{p.mu.Unlock();_ = conn.Close();return errors.New("concurrent OPEN conflict")};p.flows[fr.StreamID]=fl;p.mu.Unlock();if err:=p.writer.send(protocol.Frame{Type:protocol.TypeOpenOK,StreamID:fr.StreamID,Payload:[]byte("{}")});err!=nil{fl.close();p.removeFlow(fr.StreamID);return err};if err:=p.grantReceive(fl);err!=nil{fl.close();p.removeFlow(fr.StreamID);return err};p.startPump(ctx,fl);return nil}
+func targetDialErrorCode(err error) protocol.ErrorCode { var ne net.Error; if errors.As(err,&ne)&&ne.Timeout(){return protocol.ErrorTargetTimeout}; return protocol.ErrorTargetUnreachable }
+
+func (p *Peer) sendReset(fl *flow,code protocol.ErrorCode)error{if !protocol.ValidErrorCode(code){return errors.New("invalid local RESET code")};payload,err:=protocol.EncodeControl(protocol.Reset{Code:code});if err!=nil{return err};if err:=p.writer.send(protocol.Frame{Type:protocol.TypeReset,StreamID:fl.id,Payload:payload});err!=nil{return err};fl.mu.Lock();fl.resetCode=code;fl.mu.Unlock();fl.close();p.removeFlow(fl.id);return nil}
+
 func (p *Peer) grantReceive(fl *flow)error{fl.mu.Lock();newMax:=fl.rxWritten+defaultWindow;if newMax<fl.rxWritten{fl.mu.Unlock();return errors.New("receive window overflow")};if newMax<=fl.rxMax{fl.mu.Unlock();return nil};fl.rxMax=newMax;fl.mu.Unlock();return p.writer.send(protocol.Frame{Type:protocol.TypeWindow,StreamID:fl.id,Offset:newMax})}
 func (p *Peer) handleData(fl *flow,fr protocol.Frame)error{data,ack,duplicate,err:=fl.acceptData(fr.Offset,fr.Payload);if err!=nil{return err};if err:=p.writer.send(protocol.Frame{Type:protocol.TypeAck,StreamID:fl.id,Offset:ack});err!=nil{return err};if duplicate{return nil};if err:=writeConnFull(fl.conn,data);err!=nil{return err};fl.mu.Lock();fl.rxWritten+=uint64(len(data));fl.mu.Unlock();return p.grantReceive(fl)}
 func (p *Peer) handleFin(fl *flow,finalOffset uint64)error{fl.mu.Lock();if finalOffset!=fl.rxNext{fl.mu.Unlock();return errors.New("FIN final_offset does not match received data")};fl.finRecv=true;fl.mu.Unlock();if cw,ok:=fl.conn.(interface{CloseWrite()error});ok{if err:=cw.CloseWrite();err!=nil{return err}};return p.writer.send(protocol.Frame{Type:protocol.TypeFinAck,StreamID:fl.id,Offset:finalOffset})}
