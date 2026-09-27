@@ -52,6 +52,7 @@ type Peer struct {
 	routes             *routes.Table
 	dial               func(context.Context, string, string) (net.Conn, error)
 	allocator          *resources.Allocator
+	dataSender         *dataSender
 	nodeID             string
 	expectedPeerNodeID string
 	bootID             string
@@ -175,6 +176,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		p.nextID = 2
 	}
 	p.dial = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
+	p.dataSender = newDataSender(&p.writer)
 	return p, nil
 }
 
@@ -187,7 +189,14 @@ func randomHex128() (string, error) {
 }
 
 func (p *Peer) Run(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.dataSender.run(runCtx)
+	}()
 	defer func() {
+		cancel()
 		p.closeAll()
 		p.wg.Wait()
 	}()
@@ -204,7 +213,7 @@ func (p *Peer) Run(ctx context.Context) error {
 			}
 			return err
 		}
-		if err := p.handleFrame(ctx, f); err != nil {
+		if err := p.handleFrame(runCtx, f); err != nil {
 			return err
 		}
 	}
@@ -253,6 +262,10 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 		fl.close()
 		p.removeFlow(id)
 		return ctx.Err()
+	}
+	if err := p.dataSender.addFlow(fl.id); err != nil {
+		_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
+		return err
 	}
 	if err := p.grantReceive(fl); err != nil {
 		_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
@@ -362,7 +375,11 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 		if err != nil {
 			return err
 		}
-		return fl.onFinAck(fr.Offset)
+		if err := fl.onFinAck(fr.Offset); err != nil {
+			return err
+		}
+		p.finishIfComplete(fl)
+		return nil
 	case protocol.TypeReset:
 		fl, err := p.getFlow(fr.StreamID)
 		if err != nil {
@@ -585,6 +602,12 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 	fl.mu.Lock()
 	fl.openOK = true
 	fl.mu.Unlock()
+	if err := p.dataSender.addFlow(fl.id); err != nil {
+		fl.close()
+		p.removeFlow(fr.StreamID)
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
+		return p.writer.send(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+	}
 	if err := p.writer.send(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")}); err != nil {
 		fl.close()
 		p.removeFlow(fr.StreamID)
@@ -714,7 +737,22 @@ func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 			return err
 		}
 	}
-	return p.writer.send(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: finalOffset})
+	if err := p.writer.send(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: finalOffset}); err != nil {
+		return err
+	}
+	p.finishIfComplete(fl)
+	return nil
+}
+
+func (p *Peer) finishIfComplete(fl *flow) {
+	fl.mu.Lock()
+	done := fl.finRecv && fl.finAcked
+	fl.mu.Unlock()
+	if !done {
+		return
+	}
+	fl.close()
+	p.removeFlow(fl.id)
 }
 
 func (p *Peer) startPump(ctx context.Context, fl *flow) {
@@ -742,7 +780,7 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(n))
 				return
 			}
-			if err := p.writer.send(protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
+			if err := p.dataSender.send(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
 				return
 			}
 		}
