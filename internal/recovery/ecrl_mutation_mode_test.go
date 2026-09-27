@@ -3,6 +3,7 @@ package recovery
 import "os"
 
 const mutationEnv = "ECRL_MUTANT"
+const engineMutationEnv = "ECRL_ENGINE_MUTANT"
 
 func mutantActive(name string) bool {
 	return os.Getenv(mutationEnv) == name
@@ -23,6 +24,4 @@ var requiredMutationCatalog = map[string]string{
 	"f10_replay_from_a_plus_1":  "F10",
 }
 
-func mutantNameForEngine() string {
-	return os.Getenv(mutationEnv)
-}
+func engineMutantName() string { return os.Getenv(engineMutationEnv) }

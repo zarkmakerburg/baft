@@ -39,10 +39,10 @@ jobs:
             -run '^(TestECRLF|TestECRLKReleaseNotRequiredForCurrentInMemoryResume|TestECRLFutureDurableSlowTargetReplayBoundNoDeadlock|TestECRLMutationCatalogCoversEveryF)' \
             -count=1 -v
 
-      - name: Stage-1 real engine refinement and differential gate
+      - name: Stage-1 real engine refinement, generated differential and atomicity gate
         run: |
           go test ./internal/recovery \
-            -run '^(TestEngineECRL|TestStage1DifferentialReferenceVsEngine|TestDurableSnapshot)' \
+            -run '^(TestEngine|TestStage1DifferentialGenerated|TestDurableSnapshot)' \
             -count=1 -v
 
       - name: Mutation kill gate — original F tests must FAIL
@@ -55,7 +55,7 @@ jobs:
             local test_name="$2"
             echo "===== MUTANT ${mutant} -> ${test_name} (expected FAIL) ====="
             set +e
-            output="$(ECRL_MUTANT="${mutant}" go test ./internal/recovery -run "^${test_name}$" -count=1 -v 2>&1)"
+            output="$(ECRL_ENGINE_MUTANT="${mutant}" go test ./internal/recovery -run "^${test_name}$" -count=1 -v 2>&1)"
             status=$?
             set -e
             printf '%s\n' "$output"
@@ -114,3 +114,4 @@ jobs:
           kill_engine_mutant f07_resume_after_boot_change TestEngineECRLF07PeerRestart
           kill_engine_mutant f08_accept_a_gt_s TestEngineECRLF08InconsistentSnapshot
           kill_engine_mutant f09_skip_k_le_a TestEngineECRLF09DeterministicSnapshotSweep
+          kill_engine_mutant commit_two_stage TestEngineCommitAtomicNoMixedAuthority

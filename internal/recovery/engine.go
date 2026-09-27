@@ -10,11 +10,28 @@ import (
 var (
 	ErrEnginePlanMismatch = errors.New("engine reconcile plan mismatch")
 	ErrDurableSnapshotConfig = errors.New("durable_snapshot configuration invalid")
+	ErrResumeFrozen = errors.New("resume snapshot is frozen")
 )
+
+type FlowIdentity struct {
+	StreamID uint64
+	OpenNonce string
+}
+
+type TransitionKind string
+
+const (
+	TransitionOpen TransitionKind = "OPEN"
+	TransitionData TransitionKind = "DATA"
+	TransitionFIN TransitionKind = "FIN"
+)
+
+type EngineScheduler interface { Point(name string) }
 
 type EngineOptions struct {
 	DurableSnapshot bool
-	RReplay          uint64
+	RReplay uint64
+	Scheduler EngineScheduler
 }
 
 func (o EngineOptions) validate() error {
@@ -73,6 +90,7 @@ func (p ReplayPolicy) ValidateOutstanding(s, kRelease uint64) error {
 }
 
 type ReconcileCommitEngine interface {
+	SetActiveFlows(flows []FlowIdentity) error
 	Prepare(next uint64, candidateID string) error
 	Reconcile(candidateID string, local, peer Snapshot, expectedPeerBootID string) (Plan, error)
 	Commit(next uint64, candidateID string, plan Plan) error
@@ -80,6 +98,7 @@ type ReconcileCommitEngine interface {
 	Authorize(epoch uint64, carrierID string) bool
 	CurrentEpoch() uint64
 	Owner() string
+	TransitionAllowed(kind TransitionKind, streamID uint64, nonce string) error
 }
 
 type engineFaults struct {
@@ -89,6 +108,7 @@ type engineFaults struct {
 	resumeAfterBootChange bool
 	acceptAGreaterThanS   bool
 	skipKLessEqualA       bool
+	twoStageCommit         bool
 }
 
 type Engine struct {
@@ -102,6 +122,9 @@ type Engine struct {
 	opts EngineOptions
 	policy ReplayPolicy
 	faults engineFaults
+	scheduler EngineScheduler
+	activeFlows map[uint64]string
+	frozenFlows map[uint64]string
 }
 
 func NewEngine(initialEpoch uint64, owner string, opts EngineOptions) (*Engine, error) {
@@ -115,13 +138,33 @@ func NewEngine(initialEpoch uint64, owner string, opts EngineOptions) (*Engine, 
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{currentEpoch: initialEpoch, owner: owner, opts: opts, policy: policy}, nil
+	return &Engine{currentEpoch:initialEpoch,owner:owner,opts:opts,policy:policy,scheduler:opts.Scheduler,activeFlows:map[uint64]string{}}, nil
+}
+
+func (e *Engine) point(name string){if e.scheduler!=nil{e.scheduler.Point(name)}}
+func (e *Engine) SetActiveFlows(flows []FlowIdentity) error{
+	e.mu.Lock();defer e.mu.Unlock()
+	if e.pendingEpoch!=0{return ErrResumeFrozen}
+	m,err:=identitiesToMap(flows);if err!=nil{return err};e.activeFlows=m;return nil
+}
+func (e *Engine) TransitionAllowed(kind TransitionKind,streamID uint64,nonce string)error{
+	e.mu.Lock();defer e.mu.Unlock()
+	if e.pendingEpoch!=0{return ErrResumeFrozen}
+	if streamID==0{return ErrStateMismatch}
+	switch kind{
+	case TransitionOpen:
+		if nonce==""{return ErrStateMismatch}
+	case TransitionData,TransitionFIN:
+	default:return ErrStateMismatch
+	}
+	return nil
 }
 
 func (e *Engine) Prepare(next uint64, candidateID string) error {
 	if candidateID == "" {
 		return errors.New("candidate id is required")
 	}
+	e.point("prepare_before_lock")
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.currentEpoch == math.MaxUint64 {
@@ -136,6 +179,7 @@ func (e *Engine) Prepare(next uint64, candidateID string) error {
 			e.pendingCandidate = candidateID
 			e.pendingPlan = Plan{}
 			e.hasPendingPlan = false
+			e.frozenFlows = cloneIdentityMap(e.activeFlows)
 			return nil
 		}
 		if e.pendingEpoch == next && e.pendingCandidate == candidateID {
@@ -147,6 +191,7 @@ func (e *Engine) Prepare(next uint64, candidateID string) error {
 	e.pendingCandidate = candidateID
 	e.pendingPlan = Plan{}
 	e.hasPendingPlan = false
+	e.frozenFlows = cloneIdentityMap(e.activeFlows)
 	return nil
 }
 
@@ -181,6 +226,7 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 	if local.SessionID != peer.SessionID || local.Epoch != peer.Epoch {
 		return Plan{}, ErrStateMismatch
 	}
+	if !snapshotMatchesFrozen(local,e.frozenFlows)||!snapshotMatchesFrozen(peer,e.frozenFlows){return Plan{},ErrStateMismatch}
 	peerFlows := make(map[uint64]FlowSnapshot, len(peer.Flows))
 	for _, f := range peer.Flows {
 		peerFlows[f.StreamID] = f
@@ -227,25 +273,24 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 	return out, nil
 }
 
-func (e *Engine) Commit(next uint64, candidateID string, plan Plan) error {
+func (e *Engine) Commit(next uint64,candidateID string,plan Plan)error{
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.pendingEpoch != next || e.pendingCandidate != candidateID || candidateID == "" || !e.hasPendingPlan {
-		return ErrNotPrepared
+	if e.pendingEpoch!=next||e.pendingCandidate!=candidateID||candidateID==""||!e.hasPendingPlan{e.mu.Unlock();return ErrNotPrepared}
+	if next!=e.currentEpoch+1{e.mu.Unlock();return ErrStaleEpoch}
+	if !plansEqual(e.pendingPlan,plan){e.mu.Unlock();return ErrEnginePlanMismatch}
+	e.point("commit_locked_before_publish")
+	if e.faults.twoStageCommit{
+		e.owner=candidateID
+		e.mu.Unlock()
+		e.point("commit_nonatomic_mid")
+		e.mu.Lock()
+		e.currentEpoch=next
+	}else{
+		e.currentEpoch=next
+		e.owner=candidateID
 	}
-	if next != e.currentEpoch+1 {
-		return ErrStaleEpoch
-	}
-	if !plansEqual(e.pendingPlan, plan) {
-		return ErrEnginePlanMismatch
-	}
-	e.currentEpoch = next
-	e.owner = candidateID
-	e.pendingEpoch = 0
-	e.pendingCandidate = ""
-	e.pendingPlan = Plan{}
-	e.hasPendingPlan = false
-	return nil
+	e.pendingEpoch=0;e.pendingCandidate="";e.pendingPlan=Plan{};e.hasPendingPlan=false;e.frozenFlows=nil
+	e.mu.Unlock();e.point("commit_after_publish");return nil
 }
 
 func (e *Engine) Abort(next uint64, candidateID string) {
@@ -255,11 +300,13 @@ func (e *Engine) Abort(next uint64, candidateID string) {
 		e.pendingCandidate = ""
 		e.pendingPlan = Plan{}
 		e.hasPendingPlan = false
+		e.frozenFlows = nil
 	}
 	e.mu.Unlock()
 }
 
 func (e *Engine) Authorize(epoch uint64, carrierID string) bool {
+	e.point("authorize_before_lock")
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.faults.acceptOldEpoch && epoch < e.currentEpoch {
@@ -279,6 +326,15 @@ func (e *Engine) Owner() string {
 	defer e.mu.Unlock()
 	return e.owner
 }
+
+func identitiesToMap(flows []FlowIdentity)(map[uint64]string,error){
+	out:=make(map[uint64]string,len(flows))
+	for _,f:=range flows{if f.StreamID==0||f.OpenNonce==""{return nil,ErrStateMismatch};if _,ok:=out[f.StreamID];ok{return nil,ErrStateMismatch};out[f.StreamID]=f.OpenNonce}
+	return out,nil
+}
+func cloneIdentityMap(in map[uint64]string)map[uint64]string{out:=make(map[uint64]string,len(in));for k,v:=range in{out[k]=v};return out}
+func snapshotMatchesFrozen(s Snapshot,frozen map[uint64]string)bool{if len(s.Flows)!=len(frozen){return false};for _,f:=range s.Flows{if frozen[f.StreamID]!=f.OpenNonce{return false}};return true}
+func flowIdentities(s Snapshot)[]FlowIdentity{out:=make([]FlowIdentity,0,len(s.Flows));for _,f:=range s.Flows{out=append(out,FlowIdentity{StreamID:f.StreamID,OpenNonce:f.OpenNonce})};return out}
 
 func validateSnapshotEngine(s Snapshot) error {
 	if s.SessionID == "" || s.BootID == "" || s.Epoch == 0 {
