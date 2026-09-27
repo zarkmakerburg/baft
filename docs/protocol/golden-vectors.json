@@ -1,0 +1,22 @@
+{
+  "wire_version": 1,
+  "byte_order": "big-endian",
+  "header_bytes": 24,
+  "vectors": [
+    {
+      "name": "data-stream-1-offset-7-abc",
+      "frame": {"type": "DATA", "stream_id": "1", "offset": "7", "payload_utf8": "abc"},
+      "hex": "0000001b2000000000000000000000010000000000000007616263"
+    },
+    {
+      "name": "ack-stream-1-offset-10",
+      "frame": {"type": "ACK", "stream_id": "1", "offset": "10", "payload_hex": ""},
+      "hex": "00000018210000000000000000000001000000000000000a"
+    },
+    {
+      "name": "hello-empty-json",
+      "frame": {"type": "HELLO", "stream_id": "0", "offset": "0", "payload_utf8": "{}"},
+      "hex": "0000001a01000000000000000000000000000000000000007b7d"
+    }
+  ]
+}
