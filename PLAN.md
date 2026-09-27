@@ -108,4 +108,30 @@
 - [ ] rollback
 - [ ] گزارش محدودیت و نتیجه
 
+
+## R2 v0.1 — وضعیت اجرا
+
+- [x] تشخیص Debian/Ubuntu در installer
+- [x] تشخیص amd64/arm64
+- [x] نصب/تطبیق Go 1.27.1 با checksum manifest
+- [x] build با `-trimpath -ldflags="-s -w"`
+- [x] نصب `/usr/local/bin/baft`
+- [x] ساخت system user `baft`
+- [x] systemd hardening شامل `NoNewPrivileges=true` و `PrivateTmp=true`
+- [x] ابزار `baft-pair`
+- [x] descriptor `BAFTPAIR1`
+- [x] apply اتمیک pairing state در IR
+- [x] Noise Pattern IK با `github.com/flynn/noise v1.1.0`
+- [x] enrollment اولیه با `IKpsk0`
+- [x] تست Noise روی HTTP/2 در حضور TLS-terminating intermediary
+- [x] race test
+- [ ] اتصال SecurityInternal به `node.Runtime` production data path
+- [ ] حذف اتمیک PSK یک‌بارمصرف پس از pin موفق در runtime واقعی
+- [ ] تست نصب کامل روی VM تازه Debian و Ubuntu
+- [ ] Stage D Replay Engine — **PAUSED**
+
+### Non-goal فعلی
+
+probabilistic timing/packet morphing برای دورزدن traffic analysis یا فیلترینگ در R2 v0.1 پیاده‌سازی نشده است.
+
 </div>
