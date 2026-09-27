@@ -51,6 +51,25 @@ func (s *outboundSender) addFlow(flowID uint64) error {
 	return s.drr.AddFlow(flowID, dataChunk)
 }
 
+func (s *outboundSender) removeFlow(flowID uint64, cause error) {
+	if cause == nil {
+		cause = errors.New("flow removed")
+	}
+	s.mu.Lock()
+	pending := s.drr.RemoveFlow(flowID)
+	s.mu.Unlock()
+	for _, item := range pending {
+		req, ok := item.Value.(*outboundRequest)
+		if !ok || req == nil {
+			continue
+		}
+		select {
+		case req.done <- cause:
+		default:
+		}
+	}
+}
+
 func (s *outboundSender) sendControl(frame protocol.Frame) error {
 	if frame.Type == protocol.TypeData {
 		return errors.New("DATA must use DRR data path")

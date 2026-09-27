@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,12 +16,15 @@ import (
 	"github.com/zarkmakerburg/baft/internal/session"
 )
 
-type zeroReader struct{}
+type countingZeroReader struct {
+	n atomic.Int64
+}
 
-func (zeroReader) Read(p []byte) (int, error) {
+func (r *countingZeroReader) Read(p []byte) (int, error) {
 	for i := range p {
 		p[i] = 0
 	}
+	r.n.Add(int64(len(p)))
 	return len(p), nil
 }
 
@@ -185,9 +189,11 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 		t.Fatal("target was not connected")
 	}
 
+	const totalSource = int64(16 << 20)
+	source := &countingZeroReader{}
 	writeDone := make(chan error, 1)
 	go func() {
-		_, err := io.CopyN(user, zeroReader{}, 16<<20)
+		_, err := io.CopyN(user, source, totalSource)
 		if err == nil {
 			err = user.CloseWrite()
 		}
@@ -198,6 +204,10 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 	case err := <-writeDone:
 		t.Fatalf("16 MiB source completed while target was not reading; expected backpressure, err=%v", err)
 	case <-time.After(200 * time.Millisecond):
+	}
+	stalledAt := source.n.Load()
+	if stalledAt <= 0 || stalledAt >= totalSource {
+		t.Fatalf("unexpected source progress before drain: %d", stalledAt)
 	}
 
 	irSnap := irAlloc.Snapshot()
@@ -213,26 +223,46 @@ func TestSlowReceiverCreatesBackpressureWithoutGrowingBAFTMemory(t *testing.T) {
 	}
 
 	close(releaseTarget)
-	select {
-	case err := <-writeDone:
-		if err != nil {
-			t.Fatal(err)
+
+	progressDeadline := time.NewTimer(3 * time.Second)
+	defer progressDeadline.Stop()
+	progressTick := time.NewTicker(10 * time.Millisecond)
+	defer progressTick.Stop()
+	resumed := false
+	for !resumed {
+		select {
+		case err := <-writeDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumed = true
+		case <-progressTick.C:
+			if source.n.Load() > stalledAt+64*1024 {
+				resumed = true
+			}
+		case <-progressDeadline.C:
+			t.Fatalf("source did not resume after receiver drain: stalled=%d now=%d", stalledAt, source.n.Load())
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("source did not resume after slow receiver started draining")
-	}
-	select {
-	case err := <-targetDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("target did not finish")
 	}
 
+	// This test is about bounded backpressure and liveness after drain. COR-01
+	// separately proves full-transfer correctness, so stop this intentionally
+	// slow flow once forward progress has been observed.
+	_ = user.Close()
+	cancel()
 	_ = reqW.Close()
 	_ = resp.Body.Close()
-	cancel()
+
+	select {
+	case <-writeDone:
+	case <-time.After(time.Second):
+		t.Fatal("source writer did not stop after cancellation")
+	}
+	select {
+	case <-targetDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("target did not stop after cancellation")
+	}
 	select {
 	case <-irDone:
 	case <-time.After(time.Second):

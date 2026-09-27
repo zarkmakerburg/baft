@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
@@ -64,4 +65,23 @@ func TestOutboundSenderControlQueueBoundIsEnforced(t *testing.T) {
 	if err := s.control.Enqueue(resources.ControlItem{WireBytes: protocol.HeaderSize, Value: req}); err == nil {
 		t.Fatal("expected 256-message control queue cap")
 	}
+}
+
+func TestOutboundSenderRemoveFlowUnblocksQueuedData(t *testing.T) {
+	var buf bytes.Buffer
+	s:=newOutboundSender(&frameWriter{w:&buf})
+	if err:=s.drr.AddFlow(1,dataChunk);err!=nil{t.Fatal(err)}
+	req:=&outboundRequest{
+		frame:protocol.Frame{Type:protocol.TypeData,StreamID:1,Payload:[]byte("queued")},
+		done:make(chan error,1),
+	}
+	if err:=s.drr.Enqueue(scheduler.Item{FlowID:1,Bytes:len(req.frame.Payload),Value:req});err!=nil{t.Fatal(err)}
+	s.removeFlow(1,errors.New("reset"))
+	select{
+	case err:=<-req.done:
+		if err==nil||err.Error()!="reset"{t.Fatalf("unexpected removal error: %v",err)}
+	default:
+		t.Fatal("queued DATA waiter was not released")
+	}
+	if s.drr.Len()!=0{t.Fatalf("queued data leaked after flow removal: %d",s.drr.Len())}
 }

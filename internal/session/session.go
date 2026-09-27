@@ -996,6 +996,9 @@ func (p *Peer) removeFlow(id uint64) {
 	p.mu.Lock()
 	delete(p.flows, id)
 	p.mu.Unlock()
+	if p.sender != nil {
+		p.sender.removeFlow(id, errors.New("flow closed"))
+	}
 }
 
 func (p *Peer) closeAll() {

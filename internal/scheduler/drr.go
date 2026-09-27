@@ -36,9 +36,10 @@ func (d *DRR) AddFlow(flowID uint64, quantumBytes int) error {
 	return nil
 }
 
-func (d *DRR) RemoveFlow(flowID uint64) {
+func (d *DRR) RemoveFlow(flowID uint64) []Item {
 	f,ok:=d.flows[flowID]
-	if !ok { return }
+	if !ok { return nil }
+	pending:=append([]Item(nil),f.queue...)
 	d.queued-=len(f.queue)
 	delete(d.flows,flowID)
 	for i,id:=range d.order {
@@ -48,6 +49,7 @@ func (d *DRR) RemoveFlow(flowID uint64) {
 			break
 		}
 	}
+	return pending
 }
 
 func (d *DRR) Enqueue(item Item) error {
