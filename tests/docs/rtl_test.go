@@ -7,27 +7,29 @@ import (
 	"testing"
 )
 
-var persianRootDocs = []string{
-	"README.md",
-	"STATUS.md",
-	"PLAN.md",
-	"TEST-RESULTS.md",
-	"KNOWN-LIMITATIONS.md",
-	"BLOCKERS.md",
-	"novelty-matrix.md",
-}
-
 func TestPersianMarkdownIsRTLAndCodeBlocksAreLTR(t *testing.T) {
 	root := repoRoot(t)
 	var files []string
-	for _, name := range persianRootDocs {
-		files = append(files, filepath.Join(root, name))
-	}
-	err := filepath.WalkDir(filepath.Join(root, "docs", "fa"), func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if rel == ".git" || rel == "docs/reference" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(d.Name()), ".md") || strings.HasSuffix(strings.ToLower(d.Name()), ".en.md") || strings.HasPrefix(rel, "docs/en/") || strings.HasPrefix(rel, "docs/adr/en/") {
+			return nil
+		}
+		b, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if containsPersian(string(b)) {
 			files = append(files, path)
 		}
 		return nil
@@ -96,4 +98,13 @@ func repoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
+}
+
+func containsPersian(s string) bool {
+	for _, r := range s {
+		if (r >= '\u0600' && r <= '\u06FF') || (r >= '\u0750' && r <= '\u077F') || (r >= '\u08A0' && r <= '\u08FF') {
+			return true
+		}
+	}
+	return false
 }

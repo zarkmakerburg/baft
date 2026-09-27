@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # یادداشت پروتکل BAFT/1
 
 > English: [baft1.en.md](baft1.en.md)  
@@ -23,3 +25,5 @@ Golden vectors در [golden-vectors.json](golden-vectors.json) نگهداری م
 ## قرارداد
 
 این فایل خلاصه implementation است. توضیح state machine، OPEN/DATA/ACK/WINDOW/FIN/RESET و تفکیک «قابلیت فعلی» از «frame رزروشده برای Stage D» در راهنمای کامل پروتکل آمده است.
+
+</div>

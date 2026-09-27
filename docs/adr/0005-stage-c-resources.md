@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # ADR-0005 — منابع و حافظه Stage C
 
 > English: [en/0005-stage-c-resources.md](en/0005-stage-c-resources.md)  
@@ -26,3 +28,5 @@ DATA با DRR برحسب byte و Control با queue محدود زمان‌بند
 ## وضعیت
 
 این primitives اکنون به Session data path وصل شده‌اند و COR-01 بعد از اتصال دوباره پاس شده است. با این حال slow-receiver liveness gate هنوز سبز پایدار نیست؛ بنابراین ADR از نظر طراحی پذیرفته شده ولی **Stage C هنوز complete نیست**.
+
+</div>

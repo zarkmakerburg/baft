@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # قفل وابستگی‌ها
 
 > English: [dependency-lock.en.md](dependency-lock.en.md)
@@ -30,3 +32,5 @@ checksumها توسط Go 1.27.1 در GitHub Actions تولید و سپس در `g
 ## سیاست
 
 هر dependency جدید باید version pin، license review، checksum/lock و تست روی toolchain هدف داشته باشد. dependency بدون دلیل روشن نباید به core اضافه شود.
+
+</div>

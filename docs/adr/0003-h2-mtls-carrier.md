@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # ADR-0003 — Carrier پایه HTTP/2 + mTLS
 
 > English: [en/0003-h2-mtls-carrier.md](en/0003-h2-mtls-carrier.md)  
@@ -27,3 +29,5 @@ Carrier پایه از TLS کتابخانه استاندارد Go و HTTP/2 در 
 ## دلیل
 
 این انتخاب baseline را dependency-minimal و قابل‌آزمون نگه می‌دارد و قبل از ورود H3 یا relay، correctness دوطرفه را روی transport ساده‌تر ثابت می‌کند.
+
+</div>

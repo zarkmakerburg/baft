@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # ADR-0006 — زمان‌بندی محدود Control
 
 > English: [en/0006-control-scheduling.md](en/0006-control-scheduling.md)  
@@ -18,3 +20,5 @@
 - مقدار فعلی burst برابر 32 است.
 
 عدد 32 wire constant نیست و فقط با تست/اندازه‌گیری قابل تغییر است. سقف queue امنیتی/منبعی باقی می‌ماند.
+
+</div>

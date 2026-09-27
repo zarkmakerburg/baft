@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # ADR-0004 — semantics مسیر Flow در Stage B
 
 > English: [en/0004-stage-b-flow-semantics.md](en/0004-stage-b-flow-semantics.md)  
@@ -18,3 +20,5 @@
 ## تغییر Stage C
 
 Window ساده Stage B بعداً با reservation سراسری receive/replay و backpressure واقعی تکمیل شده است. برای وضعیت فعلی [docs/fa/07-resource-control.md](../fa/07-resource-control.md) را ببینید.
+
+</div>

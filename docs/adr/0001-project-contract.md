@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # ADR-0001 — قرارداد پروژه
 
 > English: [en/0001-project-contract.md](en/0001-project-contract.md)  
@@ -31,3 +33,5 @@ BAFT تا زمانی که شواهد کافی تولید نشده **research sof
 ## پیامد
 
 هر Stage باید gate و evidence داشته باشد. قابلیت experimental از core جدا می‌ماند و fail آن نباید باعث downgrade امنیتی مسیر اصلی شود.
+
+</div>

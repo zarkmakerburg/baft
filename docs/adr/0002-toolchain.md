@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # ADR-0002 — Toolchain زبان Go
 
 > English: [en/0002-toolchain.md](en/0002-toolchain.md)  
@@ -14,11 +16,17 @@ GitHub Actions نسخه pin‌شده را نصب و تست‌ها را روی ه
 
 `go.mod` و `go.sum` باید reproducible بمانند. CI:
 
+<div dir="ltr" align="left">
+
 ```bash
 go mod tidy
 git diff --exit-code -- go.mod go.sum
 ```
 
+</div>
+
 را اجرا می‌کند تا drift dependency وارد branch نشود.
 
 جزئیات checksum در [dependency-lock.md](../../dependency-lock.md) ثبت شده است.
+
+</div>
