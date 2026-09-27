@@ -19,6 +19,7 @@ type PairingDescriptor struct {
 	OneTimePSK    string `json:"one_time_psk"`
 	CAPEM         string `json:"ca_pem"`
 	ExpiresUnix   int64  `json:"expires_unix"`
+	RecordShaping bool   `json:"record_shaping"`
 }
 
 func NewPairingDescriptor(address, serverName, identity string, responderPub, caPEM []byte, ttl time.Duration) (PairingDescriptor, []byte, error) {

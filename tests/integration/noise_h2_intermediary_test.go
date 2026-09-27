@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zarkmakerburg/baft/internal/recordshape"
 	"github.com/zarkmakerburg/baft/internal/securityinternal"
 )
 
@@ -59,6 +60,7 @@ func TestNoiseIKOverHTTP2TerminatingIntermediary(t *testing.T) {
 		secure, peer, err := securityinternal.Responder(in, out, securityinternal.HandshakeConfig{
 			Static:            respKey,
 			OneTimePairingPSK: psk,
+			RecordShaping:     recordshape.DefaultConfig(true),
 		})
 		if err != nil {
 			serverDone <- err
@@ -107,6 +109,7 @@ func TestNoiseIKOverHTTP2TerminatingIntermediary(t *testing.T) {
 		Static:            initKey,
 		PeerStatic:        respKey.Public,
 		OneTimePairingPSK: psk,
+		RecordShaping:     recordshape.DefaultConfig(true),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -137,6 +140,6 @@ func TestNoiseIKOverHTTP2TerminatingIntermediary(t *testing.T) {
 		strings.Contains(capturedResp.String(), string(plaintext)) {
 		t.Fatal("TLS-terminating intermediary capture contained BAFT application plaintext")
 	}
-	t.Logf("noise_h2_intermediary_ok proto=%s request_capture=%d response_capture=%d",
+	t.Logf("noise_h2_intermediary_recordshape_ok proto=%s request_capture=%d response_capture=%d",
 		resp.Proto, capturedReq.Len(), capturedResp.Len())
 }

@@ -18,6 +18,7 @@ ROLE=""
 PAIRING_CODE="${BAFT_PAIRING_CODE:-}"
 PUBLIC_ADDR="${BAFT_PUBLIC_ADDR:-}"
 NONINTERACTIVE="${BAFT_NONINTERACTIVE:-0}"
+RECORD_SHAPING=0
 
 log(){ printf '[baft-install] %s\n' "$*" >&2; }
 die(){ log "ERROR: $*"; exit 1; }
@@ -26,7 +27,7 @@ need_root(){ [[ "${EUID}" -eq 0 ]] || die "run as root"; }
 usage() {
   cat <<EOF
 Usage:
-  sudo bash install.sh --role ex --public-address HOST_OR_IP
+  sudo bash install.sh --role ex --public-address HOST_OR_IP [--enable-record-shaping]
   sudo bash install.sh --role ir [--pairing-code BAFTPAIR1:...]
 
 Environment:
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --role) ROLE="${2:-}"; shift 2 ;;
     --pairing-code) PAIRING_CODE="${2:-}"; shift 2 ;;
     --public-address) PUBLIC_ADDR="${2:-}"; shift 2 ;;
+    --enable-record-shaping) RECORD_SHAPING=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -146,7 +148,11 @@ if [[ "$ROLE" == "ex" ]]; then
   [[ -n "$PUBLIC_ADDR" ]] || die "cannot determine public address; use --public-address"
   generate_outer_pki_ex "$PUBLIC_ADDR"
   IDENTITY="urn:baft:node:ex-$(openssl rand -hex 6)"
-  PAIRING="$("$BAFT_PAIR_BIN" ex-code     --key "$NOISE_KEY"     --address "${PUBLIC_ADDR}:${BAFT_PORT}"     --server-name "$PUBLIC_ADDR"     --identity "$IDENTITY"     --ca-file "$BAFT_CONFIG_DIR/pki/ca.pem"     --psk-out "$BAFT_STATE_DIR/pairing.psk"     --ttl 15m)"
+  SHAPING_FLAG=()
+  if [[ "$RECORD_SHAPING" == "1" ]]; then
+    SHAPING_FLAG=(--record-shaping)
+  fi
+  PAIRING="$("$BAFT_PAIR_BIN" ex-code     --key "$NOISE_KEY"     --address "${PUBLIC_ADDR}:${BAFT_PORT}"     --server-name "$PUBLIC_ADDR"     --identity "$IDENTITY"     --ca-file "$BAFT_CONFIG_DIR/pki/ca.pem"     --psk-out "$BAFT_STATE_DIR/pairing.psk"     --ttl 15m "${SHAPING_FLAG[@]}")"
   chown "$BAFT_USER:$BAFT_USER" "$BAFT_STATE_DIR/pairing.psk"
   printf '\nPAIRING CODE (secret, one-time, 15 minute lifetime):\n%s\n\n' "$PAIRING"
 else

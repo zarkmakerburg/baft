@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/flynn/noise"
+	"github.com/zarkmakerburg/baft/internal/recordshape"
 )
 
 const (
@@ -80,6 +81,7 @@ type HandshakeConfig struct {
 	PeerStatic        []byte
 	OneTimePairingPSK []byte
 	Prologue          []byte
+	RecordShaping     recordshape.Config
 }
 
 func (c HandshakeConfig) prologue() []byte {
@@ -106,6 +108,7 @@ type Conn struct {
 	readMu  sync.Mutex
 	writeMu sync.Mutex
 	readBuf []byte
+	shape   recordshape.Codec
 }
 
 func Initiator(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, error) {
@@ -113,6 +116,10 @@ func Initiator(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, error) {
 		return nil, err
 	}
 	local, err := cfg.Static.noiseKey()
+	if err != nil {
+		return nil, err
+	}
+	shape, err := recordshape.New(cfg.RecordShaping)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +163,7 @@ func Initiator(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, error) {
 	if cs1 == nil || cs2 == nil {
 		return nil, errors.New("securityinternal: IK handshake did not enter transport mode")
 	}
-	return &Conn{r: r, w: w, send: cs1, recv: cs2}, nil
+	return &Conn{r: r, w: w, send: cs1, recv: cs2, shape: shape}, nil
 }
 
 // Responder performs IK or IKpsk0. If PeerStatic is empty,
@@ -168,6 +175,10 @@ func Responder(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, []byte, er
 		return nil, nil, err
 	}
 	local, err := cfg.Static.noiseKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	shape, err := recordshape.New(cfg.RecordShaping)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -224,7 +235,7 @@ func Responder(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, []byte, er
 	// Noise Split returns initiator->responder first and
 	// responder->initiator second. The responder therefore sends with cs2 and
 	// receives with cs1.
-	return &Conn{r: r, w: w, send: cs2, recv: cs1}, peerStatic, nil
+	return &Conn{r: r, w: w, send: cs2, recv: cs1, shape: shape}, peerStatic, nil
 }
 
 func (c *Conn) Write(p []byte) (int, error) {
@@ -244,12 +255,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 		if len(ciphertext) > MaxCiphertextRecord {
 			return total, ErrFrameTooLarge
 		}
-		var hdr [4]byte
-		binary.BigEndian.PutUint32(hdr[:], uint32(len(ciphertext)))
-		if err := writeFull(c.w, hdr[:]); err != nil {
-			return total, err
-		}
-		if err := writeFull(c.w, ciphertext); err != nil {
+		if err := c.shape.WriteFrame(c.w, ciphertext, MaxCiphertextRecord); err != nil {
 			return total, err
 		}
 		total += n
@@ -266,16 +272,8 @@ func (c *Conn) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	if len(c.readBuf) == 0 {
-		var hdr [4]byte
-		if _, err := io.ReadFull(c.r, hdr[:]); err != nil {
-			return 0, err
-		}
-		n := binary.BigEndian.Uint32(hdr[:])
-		if n == 0 || n > MaxCiphertextRecord {
-			return 0, ErrFrameTooLarge
-		}
-		ciphertext := make([]byte, n)
-		if _, err := io.ReadFull(c.r, ciphertext); err != nil {
+		ciphertext, err := c.shape.ReadFrame(c.r, MaxCiphertextRecord)
+		if err != nil {
 			return 0, err
 		}
 		plain, err := c.recv.Decrypt(nil, nil, ciphertext)
