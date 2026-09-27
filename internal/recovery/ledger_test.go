@@ -47,3 +47,9 @@ func TestReconcileCanRecoverLostFinAck(t *testing.T){
 	p,err:=Reconcile(local,peer,"peer-boot");if err!=nil{t.Fatal(err)}
 	if !p.Flows[0].LocalFinAckCanAdvance{t.Fatal("lost FIN_ACK was not recoverable from correlated peer state")}
 }
+
+func TestReconcileRejectsSenderBeyondPeerCredit(t *testing.T){
+	local,peer:=baseSnapshots()
+	peer.Flows[0].RxCredit=local.Flows[0].TxNext-1
+	if _,err:=Reconcile(local,peer,"peer-boot");!errors.Is(err,ErrStateMismatch){t.Fatalf("err=%v",err)}
+}

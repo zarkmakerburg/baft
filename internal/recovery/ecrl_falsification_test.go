@@ -325,39 +325,17 @@ func TestECRLF10ExactByteStream(t *testing.T){
 }
 
 func TestECRLFutureDurableSlowTargetReplayBoundNoDeadlock(t *testing.T){
-	// Future durable-snapshot mode only. K_release is a delivery watermark
-	// retained by the sender so it can preserve bytes across receiver restart.
-	const (
-		total=uint64(256)
-		rReplay=uint64(64)
-		chunk=uint64(16)
-	)
+	const ( total=uint64(256); rReplay=uint64(64); chunk=uint64(16) )
+	policy,err:=NewReplayPolicy(EngineOptions{DurableSnapshot:true,RReplay:rReplay});if err!=nil{t.Fatal(err)}
+	if !policy.DurableSnapshot(){t.Fatal("test must explicitly enable durable_snapshot")}
 	var s,k,kRelease uint64
-	c:=total
-	steps:=0
+	c:=total;steps:=0
 	for kRelease<total{
-		steps++
-		if steps>1000{t.Fatal("future durable model deadlocked")}
-		progress:=false
-		creditEff:=c
-		if lim:=kRelease+rReplay;lim<creditEff{creditEff=lim}
-
-		if s<total&&s+chunk<=creditEff{
-			s+=chunk
-			k=s // receiver accepts quickly; target delivery intentionally lags.
-			progress=true
-		}
-		if s-kRelease>rReplay{
-			t.Fatalf("replay cap exceeded: S=%d K_release=%d cap=%d",s,kRelease,rReplay)
-		}
-
-		// Slow target: deliver only when sender hits the effective cap, or
-		// periodically. Delivery control is outside PADL DATA eligibility.
-		if s>kRelease&&(s==creditEff||steps%4==0){
-			kRelease+=chunk
-			if kRelease>s{kRelease=s}
-			progress=true
-		}
+		steps++;if steps>1000{t.Fatal("future durable model deadlocked")}
+		progress:=false;creditEff:=policy.EffectiveCredit(c,kRelease)
+		if s<total&&s+chunk<=creditEff{s+=chunk;k=s;progress=true}
+		if err:=policy.ValidateOutstanding(s,kRelease);err!=nil{t.Fatalf("replay cap exceeded: S=%d K_release=%d cap=%d",s,kRelease,rReplay)}
+		if s>kRelease&&(s==creditEff||steps%4==0){kRelease+=chunk;if kRelease>s{kRelease=s};progress=true}
 		if k<s{t.Fatal("acceptance watermark regressed")}
 		if !progress{t.Fatal("no sender or target progress")}
 	}

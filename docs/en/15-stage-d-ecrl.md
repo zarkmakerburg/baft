@@ -8,7 +8,7 @@
 
 | level | current status | meaning |
 |---|---|---|
-| **Research hypothesis** | **active** | ECRL is a falsifiable design hypothesis. |
+| **Research hypothesis** | **active and narrow** | Falsifiable claim: **an atomic (epoch, A-vector) commit can fence the previous Carrier while fixing each surviving Flow's replay frontier exactly at A, with no reference-model/engine divergence on valid deterministic traces.** |
 | **Supported engineering result** | **not reached** | A prototype or unit test alone is insufficient. Real carrier replacement, zombie-carrier, lost-ACK, tombstone, and exact-byte gates must pass first. |
 | **Patentability / legal novelty** | **unassessed** | This is an engineering prior-art review, not a patent search or legal opinion. |
 
@@ -438,6 +438,37 @@ Mutations are activated inside the same test-only reference model through `ECRL_
 
 The previous release-to-K mutation is no longer a valid mutant for the **current in-memory threat model** after the [D,K) proof. It belongs only to a future durable-restart mode.
 
+### Mutation-kill evidence — run 36345328811
+
+The following lines are copied **verbatim** from GitHub Actions run 36345328811:
+
+```text
+2026-09-27T19:43:19.2146603Z --- FAIL: TestECRLF01ZombieCarrier (0.00s)
+2026-09-27T19:43:19.2160451Z MUTANT_KILLED f01_accept_old_epoch by TestECRLF01ZombieCarrier
+2026-09-27T19:43:19.3654854Z --- FAIL: TestECRLF02DualCandidate (0.00s)
+2026-09-27T19:43:19.3669840Z MUTANT_KILLED f02_accept_both_candidates by TestECRLF02DualCandidate
+2026-09-27T19:43:19.5190547Z --- FAIL: TestECRLF03LostACK (0.00s)
+2026-09-27T19:43:19.5205342Z MUTANT_KILLED f03_replay_from_k by TestECRLF03LostACK
+2026-09-27T19:43:19.6649169Z --- FAIL: TestECRLF04AcceptedNotDeliveredPartition (0.00s)
+2026-09-27T19:43:19.6663888Z MUTANT_KILLED f04_overlap_ring_replay by TestECRLF04AcceptedNotDeliveredPartition
+2026-09-27T19:43:19.8092160Z --- FAIL: TestECRLF05TombstoneResurrection (0.00s)
+2026-09-27T19:43:19.8105904Z MUTANT_KILLED f05_accept_tombstone_open by TestECRLF05TombstoneResurrection
+2026-09-27T19:43:19.9749012Z --- FAIL: TestECRLF06LostFIN (0.00s)
+2026-09-27T19:43:19.9762847Z MUTANT_KILLED f06_lost_fin_never_closes by TestECRLF06LostFIN
+2026-09-27T19:43:20.1184848Z --- FAIL: TestECRLF06DuplicateFINIdempotence (0.00s)
+2026-09-27T19:43:20.1199356Z MUTANT_KILLED f06_apply_fin_twice by TestECRLF06DuplicateFINIdempotence
+2026-09-27T19:43:20.2655614Z --- FAIL: TestECRLF07PeerRestart (0.00s)
+2026-09-27T19:43:20.2672270Z MUTANT_KILLED f07_resume_after_boot_change by TestECRLF07PeerRestart
+2026-09-27T19:43:20.4135801Z --- FAIL: TestECRLF08InconsistentSnapshot (0.00s)
+2026-09-27T19:43:20.4149022Z MUTANT_KILLED f08_accept_a_gt_s by TestECRLF08InconsistentSnapshot
+2026-09-27T19:43:20.5636618Z --- FAIL: TestECRLF09DeterministicPropertySweep (0.00s)
+2026-09-27T19:43:20.5649957Z MUTANT_KILLED f09_skip_k_le_a by TestECRLF09DeterministicPropertySweep
+2026-09-27T19:43:20.7136727Z --- FAIL: TestECRLF10ExactByteStream (0.00s)
+2026-09-27T19:43:20.7150276Z MUTANT_KILLED f10_replay_from_a_minus_1 by TestECRLF10ExactByteStream
+2026-09-27T19:43:20.8597287Z --- FAIL: TestECRLF10ExactByteStream (0.00s)
+2026-09-27T19:43:20.8611174Z MUTANT_KILLED f10_replay_from_a_plus_1 by TestECRLF10ExactByteStream
+```
+
 ## 5C. Prior art for multi-stage acknowledgement/settlement
 
 - **MQTT QoS 2:** separates receipt/ownership and completion through PUBREC/PUBREL/PUBCOMP and prevents duplicate onward delivery for the same in-flight identifier.
@@ -447,11 +478,21 @@ The previous release-to-K mutation is no longer a valid mutant for the **current
 
 Therefore a two-level ACK or K_release concept is not novel by itself. The only remaining BAFT research hypothesis is the composition of epoch-fenced Carrier handoff, TWRL D/A/C state, exact byte partitioning, FIN/tombstones, and bounded replay/PADL coupling. Supported-engineering-result status for the ECRL engine is still **not claimed**, and patentability remains unassessed.
 
-Sources:
-- https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html
-- https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-complete-v1.0-os.pdf
-- https://www.rfc-editor.org/rfc/rfc8684
-- https://kafka.apache.org/40/configuration/producer-configs/
+Primary sources and exact sections:
+- MQTT 5.0 OASIS Standard, §4.3.3 — QoS 2 delivery protocol: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html
+- AMQP 1.0 OASIS, Part 2 §2.6.13 — Resuming Deliveries; Part 3 §3.4.6 — Resuming Deliveries Using Delivery States: https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-complete-v1.0-os.pdf
+- MPTCP RFC 8684, §3.3.2 — Data Acknowledgments: https://www.rfc-editor.org/rfc/rfc8684.html#section-3.3.2
+- Apache Kafka official documentation, §4.6 — Message Delivery Semantics, plus Producer Configs → `acks` and `enable.idempotence`: https://kafka.apache.org/090/documentation/#semantics and https://kafka.apache.org/40/configuration/producer-configs/
+
+## 5D. Refinement gate — Stage D step 1
+
+The executable engine and the reference adapter implement the same `ReconcileCommitEngine` contract: Prepare, Reconcile, Commit, Abort, Authorize, CurrentEpoch, and Owner.
+
+In step 1, F01/F02/F03/F07/F08/F09 are directly applicable to the executable engine. F04/F10 require replay execution and F05/F06 require FIN/tombstone execution, so they are intentionally **not reported as engine PASS** yet.
+
+`TestStage1DifferentialReferenceVsEngine` compares deterministic reference and engine traces. Any difference fails the gate.
+
+Current in-memory mode records replay release through K in the reconciliation plan. `durable_snapshot` defaults off; `RReplay` is invalid unless that flag is enabled. K_release/replay-cap behavior remains isolated to the explicitly enabled future durable policy and is not part of the step-1 engine.
 
 ## 6. Current novelty decision
 

@@ -33,13 +33,15 @@ type Snapshot struct {
 }
 
 type FlowPlan struct {
-	StreamID              uint64
-	LocalReplayFrom       uint64
-	PeerReplayFrom        uint64
-	LocalAckAdvanceTo     uint64
-	PeerAckAdvanceTo      uint64
-	LocalFinAckCanAdvance bool
-	PeerFinAckCanAdvance  bool
+	StreamID               uint64
+	LocalReplayFrom        uint64
+	PeerReplayFrom         uint64
+	LocalAckAdvanceTo      uint64
+	PeerAckAdvanceTo       uint64
+	LocalReleaseThrough    uint64
+	PeerReleaseThrough     uint64
+	LocalFinAckCanAdvance  bool
+	PeerFinAckCanAdvance   bool
 }
 
 type Plan struct {
@@ -112,11 +114,11 @@ func Reconcile(local, peer Snapshot, expectedPeerBootID string) (Plan, error) {
 		// Peer RxAccepted is authoritative evidence for how much of our Tx it
 		// admitted to bounded memory. It can recover a lost ACK, but can never
 		// exceed TxNext or move behind an ACK we already observed.
-		if pf.RxAccepted < lf.TxAcked || pf.RxAccepted > lf.TxNext {
+		if pf.RxAccepted < lf.TxAcked || pf.RxAccepted > lf.TxNext || lf.TxNext > pf.RxCredit {
 			return Plan{}, fmt.Errorf("%w: peer receive/local send contradiction on stream %d", ErrStateMismatch, lf.StreamID)
 		}
 		// Symmetric check for the peer's Tx versus our authoritative receive.
-		if lf.RxAccepted < pf.TxAcked || lf.RxAccepted > pf.TxNext {
+		if lf.RxAccepted < pf.TxAcked || lf.RxAccepted > pf.TxNext || pf.TxNext > lf.RxCredit {
 			return Plan{}, fmt.Errorf("%w: local receive/peer send contradiction on stream %d", ErrStateMismatch, lf.StreamID)
 		}
 
@@ -141,6 +143,8 @@ func Reconcile(local, peer Snapshot, expectedPeerBootID string) (Plan, error) {
 			PeerReplayFrom: lf.RxAccepted,
 			LocalAckAdvanceTo: pf.RxAccepted,
 			PeerAckAdvanceTo: lf.RxAccepted,
+			LocalReleaseThrough: lf.TxAcked,
+			PeerReleaseThrough: pf.TxAcked,
 			LocalFinAckCanAdvance: pf.FinAckSent && !lf.FinAcked,
 			PeerFinAckCanAdvance: lf.FinAckSent && !pf.FinAcked,
 		})

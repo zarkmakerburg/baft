@@ -10,7 +10,7 @@
 
 | سطح | وضعیت فعلی | معنی |
 |---|---|---|
-| **فرضیه پژوهشی** | **فعال** | ECRL یک فرضیه‌ی طراحی قابل‌ابطال است و باید با invariant و fault-injection سنجیده شود. |
+| **فرضیه پژوهشی** | **فعال و محدود** | گزاره‌ی قابل‌ابطال: **«commit اتمیکِ جفتِ (epoch، A-vector) می‌تواند Carrier قدیمی را fence کند و هم‌زمان replay frontier هر Flow را دقیقاً روی A تثبیت کند، بدون اینکه model و engine روی trace معتبر اختلاف داشته باشند.»** |
 | **نتیجه مهندسی پشتیبانی‌شده** | **هنوز محقق نشده** | وجود prototype یا unit test اولیه به‌تنهایی کافی نیست. تا وقتی carrier replacement واقعی، zombie-carrier، lost-ACK، tombstone و exact-once gate پاس نشوند، این سطح ادعا نمی‌شود. |
 | **Patentability / novelty حقوقی** | **بررسی‌نشده** | این prior-art review فقط مهندسی است. هیچ ادعای ثبت‌پذیری یا novelty حقوقی بدون جست‌وجوی patent/literature تخصصی مجاز نیست. |
 
@@ -19,9 +19,7 @@
 **خودِ epoch fencing نوآوری ECRL نیست.**  
 **خودِ resume یا anti-replay نیز نوآوری ECRL نیست.**
 
-اگر ECRL تفاوت پژوهشی قابل‌دفاعی داشته باشد، محل آن فقط می‌تواند در **پیوند اتمیک مالکیت Carrier با ledger بایتی هر Flow، watermarkهای TWRL، replay frontier، FIN و tombstone** باشد.
-
-اگر این پیوند نتواند exact-once delivery را در fault-injection ثابت کند، فرضیه ECRL رد می‌شود.
+هسته‌ی ادعا فقط یک مکانیزم مشخص است: **atomic epoch + A-vector commit**. اگر engine واقعی در هر trace deterministic با reference model اختلاف داشته باشد، یا commit بتواند epoch را بدون همان plan هم‌بسته جلو ببرد، همین فرضیه رد می‌شود. FIN/tombstone، PADL و durable snapshot اجزای مستقل‌اند و بخشی از ادعای novelty این جمله نیستند.
 
 ---
 
@@ -717,6 +715,41 @@ Mutationها با متغیر تستی `ECRL_MUTANT` **داخل همان referenc
 
 **نکته درباره mutant قدیمی release-to-K:** بعد از پاسخ بند [D,K)، «release تا K در current in-memory mode» دیگر mutant معتبر محسوب نمی‌شود، چون ring زنده نسخه‌ی `[D,K)` را نگه می‌دارد. آن رفتار فقط در durable-snapshot mode آینده، که receiver می‌تواند ring را در restart از دست بدهد ولی resume ادامه یابد، خطرناک است. بنابراین آن mutant از gate فعلی حذف شده تا تست، فرض غلط را enforce نکند.
 
+### مدرک kill شدن mutantها — run 36345328811
+
+خطوط زیر **عیناً از لاگ GitHub Actions run 36345328811** نقل شده‌اند:
+
+<div dir="ltr" align="left">
+
+```text
+2026-09-27T19:43:19.2146603Z --- FAIL: TestECRLF01ZombieCarrier (0.00s)
+2026-09-27T19:43:19.2160451Z MUTANT_KILLED f01_accept_old_epoch by TestECRLF01ZombieCarrier
+2026-09-27T19:43:19.3654854Z --- FAIL: TestECRLF02DualCandidate (0.00s)
+2026-09-27T19:43:19.3669840Z MUTANT_KILLED f02_accept_both_candidates by TestECRLF02DualCandidate
+2026-09-27T19:43:19.5190547Z --- FAIL: TestECRLF03LostACK (0.00s)
+2026-09-27T19:43:19.5205342Z MUTANT_KILLED f03_replay_from_k by TestECRLF03LostACK
+2026-09-27T19:43:19.6649169Z --- FAIL: TestECRLF04AcceptedNotDeliveredPartition (0.00s)
+2026-09-27T19:43:19.6663888Z MUTANT_KILLED f04_overlap_ring_replay by TestECRLF04AcceptedNotDeliveredPartition
+2026-09-27T19:43:19.8092160Z --- FAIL: TestECRLF05TombstoneResurrection (0.00s)
+2026-09-27T19:43:19.8105904Z MUTANT_KILLED f05_accept_tombstone_open by TestECRLF05TombstoneResurrection
+2026-09-27T19:43:19.9749012Z --- FAIL: TestECRLF06LostFIN (0.00s)
+2026-09-27T19:43:19.9762847Z MUTANT_KILLED f06_lost_fin_never_closes by TestECRLF06LostFIN
+2026-09-27T19:43:20.1184848Z --- FAIL: TestECRLF06DuplicateFINIdempotence (0.00s)
+2026-09-27T19:43:20.1199356Z MUTANT_KILLED f06_apply_fin_twice by TestECRLF06DuplicateFINIdempotence
+2026-09-27T19:43:20.2655614Z --- FAIL: TestECRLF07PeerRestart (0.00s)
+2026-09-27T19:43:20.2672270Z MUTANT_KILLED f07_resume_after_boot_change by TestECRLF07PeerRestart
+2026-09-27T19:43:20.4135801Z --- FAIL: TestECRLF08InconsistentSnapshot (0.00s)
+2026-09-27T19:43:20.4149022Z MUTANT_KILLED f08_accept_a_gt_s by TestECRLF08InconsistentSnapshot
+2026-09-27T19:43:20.5636618Z --- FAIL: TestECRLF09DeterministicPropertySweep (0.00s)
+2026-09-27T19:43:20.5649957Z MUTANT_KILLED f09_skip_k_le_a by TestECRLF09DeterministicPropertySweep
+2026-09-27T19:43:20.7136727Z --- FAIL: TestECRLF10ExactByteStream (0.00s)
+2026-09-27T19:43:20.7150276Z MUTANT_KILLED f10_replay_from_a_minus_1 by TestECRLF10ExactByteStream
+2026-09-27T19:43:20.8597287Z --- FAIL: TestECRLF10ExactByteStream (0.00s)
+2026-09-27T19:43:20.8611174Z MUTANT_KILLED f10_replay_from_a_plus_1 by TestECRLF10ExactByteStream
+```
+
+</div>
+
 ## 5C. Prior art برای ACK/settlement چندمرحله‌ای
 
 | سیستم | مکانیزم موجود | شباهت با ایده‌ی K/K_release | تفاوت BAFT | نتیجه |
@@ -726,12 +759,12 @@ Mutationها با متغیر تستی `ECRL_MUTANT` **داخل همان referenc
 | **MPTCP DATA_ACK** | ACK تجمعی در data-sequence space کل connection، مستقل از ACKهای subflow | شبیه K/A: acknowledgement در یک sequence space بالاتر از transport path | DATA_ACK موفقیت دریافت data-level را نشان می‌دهد، نه تحویل به application target؛ معادل K_release نیست | cumulative higher-layer ACK prior art است |
 | **Kafka producer acks/idempotence** | `acks=1/all` سطح durability در broker/replica را تعیین می‌کند؛ idempotent producer از duplicate write در log جلوگیری می‌کند | نشان می‌دهد acknowledgement می‌تواند stage/durability semantics متفاوت داشته باشد | Kafka record/log/replication محور است، نه per-Flow target-delivery byte watermark | چندسطحی بودن «acknowledged» جدید نیست |
 
-منابع:
+منابع اولیه و بخش دقیق:
 
-- MQTT 5.0 OASIS — QoS 2 و ownership/duplicate rules: https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html
-- AMQP 1.0 OASIS — settlement, disposition و link recovery: https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-complete-v1.0-os.pdf
-- MPTCP RFC 8684 — Data ACK: https://www.rfc-editor.org/rfc/rfc8684
-- Apache Kafka producer configs — `acks` و idempotence: https://kafka.apache.org/40/configuration/producer-configs/
+- **MQTT 5.0 OASIS Standard، §4.3.3 — QoS 2 delivery protocol**؛ ownership در PUBREC و جلوگیری از duplicate onward delivery در MQTT-4.3.3-8 تا MQTT-4.3.3-10: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html
+- **AMQP 1.0 OASIS، Part 2 §2.6.13 — Resuming Deliveries** و **Part 3 §3.4.6 — Resuming Deliveries Using Delivery States**: https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-complete-v1.0-os.pdf
+- **MPTCP RFC 8684، §3.3.2 — Data Acknowledgments**: https://www.rfc-editor.org/rfc/rfc8684.html#section-3.3.2
+- **Apache Kafka مستند رسمی، §4.6 — Message Delivery Semantics**، همراه با Producer Configs → `acks` و `enable.idempotence`: https://kafka.apache.org/090/documentation/#semantics و https://kafka.apache.org/40/configuration/producer-configs/
 
 ### نتیجه‌ی novelty پس از این review
 
@@ -741,6 +774,32 @@ Mutationها با متغیر تستی `ECRL_MUTANT` **داخل همان referenc
 - این تفاوت هنوز فقط **فرضیه پژوهشی** است.
 - **نتیجه مهندسی پشتیبانی‌شده:** برای ECRL engine هنوز ادعا نمی‌شود.
 - **Patentability:** همچنان بررسی‌نشده و نیازمند patent/literature search تخصصی است.
+
+## 5D. Refinement gate — Stage D / مرحله ۱
+
+interface مشترک reference model و engine واقعی:
+
+<div dir="ltr" align="left">
+
+```go
+type ReconcileCommitEngine interface {
+    Prepare(next uint64, candidateID string) error
+    Reconcile(candidateID string, local, peer Snapshot, expectedPeerBootID string) (Plan, error)
+    Commit(next uint64, candidateID string, plan Plan) error
+    Abort(next uint64, candidateID string)
+    Authorize(epoch uint64, carrierID string) bool
+    CurrentEpoch() uint64
+    Owner() string
+}
+```
+
+</div>
+
+در مرحله ۱ فقط F01/F02/F03/F07/F08/F09 مستقیماً روی engine واقعی قابل اعمال‌اند. F04/F10 متعلق به replay execution و F05/F06 متعلق به FIN/tombstone execution هستند و تا مراحل بعد **عمداً engine-PASS اعلام نمی‌شوند**.
+
+`TestStage1DifferentialReferenceVsEngine` روی traceهای deterministic، نتیجه Prepare/Reconcile/Commit/Authorize مدل و engine را مقایسه می‌کند. هر اختلاف gate را قرمز می‌کند.
+
+در current in-memory mode، `FlowPlan.LocalReleaseThrough = K` و `PeerReleaseThrough = K_peer` است. `durable_snapshot` در `EngineOptions{}` به‌صورت پیش‌فرض خاموش است؛ `RReplay` بدون فعال‌بودن آن config نامعتبر است. `K_release`/replay cap فقط در policy آزمایشی durable آینده فعال می‌شوند و هنوز engine replay را تغییر نمی‌دهند.
 
 ## 6. تصمیم فعلی درباره novelty
 

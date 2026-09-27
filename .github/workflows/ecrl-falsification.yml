@@ -39,6 +39,12 @@ jobs:
             -run '^(TestECRLF|TestECRLKReleaseNotRequiredForCurrentInMemoryResume|TestECRLFutureDurableSlowTargetReplayBoundNoDeadlock|TestECRLMutationCatalogCoversEveryF)' \
             -count=1 -v
 
+      - name: Stage-1 real engine refinement and differential gate
+        run: |
+          go test ./internal/recovery \
+            -run '^(TestEngineECRL|TestStage1DifferentialReferenceVsEngine|TestDurableSnapshot)' \
+            -count=1 -v
+
       - name: Mutation kill gate — original F tests must FAIL
         shell: bash
         run: |
@@ -76,3 +82,35 @@ jobs:
           kill_mutant f09_skip_k_le_a TestECRLF09DeterministicPropertySweep
           kill_mutant f10_replay_from_a_minus_1 TestECRLF10ExactByteStream
           kill_mutant f10_replay_from_a_plus_1 TestECRLF10ExactByteStream
+
+      - name: Stage-1 engine mutation kill gate — engine F tests must FAIL
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kill_engine_mutant() {
+            local mutant="$1"
+            local test_name="$2"
+            echo "===== ENGINE MUTANT ${mutant} -> ${test_name} (expected FAIL) ====="
+            set +e
+            output="$(ECRL_MUTANT="${mutant}" go test ./internal/recovery -run "^${test_name}$" -count=1 -v 2>&1)"
+            status=$?
+            set -e
+            printf '%s\n' "$output"
+            if [ "$status" -eq 0 ]; then
+              echo "ENGINE_MUTANT_SURVIVED ${mutant}: refinement gate OPEN"
+              exit 1
+            fi
+            if ! grep -q -- "--- FAIL: ${test_name}" <<<"$output"; then
+              echo "ENGINE_MUTANT_INVALID ${mutant}: expected engine F failure not visible"
+              exit 1
+            fi
+            echo "ENGINE_MUTANT_KILLED ${mutant} by ${test_name}"
+          }
+
+          kill_engine_mutant f01_accept_old_epoch TestEngineECRLF01ZombieCarrier
+          kill_engine_mutant f02_accept_both_candidates TestEngineECRLF02DualCandidate
+          kill_engine_mutant f03_replay_from_k TestEngineECRLF03LostACK
+          kill_engine_mutant f07_resume_after_boot_change TestEngineECRLF07PeerRestart
+          kill_engine_mutant f08_accept_a_gt_s TestEngineECRLF08InconsistentSnapshot
+          kill_engine_mutant f09_skip_k_le_a TestEngineECRLF09DeterministicSnapshotSweep

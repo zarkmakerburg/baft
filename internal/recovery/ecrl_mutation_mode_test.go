@@ -22,3 +22,7 @@ var requiredMutationCatalog = map[string]string{
 	"f10_replay_from_a_minus_1": "F10",
 	"f10_replay_from_a_plus_1":  "F10",
 }
+
+func mutantNameForEngine() string {
+	return os.Getenv(mutationEnv)
+}
