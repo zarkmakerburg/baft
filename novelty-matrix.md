@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # ماتریس ادعاهای پژوهشی
 
 > English: [novelty-matrix.en.md](novelty-matrix.en.md)
@@ -16,3 +18,5 @@
 | C-004 | PADL: pressure-aged deficit leasing | اتصال scheduling بایتی به replay-memory debt با aging ضد-starvation | fairness/pressure/starvation tests + multi-Flow + Stage-E A/B | فرضیه پژوهشی / prototype | هزینه انتخاب O(n) و prior-art اختصاصی هنوز باید سنجیده شود |
 
 | C-005 | conservation-oriented telemetry | گزارش رابطه invariant بین accepted/delivered/credit/ring به‌جای counterهای مستقل | snapshot race tests + multi-Shard shared-budget conservation | prototype | novelty حقوقی ادعا نمی‌شود؛ تمرکز بر diagnosability است |
+
+</div>

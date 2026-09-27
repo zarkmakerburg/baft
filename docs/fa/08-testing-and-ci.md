@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 08 — آزمون‌ها، CI و معیار پذیرش
 
 ## اصل شواهد
@@ -8,6 +10,8 @@
 
 workflow اصلی روی نسخه pin‌شده Go اجرا می‌کند:
 
+<div dir="ltr" align="left">
+
 ```bash
 go mod tidy
 git diff --exit-code -- go.mod go.sum
@@ -17,6 +21,8 @@ go test -race ./...
 go vet ./...
 go test ./internal/protocol -run '^$' -fuzz '^FuzzDecode$' -fuzztime 10s
 ```
+
+</div>
 
 `go mod tidy` همراه با `git diff` از drift وابستگی جلوگیری می‌کند.
 
@@ -101,3 +107,5 @@ integration test چند اتصال هم‌زمان ایجاد می‌کند، pa
 - benchmark رسمی تکرارشونده؛
 - تست real-path میان سرورهای واقعی؛
 - عملیات rotation/rollback.
+
+</div>

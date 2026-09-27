@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 13 — فرضیه پژوهشی Stage C: دفتر سه‌نشانگر دریافت (TWRL)
 
 ## خلأ
@@ -16,10 +18,14 @@ HTTP/2 و QUIC هر دو از flow control مبتنی بر credit استفاده
 
 و invariant زیر را نگه داریم:
 
+<div dir="ltr" align="left">
+
 ```text
 D ≤ A ≤ C
 C - D ≤ R
 ```
+
+</div>
 
 که R ظرفیت واقعی رزروشده‌ی receive است، آنگاه target کند بدون متوقف‌کردن حلقه Carrier backpressure ایجاد می‌کند و RAM نیز bounded می‌ماند.
 
@@ -71,3 +77,5 @@ C - D ≤ R
 بنابراین وضعیت فعلی مکانیزم: **نتیجه مهندسی پشتیبانی‌شده در محیط CI**.
 
 این نتیجه هنوز به معنی novelty حقوقی یا برتری performance روی اینترنت واقعی نیست.
+
+</div>

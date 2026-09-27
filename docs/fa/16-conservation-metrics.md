@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 16 — Metrics حفاظتی و Conservation Metrics
 
 ## تصمیم
@@ -8,10 +10,14 @@
 
 ## endpoint
 
+<div dir="ltr" align="left">
+
 ```text
 GET http://127.0.0.1:<port>/metrics
 Content-Type: text/plain; version=0.0.4; charset=utf-8
 ```
+
+</div>
 
 config از قبل metrics listener را به loopback محدود می‌کند.
 
@@ -43,3 +49,5 @@ metrics رایج اغلب counterهای مستقل را نشان می‌دهند
 ## ریسک
 
 aggregation می‌تواند محل دقیق Flow خراب را پنهان کند. برای debugging عمیق، admin/doctor آینده باید snapshot داخلی را روی Unix socket محدود نمایش دهد، نه اینکه label حساس را روی metrics عمومی‌تر کند.
+
+</div>

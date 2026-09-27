@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # برنامه توسعه
 
 > نسخه انگلیسی: [PLAN.en.md](PLAN.en.md)
@@ -100,3 +102,5 @@
 - [ ] چند بازه آزمایش
 - [ ] rollback
 - [ ] گزارش محدودیت و نتیجه
+
+</div>

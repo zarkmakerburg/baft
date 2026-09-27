@@ -1,4 +1,8 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 10 — ساختار کد و مسئولیت ماژول‌ها
+
+<div dir="ltr" align="left">
 
 ```text
 cmd/baft/                 CLI و entry point
@@ -33,6 +37,8 @@ docs/fa/                  مستندات فارسی
 docs/en/                  مستندات انگلیسی
 ```
 
+</div>
+
 ## اصل dependency direction
 
 ماژول‌های پایین‌دستی نباید مرز اعتماد را دور بزنند. مثال:
@@ -65,3 +71,5 @@ ADR باید توضیح دهد:
 6. آیا تصمیم provisional یا accepted است.
 
 تغییر wire format، trust boundary، resource limit و scheduling policy بدون ADR/test مناسب نباید فقط به شکل patch خام وارد شود.
+
+</div>

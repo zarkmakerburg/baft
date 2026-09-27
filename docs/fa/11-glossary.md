@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 11 — فرهنگ واژگان
 
 | اصطلاح | تعریف دقیق در BAFT |
@@ -33,3 +35,5 @@
 | **URI SAN** | URI داخل Subject Alternative Name گواهی که برای identity Node استفاده می‌شود |
 | **Allowlist** | مجموعه صریح identity/Route مجاز |
 | **COR-01** | correctness gate یک GiB دوطرفه با hash انتهایی |
+
+</div>

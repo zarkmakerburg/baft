@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 14 — فرضیه پژوهشی Stage C: PADL
 
 ## نام
@@ -41,3 +43,5 @@ prototype فعلی برای انتخاب، Flowهای فعال را scan می‌
 - MaxWeight/BackPressure: Tassiulas/Ephremides.
 
 وضعیت novelty حقوقی: **بررسی نشده / ادعایی وجود ندارد**.
+
+</div>

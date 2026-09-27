@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # راهنمای مستندات BAFT
 
 [English documentation](../en/README.md) | [README اصلی فارسی](../../README.md)
@@ -37,3 +39,5 @@
 16. [16 — Metrics حفاظتی و conservation](16-conservation-metrics.md)
 
 17. [17 — گیت‌های صحت single-flight](17-correctness-gates.md)
+
+</div>

@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 07 — کنترل حافظه، backpressure و زمان‌بندی
 
 ## چرا این بخش مهم است؟
@@ -28,6 +30,8 @@ WINDOW نباید صرفاً یک عدد خوش‌بینانه باشد. قبل 
 
 مدل ساده:
 
+<div dir="ltr" align="left">
+
 ```text
 capacity رزروشده
       │
@@ -38,6 +42,8 @@ WINDOW(max_offset)
 peer اجازه ارسال پیدا می‌کند
 ```
 
+</div>
+
 اگر ظرفیت وجود نداشته باشد، Window نباید بدون پشتوانه رشد کند.
 
 ## replay reservation
@@ -45,6 +51,8 @@ peer اجازه ارسال پیدا می‌کند
 پیش از خواندن payload جدید از socket محلی، sender فضای replay لازم را رزرو می‌کند. بعد از ساخت DATA، نسخه لازم برای state تأییدنشده نگه داشته می‌شود.
 
 با ACK پیوسته:
+
+<div dir="ltr" align="left">
 
 ```text
 ACK(new_offset)
@@ -59,11 +67,15 @@ replay reservation آزاد
 Flowهای منتظر می‌توانند ادامه دهند
 ```
 
+</div>
+
 ## backpressure
 
 وقتی credit یا replay budget تمام شود، رفتار درست **توقف خواندن بیشتر از socket منبع** است، نه ساختن queue بزرگ‌تر.
 
 بنابراین backpressure باید به منبع TCP برگردد:
+
+<div dir="ltr" align="left">
 
 ```text
 target کند
@@ -73,6 +85,8 @@ target کند
   → خواندن socket منبع متوقف
   → TCP source نیز فشار را حس می‌کند
 ```
+
+</div>
 
 ## وضعیت تست receiver کند
 
@@ -129,3 +143,5 @@ Stage C فقط وقتی باید complete شود که:
 - receiver کند باعث OOM نشود؛
 - بعد از drain مسیر به شکل قابل‌اعتماد resume کند؛
 - چند Shard و چند Flow در CI پایدار باشند.
+
+</div>

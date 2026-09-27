@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 05 — پیکربندی و Routeها
 
 ## فرمت
@@ -29,13 +31,19 @@ Loader فعلی برای کاهش ambiguity این موارد را رد می‌�
 
 IR:
 
+<div dir="ltr" align="left">
+
 ```yaml
 node:
   id: ir-01
   role: dialer
 ```
 
+</div>
+
 EX:
+
+<div dir="ltr" align="left">
 
 ```yaml
 node:
@@ -43,9 +51,13 @@ node:
   role: listener
 ```
 
+</div>
+
 `id` شناسه محلی Node است و باید با قرارداد هویت نصب هم‌خوان باشد.
 
 ## بخش peer برای dialer
+
+<div dir="ltr" align="left">
 
 ```yaml
 peer:
@@ -53,6 +65,8 @@ peer:
   server_name: ex.example
   allowed_identity: urn:baft:node:ex-01
 ```
+
+</div>
 
 - `address`: آدرس واقعی dial؛
 - `server_name`: نامی که TLS hostname verification بر اساس آن انجام می‌شود؛
@@ -62,6 +76,8 @@ peer:
 
 ## بخش server برای listener
 
+<div dir="ltr" align="left">
+
 ```yaml
 server:
   listen: 0.0.0.0:443
@@ -70,9 +86,13 @@ server:
     - urn:baft:node:ir-01
 ```
 
+</div>
+
 `allowed_peer_identities` فقط peer-level admission است؛ Route همچنان allowlist مستقل خود را دارد.
 
 ## TLS
+
+<div dir="ltr" align="left">
 
 ```yaml
 tls:
@@ -83,6 +103,8 @@ tls:
   session_tickets: false
 ```
 
+</div>
+
 در baseline:
 
 - نسخه کمتر از 1.3 رد می‌شود؛
@@ -92,6 +114,8 @@ tls:
 
 ## transport
 
+<div dir="ltr" align="left">
+
 ```yaml
 transport:
   primary: h2
@@ -100,9 +124,13 @@ transport:
   profile: secure-fast
 ```
 
+</div>
+
 در baseline فقط `h2` پذیرفته می‌شود و `h3_enabled: true` تا عبور گیت مربوط پشتیبانی نمی‌شود. تعداد Shard بین 1 و 8 است.
 
 ## limits
+
+<div dir="ltr" align="left">
 
 ```yaml
 limits:
@@ -113,11 +141,15 @@ limits:
   replay_max_mib: 16
 ```
 
+</div>
+
 هدف این فیلدها جلوگیری از resource growth نامحدود است.
 
 Runtime Stage C فعلی budget داده را به poolهای receive و replay غیرقابل‌قرض‌دادن تقسیم می‌کند. per-flow cap نباید از pool مربوط بزرگ‌تر باشد.
 
 ## recovery
+
+<div dir="ltr" align="left">
 
 ```yaml
 recovery:
@@ -125,9 +157,13 @@ recovery:
   retention_seconds: 30
 ```
 
+</div>
+
 تا پیش از کامل‌شدن Stage D، `enabled: true` باید با خطای واضح رد شود؛ silently ignoring ممنوع است.
 
 ## Route خروجی روی IR
+
+<div dir="ltr" align="left">
 
 ```yaml
 routes:
@@ -138,6 +174,8 @@ routes:
     traffic_class: interactive
 ```
 
+</div>
+
 قواعد مهم:
 
 - listener baseline روی loopback است؛
@@ -145,6 +183,8 @@ routes:
 - target در Route خروجی IR وجود ندارد.
 
 ## Route ورودی روی EX
+
+<div dir="ltr" align="left">
 
 ```yaml
 routes:
@@ -155,9 +195,13 @@ routes:
       - urn:baft:node:ir-01
 ```
 
+</div>
+
 در implementation baseline، target باید IP ثابت + port باشد؛ hostname آزاد، wildcard و مقصد peer-supplied پذیرفته نمی‌شود.
 
 ## management و metrics
+
+<div dir="ltr" align="left">
 
 ```yaml
 management:
@@ -165,9 +209,13 @@ management:
   metrics_listen: 127.0.0.1:9191
 ```
 
+</div>
+
 طراحی مرجع admin را روی Unix socket محدود و metrics را روی loopback نگه می‌دارد. کامل‌شدن API مدیریتی متعلق به مراحل عملیات است و وجود فیلد config به معنی کامل‌بودن تمام commandهای admin نیست.
 
 ## logging
+
+<div dir="ltr" align="left">
 
 ```yaml
 logging:
@@ -175,12 +223,20 @@ logging:
   payload: false
 ```
 
+</div>
+
 `payload: true` در baseline رد می‌شود.
 
 ## اعتبارسنجی
+
+<div dir="ltr" align="left">
 
 ```bash
 baft config validate --file /etc/baft/ir.yaml
 ```
 
+</div>
+
 خروجی `valid` فقط به معنی معتبر بودن schema/semantic config است؛ اتصال شبکه، certificate files و دسترس‌پذیری target را تضمین نمی‌کند.
+
+</div>

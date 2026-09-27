@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 15 — Conservation Telemetry و تست چند Shard
 
 ## مسئله
@@ -17,11 +19,15 @@ counterهای جداگانه مثل «تعداد بایت» یا «حافظه م
 
 بررسی مستقیم:
 
+<div dir="ltr" align="left">
+
 ```text
 D <= A <= C
 C - D <= R
 ring_bytes == A - D
 ```
+
+</div>
 
 این snapshot منبع داخلی برای metrics بعدی است؛ یعنی dashboard آینده از counterهای مستقل حقیقت جداگانه نمی‌سازد.
 
@@ -32,3 +38,5 @@ ring_bytes == A - D
 ## نوآوری ادعاشده؟
 
 فعلاً این مکانیزم به‌عنوان روش مهندسی برای **conservation-oriented observability** ثبت می‌شود، نه patent claim. تفاوت اصلی با metrics معمول این است که رابطه میان چند counter به‌عنوان داده درجه‌اول گزارش می‌شود.
+
+</div>

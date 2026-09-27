@@ -1,6 +1,10 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 02 — معماری، نقش‌ها و جریان داده
 
 ## نمای کلان
+
+<div dir="ltr" align="left">
 
 ```text
 ┌──────────────────── IR ────────────────────┐
@@ -24,6 +28,8 @@
 │ مقصد ثابت                                  │
 └────────────────────────────────────────────┘
 ```
+
+</div>
 
 ## مرزهای مسئولیت
 
@@ -71,6 +77,8 @@ Shard برای محدودکردن blast radius صف و state به‌کار می�
 
 هر Flow یک اتصال TCP کاربردی است. دو جهت Flow offset مستقل دارند. در یک جهت:
 
+<div dir="ltr" align="left">
+
 ```text
 socket read
    │
@@ -87,11 +95,15 @@ peer validates / accepts bytes
    └─ WINDOW(max_offset)
 ```
 
+</div>
+
 Half-close با `FIN(final_offset)` و `FIN_ACK(final_offset)` مدل می‌شود؛ بستن یک جهت به معنی حذف فوری جهت دیگر نیست.
 
 ## Session handshake
 
 برای Session جدید:
+
+<div dir="ltr" align="left">
 
 ```text
 IR                     EX
@@ -104,6 +116,8 @@ IR                     EX
 │  application frames  │
 ```
 
+</div>
+
 OPEN یا DATA قبل از READY دوطرفه protocol error است.
 
 ## مالکیت writer
@@ -113,3 +127,5 @@ OPEN یا DATA قبل از READY دوطرفه protocol error است.
 ## shutdown و cancellation
 
 Cancellation بخشی از قرارداد Carrier است. با لغو context، read/writeهای Carrier و Flowها باید آزاد شوند. ابطال اضطراری peer نیز Carrier فعال را cancel می‌کند، نه اینکه فقط اتصال بعدی را رد کند.
+
+</div>

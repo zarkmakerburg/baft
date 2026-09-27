@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 06 — ساخت و اجرای IR و EX
 
 ## هشدار وضعیت
@@ -5,6 +7,8 @@
 این بخش مسیر اجرای فعلی کد را توضیح می‌دهد، نه دستور production deployment نهایی. systemd، rotation کامل، admin transaction و packaging نهایی در مراحل بعدی تکمیل می‌شوند.
 
 ## ساخت
+
+<div dir="ltr" align="left">
 
 ```bash
 git clone https://github.com/zarkmakerburg/baft.git
@@ -14,9 +18,13 @@ go build -o baft ./cmd/baft
 ./baft version --json
 ```
 
+</div>
+
 ## آماده‌سازی فایل‌ها
 
 روی هر Node به‌صورت مفهومی نیاز است:
+
+<div dir="ltr" align="left">
 
 ```text
 /etc/baft/
@@ -27,11 +35,17 @@ go build -o baft ./cmd/baft
     └── node.key
 ```
 
+</div>
+
 کلید private را محدود کنید؛ برای نمونه روی Linux:
+
+<div dir="ltr" align="left">
 
 ```bash
 chmod 600 /etc/baft/pki/node.key
 ```
+
+</div>
 
 BAFT فایل کلیدی با permission باز برای group/other را رد می‌کند.
 
@@ -55,22 +69,34 @@ BAFT فایل کلیدی با permission باز برای group/other را رد �
 
 ### 3. هر دو config را validate کنید
 
+<div dir="ltr" align="left">
+
 ```bash
 ./baft config validate --file /etc/baft/ex.yaml
 ./baft config validate --file /etc/baft/ir.yaml
 ```
 
+</div>
+
 ### 4. ابتدا EX را اجرا کنید
+
+<div dir="ltr" align="left">
 
 ```bash
 ./baft run --file /etc/baft/ex.yaml
 ```
 
+</div>
+
 ### 5. سپس IR را اجرا کنید
+
+<div dir="ltr" align="left">
 
 ```bash
 ./baft run --file /etc/baft/ir.yaml
 ```
+
+</div>
 
 ### 6. برنامه محلی را به listener IR وصل کنید
 
@@ -123,3 +149,5 @@ permission فایل key را محدود کنید. هدف این check جلوگی
 - certificate rotation workflow کامل؛
 - support bundle؛
 - real-path pilot و rollback عملیاتی.
+
+</div>

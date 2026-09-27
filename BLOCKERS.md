@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # موانع و مسائل باز
 
 > English: [BLOCKERS.en.md](BLOCKERS.en.md)
@@ -22,3 +24,5 @@ slow-receiver liveness gate هنوز سبز پایدار نیست. این مور
 ## اصل
 
 BLOCKER به معنی کمبود دسترسی، dependency یا پیش‌نیاز است. failure تست correctness باید به‌عنوان مسئله فنی ثبت و اصلاح شود، نه با تغییر برچسب پنهان شود.
+
+</div>

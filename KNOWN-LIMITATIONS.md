@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # محدودیت‌های شناخته‌شده
 
 > English: [KNOWN-LIMITATIONS.en.md](KNOWN-LIMITATIONS.en.md)
@@ -15,3 +17,5 @@
 - real Iran↔EX pilot اجرا نشده است.
 - هیچ ادعای عمومی درباره سرعت تضمینی، تشخیص‌ناپذیری یا دسترسی در همه شرایط اثبات نشده است.
 - listener عمومی IR به‌صورت خودکار کاربر نهایی را authenticate نمی‌کند؛ اگر از loopback خارج شود، امنیت لایه سرویس جداگانه لازم است.
+
+</div>

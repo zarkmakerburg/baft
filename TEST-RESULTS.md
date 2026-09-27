@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # نتایج آزمون
 
 > English: [TEST-RESULTS.en.md](TEST-RESULTS.en.md)  
@@ -12,6 +14,8 @@
 
 ## gate استاندارد
 
+<div dir="ltr" align="left">
+
 ```bash
 go mod tidy
 git diff --exit-code -- go.mod go.sum
@@ -20,6 +24,8 @@ go test -race ./...
 go vet ./...
 go test ./internal/protocol -run '^$' -fuzz '^FuzzDecode$' -fuzztime 10s
 ```
+
+</div>
 
 ## Stage B — شواهد اصلی
 
@@ -111,3 +117,5 @@ The receive path now distinguishes protocol acceptance (A), target delivery (D),
 - test duration: `11.43s`
 
 This remains a correctness result on GitHub-hosted local networking, not a public-network throughput benchmark.
+
+</div>

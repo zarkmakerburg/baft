@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # 04 — پروتکل BAFT/1 و state machine
 
 ## هدف
@@ -156,3 +158,5 @@ RESET و OPEN_ERR از codeهای ثابت استفاده می‌کنند تا �
 ## Resume: قرارداد آینده، نه قابلیت فعلی
 
 فریم‌های RESUME_* در جدول protocol رزرو شده‌اند، اما resume کامل متعلق به Stage D است. وجود type در parser به معنی پیاده‌سازی semantics نیست. تا وقتی Stage D کامل نشده، مستندات و CLI نباید اتصال جایگزین را «resume موفق» گزارش کنند.
+
+</div>
