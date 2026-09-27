@@ -21,6 +21,12 @@ jobs:
           cache: false
       - name: Toolchain
         run: go version
+      - name: Resolve module metadata
+        run: |
+          go mod tidy
+          echo "--- GO_SUM_BEGIN ---"
+          cat go.sum
+          echo "--- GO_SUM_END ---"
       - name: Unit and integration tests
         run: go test ./...
       - name: Race detector
