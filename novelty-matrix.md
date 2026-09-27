@@ -19,6 +19,6 @@
 
 | C-005 | conservation-oriented telemetry | گزارش رابطه invariant بین accepted/delivered/credit/ring به‌جای counterهای مستقل | snapshot tests + multi-Shard shared-budget conservation + metrics | نتیجه مهندسی پشتیبانی‌شده در CI | novelty حقوقی ادعا نمی‌شود؛ تمرکز بر diagnosability است |
   
-| D-001 | ECRL: Epoch-Fenced Correlated Resume Ledger | ترکیب lease اتمیک Carrier با correlation بین sender tx و peer authoritative rx برای ACK/replay/FIN | stale-epoch race + lost-ACK + restart + mismatch + later carrier-replacement integration | فرضیه پژوهشی / مدل خالص unit-tested | prior-art اختصاصی و wire integration هنوز لازم است |
+| D-001 | ECRL: Epoch-Fenced Correlated Resume Ledger | fencing به‌تنهایی prior art است؛ فرضیه فقط روی coupling مالکیت Carrier با K/S ↔ D/A/C، تقسیم Ring=[D,A) و Replay=[A,S)، FIN و tombstone باقی می‌ماند | F01–F10 در docs/fa/15-stage-d-ecrl.md | **فرضیه پژوهشی**؛ نتیجه مهندسی هنوز ادعا نمی‌شود | patentability بررسی‌نشده؛ prior-art engineering review انجام شده ولی patent/literature search تخصصی لازم است |
 
 </div>

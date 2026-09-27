@@ -44,6 +44,8 @@
 
 19. [19 — قرنطینه محدود وضعیت پایانی Flow](19-terminal-quarantine.md)
 
-20. [20 — ECRL برای Stage D](20-stage-d-ecrl.md)
+20. [20 — یادداشت قدیمی ECRL؛ superseded](20-stage-d-ecrl.md)
+
+15D. [ECRL — prior-art، مدل تهدید و invariant رسمی](15-stage-d-ecrl.md)
 
 </div>

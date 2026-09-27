@@ -113,6 +113,14 @@ workflow مستقل `stagec-soak` اضافه شده است. این workflow mult
 
 ## Stage D و بعد
 
+### ECRL design gate
+
+ECRL فعلاً فقط در سطح **فرضیه پژوهشی** نگه داشته می‌شود. بررسی prior art اجباری، مدل تهدید، invariantهای I0–I6 و معیارهای ابطال F01–F10 در [docs/fa/15-stage-d-ecrl.md](docs/fa/15-stage-d-ecrl.md) ثبت شده‌اند.
+
+prototype موجود تا زمان ساخت falsification suite و carrier-replacement integration **نتیجه مهندسی پشتیبانی‌شده محسوب نمی‌شود** و توسعه‌ی wire/session resume باید از سند جدید پیروی کند.
+
+
+
 هنوز به‌عنوان قابلیت کامل وجود ندارند:
 
 - resume کامل؛

@@ -51,6 +51,11 @@
 
 ## Stage D — resume دقیق
 
+- [x] prior-art review اجباری Raft / QUIC / TLS 1.3
+- [x] threat model مجزا از Epoch پایه
+- [x] invariant رسمی ECRL (I0–I6)
+- [x] falsification criteria (F01–F10)
+- [ ] property/fault-injection suite برای I0–I6 و F01–F09
 - [ ] boot/session/epoch fencing
 - [ ] ownership دقیق Carrier
 - [ ] snapshot state

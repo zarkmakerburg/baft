@@ -42,4 +42,6 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 
 19. [19 — Bounded terminal quarantine](19-terminal-quarantine.md)
 
-20. [20 — ECRL for Stage D](20-stage-d-ecrl.md)
+20. [20 — superseded ECRL note](20-stage-d-ecrl.md)
+
+15D. [ECRL — prior art, threat model, and formal invariants](15-stage-d-ecrl.md)
