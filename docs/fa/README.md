@@ -40,4 +40,6 @@
 
 17. [17 — گیت‌های صحت single-flight](17-correctness-gates.md)
 
+18. [18 — گیت Soak برای Stage C](18-stage-c-soak.md)
+
 </div>

@@ -37,3 +37,5 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 16. [16 — Privacy-bounded conservation metrics](16-conservation-metrics.md)
 
 17. [17 — Single-flight correctness gates](17-correctness-gates.md)
+
+18. [18 — Stage-C soak gate](18-stage-c-soak.md)
