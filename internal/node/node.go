@@ -18,6 +18,7 @@ import (
 	carrierh2 "github.com/zarkmakerburg/baft/internal/carrier/h2"
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/identity"
+	baftmetrics "github.com/zarkmakerburg/baft/internal/metrics"
 	"github.com/zarkmakerburg/baft/internal/resources"
 	"github.com/zarkmakerburg/baft/internal/routes"
 	"github.com/zarkmakerburg/baft/internal/session"
@@ -26,10 +27,12 @@ import (
 type Runtime struct {
 	Revocations *identity.RevocationSet
 	Resources   *resources.Allocator
+	peerMu      sync.Mutex
+	peers       map[*session.Peer]struct{}
 }
 
 func NewRuntime() *Runtime {
-	return &Runtime{Revocations: identity.NewRevocationSet()}
+	return &Runtime{Revocations: identity.NewRevocationSet(), peers: map[*session.Peer]struct{}{}}
 }
 
 func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
@@ -46,13 +49,41 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 		}
 		r.Resources = a
 	}
-	switch cfg.Node.Role {
-	case "listener":
-		return r.runListener(ctx, cfg)
-	case "dialer":
-		return r.runDialer(ctx, cfg)
-	default:
-		return fmt.Errorf("unsupported node role %q", cfg.Node.Role)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	metricsDone, stopMetrics, err := r.startMetrics(runCtx, cfg.Management.MetricsListen)
+	if err != nil {
+		return err
+	}
+	defer stopMetrics()
+
+	roleDone := make(chan error, 1)
+	go func() {
+		switch cfg.Node.Role {
+		case "listener":
+			roleDone <- r.runListener(runCtx, cfg)
+		case "dialer":
+			roleDone <- r.runDialer(runCtx, cfg)
+		default:
+			roleDone <- fmt.Errorf("unsupported node role %q", cfg.Node.Role)
+		}
+	}()
+
+	select {
+	case err := <-roleDone:
+		cancel()
+		return err
+	case err := <-metricsDone:
+		cancel()
+		if err == nil {
+			err = errors.New("metrics server stopped unexpectedly")
+		}
+		return fmt.Errorf("metrics: %w", err)
+	case <-ctx.Done():
+		cancel()
+		<-roleDone
+		return nil
 	}
 }
 
@@ -143,6 +174,8 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		if err != nil {
 			return err
 		}
+		r.registerPeer(p)
+		defer r.unregisterPeer(p)
 		return p.Run(hctx)
 	}, r.Revocations)
 
@@ -204,7 +237,7 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 	for i := 0; i < cfg.Transport.Shards; i++ {
 		client, err := carrierh2.NewClient("https://"+cfg.Peer.Address, tlsCfg)
 		if err != nil {
-			closeShards(shards)
+			r.closeShards(shards)
 			return err
 		}
 		pr, pw := io.Pipe()
@@ -212,7 +245,7 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 		if err != nil {
 			_ = pw.Close()
 			client.CloseIdleConnections()
-			closeShards(shards)
+			r.closeShards(shards)
 			return fmt.Errorf("open shard %d: %w", i, err)
 		}
 		p, err := session.New(session.Dialer, session.Carrier{In: resp.Body, Out: pw}, cfg.Peer.AllowedIdentity, nil, session.Options{
@@ -224,17 +257,18 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			_ = pw.Close()
 			_ = resp.Body.Close()
 			client.CloseIdleConnections()
-			closeShards(shards)
+			r.closeShards(shards)
 			return err
 		}
 		sh := &dialerShard{peer:p,client:client,pw:pw,body:resp.Body}
+		r.registerPeer(p)
 		shards = append(shards, sh)
 		go func(index int, sh *dialerShard) {
 			err := sh.peer.Run(ctx)
 			if ctx.Err()==nil && err!=nil { runErr<-fmt.Errorf("shard %d: %w",index,err) }
 		}(i,sh)
 	}
-	defer closeShards(shards)
+	defer r.closeShards(shards)
 
 	var listeners []net.Listener
 	defer func(){for _,ln:=range listeners{_ = ln.Close()}}()
@@ -278,8 +312,52 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 	}
 }
 
-func closeShards(shards []*dialerShard) {
-	for _,sh:=range shards { sh.close() }
+func (r *Runtime) closeShards(shards []*dialerShard) {
+	for _,sh:=range shards {
+		r.unregisterPeer(sh.peer)
+		sh.close()
+	}
+}
+
+func (r *Runtime) registerPeer(p *session.Peer) {
+	if p == nil { return }
+	r.peerMu.Lock()
+	if r.peers == nil { r.peers = map[*session.Peer]struct{}{} }
+	r.peers[p] = struct{}{}
+	r.peerMu.Unlock()
+}
+
+func (r *Runtime) unregisterPeer(p *session.Peer) {
+	if p == nil { return }
+	r.peerMu.Lock()
+	delete(r.peers,p)
+	r.peerMu.Unlock()
+}
+
+func (r *Runtime) metricsSnapshot() baftmetrics.Snapshot {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers { peers=append(peers,p) }
+	r.peerMu.Unlock()
+
+	out:=baftmetrics.Snapshot{}
+	if r.Resources!=nil {
+		rs:=r.Resources.Snapshot()
+		out.ReceiveUsedBytes=rs.ReceiveUsed
+		out.ReplayUsedBytes=rs.ReplayUsed
+		out.TotalUsedBytes=rs.TotalUsed
+	}
+	for _,p:=range peers {
+		s:=p.ConservationSnapshot()
+		out.ActiveFlows += len(s.Flows)
+		out.InvariantViolations += s.Violations
+		for _,f:=range s.Flows {
+			if f.Accepted>=f.Delivered { out.AcceptedBacklogBytes += f.Accepted-f.Delivered }
+			if f.Credit>=f.Delivered { out.CreditExposureBytes += f.Credit-f.Delivered }
+			out.ReplayOutstandingBytes += f.ReplayOutstanding
+		}
+	}
+	return out
 }
 
 func nodeIDFromIdentity(identity string) (string,error) {

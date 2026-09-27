@@ -33,3 +33,5 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 14. [14 — Stage-C PADL hypothesis](14-stage-c-padl.md)
 
 15. [15 — Conservation telemetry and multi-Shard budget](15-conservation-telemetry.md)
+
+16. [16 — Privacy-bounded conservation metrics](16-conservation-metrics.md)
