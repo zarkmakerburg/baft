@@ -1,15 +1,15 @@
-name: r2-noise-v01
+name: r3-record-shaping-safe
 
 on:
   push:
-    branches: [r2-noise-v01]
+    branches: [r3-record-shaping-safe]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  noise:
+  r3:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -23,25 +23,28 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: Noise unit and intermediary integration
+      - name: Record shaping unit gate
+        run: go test ./internal/recordshape -count=1 -v
+      - name: Noise and intermediary integration
         run: |
           go test ./internal/securityinternal ./tests/integration \
             -run 'NoiseIK|IKPSK' -count=1 -v
-      - name: Noise race sample
+      - name: Race sample
         run: |
-          go test -race ./internal/securityinternal ./tests/integration \
-            -run 'NoiseIK|IKPSK' -count=1
+          go test -race ./internal/recordshape ./internal/securityinternal ./tests/integration \
+            -run 'Bucketed|NoiseIK|IKPSK' -count=1
       - name: Installer syntax
         run: bash -n install.sh
       - name: Pair helper build
         run: go build ./cmd/baft-pair
       - name: Persian docs RTL gate
         run: go test ./tests/docs -count=1
-      - name: Package R2 bundle
+      - name: Package R3 safe bundle
         run: |
-          zip -r baft-r2-v0.1.zip \
+          zip -r baft-r3-record-shaping-safe.zip \
             install.sh \
             cmd/baft-pair \
+            internal/recordshape \
             internal/securityinternal \
             tests/integration/noise_h2_intermediary_test.go \
             docs/fa/16-reachability-innovation.md \
@@ -49,7 +52,7 @@ jobs:
             .github/workflows/r2-noise.yml
       - uses: actions/upload-artifact@v4
         with:
-          name: baft-r2-v0.1
-          path: baft-r2-v0.1.zip
+          name: baft-r3-record-shaping-safe
+          path: baft-r3-record-shaping-safe.zip
           if-no-files-found: error
           retention-days: 14

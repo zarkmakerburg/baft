@@ -172,4 +172,52 @@ Stage D/Replay همچنان **متوقف** است.
 
 random packet-size/timing morphing با هدف شکست سامانه‌های تحلیل یا فیلترینگ در این implementation وجود ندارد. R2 فعلی روی نصب‌پذیری، pairing، هویت رمزنگاری‌شده و confidentiality داخلی تمرکز دارد.
 
+
+## R3 safe — Bounded Record Shaping
+
+Stage D همچنان **PAUSED** است.
+
+این شاخه یک لایه‌ی `internal/recordshape` بعد از Noise transport encryption و قبل از write روی wire اضافه می‌کند. رفتار آن:
+
+- deterministic؛
+- bounded؛
+- بدون timing jitter؛
+- بدون توزیع تصادفی packet-size؛
+- با bucketهای ثابت برای کاهش افشای exact ciphertext length؛
+- قابل خاموش/روشن شدن از Pairing descriptor.
+
+<div dir="ltr" align="left">
+
+```text
+Noise ciphertext
+    -> recordshape bucket
+    -> length-prefixed H2 stream write
+```
+
+</div>
+
+این قابلیت **anti-GFW / anti-DPI / traffic-analysis evasion** نامیده نمی‌شود و چنین ادعایی ندارد.
+
+Installer گزینه‌ی زیر را دارد:
+
+<div dir="ltr" align="left">
+
+```text
+--enable-record-shaping
+```
+
+</div>
+
+در EX این flag داخل `BAFTPAIR1` منتقل می‌شود و IR آن را در pairing state دریافت می‌کند.
+
+گیت‌های R3 safe:
+
+- recordshape round-trip؛
+- bounded bucket set؛
+- Noise IK + record shaping روی TLS-terminating HTTP/2 intermediary؛
+- race detector؛
+- installer syntax؛
+- Persian RTL docs.
+
+
 </div>

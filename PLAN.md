@@ -134,4 +134,22 @@
 
 probabilistic timing/packet morphing برای دورزدن traffic analysis یا فیلترینگ در R2 v0.1 پیاده‌سازی نشده است.
 
+
+## R3 safe — برنامه
+
+- [x] `internal/recordshape` با bucket padding deterministic
+- [x] اعمال shaping بعد از Noise encryption و قبل از wire
+- [x] propagation گزینه از EX داخل Pairing descriptor
+- [x] `--enable-record-shaping` در installer
+- [x] تست bounded wire sizes و round-trip
+- [x] Integration Noise/H2 intermediary با shaping روشن
+- [ ] production wiring به `node.Runtime`
+- [ ] VM install test روی Debian/Ubuntu
+- [ ] R4 public distribution — **BLOCKED تا بعد از review**
+- [ ] Stage D Replay — **PAUSED**
+
+### خارج از scope
+
+random packet-size morphing و timing jitter برای شکست تحلیل آماری یا سامانه‌های فیلترینگ در این شاخه پیاده‌سازی نمی‌شوند.
+
 </div>
