@@ -42,3 +42,7 @@ Stage C resource allocator / DRR / multi-flow resource policy has not started ye
 
 ## YAML configuration gate
 Strict YAML loading is implemented with `go.yaml.in/yaml/v3 v3.0.5`. Anchors/aliases, merge keys, duplicate mapping keys, custom tags, multiple documents, oversized input and unknown configuration fields are rejected. GitHub Actions run 36312919871 passed test/race/vet/fuzz with this dependency.
+
+
+## Active revocation
+Runtime peer revocation is implemented for identity, certificate serial and SHA-256 certificate fingerprint. The H2 carrier registers active watchers; a new revocation cancels the established carrier context and closes the request body so the active stream is terminated rather than waiting for a future reconnect. New carriers from already-revoked peers are rejected before the stream handler starts.

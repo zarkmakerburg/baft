@@ -331,3 +331,68 @@ func TestFourClientsUseIndependentConnections(t *testing.T) {
 		_ = r.resp.Body.Close()
 	}
 }
+
+func TestActiveIdentityRevocationTerminatesExistingCarrier(t *testing.T) {
+	p := makePKI(t)
+	revocations := identity.NewRevocationSet()
+	serverDone := make(chan error, 1)
+
+	tlsCfg, err := identity.ServerTLS(p.roots, p.serverCert, map[string]struct{}{"urn:baft:node:ir-01": {}})
+	if err != nil { t.Fatal(err) }
+	srv := httptest.NewUnstartedServer(HandlerWithRevocation(func(ctx context.Context, r io.Reader, w io.Writer, peer PeerInfo) error {
+		<-ctx.Done()
+		serverDone <- ctx.Err()
+		return ctx.Err()
+	}, revocations))
+	srv.EnableHTTP2 = true
+	srv.TLS = tlsCfg
+	srv.StartTLS()
+	defer srv.Close()
+
+	c := clientFor(t, p, srv.URL, p.clientCert)
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	resp, err := c.Open(ctx, pr)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+
+	revocations.RevokeIdentity("urn:baft:node:ir-01")
+	select {
+	case err := <-serverDone:
+		if err == nil { t.Fatal("expected revoked carrier context to be cancelled") }
+	case <-time.After(time.Second):
+		t.Fatal("active carrier did not terminate after peer revocation")
+	}
+}
+
+func TestAlreadyRevokedPeerRejectedBeforeCarrierStarts(t *testing.T) {
+	p := makePKI(t)
+	revocations := identity.NewRevocationSet()
+	revocations.RevokeSerial("3")
+	started := make(chan struct{}, 1)
+
+	tlsCfg, err := identity.ServerTLS(p.roots, p.serverCert, map[string]struct{}{"urn:baft:node:ir-01": {}})
+	if err != nil { t.Fatal(err) }
+	srv := httptest.NewUnstartedServer(HandlerWithRevocation(func(ctx context.Context, r io.Reader, w io.Writer, peer PeerInfo) error {
+		started <- struct{}{}
+		return nil
+	}, revocations))
+	srv.EnableHTTP2 = true
+	srv.TLS = tlsCfg
+	srv.StartTLS()
+	defer srv.Close()
+
+	c := clientFor(t, p, srv.URL, p.clientCert)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.Open(ctx, http.NoBody); err == nil {
+		t.Fatal("expected pre-revoked peer to be rejected")
+	}
+	select {
+	case <-started:
+		t.Fatal("stream handler must not start for revoked peer")
+	default:
+	}
+}

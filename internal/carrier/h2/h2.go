@@ -2,7 +2,9 @@ package h2
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -74,13 +76,24 @@ func (c *Client) CloseIdleConnections() {
 }
 
 type PeerInfo struct {
-	Identity   string
-	RemoteAddr string
+	Identity          string
+	CertificateSerial string
+	CertificateSHA256 string
+	RemoteAddr        string
+}
+
+type RevocationWatcher interface {
+	IsRevoked(identity, serial, fingerprint string) bool
+	Watch(identity, serial, fingerprint string) (<-chan struct{}, func())
 }
 
 type StreamHandler func(context.Context, io.Reader, io.Writer, PeerInfo) error
 
 func Handler(stream StreamHandler) http.Handler {
+	return HandlerWithRevocation(stream, nil)
+}
+
+func HandlerWithRevocation(stream StreamHandler, revocations RevocationWatcher) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != CarrierPath {
 			http.NotFound(w, r)
@@ -98,6 +111,40 @@ func Handler(stream StreamHandler) http.Handler {
 			http.Error(w, "mTLS required", http.StatusUnauthorized)
 			return
 		}
+		leaf := r.TLS.PeerCertificates[0]
+		if len(leaf.URIs) != 1 {
+			http.Error(w, "invalid peer identity", http.StatusUnauthorized)
+			return
+		}
+		sum := sha256.Sum256(leaf.Raw)
+		peer := PeerInfo{
+			Identity:          leaf.URIs[0].String(),
+			CertificateSerial: leaf.SerialNumber.Text(16),
+			CertificateSHA256: hex.EncodeToString(sum[:]),
+			RemoteAddr:        r.RemoteAddr,
+		}
+		if revocations != nil && revocations.IsRevoked(peer.Identity, peer.CertificateSerial, peer.CertificateSHA256) {
+			http.Error(w, "peer revoked", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := r.Context()
+		var cancel context.CancelFunc
+		if revocations != nil {
+			revoked, unregister := revocations.Watch(peer.Identity, peer.CertificateSerial, peer.CertificateSHA256)
+			defer unregister()
+			ctx, cancel = context.WithCancel(ctx)
+			defer cancel()
+			go func() {
+				select {
+				case <-revoked:
+					cancel()
+					_ = r.Body.Close()
+				case <-ctx.Done():
+				}
+			}()
+		}
+
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
 		if f, ok := w.(http.Flusher); ok {
@@ -106,13 +153,8 @@ func Handler(stream StreamHandler) http.Handler {
 		if stream == nil {
 			return
 		}
-		leaf := r.TLS.PeerCertificates[0]
-		if len(leaf.URIs) != 1 {
-			return
-		}
-		peer := PeerInfo{Identity: leaf.URIs[0].String(), RemoteAddr: r.RemoteAddr}
 		out := &flushingWriter{w: w}
-		if err := stream(r.Context(), r.Body, out, peer); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
+		if err := stream(ctx, r.Body, out, peer); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
 			return
 		}
 	})

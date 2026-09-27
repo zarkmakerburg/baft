@@ -10,7 +10,7 @@
 - [x] PKI آزمایشی ephemeral در تست‌ها
 - [x] prototype واقعی full-duplex HTTP/2 + mTLS + cancellation
 - [x] اثبات 4 TCP مستقل برای 4 shard در smoke test
-- [ ] اجرای gate نهایی با Go 1.27.1
+- [x] اجرای gate نهایی با Go 1.27.1
 
 ## Stage B — secure vertical slice
 - [x] BAFT/1 HELLO / HELLO_ACK / READY برای نشست جدید
@@ -21,8 +21,8 @@
 - [x] route target injection و duplicate JSON key rejection
 - [x] duplicate DATA و invalid ACK/WINDOW unit tests
 - [x] idempotent OPEN بدون target redial دوم
-- [ ] deny/revocation روی carrier فعال
-- [ ] RESET و error mapping کامل
+- [x] deny/revocation روی carrier فعال
+- [x] RESET و error mapping پایه/فهرست ثابت
 - [ ] آزمون 1GiB دوطرفه COR-01
 - [x] config YAML loader سخت‌گیرانه + dependency/checksum pin
 - [ ] production node CLI برای اجرای IR/EX خارج از integration harness
