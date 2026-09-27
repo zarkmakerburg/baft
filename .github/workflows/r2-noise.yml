@@ -1,0 +1,37 @@
+name: r2-noise-v01
+
+on:
+  push:
+    branches: [r2-noise-v01]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  noise:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Module metadata
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Noise unit and intermediary integration
+        run: |
+          go test ./internal/securityinternal ./tests/integration \
+            -run 'NoiseIK|IKPSK' -count=1 -v
+      - name: Noise race sample
+        run: |
+          go test -race ./internal/securityinternal ./tests/integration \
+            -run 'NoiseIK|IKPSK' -count=1
+      - name: Installer syntax
+        run: bash -n install.sh
+      - name: Pair helper build
+        run: go build ./cmd/baft-pair
