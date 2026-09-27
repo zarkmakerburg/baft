@@ -41,3 +41,5 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 18. [18 — Stage-C soak gate](18-stage-c-soak.md)
 
 19. [19 — Bounded terminal quarantine](19-terminal-quarantine.md)
+
+20. [20 — ECRL for Stage D](20-stage-d-ecrl.md)

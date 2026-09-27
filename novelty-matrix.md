@@ -18,5 +18,7 @@
 | C-004 | PADL: pressure-aged deficit leasing | اتصال scheduling بایتی به replay-memory debt با aging ضد-starvation | fairness/pressure/starvation tests + COR-01 + Stage-E A/B | نتیجه مهندسی پشتیبانی‌شده در CI | هزینه انتخاب O(n) و prior-art اختصاصی هنوز باید سنجیده شود |
 
 | C-005 | conservation-oriented telemetry | گزارش رابطه invariant بین accepted/delivered/credit/ring به‌جای counterهای مستقل | snapshot tests + multi-Shard shared-budget conservation + metrics | نتیجه مهندسی پشتیبانی‌شده در CI | novelty حقوقی ادعا نمی‌شود؛ تمرکز بر diagnosability است |
+  
+| D-001 | ECRL: Epoch-Fenced Correlated Resume Ledger | ترکیب lease اتمیک Carrier با correlation بین sender tx و peer authoritative rx برای ACK/replay/FIN | stale-epoch race + lost-ACK + restart + mismatch + later carrier-replacement integration | فرضیه پژوهشی / مدل خالص unit-tested | prior-art اختصاصی و wire integration هنوز لازم است |
 
 </div>

@@ -44,4 +44,6 @@
 
 19. [19 — قرنطینه محدود وضعیت پایانی Flow](19-terminal-quarantine.md)
 
+20. [20 — ECRL برای Stage D](20-stage-d-ecrl.md)
+
 </div>
