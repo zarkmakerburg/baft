@@ -215,7 +215,6 @@ peer معتبر ولی buggy/stale مقدار `rx_accepted` بزرگ‌تر از
 
 - `S` = `tx_next` sender؛
 - `K` = آخرین acceptance ACK مشاهده‌شده توسط sender؛
-- `K_release` = آخرین delivery watermark مشاهده‌شده که اجازه آزادسازی replay را می‌دهد؛
 - `F` = کف معتبر snapshot/tombstone؛
 - `A` = `rx_accepted` متناظر در peer؛
 - `D` = `rx_delivered` متناظر در peer؛
@@ -333,86 +332,154 @@ K <= A
 
 بنابراین هر implementation یا test که `K<=D` را invariant بگیرد، بخشی از رفتار صحیح TWRL را اشتباه رد خواهد کرد.
 
-#### ACK دوسطحی و شکاف [D,K)
+#### نتیجه‌ی بازبینی K_release و شکاف [D,K)
 
-ECRL مسیر **ACK دوسطحی** را انتخاب می‌کند.
+پس از ساخت trace اجباری، نتیجه این است:
 
-هر ACK منطقی دو watermark مستقل حمل می‌کند:
+**در threat model فعلی BAFT، با state فقط در حافظه و با شرط RESET پس از تغییر `boot_id`، هیچ trace معتبرِ بدون تغییر `boot_id` پیدا نشد که آزادسازی replay تا K به‌جای K_release باعث data loss شود.**
 
-- `A_ack`: آخرین offset پذیرفته‌شده در حافظه bounded؛ sender آن را در `K` ثبت می‌کند.
-- `D_ack`: آخرین offset واقعاً تحویل‌شده به target؛ sender آن را در `K_release` ثبت می‌کند.
-
-قواعد:
-
-<div dir="ltr" align="left">
-
-```text
-K_release <= D
-K_release <= K <= A
-ReplayFreeFloor <= K_release
-
-D <= A <= S <= C
-```
-
-</div>
-
-اگر target کند باشد ممکن است:
+برهان:
 
 <div dir="ltr" align="left">
 
 ```text
 D < K <= A
+
+ReceiverRing = [D,A)
+therefore:
+[D,K) subset-of [D,A)
 ```
 
 </div>
 
-اما این دیگر اجازه‌ی آزادسازی `[D,K)` را نمی‌دهد، چون replay فقط تا `K_release` آزاد می‌شود و:
+اگر Carrier قطع شود ولی `boot_id` ثابت بماند، همان Process و همان receive ring پابرجاست. پس حتی اگر sender نسخه‌ی replay بازه `[D,K)` را آزاد کرده باشد، receiver هنوز نسخه‌ی authoritative آن را در ring دارد.
+
+برای از دست‌رفتن این بازه باید state حافظه‌ای receiver از بین برود. در مدل فعلی این یعنی Process restart و تغییر `boot_id`؛ در این حالت ECRL resume را رد می‌کند و Flow/Session باید RESET/recreate شود.
+
+تست deterministic این استدلال:
+
+<div dir="ltr" align="left">
+
+```text
+TestECRLKReleaseNotRequiredForCurrentInMemoryResume
+```
+
+</div>
+
+بنابراین ادعای قبلی که «K_release شکاف [D,K) را در ECRL فعلی می‌بندد» **پس گرفته می‌شود**.
+
+### K_release فقط برای durable snapshot آینده
+
+`K_release` فعلاً جزو wire/current ECRL نیست. آن را فقط به‌عنوان پیش‌نیاز یک mode آینده نگه می‌داریم که در آن receiver بتواند پس از restart از snapshot بادوام resume کند، یعنی حالتی که ring حافظه‌ای دیگر تضمین بقا ندارد.
+
+در آن mode آینده:
+
+- `K` = آخرین acceptance watermark؛
+- `K_release` = آخرین delivery watermark بادوام/قابل‌اثبات که sender اجازه دارد replay را تا آن آزاد کند.
+
+invariantهای آینده:
 
 <div dir="ltr" align="left">
 
 ```text
 K_release <= D
+S - K_release <= R_replay
+Credit_eff = min(C, K_release + R_replay)
 ```
 
 </div>
 
-در wire design آینده، credit همچنان admission-control است: `A` frontier پذیرش است و credit از free receive capacity مشتق می‌شود. برای ring با ظرفیت R:
+`R_replay` سقف bytesی است که sender باید برای بازیابی durable نگه دارد.
+
+### target کند، replay cap و نبود deadlock
+
+تست:
 
 <div dir="ltr" align="left">
 
 ```text
-occupancy = A - D
-free      = R - occupancy
-C         = A + free
-          = D + R
+TestECRLFutureDurableSlowTargetReplayBoundNoDeadlock
 ```
 
 </div>
 
-پس «credit بر اساس A» به معنی استفاده از frontier پذیرش همراه با ظرفیت آزاد است؛ نه اینکه بدون توجه به D، پنجره نامحدود جلو برود.
+یک target کند را مدل می‌کند که acceptance سریع‌تر از delivery جلو می‌رود. Sender فقط تا:
 
-**قانون توقف [D,K):** هر implementation که replay را صرفاً با `K` آزاد کند، در حالت `D<K` مردود است.
+<div dir="ltr" align="left">
+
+```text
+Credit_eff = min(C, K_release + R_replay)
+```
+
+</div>
+
+حق پیشروی دارد. وقتی replay به سقف می‌رسد، DATA جدید block می‌شود؛ اما delivery/ACK control خارج از PADL DATA eligibility ادامه دارد، `K_release` جلو می‌رود و ظرفیت دوباره باز می‌شود. در تمام trace:
+
+<div dir="ltr" align="left">
+
+```text
+S - K_release <= R_replay
+```
+
+</div>
+
+حفظ می‌شود و progress متوقف نمی‌شود.
+
+### تعامل با PADL
+
+در **ECRL فعلی in-memory**، PADL همان replay pressure واقعی current implementation را می‌بیند و این سند semantics آن را تغییر نمی‌دهد.
+
+در **durable mode آینده**:
+
+1. eligibility قبل از PADL محدود می‌شود:
+
+<div dir="ltr" align="left">
+
+```text
+next_data_end <= Credit_eff
+```
+
+</div>
+
+2. pressure مناسب Flow برابر retained replay خواهد بود:
+
+<div dir="ltr" align="left">
+
+```text
+ReplayPressure = S - K_release
+```
+
+</div>
+
+3. PADL فقط بین Flowهای eligible انتخاب می‌کند؛ اجازه ندارد `Credit_eff` یا reservation را دور بزند.
+4. delivery ACK / control frameها در صف control جدا می‌مانند، بنابراین Flowی که به cap replay رسیده می‌تواند با پیشروی target دوباره unblock شود و circular deadlock ساخته نمی‌شود.
 
 #### نماد F — کف معتبر snapshot/tombstone
 
 `F` = **بزرگ‌ترین offsetی که یک snapshot/tombstone معتبر و retained تضمین می‌کند prefix `[0,F)` دیگر برای بازسازی به state ناپایدار قدیمی وابسته نیست.**
 
-برای Flow فعال:
+برای Flow فعال در مدل فعلی:
 
 <div dir="ltr" align="left">
 
 ```text
-F <= D <= A
+F <= D <= A <= S <= C
 K <= A
-K_release <= D
 ```
 
 </div>
 
-بین `F` و `K` ترتیب ثابت وجود ندارد:
+بین `F` و `K` ترتیب ثابت وجود ندارد.
 
-- با ACK گم‌شده ممکن است `K < F <= D`؛
-- با target کند ممکن است `F <= D < K <= A`.
+در durable mode آینده، شرط اضافه می‌شود:
+
+<div dir="ltr" align="left">
+
+```text
+K_release <= D
+```
+
+</div>
 
 برای tombstone پایانی که همه‌ی bytes تا `final_offset` تحویل شده‌اند:
 
@@ -424,9 +491,7 @@ F = D = A = S = final_offset
 
 </div>
 
-و reopen در دوره retention ممنوع است.
-
-F «مجوز آزادسازی replay» نیست؛ replay release در حالت عادی فقط از `K_release` پیروی می‌کند. F در reconciliation/tombstone مشخص می‌کند از چه prefixی به عقب rollback یا resurrection مجاز نیست.
+F مجوز آزادسازی replay در current in-memory mode نیست؛ نقش آن جلوگیری از rollback/resurrection هنگام reconciliation است.
 
 #### اثر بر ECRL
 
@@ -460,8 +525,7 @@ candidate پیش از commit فقط control مربوط به resume دارد و �
 
 ```text
 F <= D <= A <= S <= C
-K_release <= D
-K_release <= K <= A
+K <= A
 ```
 
 </div>
@@ -632,31 +696,51 @@ ECRL با «کارکردن معمولی» تأیید نمی‌شود. تست‌�
 
 **چرا F06 دو تست دارد؟** سناریویی حذف یا ادغام مفهومی نشده است. Lost FIN و Lost FIN_ACK دو جهت متفاوتِ از دست‌رفتن control در invariant terminal monotonicity (I6) هستند؛ به همین دلیل هر دو زیر شناسه F06 باقی مانده‌اند ولی با دو تست مستقل اجرا می‌شوند.
 
-## 5B. Mutation gate
+## 5B. Mutation gate — اجرای واقعی mutant داخل reference model
 
-هر mutant باید حداقل توسط یک F مشخص گرفته شود:
+Mutationها با متغیر تستی `ECRL_MUTANT` **داخل همان reference model** فعال می‌شوند. Workflow سپس **خود تست F اصلی** را با mutant اجرا می‌کند و فقط وقتی mutant کشته‌شده محسوب می‌شود که همان تست واقعاً با `--- FAIL:` خارج شود.
 
-| جهش عمدی | oracle / تست گیرنده | اگر گرفته نشود |
+| mutant | تست F که باید در حضور mutant FAIL شود | اثر عمدی |
 |---|---|---|
-| پذیرش frame از epoch قدیمی بعد از commit | F01 | gate باز؛ zombie Carrier می‌تواند state را تغییر دهد |
-| replay از K به‌جای A | F03 (و overlap قابل‌مشاهده در F04) | gate باز؛ duplicate محتمل |
-| آزادسازی replay تا K وقتی D<K | F04 / `K_release<=D` | gate باز؛ crash gap `[D,K)` می‌تواند از دست برود |
-| OPEN روی stream tombstone‌شده | F05 | gate باز؛ resurrection ممکن |
-| اعمال دوباره FIN | F06 | gate باز؛ terminal side effect غیر-idempotent |
-| پذیرش snapshot با A>S | F08 | gate باز؛ peer bytes اختراع کرده است |
-| resume به‌جای RESET بعد از تغییر boot_id | F07 | gate باز؛ state volatile از Process قبلی فرض می‌شود |
+| `f01_accept_old_epoch` | F01 / `TestECRLF01ZombieCarrier` | authorize کردن Carrier قدیمی |
+| `f02_accept_both_candidates` | F02 / `TestECRLF02DualCandidate` | پذیرش هم‌زمان دو candidate |
+| `f03_replay_from_k` | F03 / `TestECRLF03LostACK` | replay frontier = K به‌جای A |
+| `f04_overlap_ring_replay` | F04 / `TestECRLF04AcceptedNotDeliveredPartition` | شروع replay از D و overlap با Ring |
+| `f05_accept_tombstone_open` | F05 / `TestECRLF05TombstoneResurrection` | OPEN روی tombstone |
+| `f06_lost_fin_never_closes` | F06 / `TestECRLF06LostFIN` | FIN گم‌شده هرگز replay/close نشود |
+| `f06_apply_fin_twice` | F06 / `TestECRLF06DuplicateFINIdempotence` | side effect FIN دو بار اعمال شود |
+| `f07_resume_after_boot_change` | F07 / `TestECRLF07PeerRestart` | resume بعد از تغییر Boot ID |
+| `f08_accept_a_gt_s` | F08 / `TestECRLF08InconsistentSnapshot` | حذف reject برای A>S |
+| `f09_skip_k_le_a` | F09 / `TestECRLF09DeterministicPropertySweep` | حذف بررسی K<=A |
+| `f10_replay_from_a_minus_1` | F10 / `TestECRLF10ExactByteStream` | off-by-one replay از A-1؛ duplicate |
+| `f10_replay_from_a_plus_1` | F10 / `TestECRLF10ExactByteStream` | off-by-one replay از A+1؛ missing byte |
 
-فایل mutation harness:
+**نکته درباره mutant قدیمی release-to-K:** بعد از پاسخ بند [D,K)، «release تا K در current in-memory mode» دیگر mutant معتبر محسوب نمی‌شود، چون ring زنده نسخه‌ی `[D,K)` را نگه می‌دارد. آن رفتار فقط در durable-snapshot mode آینده، که receiver می‌تواند ring را در restart از دست بدهد ولی resume ادامه یابد، خطرناک است. بنابراین آن mutant از gate فعلی حذف شده تا تست، فرض غلط را enforce نکند.
 
-<div dir="ltr" align="left">
+## 5C. Prior art برای ACK/settlement چندمرحله‌ای
 
-```text
-internal/recovery/ecrl_mutation_test.go
-```
+| سیستم | مکانیزم موجود | شباهت با ایده‌ی K/K_release | تفاوت BAFT | نتیجه |
+|---|---|---|---|---|
+| **MQTT QoS 2** | چرخه PUBLISH → PUBREC → PUBREL → PUBCOMP؛ receiver پس از PUBREC ownership پیام را می‌پذیرد و duplicate PUBLISH نباید دوباره به onward recipient تحویل شود | جداسازی «دریافت/ownership» از «تکمیل exchange» | message/Packet-Identifier محور است، نه cumulative byte stream با TWRL و target-socket watermark | ACK چندمرحله‌ای به‌خودی‌خود جدید نیست |
+| **AMQP 1.0 settlement** | delivery می‌تواند unsettled بماند؛ receiver terminal outcome می‌دهد؛ settlement دوطرفه و link recovery/unsettled state وجود دارد؛ AMQP حتی `received(section,offset)` برای resume partial message دارد | بسیار نزدیک به جداسازی receive state از terminal processing/settlement و recovery | BAFT Flow یک byte stream پیوسته روی target socket است و state را با epoch fencing، TWRL `D/A/C` و replay cap ترکیب می‌کند | prior art قوی؛ ادعای novelty برای K_release به‌تنهایی قابل دفاع نیست |
+| **MPTCP DATA_ACK** | ACK تجمعی در data-sequence space کل connection، مستقل از ACKهای subflow | شبیه K/A: acknowledgement در یک sequence space بالاتر از transport path | DATA_ACK موفقیت دریافت data-level را نشان می‌دهد، نه تحویل به application target؛ معادل K_release نیست | cumulative higher-layer ACK prior art است |
+| **Kafka producer acks/idempotence** | `acks=1/all` سطح durability در broker/replica را تعیین می‌کند؛ idempotent producer از duplicate write در log جلوگیری می‌کند | نشان می‌دهد acknowledgement می‌تواند stage/durability semantics متفاوت داشته باشد | Kafka record/log/replication محور است، نه per-Flow target-delivery byte watermark | چندسطحی بودن «acknowledged» جدید نیست |
 
-</div>
+منابع:
 
-وجود PASS برای mutation test یعنی mutant **به‌درستی رد شده است**، نه اینکه رفتار خراب پذیرفته شده باشد.
+- MQTT 5.0 OASIS — QoS 2 و ownership/duplicate rules: https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html
+- AMQP 1.0 OASIS — settlement, disposition و link recovery: https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-complete-v1.0-os.pdf
+- MPTCP RFC 8684 — Data ACK: https://www.rfc-editor.org/rfc/rfc8684
+- Apache Kafka producer configs — `acks` و idempotence: https://kafka.apache.org/40/configuration/producer-configs/
+
+### نتیجه‌ی novelty پس از این review
+
+- **K_release / ACK دوسطحی به‌خودی‌خود نوآوری نیست.**
+- در مدل فعلی in-memory حتی requirement فعال ECRL هم نیست.
+- اگر BAFT تفاوت پژوهشی قابل‌بررسی داشته باشد، در **ترکیب** epoch-fenced Carrier handoff + TWRL `D/A/C` + exact byte partition + tombstone/FIN + bounded replay/PADL coupling است، نه در داشتن دو ACK.
+- این تفاوت هنوز فقط **فرضیه پژوهشی** است.
+- **نتیجه مهندسی پشتیبانی‌شده:** برای ECRL engine هنوز ادعا نمی‌شود.
+- **Patentability:** همچنان بررسی‌نشده و نیازمند patent/literature search تخصصی است.
 
 ## 6. تصمیم فعلی درباره novelty
 

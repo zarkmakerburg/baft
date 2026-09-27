@@ -32,8 +32,47 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: ECRL F01-F10 deterministic falsification harness
+
+      - name: Baseline F01-F10 and model gates
         run: |
           go test ./internal/recovery \
-            -run '^(TestECRLF(0[1-9]|10)|TestECRLMutation)' \
+            -run '^(TestECRLF|TestECRLKReleaseNotRequiredForCurrentInMemoryResume|TestECRLFutureDurableSlowTargetReplayBoundNoDeadlock|TestECRLMutationCatalogCoversEveryF)' \
             -count=1 -v
+
+      - name: Mutation kill gate — original F tests must FAIL
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kill_mutant() {
+            local mutant="$1"
+            local test_name="$2"
+            echo "===== MUTANT ${mutant} -> ${test_name} (expected FAIL) ====="
+            set +e
+            output="$(ECRL_MUTANT="${mutant}" go test ./internal/recovery -run "^${test_name}$" -count=1 -v 2>&1)"
+            status=$?
+            set -e
+            printf '%s\n' "$output"
+            if [ "$status" -eq 0 ]; then
+              echo "MUTANT_SURVIVED ${mutant}: gate OPEN"
+              exit 1
+            fi
+            if ! grep -q -- "--- FAIL: ${test_name}" <<<"$output"; then
+              echo "MUTANT_INVALID ${mutant}: expected original F test failure not visible"
+              exit 1
+            fi
+            echo "MUTANT_KILLED ${mutant} by ${test_name}"
+          }
+
+          kill_mutant f01_accept_old_epoch TestECRLF01ZombieCarrier
+          kill_mutant f02_accept_both_candidates TestECRLF02DualCandidate
+          kill_mutant f03_replay_from_k TestECRLF03LostACK
+          kill_mutant f04_overlap_ring_replay TestECRLF04AcceptedNotDeliveredPartition
+          kill_mutant f05_accept_tombstone_open TestECRLF05TombstoneResurrection
+          kill_mutant f06_lost_fin_never_closes TestECRLF06LostFIN
+          kill_mutant f06_apply_fin_twice TestECRLF06DuplicateFINIdempotence
+          kill_mutant f07_resume_after_boot_change TestECRLF07PeerRestart
+          kill_mutant f08_accept_a_gt_s TestECRLF08InconsistentSnapshot
+          kill_mutant f09_skip_k_le_a TestECRLF09DeterministicPropertySweep
+          kill_mutant f10_replay_from_a_minus_1 TestECRLF10ExactByteStream
+          kill_mutant f10_replay_from_a_plus_1 TestECRLF10ExactByteStream

@@ -132,7 +132,6 @@ For each Flow and direction:
 
 - `S` = sender `tx_next`;
 - `K` = sender-observed acceptance ACK;
-- `K_release` = sender-observed delivery watermark that permits replay release;
 - `F` = valid snapshot/tombstone floor;
 - `A` = peer `rx_accepted`;
 - `D` = peer `rx_delivered`;
@@ -228,61 +227,47 @@ but `K <= D` is not guaranteed.
 
 Any implementation that treats `K<=D` as mandatory would reject valid TWRL states.
 
-#### Two-level ACK and the [D,K) gap
+#### Re-evaluation of K_release and the [D,K) gap
 
-ECRL selects the **two-level ACK** design.
+The mandatory trace review found **no valid unchanged-Boot-ID trace in the current threat model where freeing sender replay through K causes data loss**.
 
-Each logical ACK carries two independent watermarks:
+When `D<K<=A`, the receiver owns `[D,A)` in its live in-memory ring, so `[D,K)` remains present after the sender releases its replay copy. With unchanged `boot_id`, the same Process/ring survives Carrier replacement. Losing that ring requires Process restart, which changes `boot_id` and causes current ECRL to reject resume.
 
-- `A_ack`: accepted into bounded receive state; stored by the sender as `K`.
-- `D_ack`: actually delivered to the target; stored as `K_release`.
+Therefore the earlier claim that K_release closes a current in-memory `[D,K)` correctness gap is **withdrawn**.
 
-Rules:
+The deterministic trace is `TestECRLKReleaseNotRequiredForCurrentInMemoryResume`.
+
+### K_release is only a future durable-snapshot prerequisite
+
+K_release is not part of the current ECRL wire contract. It is retained only for a future mode that may resume across receiver restart from durable state.
+
+For that future mode:
 
 ```text
 K_release <= D
-K_release <= K <= A
-ReplayFreeFloor <= K_release
-
-D <= A <= S <= C
+S - K_release <= R_replay
+Credit_eff = min(C, K_release + R_replay)
 ```
 
-When the target is slow, `D < K <= A` is valid, but replay may still only be freed through `K_release`, preventing loss of `[D,K)`.
+The deterministic slow-target model `TestECRLFutureDurableSlowTargetReplayBoundNoDeadlock` proves the reference model never exceeds `R_replay` and still makes progress.
 
-Future credit semantics remain admission-control based: with receive capacity R,
+PADL interaction in that future mode:
 
-```text
-occupancy = A - D
-free      = R - occupancy
-C         = A + free
-          = D + R
-```
+- DATA eligibility is first bounded by `next_data_end <= Credit_eff`;
+- replay pressure becomes `S-K_release`;
+- PADL selects only among eligible flows and cannot override the cap;
+- delivery/control ACKs remain outside the PADL DATA queue, allowing target progress to reopen capacity and avoiding circular deadlock.
 
-So acceptance frontier A participates in credit computation without allowing the window to outrun real free capacity.
+### F — valid snapshot/tombstone floor
 
-**[D,K) stop rule:** any implementation that frees replay directly through K while `D<K` is rejected.
-
-#### F — valid snapshot/tombstone floor
-
-`F` = **the greatest offset for which a retained valid snapshot/tombstone guarantees that prefix `[0,F)` no longer depends on older volatile reconstruction state.**
-
-For an active Flow:
+For the current in-memory model:
 
 ```text
-F <= D <= A
+F <= D <= A <= S <= C
 K <= A
-K_release <= D
 ```
 
-There is no fixed ordering between F and K. A lost ACK can yield `K<F<=D`; a slow target can yield `F<=D<K<=A`.
-
-For a fully delivered terminal tombstone:
-
-```text
-F = D = A = S = final_offset
-```
-
-F is not the normal replay-release permission; normal replay release follows `K_release`. F constrains rollback/resurrection during reconciliation.
+No fixed order exists between F and K. In a future durable mode, `K_release<=D` is additionally required. For a fully delivered terminal tombstone, `F=D=A=S=final_offset`.
 
 #### Consequence for ECRL
 
@@ -310,8 +295,7 @@ A pre-commit candidate may exchange resume control only.
 
 ```text
 F <= D <= A <= S <= C
-K_release <= D
-K_release <= K <= A
+K <= A
 ```
 
 The first inequality prevents invented or rolled-back receive state; the second preserves TWRL.
@@ -433,19 +417,41 @@ No F criterion is removed.
 
 F06 retains one criterion because both cases test terminal monotonicity I6, but **no scenario is merged away**: Lost FIN and Lost FIN_ACK are separate tests.
 
-## 5B. Mutation gate
+## 5B. Mutation gate — mutants injected into the reference model
 
-| injected mutant | catching criterion |
+Mutations are activated inside the same test-only reference model through `ECRL_MUTANT`. The workflow then runs the **original F test** and requires a real `--- FAIL:` result before declaring the mutant killed.
+
+| mutant | original F test expected to FAIL |
 |---|---|
-| accept old-epoch frame after commit | F01 |
-| replay from K instead of A | F03 (also creates F04 overlap) |
-| free replay through K while D<K | F04 / `K_release<=D` |
-| accept OPEN on tombstoned stream | F05 |
-| apply FIN side effect twice | F06 |
-| accept snapshot with A>S | F08 |
-| resume instead of reset after Boot-ID change | F07 |
+| `f01_accept_old_epoch` | F01 / `TestECRLF01ZombieCarrier` |
+| `f02_accept_both_candidates` | F02 / `TestECRLF02DualCandidate` |
+| `f03_replay_from_k` | F03 / `TestECRLF03LostACK` |
+| `f04_overlap_ring_replay` | F04 / `TestECRLF04AcceptedNotDeliveredPartition` |
+| `f05_accept_tombstone_open` | F05 / `TestECRLF05TombstoneResurrection` |
+| `f06_lost_fin_never_closes` | F06 / `TestECRLF06LostFIN` |
+| `f06_apply_fin_twice` | F06 / `TestECRLF06DuplicateFINIdempotence` |
+| `f07_resume_after_boot_change` | F07 / `TestECRLF07PeerRestart` |
+| `f08_accept_a_gt_s` | F08 / `TestECRLF08InconsistentSnapshot` |
+| `f09_skip_k_le_a` | F09 / `TestECRLF09DeterministicPropertySweep` |
+| `f10_replay_from_a_minus_1` | F10 / `TestECRLF10ExactByteStream` |
+| `f10_replay_from_a_plus_1` | F10 / `TestECRLF10ExactByteStream` |
 
-Mutation tests live in `internal/recovery/ecrl_mutation_test.go`. A PASS means the deliberately broken mutant was successfully rejected.
+The previous release-to-K mutation is no longer a valid mutant for the **current in-memory threat model** after the [D,K) proof. It belongs only to a future durable-restart mode.
+
+## 5C. Prior art for multi-stage acknowledgement/settlement
+
+- **MQTT QoS 2:** separates receipt/ownership and completion through PUBREC/PUBREL/PUBCOMP and prevents duplicate onward delivery for the same in-flight identifier.
+- **AMQP 1.0:** has unsettled delivery state, terminal outcomes, settlement, link recovery, and even a partial-message `received(section,offset)` resume state.
+- **MPTCP DATA_ACK:** provides a cumulative acknowledgment in the connection-level data sequence space, above individual TCP subflow ACKs.
+- **Kafka:** distinguishes producer acknowledgment/durability levels and supports idempotent producer writes.
+
+Therefore a two-level ACK or K_release concept is not novel by itself. The only remaining BAFT research hypothesis is the composition of epoch-fenced Carrier handoff, TWRL D/A/C state, exact byte partitioning, FIN/tombstones, and bounded replay/PADL coupling. Supported-engineering-result status for the ECRL engine is still **not claimed**, and patentability remains unassessed.
+
+Sources:
+- https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html
+- https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-complete-v1.0-os.pdf
+- https://www.rfc-editor.org/rfc/rfc8684
+- https://kafka.apache.org/40/configuration/producer-configs/
 
 ## 6. Current novelty decision
 
