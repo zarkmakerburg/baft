@@ -158,9 +158,10 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 		cfg := foreignCfgs[i]
 		rt := node.NewRuntime()
 		go func() { listenerDone <- rt.Run(ctx, cfg) }()
-	}
-	for _, cfg := range foreignCfgs {
-		waitTCP(t, cfg.Server.Listen, time.Now().Add(8*time.Second))
+		// Confirm each listener before starting the next. This preserves the
+		// six-node regression while avoiding CI scheduling spikes from six
+		// simultaneous TLS/Noise listener startups.
+		waitTCP(t, cfg.Server.Listen, time.Now().Add(12*time.Second))
 	}
 
 	masterDone := make(chan error, 1)
