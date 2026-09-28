@@ -292,7 +292,7 @@ func (s *Server) evaluateAlertsAt(ctx context.Context,now time.Time) error {
 	view:=s.store.MonitoringSnapshot(now,s.alertConfig.TelemetryStaleAfter)
 	current:=map[string]Alert{}
 	for _,n:=range view{
-		if !n.LastSeen.IsZero()&&now.Sub(n.LastSeen)>s.alertConfig.TelemetryStaleAfter{
+		if !n.LastSeen.IsZero()&&now.Sub(n.LastSeen)>=s.alertConfig.TelemetryStaleAfter{
 			key:="telemetry_stale:"+n.NodeID
 			current[key]=s.makeAlert("telemetry_stale","firing",n.NodeID,n.Alias,"",now)
 		}
