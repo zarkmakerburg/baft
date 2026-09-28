@@ -894,19 +894,6 @@ func (p *Peer) MarkPostCommitFailure(err error,ctl RecoveryControl) error {
 	return out
 }
 
-func (p *Peer) StopAndWaitRecoveryCarrier(ctl RecoveryControl) {
-	if p.recovery==nil{return}
-	a:=p.recovery
-	a.mu.Lock()
-	prep:=a.prepared
-	if prep==nil||!sameRecoveryTransaction(prep.control,ctl){a.mu.Unlock();return}
-	s:=prep.sender
-	a.mu.Unlock()
-	if s==nil{return}
-	s.stop(ErrCarrierUnavailable)
-	<-s.done
-}
-
 func (p *Peer) HandleRecoveryControlFrame(fr protocol.Frame) error {
 	ctl,err:=DecodeRecoveryControl(fr);if err!=nil{return err}
 	switch ctl.Phase {
