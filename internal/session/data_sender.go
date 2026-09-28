@@ -310,3 +310,10 @@ func (s *outboundSender) updatePressure(flowID uint64, replayBytes uint64) {
 	}
 	s.mu.Unlock()
 }
+
+
+func (s *outboundSender) isStopped() bool {
+	if s==nil{return true}
+	s.mu.Lock();defer s.mu.Unlock()
+	return s.stopped
+}
