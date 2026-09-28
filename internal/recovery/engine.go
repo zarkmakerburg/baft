@@ -255,6 +255,8 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 		if pf.FinRecv && !lf.FinSent { return Plan{}, ErrStateMismatch }
 		if lf.FinAcked && !pf.FinAckSent { return Plan{}, ErrStateMismatch }
 		if pf.FinAcked && !lf.FinAckSent { return Plan{}, ErrStateMismatch }
+		if lf.FinAckConfirmed && !pf.FinAcked { return Plan{}, ErrStateMismatch }
+		if pf.FinAckConfirmed && !lf.FinAcked { return Plan{}, ErrStateMismatch }
 
 		localReplay := pf.RxAccepted
 		if e.faults.replayFromK {
@@ -270,6 +272,8 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 			PeerReleaseThrough: pf.TxAcked,
 			LocalFinAckCanAdvance: pf.FinAckSent && !lf.FinAcked,
 			PeerFinAckCanAdvance: lf.FinAckSent && !pf.FinAcked,
+			LocalFinAckConfirmCanAdvance: pf.FinAcked && lf.FinAckSent && !lf.FinAckConfirmed,
+			PeerFinAckConfirmCanAdvance: lf.FinAcked && pf.FinAckSent && !pf.FinAckConfirmed,
 		})
 	}
 	sortFlowPlans(out.Flows)
@@ -367,6 +371,7 @@ func validateSnapshotEngine(s Snapshot) error {
 		if f.RxDelivered > f.RxAccepted || f.RxAccepted > f.RxCredit { return ErrStateMismatch }
 		if f.FinAcked && !f.FinSent { return ErrStateMismatch }
 		if f.FinAckSent && !f.FinRecv { return ErrStateMismatch }
+		if f.FinAckConfirmed && !f.FinAckSent { return ErrStateMismatch }
 	}
 	return nil
 }
