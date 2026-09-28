@@ -140,7 +140,6 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	if err:=sh.peer.MarkRecoveryCommitReady(prepared);err!=nil{return err}
 
 	if err:=r.recoveryFail("before_commit");err!=nil{sh.peer.RecordRecoveryFailure("commit");return fmt.Errorf("before commit: %w",err)}
-
 	commitCtl:=prepared;commitCtl.Phase=session.RecoveryPhaseCommit
 	commitCopies:=r.recoveryControlCopiesForTest("dialer_commit_send",&commitCtl)
 	if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{return fmt.Errorf("commit send: %w",err)}
@@ -178,14 +177,66 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	published=true
 	sh.replaceCarrier(o);keepCarrier=true
 
-	finalAck:=commitCtl;finalAck.Phase=session.RecoveryPhaseCommitAck
-	if err:=session.EncodeRecoveryControl(o.carrier.Out,finalAck);err!=nil{
-		return sh.peer.MarkPostCommitFailure(fmt.Errorf("final commit ack: %w",err),commitCtl)
+	if err:=r.finishDialerFinalization(ctx,sh,o,commitCtl);err!=nil{return err}
+	return nil
+}
+
+func (r *Runtime) finishDialerFinalization(ctx context.Context,sh *dialerShard,o *openedRuntimeCarrier,commitCtl session.RecoveryControl) error {
+	finalCtl:=commitCtl
+	finalCtl.Phase=session.RecoveryPhaseFinalize
+	finalCtl.Status=session.RecoveryResolutionNone
+	if err:=sh.peer.MarkFinalizationStarted(finalCtl);err!=nil{return err}
+
+	copies:=r.recoveryControlCopiesForTest("dialer_finalize_send",&finalCtl)
+	if copies<1{copies=1}
+	for i:=0;i<copies;i++{
+		if err:=session.EncodeRecoveryControl(o.carrier.Out,finalCtl);err!=nil{
+			_ = sh.peer.MarkFinalizationUncertain(finalCtl)
+			sh.peer.EnsureRecoverySignal(err)
+			return fmt.Errorf("%w: FINALIZE write: %v",session.ErrFinalizationUncertain,err)
+		}
 	}
+	// Preserve the previous test hook name while exposing an explicit finalizer
+	// stage for deterministic asymmetric-final-ACK tests.
 	if err:=r.recoveryFail("after_final_ack_send");err!=nil{
-		return sh.peer.MarkPostCommitFailure(err,commitCtl)
+		_ = sh.peer.MarkFinalizationUncertain(finalCtl);sh.peer.EnsureRecoverySignal(err)
+		return fmt.Errorf("%w: %v",session.ErrFinalizationUncertain,err)
 	}
-	if err:=sh.peer.FinalizeRecoveryCommit(ctx,commitCtl);err!=nil{return err}
+	if err:=r.recoveryFail("after_finalize_send");err!=nil{
+		_ = sh.peer.MarkFinalizationUncertain(finalCtl);sh.peer.EnsureRecoverySignal(err)
+		return fmt.Errorf("%w: %v",session.ErrFinalizationUncertain,err)
+	}
+
+	ackNeed:=r.recoveryControlCopiesForTest("dialer_finalize_ack_reads",&finalCtl)
+	if ackNeed<1{ackNeed=1}
+	acks:=0
+	for acks<ackNeed{
+		fr,err:=protocol.Decode(o.carrier.In)
+		if err!=nil{
+			_ = sh.peer.MarkFinalizationUncertain(finalCtl);sh.peer.EnsureRecoverySignal(err)
+			return fmt.Errorf("%w: FINALIZE_ACK: %v",session.ErrFinalizationUncertain,err)
+		}
+		ctl,err:=session.DecodeRecoveryControl(fr);if err!=nil{
+			_ = sh.peer.MarkFinalizationUncertain(finalCtl);sh.peer.EnsureRecoverySignal(err)
+			return fmt.Errorf("%w: FINALIZE_ACK decode: %v",session.ErrFinalizationUncertain,err)
+		}
+		switch ctl.Phase{
+		case session.RecoveryPhaseFinalizeAck:
+			if err:=sh.peer.ValidateRecoveryControl(ctl,session.RecoveryPhaseFinalizeAck);err!=nil{
+				_ = sh.peer.MarkFinalizationUncertain(finalCtl);return err
+			}
+			acks++
+		case session.RecoveryPhaseCommitAck:
+			if err:=sh.peer.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommitAck);err!=nil{return err}
+		case session.RecoveryPhaseStatusReply:
+			if err:=sh.peer.ValidateStatusReply(ctl);err!=nil{return err}
+		default:
+			_ = sh.peer.MarkFinalizationUncertain(finalCtl)
+			return recovery.ErrStateMismatch
+		}
+	}
+	if err:=sh.peer.CompleteRecoveryFinalization(finalCtl);err!=nil{return err}
+	if err:=sh.peer.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{return err}
 	return nil
 }
 
