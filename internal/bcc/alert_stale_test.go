@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,12 +16,13 @@ import (
 )
 
 func TestForcedStaleAlertFiresOnceAndResolvesOnce(t *testing.T){
+	var mu sync.Mutex
 	var got []Alert
 	webhook:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
 		defer r.Body.Close()
 		var a Alert
 		if err:=json.NewDecoder(r.Body).Decode(&a);err!=nil{t.Error(err);http.Error(w,"bad json",400);return}
-		got=append(got,a)
+		mu.Lock();got=append(got,a);mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer webhook.Close()
@@ -47,17 +49,19 @@ func TestForcedStaleAlertFiresOnceAndResolvesOnce(t *testing.T){
 	if _,_,err:=store.ApplyTelemetry(token,telemetry.Sign(token,body),body,rep);err!=nil{t.Fatal(err)}
 
 	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
-	if len(got)!=0{t.Fatalf("unexpected alert before threshold: %+v",got)}
+	mu.Lock();if len(got)!=0{t.Fatalf("unexpected alert before threshold: %+v",got)};mu.Unlock()
 
 	fakeNow:=base.Add(3*time.Minute)
 	app.now=func() time.Time{return fakeNow}
 	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
 	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
+	mu.Lock()
 	if len(got)!=1{t.Fatalf("stale alert count=%d want=1 alerts=%+v",len(got),got)}
 	if got[0].Type!="telemetry_stale"||got[0].Status!="firing"{t.Fatalf("unexpected firing alert=%+v",got[0])}
 	if !strings.Contains(got[0].Message,"نود تهران")||!strings.Contains(got[0].Message,"زمان UTC")||!strings.Contains(got[0].Message,"زمان تهران"){
 		t.Fatalf("Persian alert missing required fields: %q",got[0].Message)
 	}
+	mu.Unlock()
 
 	fresh:=rep
 	fresh.Sequence=2
@@ -69,11 +73,13 @@ func TestForcedStaleAlertFiresOnceAndResolvesOnce(t *testing.T){
 
 	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
 	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
+	mu.Lock()
 	if len(got)!=2{t.Fatalf("resolved alert count=%d want=2 alerts=%+v",len(got),got)}
 	if got[1].Status!="resolved"||!strings.Contains(got[1].Message,"برطرف شد"){
 		t.Fatalf("missing resolved Persian alert: %+v",got[1])
 	}
 	t.Logf("PASS stale firing/resolution exactly once: firing=%s resolved=%s",got[0].Status,got[1].Status)
+	mu.Unlock()
 }
 
 func TestWebhookSecretNeverAppearsInAPIResponses(t *testing.T){
