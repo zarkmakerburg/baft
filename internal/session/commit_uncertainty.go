@@ -293,11 +293,11 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 	if prep!=nil {
 		if err:=p.RebindPreparedRecovery(ctx,ctl,c);err!=nil{return err}
 		a.mu.Lock();prep=a.prepared;sender:=prep.sender;runCtx:=prep.runCtx;a.mu.Unlock()
-		p.mu.Lock();oldSender:=p.sender;p.carrier=c;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.sender=sender;p.mu.Unlock()
+		p.mu.Lock();oldSender:=p.sender;p.carrier=c;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.carrierGeneration++;p.sender=sender;p.mu.Unlock()
 		p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
 		if oldSender!=nil&&oldSender!=sender{oldSender.stop(ErrCarrierUnavailable)}
 		if sender!=nil&&!sender.isStarted(){p.wg.Add(1);go func(){defer p.wg.Done();sender.run(runCtx)}()}
-		p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
+		// Do not wake the session reader until COMMIT status exchange is complete.
 		return nil
 	}
 
@@ -307,7 +307,7 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 	for _,fl:=range p.flows{flows=append(flows,fl)}
 	runCtx:=p.runCtx
 	oldSender:=p.sender
-	p.carrier=c;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.sender=newSender
+	p.carrier=c;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.carrierGeneration++;p.sender=newSender
 	p.mu.Unlock()
 	for _,fl:=range flows{
 		fl.mu.Lock();open:=fl.openOK&&!fl.closed;fl.mu.Unlock()
