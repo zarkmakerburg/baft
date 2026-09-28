@@ -24,9 +24,11 @@ func validTxnTransition(from,to RecoveryTxnState) bool {
 	case RecoveryTxnUncertain:
 		return to==RecoveryTxnCommitted||to==RecoveryTxnAborted||to==RecoveryTxnFinalizing
 	case RecoveryTxnCommitted:
-		return to==RecoveryTxnUncertain||to==RecoveryTxnFinalizing
+		return to==RecoveryTxnUncertain||to==RecoveryTxnFinalizing||to==RecoveryTxnFinalizationUncertain
 	case RecoveryTxnFinalizing:
-		return to==RecoveryTxnFinalized||to==RecoveryTxnUncertain
+		return to==RecoveryTxnFinalized||to==RecoveryTxnUncertain||to==RecoveryTxnFinalizationUncertain
+	case RecoveryTxnFinalizationUncertain:
+		return to==RecoveryTxnFinalizing||to==RecoveryTxnFinalized
 	}
 	return false
 }
@@ -50,7 +52,7 @@ func (p *Peer) RecoveryTransactionIdentity()(RecoveryControl,bool){
 	a:=p.recovery
 	a.mu.Lock();defer a.mu.Unlock()
 	if a.uncertain.SessionID!=""{return a.uncertain,true}
-	if a.lastCommit.SessionID!=""&&(a.txnState==RecoveryTxnCommitted||a.txnState==RecoveryTxnFinalizing||a.txnState==RecoveryTxnFinalized){return a.lastCommit,true}
+	if a.lastCommit.SessionID!=""&&(a.txnState==RecoveryTxnCommitted||a.txnState==RecoveryTxnFinalizing||a.txnState==RecoveryTxnFinalizationUncertain||a.txnState==RecoveryTxnFinalized){return a.lastCommit,true}
 	if a.prepared!=nil{return a.prepared.control,true}
 	return RecoveryControl{},false
 }
@@ -58,7 +60,7 @@ func (p *Peer) RecoveryTransactionIdentity()(RecoveryControl,bool){
 func (p *Peer) HasCommitUncertainty() bool {
 	if p.recovery==nil{return false}
 	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
-	return a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain
+	return a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnFinalizationUncertain
 }
 
 func (p *Peer) MarkRecoveryPrepared(ctl RecoveryControl) error {
@@ -115,6 +117,50 @@ func (p *Peer) MarkCommitUncertain(ctl RecoveryControl) error {
 	return nil
 }
 
+
+func (p *Peer) MarkFinalizationUncertain(ctl RecoveryControl) error {
+	if p.recovery==nil{return errors.New("recovery is disabled")}
+	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
+	if a.lastCommit.SessionID==""||!sameRecoveryTransaction(a.lastCommit,ctl)||a.engine.CurrentEpoch()!=ctl.NextEpoch||a.engine.Owner()!=ctl.CandidateID{return recovery.ErrStateMismatch}
+	entered:=false
+	switch a.txnState{
+	case RecoveryTxnCommitted,RecoveryTxnFinalizing:
+		if err:=a.transitionLocked(RecoveryTxnFinalizationUncertain);err!=nil{return err}
+		entered=true
+	case RecoveryTxnFinalizationUncertain:
+	case RecoveryTxnFinalized:
+		return nil
+	default:
+		return fmt.Errorf("%w: finalization uncertain from %s",ErrRecoveryTransition,a.txnState)
+	}
+	a.uncertain=ctl;a.uncertain.Phase=RecoveryPhaseFinalize
+	a.frozen=true
+	if a.prepared!=nil{a.prepared.finalizing=false}
+	if entered{a.finalizationUncertain.Add(1)}
+	return nil
+}
+
+func (p *Peer) CompleteRecoveryFinalization(ctl RecoveryControl) error {
+	if p.recovery==nil{return errors.New("recovery is disabled")}
+	a:=p.recovery
+	a.mu.Lock()
+	if a.lastCommit.SessionID==""||!sameRecoveryTransaction(a.lastCommit,ctl)||a.engine.CurrentEpoch()!=ctl.NextEpoch||a.engine.Owner()!=ctl.CandidateID{
+		a.mu.Unlock();return recovery.ErrStateMismatch
+	}
+	if a.txnState==RecoveryTxnFinalized{a.mu.Unlock();return nil}
+	switch a.txnState{
+	case RecoveryTxnCommitted,RecoveryTxnFinalizing,RecoveryTxnFinalizationUncertain,RecoveryTxnUncertain:
+		a.txnState=RecoveryTxnFinalized
+	default:
+		a.mu.Unlock();return fmt.Errorf("%w: finalize completion from %s",ErrRecoveryTransition,a.txnState)
+	}
+	if a.prepared!=nil{a.prepared.finalizing=false;a.prepared.finalized=true}
+	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
+	a.mu.Unlock()
+	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
+	return nil
+}
+
 func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c Carrier) error {
 	if p.recovery==nil{return errors.New("recovery is disabled")}
 	if c.In==nil||c.Out==nil{return errors.New("resolution carrier input/output required")}
@@ -139,7 +185,7 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 func (p *Peer) CommitStatusQuery() (RecoveryControl,error) {
 	if p.recovery==nil{return RecoveryControl{},errors.New("recovery is disabled")}
 	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
-	if a.txnState!=RecoveryTxnUncertain&&a.txnState!=RecoveryTxnCommitSent{return RecoveryControl{},ErrCommitUncertain}
+	if a.txnState!=RecoveryTxnUncertain&&a.txnState!=RecoveryTxnCommitSent&&a.txnState!=RecoveryTxnFinalizationUncertain{return RecoveryControl{},ErrCommitUncertain}
 	if a.uncertain.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
 	q:=a.uncertain;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
 	return q,nil
@@ -156,7 +202,7 @@ func (p *Peer) EvaluateCommitStatus(query RecoveryControl)(RecoveryControl,error
 	current:=a.engine.CurrentEpoch();owner:=a.engine.Owner()
 	if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,query){
 		if current==query.NextEpoch&&owner==query.CandidateID{
-			reply.Status=RecoveryResolutionCommitted
+			if a.txnState==RecoveryTxnFinalized{reply.Status=RecoveryResolutionFinalized}else{reply.Status=RecoveryResolutionCommitted}
 			return reply,nil
 		}
 		reply.Status=RecoveryResolutionConflict
@@ -194,7 +240,7 @@ func (p *Peer) ValidateStatusReply(reply RecoveryControl) error {
 	if !matched&&reply.Status==RecoveryResolutionNotCommitted&&a.lastNotCommitted.SessionID!="" {
 		matched=sameRecoveryTransaction(a.lastNotCommitted,reply)
 	}
-	if !matched&&reply.Status==RecoveryResolutionCommitted&&a.lastCommit.SessionID!="" {
+	if !matched&&(reply.Status==RecoveryResolutionCommitted||reply.Status==RecoveryResolutionFinalized)&&a.lastCommit.SessionID!="" {
 		matched=sameRecoveryTransaction(a.lastCommit,reply)
 	}
 	if !matched&&(reply.Status==RecoveryResolutionConflict||reply.Status==RecoveryResolutionUnknown)&&a.lastResolutionConflict.SessionID!="" {
@@ -202,7 +248,7 @@ func (p *Peer) ValidateStatusReply(reply RecoveryControl) error {
 	}
 	if !matched{return recovery.ErrStateMismatch}
 	switch reply.Status{
-	case RecoveryResolutionCommitted,RecoveryResolutionNotCommitted,RecoveryResolutionConflict,RecoveryResolutionUnknown:
+	case RecoveryResolutionCommitted,RecoveryResolutionFinalized,RecoveryResolutionNotCommitted,RecoveryResolutionConflict,RecoveryResolutionUnknown:
 		return nil
 	default:return recovery.ErrStateMismatch
 	}
@@ -240,6 +286,19 @@ func (p *Peer) NoteCommittedResolution(reply RecoveryControl) error {
 	a.lastResolutionCommitted=reply
 	a.mu.Unlock()
 	a.resolutionCommitted.Add(1)
+	return nil
+}
+
+
+func (p *Peer) NoteFinalizedResolution(reply RecoveryControl) error {
+	if err:=p.ValidateStatusReply(reply);err!=nil{return err}
+	if reply.Status!=RecoveryResolutionFinalized{return recovery.ErrStateMismatch}
+	a:=p.recovery
+	a.mu.Lock()
+	if a.lastResolutionCommitted.SessionID!=""&&sameRecoveryTransaction(a.lastResolutionCommitted,reply)&&a.txnState==RecoveryTxnFinalized{a.mu.Unlock();return nil}
+	a.lastResolutionCommitted=reply
+	a.mu.Unlock()
+	a.resolutionFinalized.Add(1)
 	return nil
 }
 
