@@ -1,7 +1,7 @@
 # Project Status
 
 > Persian: [STATUS.md](STATUS.md)  
-> Report date: 2026-09-27
+> Report date: 2026-09-28
 
 Repository: `zarkmakerburg/baft`, branch `main`. Code head before the documentation overhaul: `b1ddb44512fa0f48ff4629e1faf2f37523a9fe85`.
 
@@ -10,7 +10,7 @@ Repository: `zarkmakerburg/baft`, branch `main`. Code head before the documentat
 - Stage A: complete for its defined scope.
 - Stage B: complete for the defined secure vertical slice.
 - Stage C: in progress and not complete.
-- Stage D and later: not complete.
+- Stage D: same-process ECRL recovery through Step 5.7 is implemented and tested, but Stage D is not complete or production-ready; process-restart/machine-reboot resume and durable ECRL session snapshots remain unimplemented.
 
 ## Stage B evidence
 
@@ -32,17 +32,17 @@ Stage C is still formally open only because the dedicated repeated soak workflow
 
 ## Not complete
 
-Full resume/epoch/snapshot/replay/tombstone semantics, endpoint/relay production paths, formal benchmark campaign, final operations/package work, and real-path pilot testing remain future stages.
+Same-process carrier replacement, same-process epoch fencing, and bounded replay are implemented and tested in Step 5.7. Still incomplete are process-restart resume, machine-reboot resume, durable ECRL session snapshots/tombstones across restart, endpoint/relay production paths, the formal benchmark campaign, final operations/package work, and real-path pilot testing.
 
 ## R3.1 current review candidate
 
-Probabilistic normal/Laplace padding, tunable jitter, pinned Noise runtime wiring and pre-authentication HTML fallback are implemented. See [R3.1 guide](docs/en/21-stealth-pro.md) and [Hoosha report](reports/HOOSHA-R3.1.md). Full local tests/race/vet and ECRL differential pass. Stage D remains paused. Fresh-VM provisioning, jitter performance acceptance and real-path detectability validation remain open; v0.2-Pro is not released.
+Probabilistic normal/Laplace padding, tunable jitter, pinned Noise runtime wiring and pre-authentication HTML fallback were recorded for the historical R3.1 review candidate. See [R3.1 guide](docs/en/21-stealth-pro.md) and [Hoosha report](reports/HOOSHA-R3.1.md). The statement that Stage D was paused describes that historical point; current ECRL status is the Step 5.7 release-branch section below. Fresh-VM provisioning and the broader release/operations validation remain open; v0.2-Pro is not released.
 
 
 ## Release branch Steps 5.1–5.7 status (2026-09-28)
 
 On `release-v1-goldapp`, Steps 5.1 through 5.6 have passing CI regression gates for signed/idempotent telemetry, route monitoring, finance reporting, BCC hardening, backup/audit anchoring, and persistent telemetry reliability.
 
-Step 5.7 integrates ECRL with live Runtime sessions for **same-process carrier replacement only**. Tested scope includes active-flow continuity, same-process epoch fencing, bounded replay, peer BootID fail-closed behavior, competing candidates, FIN/FIN_ACK recovery, multi-flow recovery, six-route identity isolation, and telemetry/finance continuity. Recovery commit safety uses pre-commit replay/materialization validation, a canonical plan digest, an explicit two-sided prepared/commit barrier, committed/uncommitted results, idempotent commit identity, and separate post-commit failure accounting.
+Step 5.7 integrates ECRL with live Runtime sessions for **same-process carrier replacement only**. Tested scope includes active-flow continuity, same-process epoch fencing, bounded replay, peer BootID fail-closed behavior, competing candidates, FIN/FIN_ACK recovery, multi-flow recovery, six-route identity isolation, and telemetry/finance continuity. Recovery commit safety uses pre-commit replay/materialization validation, a canonical plan digest, an explicit two-sided PREPARED/readiness/COMMIT barrier, committed/uncommitted results, idempotent COMMIT/COMMIT_ACK handling, old-epoch fencing after authority publication, forward recovery to the next epoch after post-commit carrier failure, and separate post-commit failure accounting.
 
 This does **not** make BAFT production-ready. Process-restart resume, machine-reboot resume, and durable ECRL session snapshots are not implemented or claimed. Subscription Engine work is not part of Step 5.7.
