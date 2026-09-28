@@ -66,7 +66,9 @@ func TestEncryptedBackupFreshRestoreFullStateAndAudit(t *testing.T){
 	applyTelemetryDirect(t,store,"backup-token-a",rep)
 	app.alertMu.Lock()
 	app.activeAlerts["route_down:n1:r1"]=Alert{Type:"route_down",Status:"firing",NodeID:"n1",NodeAlias:"Node 1",RouteID:"r1",Timestamp:time.Now().UTC()}
+	alertSnapshot:=cloneAlerts(app.activeAlerts)
 	app.alertMu.Unlock()
+	if err:=store.SetActiveAlerts(alertSnapshot);err!=nil{t.Fatal(err)}
 
 	sourceState:=stateSnapshotForTest(t,store)
 	sourceAudit,err:=app.audit.List(0);if err!=nil{t.Fatal(err)}
