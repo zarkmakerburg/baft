@@ -946,3 +946,136 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during replay retry accepts_delta=%d",n)}
 	t.Logf("PASS local write != peer acceptance; conservative replay deduped application bytes hash=%x accepted_before=%d accepted_mid=%d",have,before.PeerAccepted,mid.PeerAccepted)
 }
+
+
+func closeWriteRecoveryConn(t *testing.T,c net.Conn){
+	t.Helper()
+	cw,ok:=c.(interface{CloseWrite() error})
+	if !ok{t.Fatalf("connection %T does not support CloseWrite",c)}
+	if err:=cw.CloseWrite();err!=nil{t.Fatal(err)}
+}
+
+func waitRecoveryFlowsGone(t *testing.T,p *recoveryRuntimePair){
+	t.Helper()
+	deadline:=time.Now().Add(10*time.Second)
+	for{
+		ir:=p.irRuntime.RecoveryAuthoritiesForTest()
+		ex:=p.exRuntime.RecoveryAuthoritiesForTest()
+		if len(ir)==1&&len(ex)==1&&len(ir[0].Flows)==0&&len(ex[0].Flows)==0{return}
+		if time.Now().After(deadline){t.Fatalf("flow termination stuck ir=%+v ex=%+v",ir,ex)}
+		time.Sleep(2*time.Millisecond)
+	}
+}
+
+func TestReplayPeerAcceptanceFrontierAdvancesMonotonically(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(20*time.Second))
+	targetBefore:=p.targetAccepts.Load()
+
+	payload:=make([]byte,48*1024+37)
+	for i:=range payload{payload[i]=byte((i*17+3)%251)}
+	if _,err:=c.Write(payload);err!=nil{t.Fatal(err)}
+	got:=make([]byte,len(payload))
+	if _,err:=io.ReadFull(c,got);err!=nil{t.Fatal(err)}
+	if !bytes.Equal(got,payload){t.Fatal("pre-cut accepted payload mismatch")}
+
+	before:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{
+		return f.TxNext>uint64(len("commit-safety-probe"))&&f.PeerAccepted==f.TxNext
+	})
+	p.proxy.CutAll()
+	irFinal,exFinal:=waitAuthorityPair(t,p,2,true)
+	if irFinal.TxnState!=session.RecoveryTxnFinalized||exFinal.TxnState!=session.RecoveryTxnFinalized{
+		t.Fatalf("recovery did not finalize ir=%+v ex=%+v",irFinal,exFinal)
+	}
+	after:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{
+		return f.PeerAccepted>=before.PeerAccepted
+	})
+	if after.PeerAccepted<before.PeerAccepted{t.Fatalf("peer acceptance frontier regressed before=%+v after=%+v",before,after)}
+	if after.ReplaySource<before.PeerAccepted{t.Fatalf("proven accepted bytes remained below replay source before=%+v after=%+v",before,after)}
+
+	probe:=[]byte("accepted-frontier-still-live")
+	if _,err:=c.Write(probe);err!=nil{t.Fatal(err)}
+	echo:=make([]byte,len(probe));if _,err:=io.ReadFull(c,echo);err!=nil{t.Fatal(err)}
+	if !bytes.Equal(echo,probe){t.Fatal("post-recovery echo mismatch")}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened accepts_delta=%d",n)}
+	t.Logf("PASS peer-accepted frontier monotonic accepted=%d replay_source=%d",after.PeerAccepted,after.ReplaySource)
+}
+
+func TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(20*time.Second))
+	targetBefore:=p.targetAccepts.Load()
+
+	blocked:=make(chan struct{})
+	release:=make(chan struct{})
+	var once sync.Once
+	p.exRuntime.SetRecoveryFrameHookForTest(func(stage string,fr protocol.Frame)bool{
+		if stage!="before_fin_accept"{return false}
+		first:=false
+		once.Do(func(){first=true;close(blocked)})
+		if first{
+			<-release
+			return true
+		}
+		return false
+	})
+
+	closeWriteRecoveryConn(t,c)
+	select{case <-blocked:case <-time.After(8*time.Second):t.Fatal("FIN never reached deterministic pre-accept barrier")}
+	mid:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return f.FinSent&&!f.FinAcked})
+	if mid.FinAcked{t.Fatalf("FIN acceptance advanced before proof: %+v",mid)}
+
+	p.proxy.CutAll()
+	close(release)
+	irFinal,exFinal:=waitAuthorityPair(t,p,2,true)
+	if irFinal.Epoch!=2||exFinal.Epoch!=2{t.Fatalf("FIN recovery authority mismatch ir=%+v ex=%+v",irFinal,exFinal)}
+
+	var one [1]byte
+	n,err:=c.Read(one[:])
+	if n!=0||!errors.Is(err,io.EOF){t.Fatalf("expected one application EOF after FIN retry n=%d err=%v",n,err)}
+	waitRecoveryFlowsGone(t,p)
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during FIN retry accepts_delta=%d",n)}
+	t.Log("PASS FIN local write without peer acceptance retried idempotently; one EOF and no target reopen")
+}
+
+func TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(20*time.Second))
+	targetBefore:=p.targetAccepts.Load()
+
+	blocked:=make(chan struct{})
+	release:=make(chan struct{})
+	var once sync.Once
+	p.irRuntime.SetRecoveryFrameHookForTest(func(stage string,fr protocol.Frame)bool{
+		if stage!="before_fin_ack_accept"{return false}
+		first:=false
+		once.Do(func(){first=true;close(blocked)})
+		if first{
+			<-release
+			return true
+		}
+		return false
+	})
+
+	closeWriteRecoveryConn(t,c)
+	select{case <-blocked:case <-time.After(8*time.Second):t.Fatal("FIN_ACK never reached deterministic pre-accept barrier")}
+	irMid:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return f.FinSent&&!f.FinAcked})
+	exMid:=waitSingleFlowFrontier(t,p.exRuntime,func(f session.RecoveryFlowFrontier)bool{return f.FinAckSent&&!f.FinAckConfirmed})
+	if irMid.FinAcked{t.Fatalf("FIN_ACK write incorrectly became local acceptance: %+v",irMid)}
+	if exMid.FinAckConfirmed{t.Fatalf("FIN_ACK confirmation appeared before peer acceptance: %+v",exMid)}
+
+	p.proxy.CutAll()
+	close(release)
+	irFinal,exFinal:=waitAuthorityPair(t,p,2,true)
+	if irFinal.Epoch!=2||exFinal.Epoch!=2{t.Fatalf("FIN_ACK recovery authority mismatch ir=%+v ex=%+v",irFinal,exFinal)}
+
+	var one [1]byte
+	n,err:=c.Read(one[:])
+	if n!=0||!errors.Is(err,io.EOF){t.Fatalf("expected clean EOF after FIN_ACK retry n=%d err=%v",n,err)}
+	waitRecoveryFlowsGone(t,p)
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during FIN_ACK retry accepts_delta=%d",n)}
+	t.Log("PASS FIN_ACK local write without peer acceptance retried until confirmation; no duplicate transition")
+}
