@@ -35,6 +35,8 @@ type Carrier struct {
 	Out io.Writer
 }
 
+type TrafficObserver func(ingressBytes, egressBytes uint64)
+
 type Options struct {
 	NodeID             string
 	ExpectedPeerNodeID string
@@ -43,6 +45,7 @@ type Options struct {
 	ProfileVersion     uint32
 	ConfigRevision     string
 	Resources          *resources.Allocator
+	TrafficObserver    TrafficObserver
 }
 
 type Peer struct {
@@ -74,6 +77,7 @@ type Peer struct {
 	nextID             uint64
 	closed             bool
 	wg                 sync.WaitGroup
+	trafficObserver    TrafficObserver
 }
 
 type replayChunk struct {
@@ -171,7 +175,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		nodeID: opts.NodeID, expectedPeerNodeID: opts.ExpectedPeerNodeID,
 		bootID: bootID, shardID: opts.ShardID, profileID: opts.ProfileID,
 		profileVersion: opts.ProfileVersion, configRevision: opts.ConfigRevision,
-		epoch: "1", readyCh: make(chan struct{}),
+		epoch: "1", readyCh: make(chan struct{}), trafficObserver: opts.TrafficObserver,
 	}
 	if role == Dialer {
 		p.nextID = 1
@@ -747,6 +751,9 @@ func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
 	if duplicate {
 		return nil
 	}
+	if p.trafficObserver != nil {
+		p.trafficObserver(uint64(len(fr.Payload)),0)
+	}
 	return nil
 }
 
@@ -903,6 +910,9 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			}
 			if err := p.sender.sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
 				return
+			}
+			if p.trafficObserver != nil {
+				p.trafficObserver(0,uint64(n))
 			}
 		}
 		if readErr != nil {
