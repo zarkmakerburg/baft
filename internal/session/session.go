@@ -125,6 +125,7 @@ type flow struct {
 	rxRing          *receiveRing
 	finRecvFinal    uint64
 	finAckSent      bool
+	writeClosed     bool
 	replay          []replayChunk
 	creditWait      chan struct{}
 	finSent         bool
@@ -857,17 +858,23 @@ func (p *Peer) ackRemoteFin(fl *flow) error {
 		return nil
 	}
 	final := fl.finRecvFinal
-	fl.finAckSent = true
+	needCloseWrite:=!fl.writeClosed
+	if needCloseWrite{fl.writeClosed=true}
 	fl.mu.Unlock()
 
-	if cw, ok := fl.conn.(interface{ CloseWrite() error }); ok {
-		if err := cw.CloseWrite(); err != nil {
-			return p.sendReset(fl, protocol.ErrorTargetUnreachable)
-		}
+	if needCloseWrite {
+		if cw, ok := fl.conn.(interface{ CloseWrite() error }); ok {
+			if err := cw.CloseWrite(); err != nil {
+				return p.sendReset(fl, protocol.ErrorTargetUnreachable)
+			}
+	}
 	}
 	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final}); err != nil {
 		return err
 	}
+	fl.mu.Lock()
+	fl.finAckSent=true
+	fl.mu.Unlock()
 	p.finishIfComplete(fl)
 	return nil
 }
@@ -973,7 +980,9 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			_ = p.ackRemoteFin(fl)
 			return
 		}
-		if err := p.grantReceive(fl); err != nil {
+		for {
+			err := p.grantReceive(fl)
+			if err==nil{break}
 			// FIN completion can race the credit refresh. A Flow that became
 			// terminal while this goroutine was between delivery and WINDOW
 			// must absorb that late credit intent instead of emitting RESET.
@@ -981,12 +990,12 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			closed = fl.closed
 			finalReady = fl.finRecv && !fl.finAckSent && fl.rxWritten == fl.finRecvFinal
 			fl.mu.Unlock()
-			if closed {
-				return
-			}
-			if finalReady {
-				_ = p.ackRemoteFin(fl)
-				return
+			if closed{return}
+			if finalReady{_ = p.ackRemoteFin(fl);return}
+			if p.recoveryEnabled {
+				epoch,owner:=p.currentCarrierIdentity()
+				p.onCarrierFailure(err)
+				if werr:=p.waitForReplacement(ctx,epoch,owner);werr==nil{continue}
 			}
 			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
 			return
@@ -1012,6 +1021,11 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				return
 			}
 			if err := p.sender.sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
+				if p.recoveryEnabled {
+					epoch,owner:=p.currentCarrierIdentity()
+					p.onCarrierFailure(err)
+					if werr:=p.waitForReplacement(ctx,epoch,owner);werr==nil{continue}
+				}
 				return
 			}
 			if p.trafficObserver != nil {
