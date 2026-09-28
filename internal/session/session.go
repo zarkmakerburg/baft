@@ -1048,6 +1048,11 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(n))
 				return
 			}
+			// In recovery mode account application bytes exactly once when they
+			// enter the session ledger. Carrier replay must never bill them again.
+			if p.recoveryEnabled && p.trafficObserver != nil {
+				p.trafficObserver(0,uint64(n))
+			}
 			if err := p.senderNow().sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
 				if p.recoveryEnabled {
 					epoch,owner:=p.currentCarrierIdentity()
@@ -1056,7 +1061,7 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				}
 				return
 			}
-			if p.trafficObserver != nil {
+			if !p.recoveryEnabled && p.trafficObserver != nil {
 				p.trafficObserver(0,uint64(n))
 			}
 		}
