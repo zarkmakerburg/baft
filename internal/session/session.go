@@ -132,6 +132,8 @@ type flow struct {
 	finAcked        bool
 	closed          bool
 	resetCode       protocol.ErrorCode
+	localPumpRunning bool
+	targetPumpRunning bool
 }
 
 type frameWriter struct {
@@ -289,6 +291,7 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 	if err := p.waitReady(ctx); err != nil {
 		return err
 	}
+	if p.recovery!=nil && p.recovery.IsFrozen(){ return recovery.ErrResumeFrozen }
 	id, err := p.allocateStreamID()
 	if err != nil {
 		return err
@@ -631,6 +634,7 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 	if p.role != Listener {
 		return errors.New("dialer received unexpected OPEN")
 	}
+	if p.recovery!=nil && p.recovery.IsFrozen(){ return recovery.ErrResumeFrozen }
 	req, err := protocol.DecodeOpen(fr.Payload)
 	if err != nil {
 		return err
@@ -871,17 +875,27 @@ func (p *Peer) finishIfComplete(fl *flow) {
 }
 
 func (p *Peer) startPump(ctx context.Context, fl *flow) {
+	fl.mu.Lock()
+	if fl.closed||fl.finSent||fl.localPumpRunning { fl.mu.Unlock(); return }
+	fl.localPumpRunning=true
+	fl.mu.Unlock()
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		defer func(){fl.mu.Lock();fl.localPumpRunning=false;fl.mu.Unlock()}()
 		p.pumpLocal(ctx, fl)
 	}()
 }
 
 func (p *Peer) startTargetPump(ctx context.Context, fl *flow) {
+	fl.mu.Lock()
+	if fl.closed||fl.targetPumpRunning { fl.mu.Unlock(); return }
+	fl.targetPumpRunning=true
+	fl.mu.Unlock()
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		defer func(){fl.mu.Lock();fl.targetPumpRunning=false;fl.mu.Unlock()}()
 		p.pumpTarget(ctx, fl)
 	}()
 }
