@@ -80,10 +80,11 @@ type Management struct {
 	MetricsListen string `json:"metrics_listen"`
 }
 type Telemetry struct {
-	Enabled         bool   `json:"enabled"`
-	BCCURL          string `json:"bcc_url,omitempty"`
-	AgentTokenEnv   string `json:"agent_token_env,omitempty"`
-	IntervalSeconds int    `json:"interval_seconds,omitempty"`
+	Enabled                   bool   `json:"enabled"`
+	BCCURL                    string `json:"bcc_url,omitempty"`
+	AgentTokenEnv             string `json:"agent_token_env,omitempty"`
+	IntervalSeconds           int    `json:"interval_seconds,omitempty"`
+	RouteProbeIntervalSeconds int    `json:"route_probe_interval_seconds,omitempty"`
 }
 type Logging struct {
 	Level   string `json:"level"`
@@ -273,7 +274,8 @@ func validateTelemetry(t Telemetry) error {
 		}
 	}
 	if t.IntervalSeconds<0||t.IntervalSeconds>3600{return errors.New("telemetry.interval_seconds is out of range")}
-	if t.IntervalSeconds>0&&t.IntervalSeconds<1{return errors.New("telemetry.interval_seconds is too small")}
+	if t.RouteProbeIntervalSeconds<0||t.RouteProbeIntervalSeconds>60{return errors.New("telemetry.route_probe_interval_seconds is out of range")}
+	if t.RouteProbeIntervalSeconds>0&&t.RouteProbeIntervalSeconds<1{return errors.New("telemetry.route_probe_interval_seconds is too small")}
 	if strings.ContainsAny(t.AgentTokenEnv,"=\x00"){return errors.New("telemetry.agent_token_env is invalid")}
 	return nil
 }
