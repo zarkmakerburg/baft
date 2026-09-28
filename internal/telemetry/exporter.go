@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,15 @@ type Report struct {
 
 type Source func() Snapshot
 
+type Status struct {
+	PendingCount           int       `json:"pending_count"`
+	OldestPendingSequence  uint64    `json:"oldest_pending_sequence,omitempty"`
+	LatestSequence         uint64    `json:"latest_sequence"`
+	SpoolHealth            string    `json:"spool_health"`
+	LastSuccessfulDelivery time.Time `json:"last_successful_delivery,omitempty"`
+	LastDeliveryError      string    `json:"last_delivery_error,omitempty"`
+}
+
 type Exporter struct {
 	NodeID     string
 	BootID     string
@@ -59,26 +69,46 @@ type Exporter struct {
 	QueueLimit int
 	Source     Source
 	Client     *http.Client
+	Spool      *Spool
 
 	flushMu sync.Mutex
-	mu      sync.Mutex
-	nextSeq uint64
-	queue   []Report
+	sampleMu sync.Mutex
+	statusMu sync.Mutex
+	baseIngress uint64
+	baseEgress uint64
+	baseHandshakes uint64
+	lastSuccess time.Time
+	lastError string
+	spoolHealth string
+
+	afterSendBeforeAck func(Report) error
 }
 
-func New(nodeID,bccURL,token string,interval time.Duration,source Source)(*Exporter,error){
+func NewPersistent(nodeID,bccURL,token,spoolPath string,interval time.Duration,queueLimit int,source Source)(*Exporter,error){
 	if strings.TrimSpace(nodeID)==""||strings.TrimSpace(bccURL)==""||strings.TrimSpace(token)==""{
 		return nil,errors.New("telemetry node, BCC URL, and token are required")
 	}
+	if strings.TrimSpace(spoolPath)==""{return nil,errors.New("telemetry spool path is required")}
 	if source==nil{return nil,errors.New("telemetry source is required")}
 	if interval<=0{interval=60*time.Second}
-	boot:=make([]byte,16)
-	if _,err:=rand.Read(boot);err!=nil{return nil,err}
+	if queueLimit<=0{queueLimit=DefaultQueueLimit}
+	spool,err:=OpenSpool(spoolPath,nodeID,queueLimit)
+	if err!=nil{return nil,err}
+	ingress,egress,handshakes:=spool.LastCounters()
 	return &Exporter{
-		NodeID:nodeID,BootID:hex.EncodeToString(boot),BCCURL:strings.TrimRight(bccURL,"/"),
-		Token:token,Interval:interval,QueueLimit:DefaultQueueLimit,Source:source,
-		Client:&http.Client{Timeout:10*time.Second},
+		NodeID:nodeID,BootID:spool.BootID(),BCCURL:strings.TrimRight(bccURL,"/"),
+		Token:token,Interval:interval,QueueLimit:queueLimit,Source:source,
+		Client:&http.Client{Timeout:10*time.Second},Spool:spool,
+		baseIngress:ingress,baseEgress:egress,baseHandshakes:handshakes,spoolHealth:"ok",
 	},nil
+}
+
+// New is retained for compatibility with callers that do not need restart
+// recovery. Production Runtime uses NewPersistent with a configured spool path.
+func New(nodeID,bccURL,token string,interval time.Duration,source Source)(*Exporter,error){
+	dir,err:=os.MkdirTemp("","baft-telemetry-")
+	if err!=nil{return nil,err}
+	return NewPersistent(nodeID,bccURL,token,filepath.Join(dir,"spool.json"),interval,DefaultQueueLimit,source)
 }
 
 func signingKey(token string) []byte {
@@ -99,30 +129,63 @@ func VerifyHashedToken(tokenHashHex,signature string,body []byte) bool {
 	return hmac.Equal(got,m.Sum(nil))
 }
 
-func (e *Exporter) sample(now time.Time) {
+func addCounter(base,raw uint64)(uint64,error){
+	if ^uint64(0)-base<raw{return 0,errors.New("telemetry cumulative counter overflow")}
+	return base+raw,nil
+}
+
+func (e *Exporter) setError(err error){
+	e.statusMu.Lock();defer e.statusMu.Unlock()
+	if err==nil{e.lastError="";e.spoolHealth="ok";return}
+	e.lastError=err.Error()
+	if errors.Is(err,ErrSpoolFull){e.spoolHealth="degraded"}else{e.spoolHealth="error"}
+}
+
+func (e *Exporter) markSuccess(){
+	e.statusMu.Lock();defer e.statusMu.Unlock()
+	e.lastSuccess=time.Now().UTC()
+	e.lastError=""
+	e.spoolHealth="ok"
+}
+
+func (e *Exporter) sample(now time.Time) error {
+	e.sampleMu.Lock()
+	defer e.sampleMu.Unlock()
 	s:=e.Source()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.nextSeq++
+	ingress,err:=addCounter(e.baseIngress,s.IngressBytes);if err!=nil{e.setError(err);return err}
+	egress,err:=addCounter(e.baseEgress,s.EgressBytes);if err!=nil{e.setError(err);return err}
+	handshakes,err:=addCounter(e.baseHandshakes,s.HandshakeErrors);if err!=nil{e.setError(err);return err}
+	seq:=e.Spool.NextSequence()
 	r:=Report{
-		NodeID:e.NodeID,BootID:e.BootID,Sequence:e.nextSeq,
-		IngressBytes:s.IngressBytes,EgressBytes:s.EgressBytes,
-		ActiveSessions:s.ActiveSessions,HandshakeErrors:s.HandshakeErrors,
+		NodeID:e.NodeID,BootID:e.BootID,Sequence:seq,
+		IngressBytes:ingress,EgressBytes:egress,
+		ActiveSessions:s.ActiveSessions,HandshakeErrors:handshakes,
 		NoiseLatencyMS:s.NoiseLatencyMS,Routes:append([]RouteSnapshot(nil),s.Routes...),
 		TimestampUnix:now.Unix(),
 	}
-	limit:=e.QueueLimit
-	if limit<=0{limit=DefaultQueueLimit}
-	if len(e.queue)>=limit {
-		copy(e.queue,e.queue[len(e.queue)-limit+1:])
-		e.queue=e.queue[:limit-1]
-	}
-	e.queue=append(e.queue,r)
+	if err:=e.Spool.Enqueue(r);err!=nil{e.setError(err);return err}
+	e.setError(nil)
+	return nil
 }
 
 func (e *Exporter) QueueLength() int {
-	e.mu.Lock();defer e.mu.Unlock()
-	return len(e.queue)
+	if e==nil||e.Spool==nil{return 0}
+	return e.Spool.PendingCount()
+}
+
+func (e *Exporter) Status() Status {
+	if e==nil||e.Spool==nil{return Status{SpoolHealth:"error",LastDeliveryError:"exporter not configured"}}
+	pending:=e.Spool.PendingCount()
+	oldest,_:=e.Spool.OldestSequence()
+	next:=e.Spool.NextSequence()
+	e.statusMu.Lock()
+	st:=Status{
+		PendingCount:pending,OldestPendingSequence:oldest,SpoolHealth:e.spoolHealth,
+		LastSuccessfulDelivery:e.lastSuccess,LastDeliveryError:e.lastError,
+	}
+	e.statusMu.Unlock()
+	if next>0{st.LatestSequence=next-1}
+	return st
 }
 
 func (e *Exporter) sendReport(ctx context.Context,r Report) error {
@@ -142,34 +205,40 @@ func (e *Exporter) flush(ctx context.Context) error {
 	e.flushMu.Lock()
 	defer e.flushMu.Unlock()
 	for {
-		e.mu.Lock()
-		if len(e.queue)==0{e.mu.Unlock();return nil}
-		r:=e.queue[0]
-		e.mu.Unlock()
-		if err:=e.sendReport(ctx,r);err!=nil{return err}
-		e.mu.Lock()
-		if len(e.queue)>0&&e.queue[0].Sequence==r.Sequence&&e.queue[0].BootID==r.BootID {
-			e.queue=append([]Report(nil),e.queue[1:]...)
+		r,ok:=e.Spool.First()
+		if !ok{return nil}
+		if err:=e.sendReport(ctx,r);err!=nil{e.setError(err);return err}
+		if e.afterSendBeforeAck!=nil{
+			if err:=e.afterSendBeforeAck(r);err!=nil{e.setError(err);return err}
 		}
-		e.mu.Unlock()
+		if err:=e.Spool.Ack(r.BootID,r.Sequence);err!=nil{e.setError(err);return err}
+		e.markSuccess()
 	}
 }
 
 func (e *Exporter) SendOnce(ctx context.Context) error {
-	if e==nil||e.Source==nil{return errors.New("telemetry exporter is not configured")}
-	e.sample(time.Now())
+	if e==nil||e.Source==nil||e.Spool==nil{return errors.New("telemetry exporter is not configured")}
+	// Drain old durable reports first so a full spool can recover as soon as
+	// connectivity returns. A failure here still leaves every report durable.
+	if err:=e.flush(ctx);err!=nil{
+		// We still attempt to sample if capacity remains, preserving outage data.
+		if err2:=e.sample(time.Now());err2!=nil{return err2}
+		return err
+	}
+	if err:=e.sample(time.Now());err!=nil{return err}
 	return e.flush(ctx)
 }
 
 func (e *Exporter) Run(ctx context.Context) {
+	_ = e.flush(ctx)
 	_ = e.SendOnce(ctx)
 	t:=time.NewTicker(e.Interval);defer t.Stop()
 	for{
 		select{
 		case <-ctx.Done():return
 		case now:=<-t.C:
-			e.sample(now)
 			_ = e.flush(ctx)
+			if err:=e.sample(now);err==nil{_ = e.flush(ctx)}
 		}
 	}
 }
