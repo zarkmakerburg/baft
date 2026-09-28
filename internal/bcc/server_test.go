@@ -110,6 +110,7 @@ func TestFinancialTrafficSync(t *testing.T){
 	rr:=httptest.NewRecorder()
 	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/finance","admin",map[string]any{
 		"node_id":"ex-fin","cost_micros_per_gib":int64(2_000_000),"revenue_micros_per_gib":int64(5_000_000),
+		"currency":"IRR","effective_from":"2023-01-01T00:00:00Z",
 	}))
 	if rr.Code!=http.StatusOK{t.Fatalf("finance policy status=%d body=%s",rr.Code,rr.Body.String())}
 
