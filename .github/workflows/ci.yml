@@ -34,6 +34,11 @@ jobs:
           go test ./internal/recordshape -run 'TestMorphingStatistics1000|TestStatisticalGateRejectsFixedBucketAndPeriodicMutants' -count=1 -v
       - name: Step 2 sync integrity evidence
         run: go test ./internal/clustersync -run 'TestTokenRoundTripSixNodes|TestTokenTamperRejected|TestWorkerDetectsSignedNodeUpdateAndSyncs|TestRollbackAndWrongSignerRejected|TestBuildWorkerConfigsMirrorsExactlySixRoutes|TestChangedRouteIndexesPinpointsSingleNodeUpdate' -count=1 -v
+      - name: Step 3 dynamic BCC evidence
+        run: |
+          go test ./internal/cluster -run 'TestValidateMasterConfigsDynamicSizes|TestMasterFailFastCancelsDynamicPeerSet' -count=1 -v
+          go test ./internal/clustersync -run 'TestTokenDynamicNodeCounts|TestBuildWorkerConfigsDynamicNodeCounts' -count=1 -v
+          go test ./internal/bcc -run 'TestDynamicRegistryAndEnrollmentJobs|TestOneClickDeployCreatesOnlyTypedJobs|TestHealthProbeAndDashboard' -count=1 -v
       - name: Race detector
         run: go test -race ./...
       - name: Vet
