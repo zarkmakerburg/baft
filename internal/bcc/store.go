@@ -159,7 +159,8 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	old,exists:=s.st.Nodes[n.ID]
 	if agentToken!="" { n.AgentTokenHash=tokenHash(agentToken) } else if exists { n.AgentTokenHash=old.AgentTokenHash }
 	if n.Health=="" { if exists { n.Health=old.Health } else { n.Health="unknown" } }
-	if n.LastChecked.IsZero()&&exists{n.LastChecked=old.LastChecked}
+	if n.LastChecked.IsZero()&&exists{n.LastChecked=old.LastChecked;n.LatencyMS=old.LatencyMS}
+	if n.LastChecked.IsZero()&&!exists{n.LatencyMS=-1}
 	n.UpdatedAt=time.Now().UTC()
 	s.st.Nodes[n.ID]=n
 	return publicNode(n),s.saveLocked()
@@ -393,7 +394,7 @@ func (s *Store) MonitoringSnapshot(now time.Time,staleAfter time.Duration) []Mon
 		status:="unknown"
 		if n.Health=="down"{status="down"}
 		if hasTelemetry {
-			if now.Sub(cur.LastTelemetry)>staleAfter { status="down" } else if n.Health=="up" { status="up" }
+			if now.Sub(cur.LastTelemetry)>staleAfter { status="down" } else if n.Health!="down" { status="up" }
 		}
 		routes:=append([]telemetry.RouteSnapshot(nil),cur.Routes...)
 		if hasTelemetry&&now.Sub(cur.LastTelemetry)>staleAfter {
