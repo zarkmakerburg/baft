@@ -22,6 +22,7 @@ var (
 	ErrCarrierUnavailable = errors.New("session carrier unavailable")
 	ErrPostCommitFailure = errors.New("recovery post-commit failure")
 	ErrCommitUncertain = errors.New("recovery commit outcome uncertain")
+	ErrFinalizationUncertain = errors.New("recovery finalization outcome uncertain")
 	ErrRecoveryTransition = errors.New("invalid recovery transaction transition")
 )
 
@@ -41,6 +42,8 @@ const (
 	RecoveryPhaseCommitAck      RecoveryPhase = "COMMIT_ACK"
 	RecoveryPhaseStatusQuery    RecoveryPhase = "COMMIT_STATUS_QUERY"
 	RecoveryPhaseStatusReply    RecoveryPhase = "COMMIT_STATUS_REPLY"
+	RecoveryPhaseFinalize       RecoveryPhase = "FINALIZE"
+	RecoveryPhaseFinalizeAck    RecoveryPhase = "FINALIZE_ACK"
 )
 
 type RecoveryTxnState string
@@ -54,6 +57,7 @@ const (
 	RecoveryTxnUncertain     RecoveryTxnState = "COMMIT_UNCERTAIN"
 	RecoveryTxnCommitted     RecoveryTxnState = "COMMITTED"
 	RecoveryTxnFinalizing    RecoveryTxnState = "FINALIZING"
+	RecoveryTxnFinalizationUncertain RecoveryTxnState = "FINALIZATION_UNCERTAIN"
 	RecoveryTxnFinalized     RecoveryTxnState = "FINALIZED"
 	RecoveryTxnAborted       RecoveryTxnState = "ABORTED"
 )
@@ -63,6 +67,7 @@ type RecoveryResolutionStatus string
 const (
 	RecoveryResolutionNone         RecoveryResolutionStatus = ""
 	RecoveryResolutionCommitted    RecoveryResolutionStatus = "COMMITTED"
+	RecoveryResolutionFinalized    RecoveryResolutionStatus = "FINALIZED"
 	RecoveryResolutionNotCommitted RecoveryResolutionStatus = "NOT_COMMITTED"
 	RecoveryResolutionConflict     RecoveryResolutionStatus = "CONFLICT"
 	RecoveryResolutionUnknown      RecoveryResolutionStatus = "UNKNOWN"
@@ -88,8 +93,10 @@ type preparedFlowRecovery struct {
 	flow *flow
 	replay []protocol.Frame
 	replayed uint64
+	replayFrom uint64
 	ackAdvance uint64
 	finAckAdvance bool
+	finAckConfirmAdvance bool
 	resendFIN bool
 	finFinal uint64
 	ackPeerFIN bool
@@ -110,6 +117,7 @@ type preparedRecovery struct {
 	published bool
 	finalizing bool
 	finalized bool
+	activationComplete bool
 	rebindPending bool
 }
 
@@ -122,6 +130,8 @@ type RecoveryStats struct {
 	ResolutionCommitted         uint64
 	ResolutionNotCommitted      uint64
 	ResolutionConflict          uint64
+	ResolutionFinalized         uint64
+	FinalizationUncertain       uint64
 	CurrentEpoch                uint64
 	ReplayedBytes               uint64
 	Failures                    map[string]uint64
@@ -154,6 +164,8 @@ type RecoveryAdapter struct {
 	resolutionCommitted atomic.Uint64
 	resolutionNotCommitted atomic.Uint64
 	resolutionConflict atomic.Uint64
+	resolutionFinalized atomic.Uint64
+	finalizationUncertain atomic.Uint64
 	replayed atomic.Uint64
 	failures map[string]uint64
 }
@@ -195,6 +207,7 @@ func (a *RecoveryAdapter) Stats() RecoveryStats {
 		Attempts:a.attempts.Load(),Commits:a.commits.Load(),Aborts:a.aborts.Load(),PostCommitFailures:a.postCommitFailures.Load(),
 		CommitUncertain:a.commitUncertain.Load(),ResolutionCommitted:a.resolutionCommitted.Load(),
 		ResolutionNotCommitted:a.resolutionNotCommitted.Load(),ResolutionConflict:a.resolutionConflict.Load(),
+		ResolutionFinalized:a.resolutionFinalized.Load(),FinalizationUncertain:a.finalizationUncertain.Load(),
 		CurrentEpoch:a.engine.CurrentEpoch(),ReplayedBytes:a.replayed.Load(),Failures:fail,
 	}
 }
@@ -312,7 +325,7 @@ func (p *Peer) recoverySnapshot() (recovery.Snapshot,map[uint64]string,error) {
 		out.Flows=append(out.Flows,recovery.FlowSnapshot{
 			StreamID:fl.id,OpenNonce:fl.nonce,TxNext:fl.txNext,TxAcked:fl.txAcked,
 			RxAccepted:fl.rxNext,RxDelivered:fl.rxWritten,RxCredit:fl.rxMax,
-			FinSent:fl.finSent,FinRecv:fl.finRecv,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,
+			FinSent:fl.finSent,FinRecv:fl.finRecv,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,FinAckConfirmed:fl.finAckConfirmed,
 		})
 		routes[fl.id]=fl.routeID
 		fl.mu.Unlock()
@@ -404,6 +417,7 @@ type recoveryDigestSide struct {
 	AckAdvanceTo uint64 `json:"ack_advance_to"`
 	ReleaseThrough uint64 `json:"release_through"`
 	FinAckCanAdvance bool `json:"fin_ack_can_advance"`
+	FinAckConfirmCanAdvance bool `json:"fin_ack_confirm_can_advance"`
 }
 type recoveryDigestFlow struct {
 	StreamID uint64 `json:"stream_id"`
@@ -433,8 +447,8 @@ func recoveryPlanDigest(plan recovery.Plan,snap recovery.Snapshot,routes map[uin
 	for _,fp:=range plan.Flows{
 		n:=nonce[fp.StreamID];route,ok:=routes[fp.StreamID]
 		if n==""||!ok{return "",recovery.ErrStateMismatch}
-		a:=recoveryDigestSide{ReplayFrom:fp.LocalReplayFrom,AckAdvanceTo:fp.LocalAckAdvanceTo,ReleaseThrough:fp.LocalReleaseThrough,FinAckCanAdvance:fp.LocalFinAckCanAdvance}
-		b:=recoveryDigestSide{ReplayFrom:fp.PeerReplayFrom,AckAdvanceTo:fp.PeerAckAdvanceTo,ReleaseThrough:fp.PeerReleaseThrough,FinAckCanAdvance:fp.PeerFinAckCanAdvance}
+		a:=recoveryDigestSide{ReplayFrom:fp.LocalReplayFrom,AckAdvanceTo:fp.LocalAckAdvanceTo,ReleaseThrough:fp.LocalReleaseThrough,FinAckCanAdvance:fp.LocalFinAckCanAdvance,FinAckConfirmCanAdvance:fp.LocalFinAckConfirmCanAdvance}
+		b:=recoveryDigestSide{ReplayFrom:fp.PeerReplayFrom,AckAdvanceTo:fp.PeerAckAdvanceTo,ReleaseThrough:fp.PeerReleaseThrough,FinAckCanAdvance:fp.PeerFinAckCanAdvance,FinAckConfirmCanAdvance:fp.PeerFinAckConfirmCanAdvance}
 		if recoverySideLess(b,a){a,b=b,a}
 		flows=append(flows,recoveryDigestFlow{StreamID:fp.StreamID,OpenNonce:n,Route:route,SideA:a,SideB:b})
 	}
@@ -500,7 +514,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 		}
 		frames,n,err:=fl.replayFramesFrom(fp.LocalReplayFrom);if err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
 		if err:=newSender.addFlow(fl.id);err!=nil{a.recordFailure("candidate_setup");return RecoveryControl{},err}
-		prep.flows=append(prep.flows,preparedFlowRecovery{flow:fl,replay:frames,replayed:n,ackAdvance:fp.LocalAckAdvanceTo,finAckAdvance:fp.LocalFinAckCanAdvance,resendFIN:resendFIN,finFinal:final,ackPeerFIN:ackPeerFIN})
+		prep.flows=append(prep.flows,preparedFlowRecovery{flow:fl,replay:frames,replayed:n,replayFrom:fp.LocalReplayFrom,ackAdvance:fp.LocalAckAdvanceTo,finAckAdvance:fp.LocalFinAckCanAdvance,finAckConfirmAdvance:fp.LocalFinAckConfirmCanAdvance,resendFIN:resendFIN,finFinal:final,ackPeerFIN:ackPeerFIN})
 	}
 	a.mu.Lock()
 	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return RecoveryControl{},recovery.ErrNotPrepared}
@@ -808,12 +822,12 @@ func DecodeRecoveryControl(fr protocol.Frame)(RecoveryControl,error){
 	var ctl RecoveryControl
 	if err:=dec.Decode(&ctl);err!=nil{return RecoveryControl{},err}
 	switch ctl.Phase {
-	case RecoveryPhasePrepared,RecoveryPhaseCommitReady,RecoveryPhaseCommit,RecoveryPhaseCommitAck:
+	case RecoveryPhasePrepared,RecoveryPhaseCommitReady,RecoveryPhaseCommit,RecoveryPhaseCommitAck,RecoveryPhaseFinalize,RecoveryPhaseFinalizeAck:
 		if ctl.Status!=RecoveryResolutionNone{return RecoveryControl{},recovery.ErrStateMismatch}
 	case RecoveryPhaseStatusQuery:
 		if ctl.Status!=RecoveryResolutionNone{return RecoveryControl{},recovery.ErrStateMismatch}
 	case RecoveryPhaseStatusReply:
-		switch ctl.Status{case RecoveryResolutionCommitted,RecoveryResolutionNotCommitted,RecoveryResolutionConflict,RecoveryResolutionUnknown:default:return RecoveryControl{},recovery.ErrStateMismatch}
+		switch ctl.Status{case RecoveryResolutionCommitted,RecoveryResolutionFinalized,RecoveryResolutionNotCommitted,RecoveryResolutionConflict,RecoveryResolutionUnknown:default:return RecoveryControl{},recovery.ErrStateMismatch}
 	default:return RecoveryControl{},recovery.ErrStateMismatch
 	}
 	if ctl.SessionID==""||ctl.CandidateID==""||ctl.NextEpoch==0||ctl.PlanDigest==""{return RecoveryControl{},recovery.ErrStateMismatch}
