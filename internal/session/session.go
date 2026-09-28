@@ -913,7 +913,7 @@ func (p *Peer) finishIfComplete(fl *flow) {
 
 func (p *Peer) startPump(ctx context.Context, fl *flow) {
 	fl.mu.Lock()
-	if fl.closed||fl.finSent||fl.localPumpRunning { fl.mu.Unlock(); return }
+	if fl.closed||fl.conn==nil||fl.finSent||fl.localPumpRunning { fl.mu.Unlock(); return }
 	done:=make(chan struct{})
 	fl.localPumpRunning=true
 	fl.localPumpDone=done
@@ -932,7 +932,7 @@ func (p *Peer) startPump(ctx context.Context, fl *flow) {
 
 func (p *Peer) startTargetPump(ctx context.Context, fl *flow) {
 	fl.mu.Lock()
-	if fl.closed||fl.finAckSent||fl.targetPumpRunning { fl.mu.Unlock(); return }
+	if fl.closed||fl.conn==nil||fl.finAckSent||fl.targetPumpRunning { fl.mu.Unlock(); return }
 	done:=make(chan struct{})
 	fl.targetPumpRunning=true
 	fl.targetPumpDone=done
