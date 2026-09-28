@@ -88,6 +88,14 @@ func (r *Runtime) recoveryControlCopiesForTest(stage string,ctl *session.Recover
 	return n
 }
 
+func (r *Runtime) SetRecoveryFrameHookForTest(fn func(string,protocol.Frame) bool) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	for _,p:=range peers{p.SetRecoveryFrameHookForTest(fn)}
+}
+
 func (r *Runtime) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
 	r.peerMu.Lock()
 	peers:=make([]*session.Peer,0,len(r.peers))
