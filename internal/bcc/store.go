@@ -397,10 +397,10 @@ func (s *Store) MonitoringSnapshot(now time.Time,staleAfter time.Duration) []Mon
 		status:="unknown"
 		if n.Health=="down"{status="down"}
 		if hasTelemetry {
-			if now.Sub(cur.LastTelemetry)>staleAfter { status="down" } else if n.Health!="down" { status="up" }
+			if now.Sub(cur.LastTelemetry)>=staleAfter { status="down" } else if n.Health!="down" { status="up" }
 		}
 		routes:=append([]telemetry.RouteSnapshot(nil),cur.Routes...)
-		if hasTelemetry&&now.Sub(cur.LastTelemetry)>staleAfter {
+		if hasTelemetry&&now.Sub(cur.LastTelemetry)>=staleAfter {
 			for i:=range routes { routes[i].Status="unknown" }
 		}
 		out=append(out,MonitoringNode{
