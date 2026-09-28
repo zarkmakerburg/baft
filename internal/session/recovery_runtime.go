@@ -144,6 +144,26 @@ func (p *Peer) DrainRecoverySignals() {
 	}
 }
 
+func (p *Peer) waitForCarrierSwitch(ctx context.Context,oldEpoch uint64,oldCarrier string) error {
+	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
+	for {
+		e,id:=p.currentCarrierIdentity()
+		if e>oldEpoch && id!=oldCarrier{return nil}
+		p.carrierSwitchMu.Lock()
+		wait:=p.carrierSwitchWait
+		p.carrierSwitchMu.Unlock()
+		// Re-check after taking the generation channel so a concurrent commit
+		// cannot strand this reader on the next generation.
+		e,id=p.currentCarrierIdentity()
+		if e>oldEpoch && id!=oldCarrier{return nil}
+		select {
+		case <-ctx.Done():return ctx.Err()
+		case <-t.C:return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable)
+		case <-wait:
+		}
+	}
+}
+
 func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier string) error {
 	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
 	for {
@@ -300,6 +320,14 @@ func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) 
 		if open { if err:=newSender.addFlow(fl.id);err!=nil{return err} }
 	}
 	p.wg.Add(1);go func(){defer p.wg.Done();newSender.run(runCtx)}()
+
+	// Epoch/owner are committed and the candidate is now authoritative. Wake
+	// only the session reader here so ACK/WINDOW from bounded replay can drain.
+	// Application pumps remain blocked on replacementWait until replay finishes.
+	p.carrierSwitchMu.Lock()
+	close(p.carrierSwitchWait)
+	p.carrierSwitchWait=make(chan struct{})
+	p.carrierSwitchMu.Unlock()
 
 	var replayed uint64
 	for _,fp:=range plan.Flows {
