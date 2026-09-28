@@ -19,7 +19,6 @@ func main(){
 	stateFile:=flag.String("state-file","./bcc-state.json","persistent BCC state file")
 	adminTokenFile:=flag.String("admin-token-file","","file containing BCC admin bearer token")
 	healthInterval:=flag.Duration("health-interval",10*time.Second,"node TCP health-check interval")
-	alertWebhook:=flag.String("alert-webhook","","optional HTTP(S) webhook for monitoring alerts")
 	telemetryStale:=flag.Duration("telemetry-stale",3*time.Minute,"telemetry stale threshold")
 	handshakeErrorRate:=flag.Float64("handshake-error-rate",5.0,"handshake error alert threshold per minute")
 	alertInterval:=flag.Duration("alert-interval",15*time.Second,"alert evaluation interval")
@@ -38,8 +37,9 @@ func main(){
 	app,err:=bcc.NewServer(store,adminToken)
 	if err!=nil{fmt.Fprintln(os.Stderr,"BCC server:",err);os.Exit(1)}
 	if *handshakeErrorRate<=0{fmt.Fprintln(os.Stderr,"handshake-error-rate must be positive");os.Exit(2)}
+	alertWebhook:=strings.TrimSpace(os.Getenv("BAFT_ALERT_WEBHOOK_URL"))
 	if err:=app.ConfigureAlerts(bcc.AlertConfig{
-		WebhookURL:*alertWebhook,TelemetryStaleAfter:*telemetryStale,
+		WebhookURL:alertWebhook,TelemetryStaleAfter:*telemetryStale,
 		HandshakeErrorRateMilliPerMin:int64(*handshakeErrorRate*1000),
 		Interval:*alertInterval,
 	});err!=nil{fmt.Fprintln(os.Stderr,"alert config:",err);os.Exit(2)}
