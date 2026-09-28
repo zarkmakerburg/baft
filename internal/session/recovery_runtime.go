@@ -131,12 +131,19 @@ func (p *Peer) DrainRecoverySignals() {
 func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier string) error {
 	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
 	for {
+		e,id:=p.currentCarrierIdentity()
+		if e>oldEpoch && id!=oldCarrier{return nil}
+		p.replacementMu.Lock()
+		wait:=p.replacementWait
+		p.replacementMu.Unlock()
+		// Re-check after capturing the broadcast channel so a commit racing with
+		// this waiter cannot move us onto the next generation and strand us.
+		e,id=p.currentCarrierIdentity()
+		if e>oldEpoch && id!=oldCarrier{return nil}
 		select {
 		case <-ctx.Done():return ctx.Err()
 		case <-t.C:return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable)
-		case <-p.replacementReady:
-			e,id:=p.currentCarrierIdentity()
-			if e>oldEpoch && id!=oldCarrier{return nil}
+		case <-wait:
 		}
 	}
 }
@@ -286,7 +293,10 @@ func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) 
 	}
 	a.replayed.Add(replayed);a.commits.Add(1)
 	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.hasPlan=false;a.mu.Unlock()
-	select{case p.replacementReady<-struct{}{}:default:}
+	p.replacementMu.Lock()
+	close(p.replacementWait)
+	p.replacementWait=make(chan struct{})
+	p.replacementMu.Unlock()
 	return nil
 }
 
