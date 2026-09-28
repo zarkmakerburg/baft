@@ -65,7 +65,7 @@ func TestOldEpochFramesRejectedAfterCommit(t *testing.T){
 	_,peer:=peerOfferFor(t,p,"carrier-2")
 	if err:=p.ReconcileRecovery("carrier-2",peer);err!=nil{t.Fatal(err)}
 	var next bytes.Buffer
-	if err:=p.CommitRecovery(ctx,"carrier-2",Carrier{In:bytes.NewReader(nil),Out:&next});err!=nil{t.Fatal(err)}
+	if _,err:=p.CommitRecovery(ctx,"carrier-2",Carrier{In:bytes.NewReader(nil),Out:&next});err!=nil{t.Fatal(err)}
 	fl,_:=p.getOpenFlow(1);fl.mu.Lock();before:=fl.txAcked;fl.mu.Unlock()
 	err:=p.HandleCarrierFrame(ctx,1,"carrier-1",protocol.Frame{Type:protocol.TypeAck,StreamID:1,Offset:4})
 	if !errors.Is(err,recovery.ErrStaleEpoch){t.Fatalf("old frame err=%v",err)}
@@ -100,7 +100,7 @@ func TestCompetingRecoveryCandidatesSingleWinner(t *testing.T){
 	if _,err:=p.BeginRecovery("candidate-B");!errors.Is(err,recovery.ErrLeaseConflict){t.Fatalf("second candidate err=%v",err)}
 	if err:=p.ReconcileRecovery("candidate-A",peer);err!=nil{t.Fatal(err)}
 	var out bytes.Buffer
-	if err:=p.CommitRecovery(ctx,"candidate-A",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+	if _,err:=p.CommitRecovery(ctx,"candidate-A",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
 	if p.RecoveryOwner()!="candidate-A"||p.recovery.engine.Authorize(2,"candidate-B"){t.Fatal("competing candidate authorized")}
 }
 
@@ -111,7 +111,7 @@ func TestRecoveryDuringFINPreservesCloseSemantics(t *testing.T){
 	peer.Snapshot.Flows[0].FinAckSent=true
 	if err:=p.ReconcileRecovery("carrier-2",peer);err!=nil{t.Fatal(err)}
 	var out bytes.Buffer
-	if err:=p.CommitRecovery(ctx,"carrier-2",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+	if _,err:=p.CommitRecovery(ctx,"carrier-2",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
 	fl,_:=p.getOpenFlow(1)
 	fl.mu.Lock();sent,acked,closed:=fl.finSent,fl.finAcked,fl.closed;fl.mu.Unlock()
 	if !sent||!acked||closed{t.Fatalf("FIN state sent=%v acked=%v closed=%v",sent,acked,closed)}
@@ -122,7 +122,7 @@ func TestMultiFlowCarrierReplacementNoDuplicateOrLoss(t *testing.T){
 	_,peer:=peerOfferFor(t,p,"carrier-2")
 	if err:=p.ReconcileRecovery("carrier-2",peer);err!=nil{t.Fatal(err)}
 	var out bytes.Buffer
-	if err:=p.CommitRecovery(ctx,"carrier-2",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+	if _,err:=p.CommitRecovery(ctx,"carrier-2",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
 	got:=map[uint64][]byte{}
 	for out.Len()>0{
 		fr,err:=protocol.Decode(&out);if err!=nil{t.Fatal(err)}
@@ -161,7 +161,7 @@ func TestRecoveryFailureImmediatelyBeforeCommitKeepsOldOwner(t *testing.T){
 	injected:=errors.New("injected before commit")
 	p.recovery.beforeCommit=func()error{return injected}
 	var out bytes.Buffer
-	err:=p.CommitRecovery(ctx,"candidate-precommit",Carrier{In:bytes.NewReader(nil),Out:&out})
+	_,err:=p.CommitRecovery(ctx,"candidate-precommit",Carrier{In:bytes.NewReader(nil),Out:&out})
 	if !errors.Is(err,injected){t.Fatalf("commit err=%v",err)}
 	if p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatalf("authority changed epoch=%d owner=%s",p.RecoveryEpoch(),p.RecoveryOwner())}
 	if !p.recovery.engine.Authorize(1,"carrier-1")||p.recovery.engine.Authorize(2,"candidate-precommit"){t.Fatal("candidate became authorized before commit")}
@@ -200,7 +200,7 @@ func TestRecoveryDuringFINPreservesPendingFinAck(t *testing.T){
 	peer.Snapshot.Flows[0].TxAcked=0
 	if err:=p.ReconcileRecovery("carrier-finack",peer);err!=nil{t.Fatal(err)}
 	var out bytes.Buffer
-	if err:=p.CommitRecovery(ctx,"carrier-finack",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+	if _,err:=p.CommitRecovery(ctx,"carrier-finack",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
 	seen:=false
 	for out.Len()>0{
 		fr,err:=protocol.Decode(&out);if err!=nil{t.Fatal(err)}
