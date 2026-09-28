@@ -51,6 +51,7 @@ type Server struct {
 	httpClient *http.Client
 	mutationMu sync.Mutex
 	backupMu sync.Mutex
+	restoreFault func(string) error
 	now func() time.Time
 }
 
