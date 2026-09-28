@@ -134,6 +134,8 @@ type flow struct {
 	resetCode       protocol.ErrorCode
 	localPumpRunning bool
 	targetPumpRunning bool
+	localPumpDone chan struct{}
+	targetPumpDone chan struct{}
 }
 
 type frameWriter struct {
@@ -884,27 +886,52 @@ func (p *Peer) finishIfComplete(fl *flow) {
 func (p *Peer) startPump(ctx context.Context, fl *flow) {
 	fl.mu.Lock()
 	if fl.closed||fl.finSent||fl.localPumpRunning { fl.mu.Unlock(); return }
+	done:=make(chan struct{})
 	fl.localPumpRunning=true
+	fl.localPumpDone=done
 	fl.mu.Unlock()
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		defer func(){fl.mu.Lock();fl.localPumpRunning=false;fl.mu.Unlock()}()
+		defer func(){
+			fl.mu.Lock()
+			if fl.localPumpDone==done { fl.localPumpRunning=false; close(done) }
+			fl.mu.Unlock()
+		}()
 		p.pumpLocal(ctx, fl)
 	}()
 }
 
 func (p *Peer) startTargetPump(ctx context.Context, fl *flow) {
 	fl.mu.Lock()
-	if fl.closed||fl.targetPumpRunning { fl.mu.Unlock(); return }
+	if fl.closed||fl.finAckSent||fl.targetPumpRunning { fl.mu.Unlock(); return }
+	done:=make(chan struct{})
 	fl.targetPumpRunning=true
+	fl.targetPumpDone=done
 	fl.mu.Unlock()
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		defer func(){fl.mu.Lock();fl.targetPumpRunning=false;fl.mu.Unlock()}()
+		defer func(){
+			fl.mu.Lock()
+			if fl.targetPumpDone==done { fl.targetPumpRunning=false; close(done) }
+			fl.mu.Unlock()
+		}()
 		p.pumpTarget(ctx, fl)
 	}()
+}
+
+func (p *Peer) ensurePumpsAfterRecovery(ctx context.Context,fl *flow){
+	fl.mu.Lock()
+	localRunning,localDone:=fl.localPumpRunning,fl.localPumpDone
+	targetRunning,targetDone:=fl.targetPumpRunning,fl.targetPumpDone
+	fl.mu.Unlock()
+	if !localRunning { p.startPump(ctx,fl) } else if localDone!=nil {
+		p.wg.Add(1);go func(){defer p.wg.Done();select{case <-ctx.Done():case <-localDone:p.startPump(ctx,fl)}}()
+	}
+	if !targetRunning { p.startTargetPump(ctx,fl) } else if targetDone!=nil {
+		p.wg.Add(1);go func(){defer p.wg.Done();select{case <-ctx.Done():case <-targetDone:p.startTargetPump(ctx,fl)}}()
+	}
 }
 
 func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
