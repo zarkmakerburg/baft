@@ -409,9 +409,11 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 					select{
 					case <-ctx.Done():return
 					case <-sh.peer.RecoveryNeeded():
+						if !sh.peer.NeedsRecovery(){continue}
 						if err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh);err!=nil&&ctx.Err()==nil{
 							runErr<-fmt.Errorf("shard %d recovery: %w",index,err);return
 						}
+						sh.peer.DrainRecoverySignals()
 					}
 				}
 			}(i,sh)
