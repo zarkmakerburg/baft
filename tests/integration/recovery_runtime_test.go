@@ -331,3 +331,73 @@ func TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch(t *testing.T){
 	close(release)
 	t.Log("PASS two real runtimes stayed on old epoch during listener precommit failure")
 }
+
+
+func waitRecoveryFaultAndSettled(t *testing.T, fired *atomic.Bool, p *recoveryRuntimePair) {
+	t.Helper()
+	deadline:=time.Now().Add(5*time.Second)
+	for time.Now().Before(deadline) {
+		if fired.Load() {
+			ir:=p.irRuntime.RecoveryAuthoritiesForTest()
+			ex:=p.exRuntime.RecoveryAuthoritiesForTest()
+			if len(ir)>0&&len(ex)>0 {
+				allOld:=true
+				for _,s:=range append(append([]node.RecoveryAuthoritySnapshot{},ir...),ex...) {
+					if s.Epoch!=1||s.Frozen { allOld=false;break }
+				}
+				if allOld{return}
+			}
+		}
+		time.Sleep(20*time.Millisecond)
+	}
+	t.Fatalf("pre-commit fault did not settle with both runtimes on old epoch: fired=%v ir=%+v ex=%+v",
+		fired.Load(),p.irRuntime.RecoveryAuthoritiesForTest(),p.exRuntime.RecoveryAuthoritiesForTest())
+}
+
+func assertBothRuntimeOldEpoch(t *testing.T,p *recoveryRuntimePair) {
+	t.Helper()
+	for name,states:=range map[string][]node.RecoveryAuthoritySnapshot{
+		"dialer":p.irRuntime.RecoveryAuthoritiesForTest(),
+		"listener":p.exRuntime.RecoveryAuthoritiesForTest(),
+	} {
+		if len(states)==0 { t.Fatalf("%s has no live recovery authority",name) }
+		for _,s:=range states {
+			if s.Epoch!=1 { t.Fatalf("%s authority advanced before distributed commit: %+v",name,s) }
+			if s.Frozen { t.Fatalf("%s remained frozen after pre-commit abort: %+v",name,s) }
+		}
+	}
+}
+
+func TestTwoRuntimeDialerPreCommitFailureKeepsBothOldEpoch(t *testing.T) {
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c,err:=net.DialTimeout("tcp",p.ir.Routes[0].Listen,time.Second);if err!=nil{t.Fatal(err)}
+	defer c.Close();_ = c.SetDeadline(time.Now().Add(10*time.Second))
+	if _,err:=c.Write([]byte("precommit-dialer"));err!=nil{t.Fatal(err)}
+	echo:=make([]byte,len("precommit-dialer"));if _,err:=io.ReadFull(c,echo);err!=nil{t.Fatal(err)}
+	var fired atomic.Bool
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="before_commit" { fired.Store(true);return errors.New("dialer precommit injected") }
+		return nil
+	})
+	p.proxy.CutAll()
+	waitRecoveryFaultAndSettled(t,&fired,p)
+	assertBothRuntimeOldEpoch(t,p)
+	t.Log("PASS two real runtimes kept old epoch after dialer pre-commit failure")
+}
+
+func TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch(t *testing.T) {
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c,err:=net.DialTimeout("tcp",p.ir.Routes[0].Listen,time.Second);if err!=nil{t.Fatal(err)}
+	defer c.Close();_ = c.SetDeadline(time.Now().Add(10*time.Second))
+	if _,err:=c.Write([]byte("precommit-listener"));err!=nil{t.Fatal(err)}
+	echo:=make([]byte,len("precommit-listener"));if _,err:=io.ReadFull(c,echo);err!=nil{t.Fatal(err)}
+	var fired atomic.Bool
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="listener_before_commit" { fired.Store(true);return errors.New("listener precommit injected") }
+		return nil
+	})
+	p.proxy.CutAll()
+	waitRecoveryFaultAndSettled(t,&fired,p)
+	assertBothRuntimeOldEpoch(t,p)
+	t.Log("PASS two real runtimes kept old epoch after listener pre-commit failure")
+}
