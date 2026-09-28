@@ -85,6 +85,8 @@ type Telemetry struct {
 	AgentTokenEnv             string `json:"agent_token_env,omitempty"`
 	IntervalSeconds           int    `json:"interval_seconds,omitempty"`
 	RouteProbeIntervalSeconds int    `json:"route_probe_interval_seconds,omitempty"`
+	SpoolPath                 string `json:"spool_path,omitempty"`
+	SpoolMaxPending           int    `json:"spool_max_pending,omitempty"`
 }
 type Logging struct {
 	Level   string `json:"level"`
@@ -277,5 +279,7 @@ func validateTelemetry(t Telemetry) error {
 	if t.RouteProbeIntervalSeconds<0||t.RouteProbeIntervalSeconds>60{return errors.New("telemetry.route_probe_interval_seconds is out of range")}
 	if t.RouteProbeIntervalSeconds>0&&t.RouteProbeIntervalSeconds<1{return errors.New("telemetry.route_probe_interval_seconds is too small")}
 	if strings.ContainsAny(t.AgentTokenEnv,"=\x00"){return errors.New("telemetry.agent_token_env is invalid")}
+	if strings.ContainsRune(t.SpoolPath,'\x00'){return errors.New("telemetry.spool_path is invalid")}
+	if t.SpoolMaxPending<0||t.SpoolMaxPending>1_000_000{return errors.New("telemetry.spool_max_pending is out of range")}
 	return nil
 }
