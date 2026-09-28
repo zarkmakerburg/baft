@@ -181,7 +181,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 	}
 	var handler http.Handler
 	if cfg.Noise != nil {
-		nc, err := noiseConfig(cfg)
+		nc, allowedPeers, legacyIdentity, err := noiseListenerOptions(cfg)
 		if err != nil {
 			return err
 		}
@@ -189,7 +189,10 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		if err != nil {
 			return err
 		}
-		handler, err = carrierh2.HandlerWithNoise(stream, carrierh2.NoiseOptions{Handshake: nc, PeerIdentity: cfg.Server.AllowedPeerIdentities[0], Cover: cover, Revocations: r.Revocations})
+		handler, err = carrierh2.HandlerWithNoise(stream, carrierh2.NoiseOptions{
+			Handshake: nc, PeerIdentity: legacyIdentity, AllowedPeers: allowedPeers,
+			Cover: cover, Revocations: r.Revocations,
+		})
 		if err != nil {
 			return err
 		}
