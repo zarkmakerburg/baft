@@ -425,7 +425,7 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 
 	prev:=s.st.Telemetry[report.NodeID]
 	if prev.BootID==report.BootID && report.Sequence<=prev.Sequence {
-		f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID;s.recalculateFinanceLocked(&f)
+		f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
 		return f,true,nil
 	}
 	var din,dout uint64
@@ -440,12 +440,9 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 		dout=report.EgressBytes
 	}
 
-	f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
-	if ^uint64(0)-f.IngressBytes<din||^uint64(0)-f.EgressBytes<dout{return NodeFinance{},false,errors.New("traffic counter overflow")}
-	f.IngressBytes+=din;f.EgressBytes+=dout;f.UpdatedAt=time.Now().UTC()
-	s.recalculateFinanceLocked(&f)
-	s.st.Finance[report.NodeID]=f
 	ts:=time.Unix(report.TimestampUnix,0).UTC()
+	if err:=s.appendFinanceLocked(report.NodeID,ts,din,dout);err!=nil{return NodeFinance{},false,err}
+	f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
 	rateMilli:=int64(0)
 	if prev.BootID==report.BootID && !prev.LastTelemetry.IsZero() && ts.After(prev.LastTelemetry) {
 		deltaErrors:=report.HandshakeErrors-prev.HandshakeErrors
