@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -36,6 +37,7 @@ type Carrier struct {
 }
 
 type TrafficObserver func(ingressBytes, egressBytes uint64)
+type LatencyObserver func(rtt time.Duration)
 
 type Options struct {
 	NodeID             string
@@ -46,6 +48,8 @@ type Options struct {
 	ConfigRevision     string
 	Resources          *resources.Allocator
 	TrafficObserver    TrafficObserver
+	LatencyObserver    LatencyObserver
+	PingInterval       time.Duration
 }
 
 type Peer struct {
@@ -78,6 +82,8 @@ type Peer struct {
 	closed             bool
 	wg                 sync.WaitGroup
 	trafficObserver    TrafficObserver
+	latencyObserver    LatencyObserver
+	pingInterval       time.Duration
 }
 
 type replayChunk struct {
@@ -176,6 +182,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		bootID: bootID, shardID: opts.ShardID, profileID: opts.ProfileID,
 		profileVersion: opts.ProfileVersion, configRevision: opts.ConfigRevision,
 		epoch: "1", readyCh: make(chan struct{}), trafficObserver: opts.TrafficObserver,
+		latencyObserver: opts.LatencyObserver, pingInterval: opts.PingInterval,
 	}
 	if role == Dialer {
 		p.nextID = 1
@@ -214,6 +221,13 @@ func (p *Peer) Run(ctx context.Context) error {
 	if p.role == Dialer {
 		if err := p.sendHello(); err != nil {
 			return err
+		}
+		if p.pingInterval > 0 {
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				p.pingLoop(runCtx)
+			}()
 		}
 	}
 	for {
@@ -329,6 +343,10 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 		return errors.New("application frame received before READY")
 	}
 	switch fr.Type {
+	case protocol.TypePing:
+		return p.handlePing(fr)
+	case protocol.TypePong:
+		return p.handlePong(fr)
 	case protocol.TypeOpen:
 		return p.handleOpen(ctx, fr)
 	case protocol.TypeOpenOK:
@@ -1201,5 +1219,43 @@ func writeConnFull(w io.Writer, p []byte) error {
 			return io.ErrShortWrite
 		}
 	}
+	return nil
+}
+
+
+func (p *Peer) pingLoop(ctx context.Context) {
+	if err:=p.waitReady(ctx);err!=nil{return}
+	send:=func() bool {
+		var payload [8]byte
+		binary.BigEndian.PutUint64(payload[:],uint64(time.Now().UnixNano()))
+		if err:=p.sender.sendControl(protocol.Frame{Type:protocol.TypePing,Payload:payload[:]});err!=nil{return false}
+		return true
+	}
+	if !send(){return}
+	t:=time.NewTicker(p.pingInterval)
+	defer t.Stop()
+	for{
+		select{
+		case <-ctx.Done():return
+		case <-t.C:
+			if !send(){return}
+		}
+	}
+}
+
+func (p *Peer) handlePing(fr protocol.Frame) error {
+	if len(fr.Payload)!=8{return errors.New("invalid PING payload")}
+	payload:=append([]byte(nil),fr.Payload...)
+	return p.sender.sendControl(protocol.Frame{Type:protocol.TypePong,Payload:payload})
+}
+
+func (p *Peer) handlePong(fr protocol.Frame) error {
+	if len(fr.Payload)!=8{return errors.New("invalid PONG payload")}
+	sent:=int64(binary.BigEndian.Uint64(fr.Payload))
+	now:=time.Now().UnixNano()
+	if sent<=0||sent>now{return errors.New("invalid PONG timestamp")}
+	rtt:=time.Duration(now-sent)
+	if rtt>time.Minute{return errors.New("implausible PONG RTT")}
+	if p.latencyObserver!=nil{p.latencyObserver(rtt)}
 	return nil
 }
