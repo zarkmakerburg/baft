@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,18 +26,57 @@ type RecoveryOffer struct {
 	Routes      map[uint64]string `json:"routes"`
 }
 
-type RecoveryDone struct {
-	CandidateID string `json:"candidate_id"`
-	NextEpoch uint64 `json:"next_epoch"`
+type RecoveryPhase string
+
+const (
+	RecoveryPhasePrepared    RecoveryPhase = "PREPARED"
+	RecoveryPhaseCommitReady RecoveryPhase = "COMMIT_READY"
+	RecoveryPhaseCommit      RecoveryPhase = "COMMIT"
+	RecoveryPhaseCommitAck   RecoveryPhase = "COMMIT_ACK"
+)
+
+type RecoveryControl struct {
+	Phase       RecoveryPhase `json:"phase"`
+	SessionID   string        `json:"session_id"`
+	CandidateID string        `json:"candidate_id"`
+	NextEpoch   uint64        `json:"next_epoch"`
+	PlanDigest  string        `json:"plan_digest"`
+}
+
+type CommitResult struct {
+	Committed  bool
+	Epoch      uint64
+	CandidateID string
+	PlanDigest string
+}
+
+type preparedFlowRecovery struct {
+	flow *flow
+	replay []protocol.Frame
+	replayed uint64
+	ackAdvance uint64
+	finAckAdvance bool
+	resendFIN bool
+	finFinal uint64
+	ackPeerFIN bool
+}
+
+type preparedRecovery struct {
+	control RecoveryControl
+	carrier Carrier
+	sender *outboundSender
+	runCtx context.Context
+	flows []preparedFlowRecovery
 }
 
 type RecoveryStats struct {
-	Attempts      uint64
-	Commits       uint64
-	Aborts        uint64
-	CurrentEpoch  uint64
-	ReplayedBytes uint64
-	Failures      map[string]uint64
+	Attempts           uint64
+	Commits            uint64
+	Aborts             uint64
+	PostCommitFailures uint64
+	CurrentEpoch       uint64
+	ReplayedBytes      uint64
+	Failures           map[string]uint64
 }
 
 type RecoveryAdapter struct {
@@ -50,9 +90,12 @@ type RecoveryAdapter struct {
 	pendingSnapshot recovery.Snapshot
 	pendingRoutes map[uint64]string
 	hasPlan bool
+	prepared *preparedRecovery
+	lastCommit RecoveryControl
 	attempts atomic.Uint64
 	commits atomic.Uint64
 	aborts atomic.Uint64
+	postCommitFailures atomic.Uint64
 	replayed atomic.Uint64
 	failures map[string]uint64
 }
@@ -79,7 +122,7 @@ func (a *RecoveryAdapter) IsFrozen() bool {
 
 func (a *RecoveryAdapter) recordFailure(reason string) {
 	switch reason {
-	case "candidate_setup","snapshot_exchange","peer_restart","state_mismatch","replay_unavailable","lease_conflict","commit":
+	case "candidate_setup","snapshot_exchange","peer_restart","state_mismatch","replay_unavailable","lease_conflict","commit","post_commit_failure":
 	default: reason="other"
 	}
 	a.mu.Lock(); a.failures[reason]++; a.mu.Unlock()
@@ -91,7 +134,7 @@ func (a *RecoveryAdapter) Stats() RecoveryStats {
 	for k,v:=range a.failures { fail[k]=v }
 	a.mu.Unlock()
 	return RecoveryStats{
-		Attempts:a.attempts.Load(),Commits:a.commits.Load(),Aborts:a.aborts.Load(),
+		Attempts:a.attempts.Load(),Commits:a.commits.Load(),Aborts:a.aborts.Load(),PostCommitFailures:a.postCommitFailures.Load(),
 		CurrentEpoch:a.engine.CurrentEpoch(),ReplayedBytes:a.replayed.Load(),Failures:fail,
 	}
 }
