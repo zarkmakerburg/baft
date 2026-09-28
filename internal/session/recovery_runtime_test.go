@@ -233,6 +233,7 @@ func prepareCommitFixture(t *testing.T,candidate string)(*Peer,context.Context,c
 	out:=&bytes.Buffer{}
 	ctl,err:=p.PrepareRecoveryCommit(ctx,candidate,Carrier{In:bytes.NewReader(nil),Out:out})
 	if err!=nil{cancel();t.Fatal(err)}
+	if err:=p.MarkRecoveryCommitReady(ctl);err!=nil{cancel();t.Fatal(err)}
 	ctl.Phase=RecoveryPhaseCommit
 	return p,ctx,cancel,out,ctl
 }
@@ -276,6 +277,16 @@ func TestPlanDigestMismatchRejectsCommit(t *testing.T){
 	t.Log("PASS plan digest mismatch rejected before commit")
 }
 
+func resolveCommittedForTest(t *testing.T,p *Peer,ctx context.Context,ctl RecoveryControl) {
+	t.Helper()
+	reply:=ctl;reply.Phase=RecoveryPhaseStatusReply;reply.Status=RecoveryResolutionCommitted
+	if err:=p.NoteCommittedResolution(reply);err!=nil{t.Fatal(err)}
+	var rebound bytes.Buffer
+	if err:=p.RebindCommittedCarrier(ctx,ctl,Carrier{In:bytes.NewReader(nil),Out:&rebound});err!=nil{t.Fatal(err)}
+	p.recovery.postCommitFault=nil
+	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+}
+
 func TestPostCommitReplayFailureNeverReauthorizesOldEpoch(t *testing.T){
 	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-postfail");defer cancel()
 	injected:=errors.New("replay writer injected failure")
@@ -290,10 +301,13 @@ func TestPostCommitReplayFailureNeverReauthorizesOldEpoch(t *testing.T){
 	if p.recovery.engine.Authorize(1,"carrier-1"){t.Fatal("old epoch re-authorized after post-commit failure")}
 	p.AbortRecovery("candidate-postfail")
 	if p.RecoveryEpoch()!=2||p.RecoveryOwner()!="candidate-postfail"{t.Fatal("Abort pretended to roll back committed authority")}
-	if p.recovery.IsFrozen(){t.Fatal("post-commit failure left session frozen")}
+	if !p.RecoveryFrozen()||p.RecoveryTransactionState()!=RecoveryTxnUncertain{t.Fatalf("post-commit uncertainty state=%s frozen=%v",p.RecoveryTransactionState(),p.RecoveryFrozen())}
+	if _,err:=p.BeginRecovery("fresh-before-resolution");!errors.Is(err,ErrCommitUncertain){t.Fatalf("fresh recovery bypassed uncertainty: %v",err)}
+	resolveCommittedForTest(t,p,ctx,ctl)
+	if p.RecoveryFrozen(){t.Fatal("resolved transaction remained permanently frozen")}
 	s:=p.RecoveryStats()
 	if s.Commits!=1||s.PostCommitFailures!=1||s.Aborts!=0{t.Fatalf("metrics=%+v",s)}
-	t.Log("PASS post-commit replay failure kept old epoch fenced and freeze cleared")
+	t.Log("PASS post-commit replay failure fenced old epoch until exact committed resolution finalized")
 }
 
 func TestPostCommitFailureCanRecoverToNextEpoch(t *testing.T){
@@ -305,7 +319,8 @@ func TestPostCommitFailureCanRecoverToNextEpoch(t *testing.T){
 	}
 	res,err:=p.CommitPreparedRecovery(ctx,ctl)
 	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("first result=%+v err=%v",res,err)}
-	p.recovery.postCommitFault=nil
+	if _,err:=p.BeginRecovery("candidate-3");!errors.Is(err,ErrCommitUncertain){t.Fatalf("candidate-3 started before resolution: %v",err)}
+	resolveCommittedForTest(t,p,ctx,ctl)
 	_,peer:=peerOfferFor(t,p,"candidate-3")
 	if err:=p.ReconcileRecovery("candidate-3",peer);err!=nil{t.Fatal(err)}
 	var out bytes.Buffer
@@ -313,7 +328,7 @@ func TestPostCommitFailureCanRecoverToNextEpoch(t *testing.T){
 	if err!=nil{t.Fatal(err)}
 	if !res.Committed||res.Epoch!=3||p.RecoveryEpoch()!=3||p.RecoveryOwner()!="candidate-3"{t.Fatalf("next recovery result=%+v epoch=%d owner=%s",res,p.RecoveryEpoch(),p.RecoveryOwner())}
 	if p.recovery.engine.Authorize(1,"carrier-1")||p.recovery.engine.Authorize(2,"candidate-2"){t.Fatal("older epochs authorized after epoch-3 recovery")}
-	t.Log("PASS post-commit candidate failure recovered forward to epoch 3")
+	t.Log("PASS post-commit uncertainty resolved exact epoch 2 before forward recovery to epoch 3")
 }
 
 func TestPostCommitFailureDoesNotLeaveSessionFrozen(t *testing.T){
@@ -321,8 +336,11 @@ func TestPostCommitFailureDoesNotLeaveSessionFrozen(t *testing.T){
 	p.recovery.postCommitFault=func(stage string)error{if stage=="after_authority_commit"{return errors.New("after commit")};return nil}
 	res,err:=p.CommitPreparedRecovery(ctx,ctl)
 	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("result=%+v err=%v",res,err)}
-	if p.recovery.IsFrozen(){t.Fatal("session remained frozen")}
-	next,err:=p.BeginRecovery("candidate-next");if err!=nil{t.Fatalf("new recovery blocked: %v",err)}
+	if !p.RecoveryFrozen(){t.Fatal("uncertain committed transaction was not frozen")}
+	if _,err:=p.BeginRecovery("candidate-next");!errors.Is(err,ErrCommitUncertain){t.Fatalf("fresh recovery bypassed uncertainty: %v",err)}
+	resolveCommittedForTest(t,p,ctx,ctl)
+	if p.RecoveryFrozen(){t.Fatal("session remained frozen after committed resolution/finalize")}
+	next,err:=p.BeginRecovery("candidate-next");if err!=nil{t.Fatalf("new recovery blocked after resolution: %v",err)}
 	if next.NextEpoch!=3{t.Fatalf("next epoch=%d",next.NextEpoch)}
 	p.AbortRecovery("candidate-next")
 }
