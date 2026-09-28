@@ -204,8 +204,29 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 
 	stream := func(hctx context.Context, in io.Reader, out io.Writer, peer carrierh2.PeerInfo) error {
 		expected, err := nodeIDFromIdentity(peer.Identity)
-		if err != nil {
-			return err
+		if err != nil { return err }
+		if cfg.Recovery.Enabled {
+			first,err:=protocol.Decode(in);if err!=nil{return err}
+			if handled,err:=r.handleIncomingRecovery(hctx,cfg,in,out,peer,first);handled{return err}
+			if first.Type!=protocol.TypeHello{return errors.New("new carrier must begin with HELLO or RESUME_STATE")}
+			h,err:=protocol.DecodeHello(first.Payload);if err!=nil{return err}
+			owner:=fmt.Sprintf("shard-%d-carrier-1",h.ShardID)
+			p,err:=session.New(session.Listener,session.Carrier{In:in,Out:out},peer.Identity,table,session.Options{
+				NodeID:cfg.Node.ID,ExpectedPeerNodeID:expected,
+				ProfileID:cfg.Transport.Profile,ProfileVersion:1,ConfigRevision:"config-v1",
+				Resources:r.Resources,RecoveryEnabled:true,RecoveryRetention:recoveryRetention(cfg),CarrierID:owner,
+				TrafficObserver:func(in,out uint64){r.ingressBytes.Add(in);r.egressBytes.Add(out)},
+			})
+			if err!=nil{return err}
+			// The listener learns SessionID from the authenticated first HELLO.
+			if h.SessionID==""{return errors.New("empty session id")}
+			r.sessionMu.Lock()
+			if old:=r.sessions[h.SessionID];old!=nil&&old!=p{r.sessionMu.Unlock();return errors.New("duplicate live session id")}
+			r.sessions[h.SessionID]=p
+			r.sessionMu.Unlock()
+			r.registerPeer(p)
+			defer func(){r.unregisterPeer(p);r.unregisterSession(p)}()
+			return p.RunWithFirstFrame(hctx,first)
 		}
 		p, err := session.New(session.Listener, session.Carrier{In: in, Out: out}, peer.Identity, table, session.Options{
 			NodeID: cfg.Node.ID, ExpectedPeerNodeID: expected,
@@ -213,9 +234,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			Resources: r.Resources,
 			TrafficObserver: func(in,out uint64){ r.ingressBytes.Add(in); r.egressBytes.Add(out) },
 		})
-		if err != nil {
-			return err
-		}
+		if err != nil { return err }
 		r.registerPeer(p)
 		defer r.unregisterPeer(p)
 		return p.Run(hctx)
