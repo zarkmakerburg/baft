@@ -57,6 +57,9 @@ jobs:
         run: |
           go test ./internal/bcc -run 'TestForcedStaleAlertFiresOnceAndResolvesOnce|TestWebhookSecretNeverAppearsInAPIResponses|TestNodeRegistrationUsesEnvTokenAndRejectsRawSecret|TestFinanceRateChangeMidDayUsesEffectiveVersion|TestFinanceDailyMonthlyAndClusterSumsMatch|TestFinanceTehranDayBoundary|TestFinanceDuplicateAndOutOfOrderDoNotChangeReports|TestFinanceReportAPIAndCSV' -count=1 -v
           go test ./tests/integration -run '^TestBadNoiseHandshakeIncrementsTelemetryAndReachesBCC$' -count=1 -v
+      - name: Step 5.4 BCC hardening evidence
+        run: |
+          go test ./internal/bcc -run 'TestAuditLogAdminTransactionsAndTamperDetection|TestRateLimitAndBruteForceTemporaryBlock|TestAgentTokenRotationGraceAndImmediateRevoke|TestValidateListenAddressWhitelist' -count=1 -v
       - name: Race detector
         run: go test -race ./...
       - name: Vet
