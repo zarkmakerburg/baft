@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -150,4 +151,75 @@ func TestRecoveryDisabledBaselineUnchanged(t *testing.T){
 	if err!=nil{t.Fatal(err)}
 	if p.recovery!=nil||p.recoveryEnabled{t.Fatal("disabled baseline unexpectedly enabled ECRL")}
 	if p.RecoveryEpoch()!=1{t.Fatalf("baseline epoch=%d",p.RecoveryEpoch())}
+}
+
+
+func TestRecoveryFailureImmediatelyBeforeCommitKeepsOldOwner(t *testing.T){
+	p,_,ctx,cancel:=recoveryFixture(t,1);defer cancel()
+	_,peer:=peerOfferFor(t,p,"candidate-precommit")
+	if err:=p.ReconcileRecovery("candidate-precommit",peer);err!=nil{t.Fatal(err)}
+	injected:=errors.New("injected before commit")
+	p.recovery.beforeCommit=func()error{return injected}
+	var out bytes.Buffer
+	err:=p.CommitRecovery(ctx,"candidate-precommit",Carrier{In:bytes.NewReader(nil),Out:&out})
+	if !errors.Is(err,injected){t.Fatalf("commit err=%v",err)}
+	if p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatalf("authority changed epoch=%d owner=%s",p.RecoveryEpoch(),p.RecoveryOwner())}
+	if !p.recovery.engine.Authorize(1,"carrier-1")||p.recovery.engine.Authorize(2,"candidate-precommit"){t.Fatal("candidate became authorized before commit")}
+	p.AbortRecovery("candidate-precommit")
+}
+
+func TestRecoveryFreezeRejectsNewOpenOnLiveSession(t *testing.T){
+	p,_,_,cancel:=recoveryFixture(t,1);defer cancel()
+	p.mu.Lock()
+	select{case <-p.readyCh:default:close(p.readyCh)}
+	p.localReady=true;p.peerReady=true
+	p.mu.Unlock()
+	if _,err:=p.BeginRecovery("candidate-freeze");err!=nil{t.Fatal(err)}
+	a,b:=net.Pipe();defer a.Close();defer b.Close()
+	ctx,cancelOpen:=context.WithTimeout(context.Background(),time.Second);defer cancelOpen()
+	err:=p.OpenFlow(ctx,"route-new",a)
+	if !errors.Is(err,recovery.ErrResumeFrozen){t.Fatalf("new OPEN during recovery err=%v",err)}
+	p.AbortRecovery("candidate-freeze")
+}
+
+func TestRecoveryDuringFINPreservesPendingFinAck(t *testing.T){
+	p,_,ctx,cancel:=recoveryFixture(t,1);defer cancel()
+	fl,_:=p.getOpenFlow(1)
+	fl.mu.Lock()
+	fl.finSent=false
+	fl.finRecv=true
+	fl.finRecvFinal=0
+	fl.rxNext=0
+	fl.rxWritten=0
+	fl.finAckSent=false
+	fl.mu.Unlock()
+
+	_,peer:=peerOfferFor(t,p,"carrier-finack")
+	peer.Snapshot.Flows[0].FinSent=true
+	peer.Snapshot.Flows[0].TxNext=0
+	peer.Snapshot.Flows[0].TxAcked=0
+	if err:=p.ReconcileRecovery("carrier-finack",peer);err!=nil{t.Fatal(err)}
+	var out bytes.Buffer
+	if err:=p.CommitRecovery(ctx,"carrier-finack",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+	seen:=false
+	for out.Len()>0{
+		fr,err:=protocol.Decode(&out);if err!=nil{t.Fatal(err)}
+		if fr.Type==protocol.TypeFinAck&&fr.StreamID==1&&fr.Offset==0{seen=true}
+	}
+	if !seen{t.Fatal("pending FIN_ACK was not replayed")}
+	fl.mu.Lock();sent:=fl.finAckSent;closed:=fl.closed;fl.mu.Unlock()
+	if !sent||closed{t.Fatalf("FIN_ACK state sent=%v closed=%v",sent,closed)}
+}
+
+func TestRecoveryBoundedReplayMissingBytesFailsClosed(t *testing.T){
+	p,_,_,cancel:=recoveryFixture(t,1);defer cancel()
+	_,peer:=peerOfferFor(t,p,"candidate-gap")
+	fl,_:=p.getOpenFlow(1)
+	fl.mu.Lock()
+	fl.replay=[]replayChunk{{start:2,end:4,data:[]byte{3,4}}}
+	fl.mu.Unlock()
+	err:=p.ReconcileRecovery("candidate-gap",peer)
+	if err==nil{t.Fatal("missing replay prefix was accepted")}
+	p.AbortRecovery("candidate-gap")
+	if p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatal("missing replay bytes changed authority")}
 }
