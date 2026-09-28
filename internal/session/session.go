@@ -314,6 +314,12 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 			continue
 		}
 		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil {
+			if p.recoveryEnabled && errors.Is(err,recovery.ErrStaleEpoch) {
+				// A delayed frame from a fenced carrier is expected during
+				// replacement. Reject it without mutating flow state, then
+				// continue on the currently authoritative carrier.
+				continue
+			}
 			if p.recoveryEnabled && errors.Is(err,ErrCarrierUnavailable) {
 				p.onCarrierFailureForGeneration(err,generation)
 				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);werr!=nil{return werr}
