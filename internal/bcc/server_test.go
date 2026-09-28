@@ -86,3 +86,42 @@ func TestHealthProbeAndDashboard(t *testing.T){
 	rr:=httptest.NewRecorder();app.Handler().ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/",nil))
 	if rr.Code!=200||!strings.Contains(rr.Body.String(),"BAFT Command Center"){t.Fatal("dashboard missing")}
 }
+
+
+func TestFinancialTrafficSync(t *testing.T){
+	store,err:=OpenStore(filepath.Join(t.TempDir(),"state.json"));if err!=nil{t.Fatal(err)}
+	_,err=store.UpsertNode(Node{ID:"ex-fin",Alias:"EX Finance",Address:"127.0.0.1:25000",Role:"foreign"},"agent-fin")
+	if err!=nil{t.Fatal(err)}
+	app,_:=NewServer(store,"admin")
+
+	rr:=httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/finance","admin",map[string]any{
+		"node_id":"ex-fin","cost_micros_per_gib":int64(2_000_000),"revenue_micros_per_gib":int64(5_000_000),
+	}))
+	if rr.Code!=http.StatusOK{t.Fatalf("finance policy status=%d body=%s",rr.Code,rr.Body.String())}
+
+	rr=httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/agent/traffic","agent-fin",map[string]any{
+		"node_id":"ex-fin","ingress_bytes":uint64(1<<29),"egress_bytes":uint64(1<<29),
+	}))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("traffic status=%d body=%s",rr.Code,rr.Body.String())}
+	var got NodeFinance
+	if err:=json.Unmarshal(rr.Body.Bytes(),&got);err!=nil{t.Fatal(err)}
+	if got.CostMicros!=2_000_000||got.RevenueMicros!=5_000_000||got.ProfitMicros!=3_000_000{
+		t.Fatalf("finance=%+v",got)
+	}
+
+	rr=httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr,authReq(http.MethodGet,"/api/finance","admin",nil))
+	if rr.Code!=http.StatusOK{t.Fatalf("finance snapshot status=%d",rr.Code)}
+	var all []NodeFinance
+	if err:=json.Unmarshal(rr.Body.Bytes(),&all);err!=nil{t.Fatal(err)}
+	if len(all)!=1||all[0].ProfitMicros!=3_000_000{t.Fatalf("snapshot=%+v",all)}
+
+	rr=httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/agent/traffic","wrong-token",map[string]any{
+		"node_id":"ex-fin","ingress_bytes":uint64(1),"egress_bytes":uint64(1),
+	}))
+	if rr.Code!=http.StatusUnauthorized{t.Fatalf("unauthorized traffic accepted status=%d",rr.Code)}
+	t.Logf("PASS finance sync cost=%d revenue=%d profit=%d",got.CostMicros,got.RevenueMicros,got.ProfitMicros)
+}
