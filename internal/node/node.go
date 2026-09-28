@@ -64,7 +64,6 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var telemetryExporter *telemetry.Exporter
 	if cfg.Telemetry.Enabled {
 		tokenEnv := cfg.Telemetry.AgentTokenEnv
 		if tokenEnv == "" { tokenEnv = "BAFT_AGENT_TOKEN" }
@@ -74,7 +73,6 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 		if cfg.Telemetry.IntervalSeconds > 0 { interval = time.Duration(cfg.Telemetry.IntervalSeconds) * time.Second }
 		exp, err := telemetry.New(cfg.Node.ID, cfg.Telemetry.BCCURL, token, interval, r.telemetrySnapshot)
 		if err != nil { return err }
-		telemetryExporter = exp
 		go exp.Run(runCtx)
 		probeInterval := 10 * time.Second
 		if cfg.Telemetry.RouteProbeIntervalSeconds > 0 {
