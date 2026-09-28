@@ -44,10 +44,28 @@ type Job struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type FinancePolicy struct {
+	NodeID               string `json:"node_id"`
+	CostMicrosPerGiB     int64  `json:"cost_micros_per_gib"`
+	RevenueMicrosPerGiB  int64  `json:"revenue_micros_per_gib"`
+}
+
+type NodeFinance struct {
+	NodeID        string    `json:"node_id"`
+	IngressBytes  uint64    `json:"ingress_bytes"`
+	EgressBytes   uint64    `json:"egress_bytes"`
+	CostMicros    int64     `json:"cost_micros"`
+	RevenueMicros int64     `json:"revenue_micros"`
+	ProfitMicros  int64     `json:"profit_micros"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type state struct {
-	Nodes   map[string]Node `json:"nodes"`
-	Jobs    map[string]Job  `json:"jobs"`
-	NextJob uint64          `json:"next_job"`
+	Nodes    map[string]Node          `json:"nodes"`
+	Jobs     map[string]Job           `json:"jobs"`
+	Finance  map[string]NodeFinance   `json:"finance,omitempty"`
+	Policies map[string]FinancePolicy `json:"finance_policies,omitempty"`
+	NextJob  uint64                   `json:"next_job"`
 }
 
 type Store struct {
@@ -58,12 +76,14 @@ type Store struct {
 
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},NextJob:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},NextJob:1}}
 	b,err:=os.ReadFile(path)
 	if err==nil {
 		if err:=json.Unmarshal(b,&s.st);err!=nil{return nil,fmt.Errorf("decode BCC state: %w",err)}
 		if s.st.Nodes==nil{s.st.Nodes=map[string]Node{}}
 		if s.st.Jobs==nil{s.st.Jobs=map[string]Job{}}
+		if s.st.Finance==nil{s.st.Finance=map[string]NodeFinance{}}
+		if s.st.Policies==nil{s.st.Policies=map[string]FinancePolicy{}}
 		if s.st.NextJob==0{s.st.NextJob=1}
 	} else if !errors.Is(err,os.ErrNotExist) {
 		return nil,err
@@ -191,4 +211,53 @@ func (s *Store) SetHealth(nodeID,health string,checked time.Time) error {
 	n,ok:=s.st.Nodes[nodeID];if !ok{return errors.New("node not found")}
 	n.Health=health;n.LastChecked=checked.UTC();s.st.Nodes[nodeID]=n
 	return s.saveLocked()
+}
+
+
+func (s *Store) SetFinancePolicy(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64) error {
+	if costMicrosPerGiB<0||revenueMicrosPerGiB<0{return errors.New("finance rates must be non-negative")}
+	s.mu.Lock();defer s.mu.Unlock()
+	if _,ok:=s.st.Nodes[nodeID];!ok{return errors.New("node not found")}
+	s.st.Policies[nodeID]=FinancePolicy{NodeID:nodeID,CostMicrosPerGiB:costMicrosPerGiB,RevenueMicrosPerGiB:revenueMicrosPerGiB}
+	f:=s.st.Finance[nodeID];f.NodeID=nodeID
+	s.recalculateFinanceLocked(&f)
+	s.st.Finance[nodeID]=f
+	return s.saveLocked()
+}
+
+func moneyForBytes(bytes uint64,rate int64) int64 {
+	if rate<=0||bytes==0{return 0}
+	return int64((bytes*uint64(rate))/(1<<30))
+}
+
+func (s *Store) recalculateFinanceLocked(f *NodeFinance) {
+	p:=s.st.Policies[f.NodeID]
+	total:=f.IngressBytes+f.EgressBytes
+	f.CostMicros=moneyForBytes(total,p.CostMicrosPerGiB)
+	f.RevenueMicros=moneyForBytes(total,p.RevenueMicrosPerGiB)
+	f.ProfitMicros=f.RevenueMicros-f.CostMicros
+}
+
+func (s *Store) AddTraffic(nodeID,token string,ingressBytes,egressBytes uint64) (NodeFinance,error) {
+	s.mu.Lock();defer s.mu.Unlock()
+	if !s.authorizedLocked(nodeID,token){return NodeFinance{},errors.New("agent authentication failed")}
+	f:=s.st.Finance[nodeID];f.NodeID=nodeID
+	if ^uint64(0)-f.IngressBytes<ingressBytes||^uint64(0)-f.EgressBytes<egressBytes{return NodeFinance{},errors.New("traffic counter overflow")}
+	f.IngressBytes+=ingressBytes;f.EgressBytes+=egressBytes;f.UpdatedAt=time.Now().UTC()
+	s.recalculateFinanceLocked(&f)
+	s.st.Finance[nodeID]=f
+	if err:=s.saveLocked();err!=nil{return NodeFinance{},err}
+	return f,nil
+}
+
+func (s *Store) FinanceSnapshot() []NodeFinance {
+	s.mu.Lock();defer s.mu.Unlock()
+	out:=make([]NodeFinance,0,len(s.st.Nodes))
+	for id:=range s.st.Nodes{
+		f:=s.st.Finance[id];f.NodeID=id
+		s.recalculateFinanceLocked(&f)
+		out=append(out,f)
+	}
+	sort.Slice(out,func(i,j int)bool{return out[i].NodeID<out[j].NodeID})
+	return out
 }
