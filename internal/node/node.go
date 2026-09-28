@@ -458,11 +458,14 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 						err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh)
 						if err!=nil&&ctx.Err()==nil{
 							// A recovery transaction failure is non-fatal to the Runtime.
-							// Pre-commit abort leaves the old epoch authoritative. A
-							// post-commit failure keeps the new epoch fenced/committed and
-							// onCarrierFailure queues the next recovery transaction.
+							// COMMIT_UNCERTAIN is never treated as an abort: retry the
+							// exact transaction status on a new authenticated carrier.
 							log.Printf("baft shard %d recovery attempt failed: %v",index,err)
 							if errors.Is(err,session.ErrPostCommitFailure){
+								continue
+							}
+							if errors.Is(err,session.ErrCommitUncertain){
+								sh.peer.EnsureRecoverySignal(err)
 								continue
 							}
 						}
