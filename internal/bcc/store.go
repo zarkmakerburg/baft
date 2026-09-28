@@ -360,7 +360,11 @@ func (s *Store) rateAtLocked(nodeID string,at time.Time) (FinancePolicy,bool) {
 		if p.EffectiveFrom.After(at){break}
 		chosen=p;ok=true
 	}
-	if ok{return chosen,true}
+	if len(h)>0{
+		if ok{return chosen,true}
+		return FinancePolicy{NodeID:nodeID,Currency:"IRR"},false
+	}
+	// Backward-compatibility only for persisted pre-versioning state.
 	p,ok:=s.st.Policies[nodeID]
 	if ok{
 		if p.Currency==""{p.Currency="IRR"}
