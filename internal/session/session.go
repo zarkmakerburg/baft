@@ -92,7 +92,8 @@ type Peer struct {
 	recoveryRetention  time.Duration
 	recovery           *RecoveryAdapter
 	recoveryNeeded     chan error
-	replacementReady   chan struct{}
+	replacementMu      sync.Mutex
+	replacementWait    chan struct{}
 	carrierID          string
 	carrierEpoch       uint64
 	peerBootID         string
@@ -202,7 +203,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		epoch: "1", readyCh: make(chan struct{}), trafficObserver: opts.TrafficObserver,
 		latencyObserver: opts.LatencyObserver, pingInterval: opts.PingInterval,
 		recoveryEnabled: opts.RecoveryEnabled, recoveryRetention: opts.RecoveryRetention,
-		recoveryNeeded: make(chan error,1), replacementReady: make(chan struct{},1), carrierEpoch:1,
+		recoveryNeeded: make(chan error,1), replacementWait: make(chan struct{}), carrierEpoch:1,
 	}
 	if role == Dialer {
 		p.nextID = 1
