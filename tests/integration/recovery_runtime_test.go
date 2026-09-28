@@ -190,23 +190,49 @@ func TestMultiFlowCarrierReplacementNoDuplicateOrLoss(t *testing.T){
 	const flows=8
 	var wg sync.WaitGroup
 	errCh:=make(chan error,flows)
-	start:=make(chan struct{})
+	startBulk:=make(chan struct{})
+	mid:=make(chan struct{},flows)
+
 	for f:=0;f<flows;f++{
 		f:=f;wg.Add(1)
-		go func(){defer wg.Done();<-start
-			payload:=make([]byte,512*1024+f*97);for i:=range payload{payload[i]=byte((i*13+f*19)%251)}
+		go func(){
+			defer wg.Done()
+			payload:=make([]byte,512*1024+f*97)
+			for i:=range payload{payload[i]=byte((i*13+f*19)%251)}
 			c,err:=net.DialTimeout("tcp",p.ir.Routes[0].Listen,time.Second);if err!=nil{errCh<-err;return}
-			defer c.Close();_ = c.SetDeadline(time.Now().Add(20*time.Second))
-			got:=make([]byte,len(payload));rd:=make(chan error,1);go func(){_,e:=io.ReadFull(c,got);rd<-e}()
+			defer c.Close();_ = c.SetDeadline(time.Now().Add(25*time.Second))
+
+			// Prove the flow is fully OPEN and bound to its existing target
+			// socket before the coordinated mid-transfer carrier cut.
+			prelude:=[]byte{0x70,byte(f),0x5a}
+			if _,err:=c.Write(prelude);err!=nil{errCh<-err;return}
+			preGot:=make([]byte,len(prelude))
+			if _,err:=io.ReadFull(c,preGot);err!=nil{errCh<-err;return}
+			if !bytes.Equal(preGot,prelude){errCh<-io.ErrUnexpectedEOF;return}
+
+			<-startBulk
+			got:=make([]byte,len(payload));rd:=make(chan error,1)
+			go func(){_,e:=io.ReadFull(c,got);rd<-e}()
+			signaled:=false
 			for off:=0;off<len(payload);{
 				n:=8192;if len(payload)-off<n{n=len(payload)-off}
-				nw,e:=c.Write(payload[off:off+n]);if e!=nil{errCh<-e;return};off+=nw;time.Sleep(250*time.Microsecond)
+				nw,e:=c.Write(payload[off:off+n]);if e!=nil{errCh<-e;return};off+=nw
+				if !signaled&&off>=64*1024{mid<-struct{}{};signaled=true}
+				time.Sleep(250*time.Microsecond)
 			}
 			if e:=<-rd;e!=nil{errCh<-e;return}
-			if !bytes.Equal(got,payload){errCh<-io.ErrUnexpectedEOF}
+			if !bytes.Equal(got,payload){errCh<-io.ErrUnexpectedEOF;return}
 		}()
 	}
-	close(start);time.Sleep(40*time.Millisecond);p.proxy.CutAll()
+	// Give all goroutines time to establish and verify their OPENs, then begin
+	// bulk transfer together. The cut occurs only after every flow has crossed
+	// 64 KiB, so all eight are genuinely active at failure time.
+	time.Sleep(150*time.Millisecond)
+	close(startBulk)
+	for i:=0;i<flows;i++{
+		select{case <-mid:case <-time.After(8*time.Second):t.Fatal("not all flows reached mid-transfer cut barrier")}
+	}
+	p.proxy.CutAll()
 	wg.Wait();close(errCh);for e:=range errCh{if e!=nil{t.Fatal(e)}}
 	if n:=p.targetAccepts.Load()-p.targetBaseline;n!=flows{t.Fatalf("target flow identity/socket count=%d want=%d baseline=%d total=%d",n,flows,p.targetBaseline,p.targetAccepts.Load())}
 	t.Log("PASS 8 active TCP flows survived one carrier replacement without byte loss/duplication")
