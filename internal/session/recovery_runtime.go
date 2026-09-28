@@ -163,6 +163,11 @@ func (p *Peer) RecoveryEpoch() uint64 {
 	if p.recovery==nil{return 1}
 	return p.recovery.engine.CurrentEpoch()
 }
+func (p *Peer) RecoveryFrozen() bool {
+	if p.recovery==nil{return false}
+	return p.recovery.IsFrozen()
+}
+
 func (p *Peer) RecoveryStats() RecoveryStats {
 	if p.recovery==nil{return RecoveryStats{CurrentEpoch:1,Failures:map[string]uint64{}}}
 	return p.recovery.Stats()
