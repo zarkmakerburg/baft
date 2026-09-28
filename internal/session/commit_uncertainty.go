@@ -118,6 +118,25 @@ func (p *Peer) MarkCommitUncertain(ctl RecoveryControl) error {
 }
 
 
+func (p *Peer) MarkFinalizationStarted(ctl RecoveryControl) error {
+	if p.recovery==nil{return errors.New("recovery is disabled")}
+	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
+	if a.lastCommit.SessionID==""||!sameRecoveryTransaction(a.lastCommit,ctl)||a.engine.CurrentEpoch()!=ctl.NextEpoch||a.engine.Owner()!=ctl.CandidateID{return recovery.ErrStateMismatch}
+	switch a.txnState{
+	case RecoveryTxnCommitted,RecoveryTxnUncertain:
+		if err:=a.transitionLocked(RecoveryTxnFinalizing);err!=nil{return err}
+	case RecoveryTxnFinalizing,RecoveryTxnFinalizationUncertain:
+		// exact duplicate/retry
+	case RecoveryTxnFinalized:
+		return nil
+	default:
+		return fmt.Errorf("%w: finalization start from %s",ErrRecoveryTransition,a.txnState)
+	}
+	a.uncertain=ctl;a.uncertain.Phase=RecoveryPhaseFinalize
+	a.frozen=true
+	return nil
+}
+
 func (p *Peer) MarkFinalizationUncertain(ctl RecoveryControl) error {
 	if p.recovery==nil{return errors.New("recovery is disabled")}
 	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
