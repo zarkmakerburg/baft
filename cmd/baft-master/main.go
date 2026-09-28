@@ -30,7 +30,7 @@ func main() {
 
 	var files fileFlags
 	fs := flag.NewFlagSet("baft-master", flag.ExitOnError)
-	fs.Var(&files, "file", "dialer config file; repeat exactly six times")
+	fs.Var(&files, "file", "dialer config file; repeat once per foreign node")
 	exportToken := fs.Bool("export-token", false, "export one encrypted cluster token instead of starting runtimes")
 	workerPublic := fs.String("worker-public-key", "", "X25519 worker public key file")
 	signingKey := fs.String("signing-key", "", "Ed25519 master signing private key file")
@@ -39,8 +39,8 @@ func main() {
 	ttl := fs.Duration("token-ttl", 15*time.Minute, "token lifetime, maximum 24h")
 	fs.Parse(os.Args[1:])
 
-	if len(files) != cluster.RequiredForeignNodes || fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: baft-master --file <ex1.yaml> ... --file <ex6.yaml> [--export-token --worker-public-key <file> --signing-key <file>]")
+	if len(files) < cluster.MinForeignNodes || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: baft-master --file <node.yaml> [--file <node2.yaml> ...] [--export-token --worker-public-key <file> --signing-key <file>]")
 		os.Exit(2)
 	}
 
@@ -48,7 +48,8 @@ func main() {
 	for _, path := range files {
 		cfg, err := config.LoadFile(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "load %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "load %s: %v
+", path, err)
 			os.Exit(1)
 		}
 		cfgs = append(cfgs, cfg)
@@ -75,7 +76,8 @@ func main() {
 		return
 	}
 
-	fmt.Printf("starting BAFT master %s with %d foreign nodes\n", cfgs[0].Node.ID, len(cfgs))
+	fmt.Printf("starting BAFT master %s with %d foreign nodes
+", cfgs[0].Node.ID, len(cfgs))
 	if err := cluster.NewMaster().Run(ctx, cfgs); err != nil {
 		fmt.Fprintln(os.Stderr, "master stopped:", err)
 		os.Exit(1)
