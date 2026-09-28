@@ -527,11 +527,11 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 		ActiveSessions:report.ActiveSessions,HandshakeErrors:report.HandshakeErrors,
 		NoiseLatencyMS:report.NoiseLatencyMS,HandshakeErrorRateMilliMin:rateMilli,Routes:routes,LastTelemetry:ts,
 	}
-	n=s.st.Nodes[report.NodeID]
+	nodeState:=s.st.Nodes[report.NodeID]
 	point:=HistoryPoint{
 		Timestamp:ts,IngressBytes:report.IngressBytes,EgressBytes:report.EgressBytes,
 		ActiveSessions:report.ActiveSessions,NoiseLatencyMS:report.NoiseLatencyMS,HandshakeErrorRateMilliMin:rateMilli,
-		NodeHealth:n.Health,LatencyMS:n.LatencyMS,Routes:routes,
+		NodeHealth:nodeState.Health,LatencyMS:nodeState.LatencyMS,Routes:routes,
 	}
 	h:=s.st.History[report.NodeID]
 	cutoff:=time.Now().UTC().Add(-7*24*time.Hour)
