@@ -226,7 +226,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			r.sessionMu.Unlock()
 			r.registerPeer(p)
 			defer func(){r.unregisterPeer(p);r.unregisterSession(p)}()
-			return p.RunWithFirstFrame(hctx,first)
+			return p.RunWithFirstFrame(ctx,first)
 		}
 		p, err := session.New(session.Listener, session.Carrier{In: in, Out: out}, peer.Identity, table, session.Options{
 			NodeID: cfg.Node.ID, ExpectedPeerNodeID: expected,
