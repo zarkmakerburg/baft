@@ -60,6 +60,11 @@ func (r *Runtime) sessionByID(id string)*session.Peer{
 	return r.sessions[id]
 }
 
+func (r *Runtime) recoveryFail(stage string) error {
+	if r.recoveryFault==nil{return nil}
+	return r.recoveryFault(stage)
+}
+
 func (r *Runtime) nextRecoveryCandidate(shard int) string {
 	n:=r.recoverySeq.Add(1)
 	return fmt.Sprintf("shard-%d-replacement-%d",shard,n)
@@ -95,10 +100,12 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	if err!=nil{return err}
 	committed:=false
 	defer func(){if !committed{sh.peer.AbortRecovery(candidate)}}()
+	if err:=r.recoveryFail("candidate_setup");err!=nil{return fmt.Errorf("candidate setup: %w",err)}
 
 	o,err:=r.openRuntimeCarrier(ctx,cfg,tlsCfg)
 	if err!=nil{return fmt.Errorf("candidate setup: %w",err)}
 	defer func(){if !committed{o.close()}}()
+	if err:=r.recoveryFail("snapshot_exchange");err!=nil{return fmt.Errorf("snapshot exchange: %w",err)}
 
 	if err:=session.EncodeRecoveryOffer(o.carrier.Out,local);err!=nil{return fmt.Errorf("snapshot exchange: %w",err)}
 	fr,err:=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("snapshot exchange: %w",err)}
@@ -111,6 +118,7 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	fr,err=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("pre-commit barrier: %w",err)}
 	done,err:=session.DecodeRecoveryDone(fr);if err!=nil{return fmt.Errorf("pre-commit barrier: %w",err)}
 	if done.CandidateID!=candidate||done.NextEpoch!=local.NextEpoch{return errors.New("recovery commit barrier mismatch")}
+	if err:=r.recoveryFail("before_commit");err!=nil{return fmt.Errorf("before commit: %w",err)}
 
 	if err:=sh.peer.CommitRecovery(ctx,candidate,o.carrier);err!=nil{return err}
 	sh.replaceCarrier(o)
