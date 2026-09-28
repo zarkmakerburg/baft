@@ -208,6 +208,25 @@ func TestMonitoringAlertsAndSevenDayHistory(t *testing.T){
 	}
 	if !gotTypes["handshake_error_rate"]||!gotTypes["route_down"]{t.Fatalf("unexpected alerts=%v",gotTypes)}
 
+	_,err=store.UpsertNode(Node{ID:"n-stale",Alias:"Stale Node",Address:"127.0.0.1:25002",Role:"foreign"},"stale-agent")
+	if err!=nil{t.Fatal(err)}
+	if err:=store.SetHealth("n-stale","up",4,time.Now());err!=nil{t.Fatal(err)}
+	staleRep:=telemetry.Report{
+		NodeID:"n-stale",BootID:"stale-boot",Sequence:1,
+		IngressBytes:10,EgressBytes:20,ActiveSessions:0,HandshakeErrors:0,
+		Routes:[]telemetry.RouteSnapshot{{RouteID:"route-stale",Status:"up",LatencyMS:4,ProbeKind:"tcp"}},
+		TimestampUnix:now.Add(-4*time.Minute).Unix(),
+	}
+	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,signedTelemetryReq(t,"stale-agent",staleRep))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("stale telemetry status=%d body=%s",rr.Code,rr.Body.String())}
+	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
+	select{
+	case a:=<-alerts:
+		if a.Type!="telemetry_stale"||a.NodeID!="n-stale"{t.Fatalf("unexpected stale alert=%+v",a)}
+	case <-time.After(2*time.Second):
+		t.Fatal("telemetry_stale webhook alert not emitted")
+	}
+
 	view:=store.MonitoringSnapshot(time.Now(),3*time.Minute)
 	if len(view)!=1||view[0].Status!="up"||view[0].LatencyMS!=7||view[0].HandshakeErrorRateMilliMin<5000{
 		t.Fatalf("monitoring view=%+v",view)
