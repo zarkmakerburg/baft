@@ -39,13 +39,13 @@ func TestReconcileRejectsFlowIdentityMismatch(t *testing.T){
 	if _,err:=Reconcile(local,peer,"peer-boot");!errors.Is(err,ErrStateMismatch){t.Fatalf("err=%v",err)}
 }
 
-func TestReconcileCanRecoverLostFinAck(t *testing.T){
+func TestReconcileDoesNotTreatFINACKWriteAsAcceptanceProof(t *testing.T){
 	local,peer:=baseSnapshots()
 	local.Flows[0].FinSent=true
 	peer.Flows[0].FinRecv=true
 	peer.Flows[0].FinAckSent=true
 	p,err:=Reconcile(local,peer,"peer-boot");if err!=nil{t.Fatal(err)}
-	if !p.Flows[0].LocalFinAckCanAdvance{t.Fatal("lost FIN_ACK was not recoverable from correlated peer state")}
+	if p.Flows[0].LocalFinAckCanAdvance{t.Fatal("peer FIN_ACK write incorrectly advanced local acceptance")}
 }
 
 func TestReconcileRejectsSenderBeyondPeerCredit(t *testing.T){
