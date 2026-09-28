@@ -845,12 +845,10 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			}
-			// A successful carrier write is not delivery evidence. Do not send a
-			// later replay offset until the peer has ACKed this frame. If the
-			// ACK is missing or the carrier dies, the exact transaction is rebound
-			// and this same frame is conservatively replayed from txAcked.
-			end:=fr.Offset+uint64(len(fr.Payload))
-			if err:=p.waitReplayAccepted(ctx,fl,end,prep.sender);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			// A successful carrier write is not delivery evidence and does not
+			// advance txAcked. Replay frames remain ordered on the carrier, but
+			// any later rebind recomputes the conservative suffix from the
+			// ACK-derived txAcked frontier, so unproven writes are retried safely.
 		}
 
 		fl.mu.Lock()
