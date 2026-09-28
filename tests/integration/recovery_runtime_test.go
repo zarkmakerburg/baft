@@ -20,6 +20,7 @@ import (
 	"github.com/zarkmakerburg/baft/internal/node"
 	"github.com/zarkmakerburg/baft/internal/recordshape"
 	"github.com/zarkmakerburg/baft/internal/securityinternal"
+	"github.com/zarkmakerburg/baft/internal/session"
 )
 
 type cutProxy struct {
@@ -356,4 +357,176 @@ func TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch(t *testing.T) {
 	waitRecoveryFaultAndSettled(t,&fired,p)
 	assertBothRuntimeOldEpoch(t,p)
 	t.Log("PASS two real runtimes kept old epoch after listener pre-commit failure")
+}
+
+
+func oneRecoveryAuthority(t *testing.T,r *node.Runtime) node.RecoveryAuthoritySnapshot {
+	t.Helper()
+	s:=r.RecoveryAuthoritiesForTest()
+	if len(s)!=1{t.Fatalf("authority count=%d states=%+v",len(s),s)}
+	return s[0]
+}
+
+func waitAuthorityPair(t *testing.T,p *recoveryRuntimePair,epoch uint64,finalized bool)(node.RecoveryAuthoritySnapshot,node.RecoveryAuthoritySnapshot){
+	t.Helper()
+	deadline:=time.Now().Add(8*time.Second)
+	for{
+		ir:=p.irRuntime.RecoveryAuthoritiesForTest()
+		ex:=p.exRuntime.RecoveryAuthoritiesForTest()
+		if len(ir)==1&&len(ex)==1&&ir[0].Epoch==epoch&&ex[0].Epoch==epoch{
+			if !finalized||(!ir[0].Frozen&&!ex[0].Frozen){
+				return ir[0],ex[0]
+			}
+		}
+		if time.Now().After(deadline){t.Fatalf("authority convergence timeout ir=%+v ex=%+v",ir,ex)}
+		time.Sleep(5*time.Millisecond)
+	}
+}
+
+func assertEchoHashOnExistingFlow(t *testing.T,c net.Conn,payload []byte) [32]byte {
+	t.Helper()
+	want:=sha256.Sum256(payload)
+	got:=make([]byte,len(payload))
+	rd:=make(chan error,1)
+	go func(){_,err:=io.ReadFull(c,got);rd<-err}()
+	for off:=0;off<len(payload);{
+		n:=32*1024;if len(payload)-off<n{n=len(payload)-off}
+		w,err:=c.Write(payload[off:off+n]);if err!=nil{t.Fatalf("existing flow write: %v",err)}
+		off+=w
+	}
+	select{case err:=<-rd:if err!=nil{t.Fatalf("existing flow read: %v",err)};case <-time.After(10*time.Second):t.Fatal("existing flow hash payload timeout")}
+	have:=sha256.Sum256(got)
+	if !bytes.Equal(got,payload)||have!=want{t.Fatalf("payload integrity got=%x want=%x",have,want)}
+	return have
+}
+
+func TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	listenerPublished:=make(chan struct{})
+	releaseListener:=make(chan struct{})
+	var publishOnce sync.Once
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="after_listener_publish_before_commit_ack"{
+			publishOnce.Do(func(){close(listenerPublished)})
+			<-releaseListener
+			return errors.New("deterministic ACK-loss after listener publish")
+		}
+		return nil
+	})
+
+	statusSent:=make(chan struct{})
+	releaseStatus:=make(chan struct{})
+	var statusOnce sync.Once
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="status_query_after_send"{
+			statusOnce.Do(func(){close(statusSent)})
+			<-releaseStatus
+		}
+		return nil
+	})
+
+	// First cut kills old carrier and starts the candidate transaction.
+	p.proxy.CutAll()
+	select{case <-listenerPublished:case <-time.After(8*time.Second):t.Fatal("listener never reached post-publish barrier")}
+
+	exAtPublish:=oneRecoveryAuthority(t,p.exRuntime)
+	irAtPublish:=oneRecoveryAuthority(t,p.irRuntime)
+	if exAtPublish.Epoch!=2{t.Fatalf("listener not committed at barrier: %+v",exAtPublish)}
+	if irAtPublish.Epoch!=1{t.Fatalf("dialer committed before valid ACK: %+v",irAtPublish)}
+	if exAtPublish.CandidateID==""||exAtPublish.CandidateID!=irAtPublish.CandidateID||exAtPublish.PlanDigest==""||exAtPublish.PlanDigest!=irAtPublish.PlanDigest{
+		t.Fatalf("transaction identity diverged at publish ex=%+v ir=%+v",exAtPublish,irAtPublish)
+	}
+
+	// Kill the physical candidate before a valid COMMIT_ACK can reach Dialer.
+	p.proxy.CutAll()
+	close(releaseListener)
+
+	// The next authenticated carrier may only resolve the same transaction.
+	select{case <-statusSent:case <-time.After(8*time.Second):t.Fatalf("dialer never entered status resolution ir=%+v ex=%+v",p.irRuntime.RecoveryAuthoritiesForTest(),p.exRuntime.RecoveryAuthoritiesForTest())}
+	irUncertain:=oneRecoveryAuthority(t,p.irRuntime)
+	exUncertain:=oneRecoveryAuthority(t,p.exRuntime)
+	if irUncertain.Epoch!=1||irUncertain.TxnState!=session.RecoveryTxnUncertain||!irUncertain.Frozen{
+		t.Fatalf("dialer uncertainty state=%+v",irUncertain)
+	}
+	if exUncertain.Epoch!=2||!exUncertain.Frozen{t.Fatalf("listener committed uncertainty state=%+v",exUncertain)}
+	if irUncertain.CandidateID!=exUncertain.CandidateID||irUncertain.PlanDigest!=exUncertain.PlanDigest||irUncertain.NextEpoch!=2{
+		t.Fatalf("uncertain identity changed ir=%+v ex=%+v",irUncertain,exUncertain)
+	}
+	close(releaseStatus)
+
+	irDone,exDone:=waitAuthorityPair(t,p,2,true)
+	if irDone.Owner!=irUncertain.CandidateID||exDone.Owner!=irUncertain.CandidateID{
+		t.Fatalf("resolved owner changed ir=%+v ex=%+v",irDone,exDone)
+	}
+	if irDone.PlanDigest!=irUncertain.PlanDigest||exDone.PlanDigest!=irUncertain.PlanDigest{
+		t.Fatalf("resolved plan digest changed ir=%+v ex=%+v",irDone,exDone)
+	}
+	payload:=make([]byte,640*1024+137)
+	for i:=range payload{payload[i]=byte((i*29+17)%251)}
+	hash:=assertEchoHashOnExistingFlow(t,c,payload)
+	if p.targetAccepts.Load()!=targetBefore{t.Fatalf("target TCP reopened before=%d after=%d",targetBefore,p.targetAccepts.Load())}
+	t.Logf("PASS authority Dialer 1->COMMIT_UNCERTAIN->2 Listener 1->2->2 candidate=%s digest=%s payload_hash=%x",irDone.CandidateID,irDone.PlanDigest,hash)
+}
+
+func TestDistributedCommitDisconnectBeforePublishProvesAbortSafe(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	beforePublish:=make(chan struct{})
+	releasePublish:=make(chan struct{})
+	var publishOnce sync.Once
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="before_listener_publish"{
+			first:=false
+			publishOnce.Do(func(){first=true;close(beforePublish)})
+			if first{
+				<-releasePublish
+				return errors.New("deterministic disconnect before listener publish")
+			}
+		}
+		return nil
+	})
+
+	proofReached:=make(chan struct{})
+	releaseFresh:=make(chan struct{})
+	var proofOnce sync.Once
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="after_not_committed_resolution"{
+			proofOnce.Do(func(){close(proofReached)})
+			<-releaseFresh
+		}
+		return nil
+	})
+
+	p.proxy.CutAll()
+	select{case <-beforePublish:case <-time.After(8*time.Second):t.Fatal("listener never reached pre-publish barrier")}
+	irPending:=oneRecoveryAuthority(t,p.irRuntime)
+	exPending:=oneRecoveryAuthority(t,p.exRuntime)
+	if irPending.Epoch!=1||exPending.Epoch!=1{t.Fatalf("authority changed before publish ir=%+v ex=%+v",irPending,exPending)}
+	if irPending.CandidateID==""||irPending.CandidateID!=exPending.CandidateID||irPending.PlanDigest!=exPending.PlanDigest{
+		t.Fatalf("pending transaction identity differs ir=%+v ex=%+v",irPending,exPending)
+	}
+
+	p.proxy.CutAll()
+	close(releasePublish)
+	select{case <-proofReached:case <-time.After(8*time.Second):t.Fatalf("NOT_COMMITTED proof was not resolved ir=%+v ex=%+v",p.irRuntime.RecoveryAuthoritiesForTest(),p.exRuntime.RecoveryAuthoritiesForTest())}
+	irProof:=oneRecoveryAuthority(t,p.irRuntime)
+	exProof:=oneRecoveryAuthority(t,p.exRuntime)
+	if irProof.Epoch!=1||exProof.Epoch!=1||irProof.Frozen||exProof.Frozen{
+		t.Fatalf("proof did not restore safe old authority ir=%+v ex=%+v",irProof,exProof)
+	}
+	if irProof.Owner!="shard-0-carrier-1"||exProof.Owner!="shard-0-carrier-1"{t.Fatalf("old owner lost after NOT_COMMITTED proof ir=%+v ex=%+v",irProof,exProof)}
+	close(releaseFresh)
+
+	irDone,exDone:=waitAuthorityPair(t,p,2,true)
+	if irDone.Owner==""||irDone.Owner!=exDone.Owner{t.Fatalf("fresh recovery did not converge ir=%+v ex=%+v",irDone,exDone)}
+	payload:=make([]byte,384*1024+91)
+	for i:=range payload{payload[i]=byte((i*41+3)%251)}
+	hash:=assertEchoHashOnExistingFlow(t,c,payload)
+	if p.targetAccepts.Load()!=targetBefore{t.Fatalf("target TCP reopened before=%d after=%d",targetBefore,p.targetAccepts.Load())}
+	t.Logf("PASS authority Dialer 1->pending/uncertain->proven NOT_COMMITTED->1->2 Listener 1->1->2 payload_hash=%x",hash)
 }
