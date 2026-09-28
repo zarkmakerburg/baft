@@ -480,14 +480,25 @@ func TestFinalizeRetryIsIdempotent(t *testing.T){
 	if err:=p.RebindCommittedCarrier(ctx,ctl,Carrier{In:bytes.NewReader(nil),Out:&second});err!=nil{t.Fatal(err)}
 	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
 	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
-	var data []byte
+	var app []byte
+	var accepted uint64
+	var wireBytes uint64
 	for _,buf:=range []*bytes.Buffer{&first,&second}{
 		for buf.Len()>0{
 			fr,e:=protocol.Decode(buf);if e!=nil{t.Fatal(e)}
-			if fr.Type==protocol.TypeData{data=append(data,fr.Payload...)}
+			if fr.Type!=protocol.TypeData{continue}
+			wireBytes+=uint64(len(fr.Payload))
+			end:=fr.Offset+uint64(len(fr.Payload))
+			if fr.Offset>accepted{t.Fatalf("wire replay gap offset=%d accepted=%d",fr.Offset,accepted)}
+			if end<=accepted{continue}
+			skip:=uint64(0)
+			if fr.Offset<accepted{skip=accepted-fr.Offset}
+			app=append(app,fr.Payload[skip:]...)
+			accepted=end
 		}
 	}
-	if !bytes.Equal(data,[]byte{1,2,3,4}){t.Fatalf("finalize retry duplicated/lost replay data=%v",data)}
-	if p.RecoveryStats().ReplayedBytes!=4{t.Fatalf("replayed bytes=%d",p.RecoveryStats().ReplayedBytes)}
-	t.Log("PASS finalize retry resumed after applied prefix without duplicate application bytes")
+	if !bytes.Equal(app,[]byte{1,2,3,4}){t.Fatalf("finalize retry duplicated/lost application data=%v",app)}
+	if wireBytes!=6{t.Fatalf("expected conservative wire retry bytes=6 got=%d",wireBytes)}
+	if p.RecoveryStats().ReplayedBytes!=wireBytes{t.Fatalf("replayed wire metric=%d want=%d",p.RecoveryStats().ReplayedBytes,wireBytes)}
+	t.Log("PASS finalize retry conservatively retransmitted unacked prefix while application offsets deduped exact bytes")
 }
