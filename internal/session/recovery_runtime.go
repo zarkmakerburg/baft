@@ -172,7 +172,8 @@ func (p *Peer) recoverySnapshot() (recovery.Snapshot,map[uint64]string,error) {
 	routes:=make(map[uint64]string,len(flows))
 	for _,fl:=range flows {
 		fl.mu.Lock()
-		if !fl.openOK || fl.closed { fl.mu.Unlock(); continue }
+		if !fl.openOK && !fl.closed { fl.mu.Unlock(); return recovery.Snapshot{},nil,recovery.ErrResumeFrozen }
+		if fl.closed { fl.mu.Unlock(); continue }
 		out.Flows=append(out.Flows,recovery.FlowSnapshot{
 			StreamID:fl.id,OpenNonce:fl.nonce,TxNext:fl.txNext,TxAcked:fl.txAcked,
 			RxAccepted:fl.rxNext,RxDelivered:fl.rxWritten,RxCredit:fl.rxMax,
@@ -186,6 +187,8 @@ func (p *Peer) recoverySnapshot() (recovery.Snapshot,map[uint64]string,error) {
 
 func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 	if p.recovery==nil{return RecoveryOffer{},errors.New("recovery is disabled")}
+	p.recoveryGate.Lock()
+	defer p.recoveryGate.Unlock()
 	a:=p.recovery
 	a.attempts.Add(1)
 	a.mu.Lock()
