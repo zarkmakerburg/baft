@@ -318,7 +318,7 @@ func assertBothRuntimeOldEpoch(t *testing.T,p *recoveryRuntimePair) {
 	} {
 		if len(states)==0 { t.Fatalf("%s has no live recovery authority",name) }
 		for _,s:=range states {
-			if s.Epoch!=1 { t.Fatalf("%s authority advanced before distributed commit: %+v",name,s) }
+			if s.Epoch!=1||s.Owner!="shard-0-carrier-1" { t.Fatalf("%s old authority changed before distributed commit: %+v",name,s) }
 			if s.Frozen { t.Fatalf("%s remained frozen after pre-commit abort: %+v",name,s) }
 		}
 	}
