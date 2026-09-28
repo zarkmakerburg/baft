@@ -266,8 +266,19 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 	if a.lastCommit.SessionID==""||!sameRecoveryTransaction(a.lastCommit,ctl)||a.engine.CurrentEpoch()!=ctl.NextEpoch||a.engine.Owner()!=ctl.CandidateID{
 		a.mu.Unlock();return recovery.ErrStateMismatch
 	}
-	if a.prepared!=nil{a.mu.Unlock();return p.RebindPreparedRecovery(ctx,ctl,c)}
+	prep:=a.prepared
 	a.mu.Unlock()
+
+	if prep!=nil {
+		if err:=p.RebindPreparedRecovery(ctx,ctl,c);err!=nil{return err}
+		a.mu.Lock();prep=a.prepared;sender:=prep.sender;runCtx:=prep.runCtx;a.mu.Unlock()
+		p.mu.Lock();oldSender:=p.sender;p.carrier=c;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.sender=sender;p.mu.Unlock()
+		p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
+		if oldSender!=nil&&oldSender!=sender{oldSender.stop(ErrCarrierUnavailable)}
+		if sender!=nil&&!sender.isStarted(){p.wg.Add(1);go func(){defer p.wg.Done();sender.run(runCtx)}()}
+		p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
+		return nil
+	}
 
 	newSender:=newOutboundSender(&frameWriter{w:c.Out},p.recoveryEnabled)
 	p.mu.Lock()
