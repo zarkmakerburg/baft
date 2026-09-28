@@ -26,7 +26,9 @@ type AlertConfig struct {
 
 type Alert struct {
 	Type      string    `json:"type"`
+	Status    string    `json:"status"`
 	NodeID    string    `json:"node_id"`
+	NodeAlias string    `json:"node_alias"`
 	RouteID   string    `json:"route_id,omitempty"`
 	Message   string    `json:"message"`
 	Timestamp time.Time `json:"timestamp"`
@@ -38,8 +40,9 @@ type Server struct {
 	probeTimeout time.Duration
 	alertConfig AlertConfig
 	alertMu sync.Mutex
-	activeAlerts map[string]bool
+	activeAlerts map[string]Alert
 	httpClient *http.Client
+	now func() time.Time
 }
 
 func NewServer(store *Store,adminToken string) (*Server,error) {
@@ -48,7 +51,8 @@ func NewServer(store *Store,adminToken string) (*Server,error) {
 	return &Server{
 		store:store,adminToken:adminToken,probeTimeout:1500*time.Millisecond,
 		alertConfig:AlertConfig{TelemetryStaleAfter:3*time.Minute,HandshakeErrorRateMilliPerMin:5000,Interval:15*time.Second},
-		activeAlerts:map[string]bool{},httpClient:&http.Client{Timeout:5*time.Second},
+		activeAlerts:map[string]Alert{},httpClient:&http.Client{Timeout:5*time.Second},
+		now:func() time.Time{return time.Now().UTC()},
 	},nil
 }
 
@@ -215,7 +219,7 @@ func (s *Server) finance(w http.ResponseWriter,r *http.Request){
 func (s *Server) monitoring(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
 	if !s.admin(w,r){return}
-	writeJSON(w,http.StatusOK,s.store.MonitoringSnapshot(time.Now().UTC(),s.alertConfig.TelemetryStaleAfter))
+	writeJSON(w,http.StatusOK,s.store.MonitoringSnapshot(s.now().UTC(),s.alertConfig.TelemetryStaleAfter))
 }
 
 func (s *Server) history(w http.ResponseWriter,r *http.Request){
@@ -223,7 +227,7 @@ func (s *Server) history(w http.ResponseWriter,r *http.Request){
 	if !s.admin(w,r){return}
 	nodeID:=strings.TrimSpace(r.URL.Query().Get("node_id"))
 	if nodeID==""{http.Error(w,"node_id is required",400);return}
-	writeJSON(w,http.StatusOK,s.store.History(nodeID,time.Now().UTC()))
+	writeJSON(w,http.StatusOK,s.store.History(nodeID,s.now().UTC()))
 }
 
 func (s *Server) ConfigureAlerts(cfg AlertConfig) error {
@@ -250,39 +254,69 @@ func (s *Server) StartAlertLoop(ctx context.Context) {
 }
 
 func (s *Server) EvaluateAlertsOnce(ctx context.Context) error {
-	now:=time.Now().UTC()
+	return s.evaluateAlertsAt(ctx,s.now().UTC())
+}
+
+func (s *Server) evaluateAlertsAt(ctx context.Context,now time.Time) error {
 	view:=s.store.MonitoringSnapshot(now,s.alertConfig.TelemetryStaleAfter)
 	current:=map[string]Alert{}
 	for _,n:=range view{
 		if !n.LastSeen.IsZero()&&now.Sub(n.LastSeen)>s.alertConfig.TelemetryStaleAfter{
 			key:="telemetry_stale:"+n.NodeID
-			current[key]=Alert{Type:"telemetry_stale",NodeID:n.NodeID,Message:"telemetry has exceeded stale threshold",Timestamp:now}
+			current[key]=s.makeAlert("telemetry_stale","firing",n.NodeID,n.Alias,"",now)
 		}
 		if n.HandshakeErrorRateMilliMin>=s.alertConfig.HandshakeErrorRateMilliPerMin{
 			key:="handshake_error_rate:"+n.NodeID
-			current[key]=Alert{Type:"handshake_error_rate",NodeID:n.NodeID,Message:"handshake error rate exceeded threshold",Timestamp:now}
+			current[key]=s.makeAlert("handshake_error_rate","firing",n.NodeID,n.Alias,"",now)
 		}
 		for _,route:=range n.Routes{
 			if route.Status=="down"{
 				key:="route_down:"+n.NodeID+":"+route.RouteID
-				current[key]=Alert{Type:"route_down",NodeID:n.NodeID,RouteID:route.RouteID,Message:"route reported down",Timestamp:now}
+				current[key]=s.makeAlert("route_down","firing",n.NodeID,n.Alias,route.RouteID,now)
 			}
 		}
 	}
 
 	s.alertMu.Lock()
 	defer s.alertMu.Unlock()
-	for key:=range s.activeAlerts{
-		if _,ok:=current[key];!ok{delete(s.activeAlerts,key)}
+
+	for key,prior:=range s.activeAlerts{
+		if _,ok:=current[key];ok{continue}
+		resolved:=s.makeAlert(prior.Type,"resolved",prior.NodeID,prior.NodeAlias,prior.RouteID,now)
+		if s.alertConfig.WebhookURL!=""{
+			if err:=s.sendWebhook(ctx,resolved);err!=nil{return err}
+		}
+		delete(s.activeAlerts,key)
 	}
 	for key,alert:=range current{
-		if s.activeAlerts[key]{continue}
+		if _,exists:=s.activeAlerts[key];exists{continue}
 		if s.alertConfig.WebhookURL!=""{
 			if err:=s.sendWebhook(ctx,alert);err!=nil{return err}
 		}
-		s.activeAlerts[key]=true
+		s.activeAlerts[key]=alert
 	}
 	return nil
+}
+
+func (s *Server) makeAlert(kind,status,nodeID,nodeAlias,routeID string,at time.Time) Alert {
+	if nodeAlias==""{nodeAlias=nodeID}
+	typeFA:=map[string]string{
+		"telemetry_stale":"توقف دریافت تل‌متری",
+		"handshake_error_rate":"افزایش نرخ خطای Handshake",
+		"route_down":"قطع مسیر",
+	}[kind]
+	if typeFA==""{typeFA=kind}
+	statusFA:="فعال"
+	if status=="resolved"{statusFA="برطرف شد"}
+	loc,err:=time.LoadLocation("Asia/Tehran")
+	if err!=nil{loc=time.FixedZone("Asia/Tehran",3*3600+30*60)}
+	routeText:="—"
+	if routeID!=""{routeText=routeID}
+	at=at.UTC()
+	msg:=fmt.Sprintf("هشدار BAFT\nوضعیت: %s\nنود: %s (%s)\nمسیر: %s\nنوع هشدار: %s\nزمان UTC: %s\nزمان تهران: %s",
+		statusFA,nodeAlias,nodeID,routeText,typeFA,
+		at.Format(time.RFC3339),at.In(loc).Format(time.RFC3339))
+	return Alert{Type:kind,Status:status,NodeID:nodeID,NodeAlias:nodeAlias,RouteID:routeID,Message:msg,Timestamp:at}
 }
 
 func (s *Server) sendWebhook(ctx context.Context,alert Alert) error {
