@@ -300,8 +300,8 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 		}
 	}
 	if first != nil {
-		epoch,carrierID,_:=p.currentCarrierIdentity()
-		if err:=p.handleFrameFrom(runCtx,epoch,carrierID,*first);err!=nil{return err}
+		epoch,carrierID,generation:=p.currentCarrierIdentity()
+		if err:=p.handleFrameFrom(runCtx,epoch,carrierID,*first,generation);err!=nil{return err}
 	}
 	for {
 		carrier,epoch,carrierID,generation:=p.currentCarrier()
@@ -316,7 +316,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);err!=nil{return err}
 			continue
 		}
-		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil {
+		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f,generation); err != nil {
 			if p.recoveryEnabled && errors.Is(err,recovery.ErrStaleEpoch) {
 				// A delayed frame from a fenced carrier is expected during
 				// replacement. Reject it without mutating flow state, then
