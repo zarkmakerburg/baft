@@ -42,11 +42,33 @@ func newIPGuard(cfg SecurityConfig)*IPGuard{
 	return &IPGuard{cfg:cfg,clients:map[string]*clientState{}}
 }
 
-func clientIP(r *http.Request) string {
+func remoteIP(r *http.Request) string {
 	host,_,err:=net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err==nil&&host!=""{return host}
 	if ip:=net.ParseIP(strings.TrimSpace(r.RemoteAddr));ip!=nil{return ip.String()}
 	return "unknown"
+}
+
+func parseTrustedProxies(values []string)(map[string]struct{},error){
+	out:=map[string]struct{}{}
+	for _,v:=range values{
+		v=strings.TrimSpace(v);if v==""{continue}
+		ip:=net.ParseIP(v)
+		if ip==nil{return nil,errors.New("trusted proxy entries must be IP literals")}
+		out[ip.String()]=struct{}{}
+	}
+	return out,nil
+}
+
+func clientIP(r *http.Request,trusted map[string]struct{}) string {
+	direct:=remoteIP(r)
+	if _,ok:=trusted[direct];!ok{return direct}
+	xff:=strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if xff==""{return direct}
+	first:=strings.TrimSpace(strings.Split(xff,",")[0])
+	ip:=net.ParseIP(first)
+	if ip==nil{return direct}
+	return ip.String()
 }
 
 func (g *IPGuard) Allow(ip string,now time.Time)(bool,time.Duration){
@@ -86,10 +108,10 @@ func (g *IPGuard) AuthSuccess(ip string){
 	if st:=g.clients[ip];st!=nil{st.failures=0;st.failureStart=time.Time{}}
 }
 
-func (g *IPGuard) middleware(now func()time.Time,next http.Handler) http.Handler {
+func (g *IPGuard) middleware(now func()time.Time,resolveIP func(*http.Request)string,next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
 		if !strings.HasPrefix(r.URL.Path,"/api/"){next.ServeHTTP(w,r);return}
-		ok,retry:=g.Allow(clientIP(r),now())
+		ok,retry:=g.Allow(resolveIP(r),now())
 		if !ok{
 			w.Header().Set("Retry-After",strconv.Itoa(int((retry+time.Second-1)/time.Second)))
 			http.Error(w,"too many requests",http.StatusTooManyRequests)
