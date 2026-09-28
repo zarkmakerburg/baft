@@ -103,6 +103,7 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 		resolved,err:=r.resolveDialerCommitUncertainty(ctx,cfg,tlsCfg,sh)
 		if err!=nil{sh.peer.EnsureRecoverySignal(err);return err}
 		if resolved{return nil}
+		if err:=r.recoveryFail("after_not_committed_resolution");err!=nil{return err}
 	}
 
 	candidate:=r.nextRecoveryCandidate(index)
