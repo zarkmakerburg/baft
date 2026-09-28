@@ -22,7 +22,7 @@ func validTxnTransition(from,to RecoveryTxnState) bool {
 	case RecoveryTxnCommitSent:
 		return to==RecoveryTxnUncertain||to==RecoveryTxnCommitted
 	case RecoveryTxnUncertain:
-		return to==RecoveryTxnCommitted||to==RecoveryTxnAborted||to==RecoveryTxnFinalizing
+		return to==RecoveryTxnCommitted||to==RecoveryTxnAborted||to==RecoveryTxnFinalizing||to==RecoveryTxnFinalizationUncertain
 	case RecoveryTxnCommitted:
 		return to==RecoveryTxnUncertain||to==RecoveryTxnFinalizing||to==RecoveryTxnFinalizationUncertain
 	case RecoveryTxnFinalizing:
@@ -124,7 +124,7 @@ func (p *Peer) MarkFinalizationUncertain(ctl RecoveryControl) error {
 	if a.lastCommit.SessionID==""||!sameRecoveryTransaction(a.lastCommit,ctl)||a.engine.CurrentEpoch()!=ctl.NextEpoch||a.engine.Owner()!=ctl.CandidateID{return recovery.ErrStateMismatch}
 	entered:=false
 	switch a.txnState{
-	case RecoveryTxnCommitted,RecoveryTxnFinalizing:
+	case RecoveryTxnCommitted,RecoveryTxnFinalizing,RecoveryTxnUncertain:
 		if err:=a.transitionLocked(RecoveryTxnFinalizationUncertain);err!=nil{return err}
 		entered=true
 	case RecoveryTxnFinalizationUncertain:
