@@ -226,3 +226,30 @@ func TestConcurrentSampleFlushAndSpoolOpen(t *testing.T){
 	if dinfo.Mode().Perm()!=0700{t.Fatalf("spool dir mode=%o",dinfo.Mode().Perm())}
 	t.Logf("PASS concurrent sample/flush/open latest=%d",st.LatestSequence)
 }
+
+
+func TestExporterObservabilityShowsCapacityAndRecovery(t *testing.T){
+	path:=filepath.Join(t.TempDir(),"status.spool")
+	srv,available,_,_:=newToggleTelemetryServer(t,"agent");defer srv.Close()
+	var n atomic.Uint64
+	e,err:=NewPersistent("n1",srv.URL,"agent",path,time.Second,1,func()Snapshot{
+		v:=n.Add(1);return Snapshot{IngressBytes:v,EgressBytes:v}
+	});if err!=nil{t.Fatal(err)}
+	if err:=e.SendOnce(context.Background());err==nil{t.Fatal("expected network outage")}
+	st:=e.Status()
+	if st.PendingCount!=1||st.OldestPendingSequence!=1||st.LatestSequence!=1||st.LastDeliveryError==""{
+		t.Fatalf("outage status=%+v",st)
+	}
+	if err:=e.SendOnce(context.Background());!errors.Is(err,ErrSpoolFull){t.Fatalf("full error=%v",err)}
+	st=e.Status()
+	if st.PendingCount!=1||st.OldestPendingSequence!=1||st.SpoolHealth!="degraded"||st.LastSpoolError==""{
+		t.Fatalf("capacity status=%+v",st)
+	}
+	available.Store(true)
+	if err:=e.SendOnce(context.Background());err!=nil{t.Fatal(err)}
+	st=e.Status()
+	if st.PendingCount!=0||st.SpoolHealth!="ok"||st.LastSpoolError!=""||st.LastDeliveryError!=""||st.LastSuccessfulDelivery.IsZero(){
+		t.Fatalf("recovered status=%+v",st)
+	}
+	t.Logf("PASS exporter status latest=%d last_success=%s",st.LatestSequence,st.LastSuccessfulDelivery.Format(time.RFC3339Nano))
+}
