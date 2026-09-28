@@ -228,6 +228,13 @@ func (r *Runtime) resolveDialerCommitUncertainty(ctx context.Context,cfg config.
 }
 
 func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,in io.Reader,out io.Writer,peer carrierh2.PeerInfo,first protocol.Frame)(bool,error){
+	if first.Type==protocol.TypeResumeDone{
+		ctl,err:=session.DecodeRecoveryControl(first);if err!=nil{return true,err}
+		if ctl.Phase==session.RecoveryPhaseStatusQuery{
+			return true,r.handleCommitStatusResolution(hctx,in,out,peer,ctl)
+		}
+		return true,recovery.ErrStateMismatch
+	}
 	if first.Type!=protocol.TypeResumeState{return false,nil}
 	remote,err:=session.DecodeRecoveryOffer(first);if err!=nil{return true,err}
 	p:=r.sessionByID(remote.Snapshot.SessionID)
@@ -237,13 +244,21 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 	local,err:=p.BeginRecovery(remote.CandidateID)
 	if err!=nil{return true,err}
 	published:=false
-	defer func(){if !published{p.AbortRecovery(remote.CandidateID)}}()
+	var prepared session.RecoveryControl
+	preparedKnown:=false
+	defer func(){
+		if published{return}
+		if preparedKnown{_ = p.RememberNotCommitted(prepared);return}
+		p.AbortRecovery(remote.CandidateID)
+	}()
 	if local.NextEpoch!=remote.NextEpoch{return true,errors.New("recovery epoch mismatch")}
 	if err:=p.ReconcileRecovery(remote.CandidateID,remote);err!=nil{return true,err}
 	if err:=session.EncodeRecoveryOffer(out,local);err!=nil{return true,fmt.Errorf("snapshot exchange: %w",err)}
 
-	prepared,err:=p.PrepareRecoveryCommit(hctx,remote.CandidateID,session.Carrier{In:in,Out:out})
+	prepared,err=p.PrepareRecoveryCommit(hctx,remote.CandidateID,session.Carrier{In:in,Out:out})
 	if err!=nil{return true,err}
+	preparedKnown=true
+	if err:=p.MarkRecoveryPrepared(prepared);err!=nil{return true,err}
 	fr,err:=protocol.Decode(in);if err!=nil{return true,fmt.Errorf("prepared exchange: %w",err)}
 	peerPrepared,err:=session.DecodeRecoveryControl(fr);if err!=nil{return true,fmt.Errorf("prepared exchange: %w",err)}
 	if err:=p.ValidateRecoveryControl(peerPrepared,session.RecoveryPhasePrepared);err!=nil{return true,err}
@@ -252,38 +267,90 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 	fr,err=protocol.Decode(in);if err!=nil{return true,fmt.Errorf("commit readiness: %w",err)}
 	ready,err:=session.DecodeRecoveryControl(fr);if err!=nil{return true,fmt.Errorf("commit readiness: %w",err)}
 	if err:=p.ValidateRecoveryControl(ready,session.RecoveryPhaseCommitReady);err!=nil{return true,err}
+	if err:=p.MarkRecoveryCommitReady(prepared);err!=nil{return true,err}
 	if err:=r.recoveryFail("listener_before_commit");err!=nil{p.RecordRecoveryFailure("commit");return true,fmt.Errorf("listener before commit: %w",err)}
 	readyAck:=prepared;readyAck.Phase=session.RecoveryPhaseCommitReady
 	if err:=session.EncodeRecoveryControl(out,readyAck);err!=nil{return true,fmt.Errorf("commit readiness: %w",err)}
 
 	for {
 		fr,err=protocol.Decode(in);if err!=nil{
-			if published{return true,p.MarkPostCommitFailure(fmt.Errorf("commit exchange: %w",err),prepared)}
+			if published{
+				commitCtl:=prepared;commitCtl.Phase=session.RecoveryPhaseCommit
+				_ = p.MarkCommitUncertain(commitCtl)
+				return true,fmt.Errorf("%w: listener commit exchange: %v",session.ErrCommitUncertain,err)
+			}
 			return true,fmt.Errorf("commit exchange: %w",err)
 		}
 		ctl,err:=session.DecodeRecoveryControl(fr);if err!=nil{return true,err}
 		switch ctl.Phase {
 		case session.RecoveryPhaseCommit:
 			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommit);err!=nil{return true,err}
+			if err:=r.recoveryFail("before_listener_publish");err!=nil{return true,fmt.Errorf("before listener publish: %w",err)}
 			res,err:=p.PublishRecoveryCommit(ctl)
 			if err!=nil{return true,err}
 			if !res.Committed{return true,errors.New("listener authority was not committed")}
 			published=true
+			if err:=r.recoveryFail("after_listener_publish_before_commit_ack");err!=nil{
+				_ = p.MarkCommitUncertain(ctl)
+				return true,fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)
+			}
 			ack:=ctl;ack.Phase=session.RecoveryPhaseCommitAck
-			if err:=session.EncodeRecoveryControl(out,ack);err!=nil{return true,p.MarkPostCommitFailure(fmt.Errorf("commit ack: %w",err),ctl)}
-			// If the first ACK is lost, a duplicate COMMIT is accepted below
-			// and receives the same idempotent ACK without another epoch/replay.
+			if err:=session.EncodeRecoveryControl(out,ack);err!=nil{
+				_ = p.MarkCommitUncertain(ctl)
+				return true,fmt.Errorf("%w: commit ack: %v",session.ErrCommitUncertain,err)
+			}
+			if err:=r.recoveryFail("after_commit_ack_write");err!=nil{
+				_ = p.MarkCommitUncertain(ctl)
+				return true,fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)
+			}
 		case session.RecoveryPhaseCommitAck:
 			if !published{return true,recovery.ErrStateMismatch}
 			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommitAck);err!=nil{return true,err}
 			if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return true,err}
-			// The session reader now owns candidate frames. Keep the HTTP/2
-			// request alive; returning here would close the committed carrier.
 			<-hctx.Done()
 			return true,nil
 		default:
 			return true,recovery.ErrStateMismatch
 		}
+	}
+}
+
+func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader,out io.Writer,peer carrierh2.PeerInfo,query session.RecoveryControl) error {
+	p:=r.sessionByID(query.SessionID)
+	if p==nil{return errors.New("recovery status session not found")}
+	if p.PeerIdentity()!=peer.Identity{return errors.New("recovery status peer identity mismatch")}
+	reply,err:=p.EvaluateCommitStatus(query);if err!=nil{return err}
+
+	if reply.Status==session.RecoveryResolutionCommitted{
+		commitCtl:=query;commitCtl.Phase=session.RecoveryPhaseCommit;commitCtl.Status=session.RecoveryResolutionNone
+		if err:=p.RebindCommittedCarrier(hctx,commitCtl,session.Carrier{In:in,Out:out});err!=nil{return err}
+	}
+	if reply.Status==session.RecoveryResolutionNotCommitted{
+		if err:=p.RememberNotCommitted(query);err!=nil{return err}
+	}
+	if err:=r.recoveryFail("before_status_reply");err!=nil{return err}
+	if err:=session.EncodeRecoveryControl(out,reply);err!=nil{return err}
+	if err:=r.recoveryFail("after_status_reply_write");err!=nil{return err}
+
+	switch reply.Status{
+	case session.RecoveryResolutionCommitted:
+		fr,err:=protocol.Decode(in);if err!=nil{
+			_ = p.MarkCommitUncertain(query)
+			return fmt.Errorf("%w: resolution finalize ack: %v",session.ErrCommitUncertain,err)
+		}
+		ack,err:=session.DecodeRecoveryControl(fr);if err!=nil{return err}
+		if err:=p.ValidateRecoveryControl(ack,session.RecoveryPhaseCommitAck);err!=nil{return err}
+		commitCtl:=query;commitCtl.Phase=session.RecoveryPhaseCommit;commitCtl.Status=session.RecoveryResolutionNone
+		if err:=p.FinalizeRecoveryCommit(hctx,commitCtl);err!=nil{return err}
+		if err:=session.EncodeRecoveryControl(out,ack);err!=nil{return err}
+		<-hctx.Done()
+		return nil
+	case session.RecoveryResolutionNotCommitted:
+		return nil
+	case session.RecoveryResolutionConflict,session.RecoveryResolutionUnknown:
+		return session.ErrCommitUncertain
+	default:
+		return recovery.ErrStateMismatch
 	}
 }
 
