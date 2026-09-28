@@ -250,3 +250,42 @@ func (p *Peer) RememberNotCommitted(query RecoveryControl) error {
 	a.mu.Unlock()
 	return nil
 }
+
+
+func (p *Peer) EnsureRecoverySignal(err error) {
+	if p==nil||!p.recoveryEnabled{return}
+	if err==nil{err=ErrCarrierUnavailable}
+	select{case p.recoveryNeeded<-err:default:}
+}
+
+func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c Carrier) error {
+	if p.recovery==nil{return errors.New("recovery is disabled")}
+	if c.In==nil||c.Out==nil{return errors.New("resolution carrier input/output required")}
+	a:=p.recovery
+	a.mu.Lock()
+	if a.lastCommit.SessionID==""||!sameRecoveryTransaction(a.lastCommit,ctl)||a.engine.CurrentEpoch()!=ctl.NextEpoch||a.engine.Owner()!=ctl.CandidateID{
+		a.mu.Unlock();return recovery.ErrStateMismatch
+	}
+	if a.prepared!=nil{a.mu.Unlock();return p.RebindPreparedRecovery(ctx,ctl,c)}
+	a.mu.Unlock()
+
+	newSender:=newOutboundSender(&frameWriter{w:c.Out},p.recoveryEnabled)
+	p.mu.Lock()
+	flows:=make([]*flow,0,len(p.flows))
+	for _,fl:=range p.flows{flows=append(flows,fl)}
+	runCtx:=p.runCtx
+	oldSender:=p.sender
+	p.carrier=c;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.sender=newSender
+	p.mu.Unlock()
+	for _,fl:=range flows{
+		fl.mu.Lock();open:=fl.openOK&&!fl.closed;fl.mu.Unlock()
+		if open{if err:=newSender.addFlow(fl.id);err!=nil{return err}}
+	}
+	if runCtx==nil{runCtx=ctx}
+	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
+	p.wg.Add(1);go func(){defer p.wg.Done();newSender.run(runCtx)}()
+	p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
+	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
+	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
+	return nil
+}
