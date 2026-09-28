@@ -311,20 +311,26 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 	if err := p.waitReady(ctx); err != nil {
 		return err
 	}
-	if p.recoveryEnabled{p.recoveryGate.Lock();defer p.recoveryGate.Unlock()}
-	if p.recovery!=nil && p.recovery.IsFrozen(){ return recovery.ErrResumeFrozen }
+	if p.recoveryEnabled{p.recoveryGate.Lock()}
+	if p.recovery!=nil && p.recovery.IsFrozen(){
+		if p.recoveryEnabled{p.recoveryGate.Unlock()}
+		return recovery.ErrResumeFrozen
+	}
 	id, err := p.allocateStreamID()
 	if err != nil {
+		if p.recoveryEnabled{p.recoveryGate.Unlock()}
 		return err
 	}
 	nonceBytes := make([]byte, 16)
 	if _, err := rand.Read(nonceBytes); err != nil {
+		if p.recoveryEnabled{p.recoveryGate.Unlock()}
 		return err
 	}
 	fl := newFlow(id, routeID, hex.EncodeToString(nonceBytes), conn, p.allocator)
 	p.mu.Lock()
 	p.flows[id] = fl
 	p.mu.Unlock()
+	if p.recoveryEnabled{p.recoveryGate.Unlock()}
 
 	payload, err := protocol.EncodeControl(protocol.OpenRequest{RouteID: routeID, OpenNonce: fl.nonce})
 	if err != nil {
