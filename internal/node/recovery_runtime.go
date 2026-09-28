@@ -249,6 +249,7 @@ func (r *Runtime) resolveDialerCommitUncertainty(ctx context.Context,cfg config.
 	defer func(){if !keepCarrier{o.close()}}()
 
 	queryCopies:=r.recoveryControlCopiesForTest("dialer_status_query_send",&query)
+	if queryCopies<1{queryCopies=1}
 	for i:=0;i<queryCopies;i++{
 		if err:=session.EncodeRecoveryControl(o.carrier.Out,query);err!=nil{return false,fmt.Errorf("%w: status query: %v",session.ErrCommitUncertain,err)}
 	}
@@ -261,39 +262,35 @@ func (r *Runtime) resolveDialerCommitUncertainty(ctx context.Context,cfg config.
 	case session.RecoveryResolutionNotCommitted:
 		if err:=sh.peer.ResolveNotCommitted(reply);err!=nil{return false,err}
 		return false,nil
-	case session.RecoveryResolutionCommitted:
-		if err:=sh.peer.NoteCommittedResolution(reply);err!=nil{return false,err}
-		commitCtl:=query;commitCtl.Phase=session.RecoveryPhaseCommit;commitCtl.Status=session.RecoveryResolutionNone
+
+	case session.RecoveryResolutionCommitted,session.RecoveryResolutionFinalized:
+		if reply.Status==session.RecoveryResolutionFinalized{
+			if err:=sh.peer.NoteFinalizedResolution(reply);err!=nil{return false,err}
+		}else{
+			if err:=sh.peer.NoteCommittedResolution(reply);err!=nil{return false,err}
+		}
+		commitCtl:=query
+		commitCtl.Phase=session.RecoveryPhaseCommit
+		commitCtl.Status=session.RecoveryResolutionNone
 		if sh.peer.RecoveryEpoch()<commitCtl.NextEpoch{
 			if err:=sh.peer.RebindPreparedRecovery(ctx,commitCtl,o.carrier);err!=nil{return false,err}
 			res,err:=sh.peer.PublishRecoveryCommit(commitCtl);if err!=nil{return false,err}
 			if !res.Committed{return false,errors.New("status resolution did not publish local authority")}
 		}else{
 			if err:=sh.peer.RebindCommittedCarrier(ctx,commitCtl,o.carrier);err!=nil{return false,err}
+			// Normalize a locally uncertain exact commit before the distributed
+			// finalization handshake.
+			if _,err:=sh.peer.PublishRecoveryCommit(commitCtl);err!=nil{return false,err}
 		}
 		sh.replaceCarrier(o);keepCarrier=true
-		ack:=commitCtl;ack.Phase=session.RecoveryPhaseCommitAck
-		if err:=session.EncodeRecoveryControl(o.carrier.Out,ack);err!=nil{
-			_ = sh.peer.MarkCommitUncertain(commitCtl)
-			return false,fmt.Errorf("%w: resolution ack: %v",session.ErrCommitUncertain,err)
-		}
-		for {
-			fr,err=protocol.Decode(o.carrier.In);if err!=nil{
-				_ = sh.peer.MarkCommitUncertain(commitCtl)
-				return false,fmt.Errorf("%w: resolution ack reply: %v",session.ErrCommitUncertain,err)
-			}
-			peerCtl,err:=session.DecodeRecoveryControl(fr);if err!=nil{return false,err}
-			if peerCtl.Phase==session.RecoveryPhaseStatusReply {
-				if err:=sh.peer.ValidateStatusReply(peerCtl);err!=nil{return false,fmt.Errorf("%w: duplicate status reply: %v",session.ErrCommitUncertain,err)}
-				if peerCtl.Status!=session.RecoveryResolutionCommitted{return false,session.ErrCommitUncertain}
-				continue
-			}
-			if peerCtl.Phase!=session.RecoveryPhaseCommitAck{return false,recovery.ErrStateMismatch}
-			if err:=sh.peer.ValidateRecoveryControl(peerCtl,session.RecoveryPhaseCommitAck);err!=nil{return false,err}
-			break
-		}
-		if err:=sh.peer.FinalizeRecoveryCommit(ctx,commitCtl);err!=nil{return false,err}
+
+		// COMMITTED and FINALIZED status both converge through the same exact
+		// idempotent FINALIZE/FINALIZE_ACK exchange. A FINALIZED reply is proof
+		// that the peer has already accepted this transaction; the duplicate
+		// FINALIZE simply binds the new physical carrier safely.
+		if err:=r.finishDialerFinalization(ctx,sh,o,commitCtl);err!=nil{return false,err}
 		return true,nil
+
 	case session.RecoveryResolutionConflict,session.RecoveryResolutionUnknown:
 		_ = sh.peer.NoteResolutionConflict(reply)
 		return false,session.ErrCommitUncertain
