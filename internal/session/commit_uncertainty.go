@@ -404,6 +404,8 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 	p.wg.Add(1);go func(){defer p.wg.Done();newSender.run(runCtx)}()
 	p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
-	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
+	// No prepared replay actions remain on this exact committed transaction,
+	// so application delivery may resume on the rebound carrier immediately.
+	p.signalReplacementReady()
 	return nil
 }
