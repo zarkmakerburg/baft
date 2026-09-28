@@ -544,6 +544,7 @@ func (p *Peer) markPostCommitFailure(err error,ctl RecoveryControl)(CommitResult
 	a.mu.Lock()
 	if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl){
 		a.uncertain=ctl;a.uncertain.Phase=RecoveryPhaseCommit
+		if a.prepared!=nil{a.prepared.finalizing=false}
 		switch a.txnState{
 		case RecoveryTxnCommitted,RecoveryTxnFinalizing,RecoveryTxnCommitSent:
 			_ = a.transitionLocked(RecoveryTxnUncertain)
