@@ -22,6 +22,7 @@ func main(){
 	telemetryStale:=flag.Duration("telemetry-stale",3*time.Minute,"telemetry stale threshold")
 	handshakeErrorRate:=flag.Float64("handshake-error-rate",5.0,"handshake error alert threshold per minute")
 	alertInterval:=flag.Duration("alert-interval",15*time.Second,"alert evaluation interval")
+	auditAnchorInterval:=flag.Duration("audit-anchor-interval",time.Hour,"external audit anchor interval")
 	flag.Parse()
 	if flag.NArg()!=0||*adminTokenFile==""{
 		fmt.Fprintln(os.Stderr,"usage: baft-bcc --admin-token-file <file> [--listen 127.0.0.1:8080] [--state-file bcc-state.json]")
@@ -44,6 +45,14 @@ func main(){
 	if err!=nil{fmt.Fprintln(os.Stderr,"BCC state:",err);os.Exit(1)}
 	app,err:=bcc.NewServer(store,adminToken)
 	if err!=nil{fmt.Fprintln(os.Stderr,"BCC server:",err);os.Exit(1)}
+	trustedProxies:=[]string{}
+	for _,part:=range strings.Split(os.Getenv("BAFT_BCC_TRUSTED_PROXIES"),","){
+		if v:=strings.TrimSpace(part);v!=""{trustedProxies=append(trustedProxies,v)}
+	}
+	if err:=app.ConfigureTrustedProxies(trustedProxies);err!=nil{fmt.Fprintln(os.Stderr,"trusted proxies:",err);os.Exit(2)}
+	if err:=app.ConfigureAuditAnchoring(strings.TrimSpace(os.Getenv("BAFT_BCC_AUDIT_ANCHOR_WEBHOOK_URL")),*auditAnchorInterval);err!=nil{
+		fmt.Fprintln(os.Stderr,"audit anchor:",err);os.Exit(2)
+	}
 	if *handshakeErrorRate<=0{fmt.Fprintln(os.Stderr,"handshake-error-rate must be positive");os.Exit(2)}
 	alertWebhook:=strings.TrimSpace(os.Getenv("BAFT_ALERT_WEBHOOK_URL"))
 	if err:=app.ConfigureAlerts(bcc.AlertConfig{
@@ -56,6 +65,7 @@ func main(){
 	defer stop()
 	go app.StartHealthLoop(ctx,*healthInterval)
 	go app.StartAlertLoop(ctx)
+	go app.StartAuditAnchorLoop(ctx)
 
 	srv:=&http.Server{Addr:*listen,Handler:app.Handler(),ReadHeaderTimeout:5*time.Second}
 	done:=make(chan error,1)
