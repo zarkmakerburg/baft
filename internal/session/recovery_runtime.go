@@ -108,6 +108,7 @@ type preparedRecovery struct {
 	runCtx context.Context
 	flows []preparedFlowRecovery
 	published bool
+	finalizing bool
 	finalized bool
 }
 
