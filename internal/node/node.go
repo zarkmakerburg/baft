@@ -21,6 +21,7 @@ import (
 	"github.com/zarkmakerburg/baft/internal/identity"
 	baftmetrics "github.com/zarkmakerburg/baft/internal/metrics"
 	"github.com/zarkmakerburg/baft/internal/resources"
+	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/routes"
 	"github.com/zarkmakerburg/baft/internal/securityinternal"
 	"github.com/zarkmakerburg/baft/internal/session"
@@ -38,6 +39,9 @@ type Runtime struct {
 	noiseLatencyMS  atomic.Int64
 	routeMu         sync.Mutex
 	routeStats      map[string]telemetry.RouteSnapshot
+	sessionMu       sync.Mutex
+	sessions        map[string]*session.Peer
+	recoverySeq     atomic.Uint64
 }
 
 func NewRuntime() *Runtime {
@@ -45,6 +49,7 @@ func NewRuntime() *Runtime {
 		Revocations: identity.NewRevocationSet(),
 		peers: map[*session.Peer]struct{}{},
 		routeStats: map[string]telemetry.RouteSnapshot{},
+		sessions: map[string]*session.Peer{},
 	}
 	r.noiseLatencyMS.Store(-1)
 	return r
