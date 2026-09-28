@@ -817,6 +817,9 @@ func (p *Peer) grantReceive(fl *flow) error {
 }
 
 func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
+	fl.mu.Lock()
+	before:=fl.rxNext
+	fl.mu.Unlock()
 	ack, duplicate, err := fl.acceptData(fr.Offset, fr.Payload)
 	if err != nil {
 		return p.sendReset(fl, protocol.ErrorFlowControl)
@@ -827,8 +830,8 @@ func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
 	if duplicate {
 		return nil
 	}
-	if p.trafficObserver != nil {
-		p.trafficObserver(uint64(len(fr.Payload)),0)
+	if p.trafficObserver != nil && ack>before {
+		p.trafficObserver(ack-before,0)
 	}
 	return nil
 }
