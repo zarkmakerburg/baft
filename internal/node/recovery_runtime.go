@@ -17,6 +17,8 @@ import (
 	"github.com/zarkmakerburg/baft/internal/session"
 )
 
+var errRecoverySnapshotTransient = errors.New("recovery snapshot exchange transient")
+
 type openedRuntimeCarrier struct {
 	carrier session.Carrier
 	client  *carrierh2.Client
@@ -119,10 +121,27 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	defer func(){if !keepCarrier{o.close()}}()
 	if err:=r.recoveryFail("snapshot_exchange");err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
 
-	if err:=session.EncodeRecoveryOffer(o.carrier.Out,local);err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
-	fr,err:=protocol.Decode(o.carrier.In);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
-	peer,err:=session.DecodeRecoveryOffer(fr);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
-	if err:=sh.peer.ReconcileRecovery(candidate,peer);err!=nil{return err}
+	if err:=session.EncodeRecoveryOffer(o.carrier.Out,local);err!=nil{
+		sh.peer.RecordRecoveryFailure("snapshot_exchange")
+		return fmt.Errorf("%w: write offer: %v",errRecoverySnapshotTransient,err)
+	}
+	fr,err:=protocol.Decode(o.carrier.In);if err!=nil{
+		// The listener may have rejected an asynchronous first snapshot before
+		// it could return its offer. When the old carrier is already dead this
+		// is safe to retry pre-commit with a fresh snapshot/candidate.
+		sh.peer.RecordRecoveryFailure("snapshot_exchange")
+		return fmt.Errorf("%w: read peer offer: %v",errRecoverySnapshotTransient,err)
+	}
+	peer,err:=session.DecodeRecoveryOffer(fr);if err!=nil{
+		sh.peer.RecordRecoveryFailure("snapshot_exchange")
+		return fmt.Errorf("snapshot exchange: %w",err)
+	}
+	if err:=sh.peer.ReconcileRecovery(candidate,peer);err!=nil{
+		if errors.Is(err,recovery.ErrStateMismatch){
+			return fmt.Errorf("%w: reconcile: %v",errRecoverySnapshotTransient,err)
+		}
+		return err
+	}
 
 	prepared,err:=sh.peer.PrepareRecoveryCommit(ctx,candidate,o.carrier)
 	if err!=nil{return err}
