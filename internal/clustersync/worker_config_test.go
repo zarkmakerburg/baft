@@ -1,6 +1,7 @@
 package clustersync
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -16,6 +17,18 @@ func workerTemplateForTest() WorkerTemplate {
 		RouteBasePort:16000,
 		MetricsBasePort:9400,
 		StateDir:"/tmp/baft-worker",
+	}
+}
+
+func TestBuildWorkerConfigsDynamicNodeCounts(t *testing.T) {
+	now:=time.Unix(1700000000,0)
+	for _,n:=range []int{1,3,6,50}{
+		t.Run(fmt.Sprintf("n=%d",n),func(t *testing.T){
+			cfgs:=testConfigsN(t,n)
+			m,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,cfgs);if err!=nil{t.Fatal(err)}
+			out,err:=BuildWorkerConfigs(snapshotFromManifest(m),workerTemplateForTest());if err!=nil{t.Fatal(err)}
+			if len(out)!=n{t.Fatalf("configs=%d",len(out))}
+		})
 	}
 }
 
