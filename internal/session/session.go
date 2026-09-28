@@ -103,6 +103,8 @@ type Peer struct {
 	peerBootID         string
 	runCtx             context.Context
 	recoveryGate       sync.Mutex
+	recoveryFrameHookMu sync.RWMutex
+	recoveryFrameHook   func(string, protocol.Frame) bool
 }
 
 type replayChunk struct {
@@ -246,6 +248,15 @@ func randomHex128() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func (p *Peer) SetRecoveryFrameHookForTest(fn func(string, protocol.Frame) bool) {
+	p.recoveryFrameHookMu.Lock();p.recoveryFrameHook=fn;p.recoveryFrameHookMu.Unlock()
+}
+
+func (p *Peer) dropRecoveryFrameForTest(stage string,fr protocol.Frame) bool {
+	p.recoveryFrameHookMu.RLock();fn:=p.recoveryFrameHook;p.recoveryFrameHookMu.RUnlock()
+	return fn!=nil&&fn(stage,fr)
 }
 
 func (p *Peer) senderNow() *outboundSender {
