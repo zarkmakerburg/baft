@@ -35,16 +35,19 @@ type Runtime struct {
 	ingressBytes    atomic.Uint64
 	egressBytes     atomic.Uint64
 	handshakeErrors atomic.Uint64
+	noiseLatencyMS  atomic.Int64
 	routeMu         sync.Mutex
 	routeStats      map[string]telemetry.RouteSnapshot
 }
 
 func NewRuntime() *Runtime {
-	return &Runtime{
+	r:=&Runtime{
 		Revocations: identity.NewRevocationSet(),
 		peers: map[*session.Peer]struct{}{},
 		routeStats: map[string]telemetry.RouteSnapshot{},
 	}
+	r.noiseLatencyMS.Store(-1)
+	return r
 }
 
 func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
@@ -333,6 +336,8 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			ProfileID: cfg.Transport.Profile, ProfileVersion: 1, ConfigRevision: "config-v1",
 			Resources: r.Resources,
 			TrafficObserver: func(in,out uint64){ r.ingressBytes.Add(in); r.egressBytes.Add(out) },
+			LatencyObserver: func(rtt time.Duration){ r.noiseLatencyMS.Store(rtt.Milliseconds()) },
+			PingInterval: func() time.Duration { if cfg.Noise!=nil { return 5*time.Second }; return 0 }(),
 		})
 		if err != nil {
 			_ = pw.Close()
@@ -500,6 +505,7 @@ func (r *Runtime) telemetrySnapshot() telemetry.Snapshot {
 		EgressBytes: r.egressBytes.Load(),
 		ActiveSessions: active,
 		HandshakeErrors: r.handshakeErrors.Load(),
+		NoiseLatencyMS: r.noiseLatencyMS.Load(),
 		Routes: routes,
 	}
 }
@@ -528,7 +534,14 @@ func (r *Runtime) routeHealthLoop(ctx context.Context,cfg config.Config,interval
 					_ = conn.Close()
 					if cr.Direction=="outbound" {
 						r.peerMu.Lock();active:=len(r.peers);r.peerMu.Unlock()
-						if active==0 { next.Status="down" }
+						if active==0 {
+							next.Status="down"
+						} else if cfg.Noise!=nil {
+							if rtt:=r.noiseLatencyMS.Load();rtt>=0 {
+								next.LatencyMS=rtt
+								next.ProbeKind="noise"
+							}
+						}
 					}
 				} else {
 					next.Status="down"
