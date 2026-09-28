@@ -49,6 +49,8 @@ type Server struct {
 	alertMu sync.Mutex
 	activeAlerts map[string]Alert
 	httpClient *http.Client
+	mutationMu sync.Mutex
+	backupMu sync.Mutex
 	now func() time.Time
 }
 
@@ -160,6 +162,7 @@ func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 		writeJSON(w,http.StatusOK,s.store.ListNodes())
 	case http.MethodPost:
 		if !s.admin(w,r){return}
+		s.mutationMu.Lock();defer s.mutationMu.Unlock()
 		var in struct{
 			ID,Alias,Address,Role,PublicKey string
 			AgentTokenEnv string
@@ -198,6 +201,7 @@ func (s *Server) jobs(w http.ResponseWriter,r *http.Request){
 func (s *Server) enroll(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
 	if !s.admin(w,r){return}
+	s.mutationMu.Lock();defer s.mutationMu.Unlock()
 	var in struct{WorkerID string `json:"worker_id"`; PublicKey string `json:"public_key"`}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
 	details:=map[string]any{"worker_id":in.WorkerID,"public_key":in.PublicKey}
@@ -210,6 +214,7 @@ func (s *Server) enroll(w http.ResponseWriter,r *http.Request){
 func (s *Server) deploy(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
 	if !s.admin(w,r){return}
+	s.mutationMu.Lock();defer s.mutationMu.Unlock()
 	var in struct{NodeIDs []string `json:"node_ids"`; Version string `json:"version"`}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
 	details:=map[string]any{"node_ids":append([]string(nil),in.NodeIDs...),"version":in.Version}
@@ -290,6 +295,7 @@ func (s *Server) finance(w http.ResponseWriter,r *http.Request){
 	case http.MethodGet:
 		writeJSON(w,http.StatusOK,s.store.FinanceSnapshot())
 	case http.MethodPost:
+		s.mutationMu.Lock();defer s.mutationMu.Unlock()
 		var in struct{
 			NodeID string `json:"node_id"`
 			CostMicrosPerGiB int64 `json:"cost_micros_per_gib"`
@@ -460,6 +466,7 @@ func (s *Server) auditEntries(w http.ResponseWriter,r *http.Request){
 func (s *Server) revokeNode(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
 	if !s.admin(w,r){return}
+	s.mutationMu.Lock();defer s.mutationMu.Unlock()
 	var in struct{NodeID string `json:"node_id"`; Reason string `json:"reason"`}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
 	details:=map[string]any{"reason":strings.TrimSpace(in.Reason)}
@@ -473,6 +480,7 @@ func (s *Server) revokeNode(w http.ResponseWriter,r *http.Request){
 func (s *Server) rotateNodeToken(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
 	if !s.admin(w,r){return}
+	s.mutationMu.Lock();defer s.mutationMu.Unlock()
 	var in struct{
 		NodeID string `json:"node_id"`
 		AgentTokenEnv string `json:"agent_token_env"`
