@@ -417,6 +417,9 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 		return errors.New("application frame received before READY")
 	}
 	switch fr.Type {
+	case protocol.TypeResumeDone:
+		if p.recovery==nil{return errors.New("unexpected recovery control while recovery disabled")}
+		return p.HandleRecoveryControlFrame(fr)
 	case protocol.TypePing:
 		return p.handlePing(fr)
 	case protocol.TypePong:
