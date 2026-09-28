@@ -138,6 +138,7 @@ type flow struct {
 	writeClosed     bool
 	replay          []replayChunk
 	creditWait      chan struct{}
+	ackWait         chan struct{}
 	finSent         bool
 	finRecv         bool
 	finAcked        bool
@@ -409,7 +410,7 @@ func newFlow(id uint64, routeID, nonce string, conn net.Conn, alloc ...*resource
 	}
 	return &flow{
 		id: id, resourceID: rid, routeID: routeID, nonce: nonce, conn: conn,
-		allocator: a, openDone: make(chan error, 1), creditWait: make(chan struct{}),
+		allocator: a, openDone: make(chan error, 1), creditWait: make(chan struct{}), ackWait: make(chan struct{}),
 	}
 }
 
@@ -1212,6 +1213,10 @@ func (f *flow) onAck(ack uint64) error {
 		return nil
 	}
 	f.txAcked = ack
+	if f.ackWait!=nil {
+		close(f.ackWait)
+	}
+	f.ackWait=make(chan struct{})
 	var released int64
 	keep := 0
 	for _, chunk := range f.replay {
