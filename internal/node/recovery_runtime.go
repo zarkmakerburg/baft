@@ -100,25 +100,25 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	if err!=nil{return err}
 	committed:=false
 	defer func(){if !committed{sh.peer.AbortRecovery(candidate)}}()
-	if err:=r.recoveryFail("candidate_setup");err!=nil{return fmt.Errorf("candidate setup: %w",err)}
+	if err:=r.recoveryFail("candidate_setup");err!=nil{sh.peer.RecordRecoveryFailure("candidate_setup");return fmt.Errorf("candidate setup: %w",err)}
 
 	o,err:=r.openRuntimeCarrier(ctx,cfg,tlsCfg)
-	if err!=nil{return fmt.Errorf("candidate setup: %w",err)}
+	if err!=nil{sh.peer.RecordRecoveryFailure("candidate_setup");return fmt.Errorf("candidate setup: %w",err)}
 	defer func(){if !committed{o.close()}}()
-	if err:=r.recoveryFail("snapshot_exchange");err!=nil{return fmt.Errorf("snapshot exchange: %w",err)}
+	if err:=r.recoveryFail("snapshot_exchange");err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
 
-	if err:=session.EncodeRecoveryOffer(o.carrier.Out,local);err!=nil{return fmt.Errorf("snapshot exchange: %w",err)}
-	fr,err:=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("snapshot exchange: %w",err)}
-	peer,err:=session.DecodeRecoveryOffer(fr);if err!=nil{return fmt.Errorf("snapshot exchange: %w",err)}
+	if err:=session.EncodeRecoveryOffer(o.carrier.Out,local);err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
+	fr,err:=protocol.Decode(o.carrier.In);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
+	peer,err:=session.DecodeRecoveryOffer(fr);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
 	if err:=sh.peer.ReconcileRecovery(candidate,peer);err!=nil{return err}
 
 	if err:=session.EncodeRecoveryDone(o.carrier.Out,session.RecoveryDone{CandidateID:candidate,NextEpoch:local.NextEpoch});err!=nil{
-		return fmt.Errorf("pre-commit barrier: %w",err)
+		sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("pre-commit barrier: %w",err)
 	}
-	fr,err=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("pre-commit barrier: %w",err)}
-	done,err:=session.DecodeRecoveryDone(fr);if err!=nil{return fmt.Errorf("pre-commit barrier: %w",err)}
-	if done.CandidateID!=candidate||done.NextEpoch!=local.NextEpoch{return errors.New("recovery commit barrier mismatch")}
-	if err:=r.recoveryFail("before_commit");err!=nil{return fmt.Errorf("before commit: %w",err)}
+	fr,err=protocol.Decode(o.carrier.In);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("pre-commit barrier: %w",err)}
+	done,err:=session.DecodeRecoveryDone(fr);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("pre-commit barrier: %w",err)}
+	if done.CandidateID!=candidate||done.NextEpoch!=local.NextEpoch{sh.peer.RecordRecoveryFailure("state_mismatch");return errors.New("recovery commit barrier mismatch")}
+	if err:=r.recoveryFail("before_commit");err!=nil{sh.peer.RecordRecoveryFailure("commit");return fmt.Errorf("before commit: %w",err)}
 
 	if err:=sh.peer.CommitRecovery(ctx,candidate,o.carrier);err!=nil{return err}
 	sh.replaceCarrier(o)
