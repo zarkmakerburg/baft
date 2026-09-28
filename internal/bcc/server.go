@@ -42,6 +42,8 @@ type Server struct {
 	audit *AuditLog
 	guard *IPGuard
 	trustedProxies map[string]struct{}
+	auditAnchorWebhook string
+	auditAnchorInterval time.Duration
 	probeTimeout time.Duration
 	alertConfig AlertConfig
 	alertMu sync.Mutex
@@ -464,6 +466,7 @@ func (s *Server) revokeNode(w http.ResponseWriter,r *http.Request){
 	n,err:=s.store.RevokeNode(strings.TrimSpace(in.NodeID),in.Reason,s.now())
 	if err!=nil{s.auditFailure(w,r,"node.revoke",in.NodeID,details,err,http.StatusBadRequest);return}
 	if err:=s.auditAdmin(r,"node.revoke",in.NodeID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
+	_ = s.SendAuditAnchor(r.Context())
 	writeJSON(w,http.StatusOK,n)
 }
 
@@ -485,5 +488,6 @@ func (s *Server) rotateNodeToken(w http.ResponseWriter,r *http.Request){
 	n,err:=s.store.RotateAgentToken(strings.TrimSpace(in.NodeID),newToken,s.now(),grace)
 	if err!=nil{s.auditFailure(w,r,"node.token.rotate",in.NodeID,details,err,http.StatusBadRequest);return}
 	if err:=s.auditAdmin(r,"node.token.rotate",in.NodeID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
+	_ = s.SendAuditAnchor(r.Context())
 	writeJSON(w,http.StatusOK,n)
 }
