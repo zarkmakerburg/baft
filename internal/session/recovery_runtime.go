@@ -353,13 +353,22 @@ func (p *Peer) waitForCarrierSwitch(ctx context.Context,oldEpoch uint64,oldCarri
 func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier string,oldGeneration uint64) error {
 	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
 	for {
-		e,id,g:=p.currentCarrierIdentity()
-		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
-		p.replacementMu.Lock();wait:=p.replacementWait;p.replacementMu.Unlock()
-		e,id,g=p.currentCarrierIdentity()
-		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
+		p.replacementMu.Lock()
+		ready:=p.replacementReadyGeneration
+		wait:=p.replacementWait
+		p.replacementMu.Unlock()
+		if ready>oldGeneration{return nil}
 		select{case <-ctx.Done():return ctx.Err();case <-t.C:return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable);case <-wait:}
 	}
+}
+
+func (p *Peer) signalReplacementReady() {
+	_,_,generation:=p.currentCarrierIdentity()
+	p.replacementMu.Lock()
+	if generation>p.replacementReadyGeneration{p.replacementReadyGeneration=generation}
+	close(p.replacementWait)
+	p.replacementWait=make(chan struct{})
+	p.replacementMu.Unlock()
 }
 
 func (p *Peer) HandleCarrierFrame(ctx context.Context,epoch uint64,carrierID string,fr protocol.Frame) error {
@@ -737,7 +746,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		a.mu.Unlock()
 		if rebound{
 			p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
-			p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
+			p.signalReplacementReady()
 			for i:=range flows{
 				fl:=flows[i].flow
 				fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
