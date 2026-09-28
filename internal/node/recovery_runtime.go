@@ -12,6 +12,7 @@ import (
 	carrierh2 "github.com/zarkmakerburg/baft/internal/carrier/h2"
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/protocol"
+	"github.com/zarkmakerburg/baft/internal/recovery"
 	"github.com/zarkmakerburg/baft/internal/securityinternal"
 	"github.com/zarkmakerburg/baft/internal/session"
 )
