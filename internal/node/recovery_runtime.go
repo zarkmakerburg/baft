@@ -62,8 +62,11 @@ func (r *Runtime) sessionByID(id string)*session.Peer{
 }
 
 func (r *Runtime) recoveryFail(stage string) error {
-	if r.recoveryFault==nil{return nil}
-	return r.recoveryFault(stage)
+	r.recoveryFaultMu.RLock()
+	fn:=r.recoveryFault
+	r.recoveryFaultMu.RUnlock()
+	if fn==nil{return nil}
+	return fn(stage)
 }
 
 func (r *Runtime) nextRecoveryCandidate(shard int) string {
