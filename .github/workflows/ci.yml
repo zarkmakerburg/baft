@@ -27,6 +27,11 @@ jobs:
           git diff --exit-code -- go.mod go.sum
       - name: Unit and integration tests
         run: go test ./...
+      - name: Step 1 stability evidence
+        run: |
+          go test ./tests/integration -run '^TestSixNodeNoiseMasterHandshakeRoundTrip$' -count=1 -v
+          go test ./internal/recovery -run '^TestSixRouteECRLEngineHealth$' -count=1 -v
+          go test ./internal/recordshape -run 'TestMorphingStatistics1000|TestStatisticalGateRejectsFixedBucketAndPeriodicMutants' -count=1 -v
       - name: Race detector
         run: go test -race ./...
       - name: Vet
