@@ -223,3 +223,117 @@ func TestRecoveryBoundedReplayMissingBytesFailsClosed(t *testing.T){
 	p.AbortRecovery("candidate-gap")
 	if p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatal("missing replay bytes changed authority")}
 }
+
+
+func prepareCommitFixture(t *testing.T,candidate string)(*Peer,context.Context,context.CancelFunc,*bytes.Buffer,RecoveryControl){
+	t.Helper()
+	p,_,ctx,cancel:=recoveryFixture(t,1)
+	_,peer:=peerOfferFor(t,p,candidate)
+	if err:=p.ReconcileRecovery(candidate,peer);err!=nil{cancel();t.Fatal(err)}
+	out:=&bytes.Buffer{}
+	ctl,err:=p.PrepareRecoveryCommit(ctx,candidate,Carrier{In:bytes.NewReader(nil),Out:out})
+	if err!=nil{cancel();t.Fatal(err)}
+	ctl.Phase=RecoveryPhaseCommit
+	return p,ctx,cancel,out,ctl
+}
+
+func TestDuplicateCommitIsIdempotent(t *testing.T){
+	p,ctx,cancel,out,ctl:=prepareCommitFixture(t,"candidate-idempotent");defer cancel()
+	first,err:=p.PublishRecoveryCommit(ctl);if err!=nil{t.Fatal(err)}
+	second,err:=p.PublishRecoveryCommit(ctl);if err!=nil{t.Fatal(err)}
+	if !first.Committed||!second.Committed||first.Epoch!=2||second.Epoch!=2{t.Fatalf("results first=%+v second=%+v",first,second)}
+	if got:=p.RecoveryStats().Commits;got!=1{t.Fatalf("authority commit counter=%d",got)}
+	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	before:=append([]byte(nil),out.Bytes()...)
+	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	if !bytes.Equal(before,out.Bytes()){t.Fatal("duplicate finalize replayed application bytes")}
+	if p.RecoveryEpoch()!=2||p.RecoveryOwner()!="candidate-idempotent"{t.Fatal("duplicate commit changed authority")}
+	t.Log("PASS duplicate COMMIT kept one authority transition and one replay")
+}
+
+func TestLostCommitACKRetryIsIdempotent(t *testing.T){
+	p,ctx,cancel,out,ctl:=prepareCommitFixture(t,"candidate-ack-retry");defer cancel()
+	if _,err:=p.PublishRecoveryCommit(ctl);err!=nil{t.Fatal(err)}
+	ack1,err:=p.HandleCommittedRecoveryControl(ctl);if err!=nil{t.Fatal(err)}
+	ack2,err:=p.HandleCommittedRecoveryControl(ctl);if err!=nil{t.Fatal(err)}
+	if !sameRecoveryTransaction(ack1,ack2)||ack1.Phase!=RecoveryPhaseCommitAck||ack2.Phase!=RecoveryPhaseCommitAck{t.Fatalf("acks differ %+v %+v",ack1,ack2)}
+	if got:=p.RecoveryStats().Commits;got!=1{t.Fatalf("duplicate COMMIT incremented commits=%d",got)}
+	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	before:=len(out.Bytes())
+	if _,err:=p.PublishRecoveryCommit(ctl);err!=nil{t.Fatal(err)}
+	if got:=len(out.Bytes());got!=before{t.Fatalf("ACK retry caused replay bytes before=%d after=%d",before,got)}
+	t.Log("PASS lost COMMIT_ACK retry resolved idempotently")
+}
+
+func TestPlanDigestMismatchRejectsCommit(t *testing.T){
+	p,_,cancel,_,ctl:=prepareCommitFixture(t,"candidate-digest");defer cancel()
+	bad:=ctl;bad.PlanDigest="00"+ctl.PlanDigest[2:]
+	if bad.PlanDigest==ctl.PlanDigest{bad.PlanDigest="ff"+ctl.PlanDigest[2:]}
+	res,err:=p.PublishRecoveryCommit(bad)
+	if !errors.Is(err,recovery.ErrStateMismatch)&&!errors.Is(err,recovery.ErrNotPrepared){t.Fatalf("digest mismatch err=%v result=%+v",err,res)}
+	if res.Committed||p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatalf("digest mismatch changed authority result=%+v epoch=%d owner=%s",res,p.RecoveryEpoch(),p.RecoveryOwner())}
+	p.AbortRecovery("candidate-digest")
+	t.Log("PASS plan digest mismatch rejected before commit")
+}
+
+func TestPostCommitReplayFailureNeverReauthorizesOldEpoch(t *testing.T){
+	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-postfail");defer cancel()
+	injected:=errors.New("replay writer injected failure")
+	fired:=false
+	p.recovery.postCommitFault=func(stage string)error{
+		if stage=="replay_write"&&!fired{fired=true;return injected}
+		return nil
+	}
+	res,err:=p.CommitPreparedRecovery(ctx,ctl)
+	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("result=%+v err=%v",res,err)}
+	if p.RecoveryEpoch()!=2||p.RecoveryOwner()!="candidate-postfail"{t.Fatalf("authority epoch=%d owner=%s",p.RecoveryEpoch(),p.RecoveryOwner())}
+	if p.recovery.engine.Authorize(1,"carrier-1"){t.Fatal("old epoch re-authorized after post-commit failure")}
+	p.AbortRecovery("candidate-postfail")
+	if p.RecoveryEpoch()!=2||p.RecoveryOwner()!="candidate-postfail"{t.Fatal("Abort pretended to roll back committed authority")}
+	if p.recovery.IsFrozen(){t.Fatal("post-commit failure left session frozen")}
+	s:=p.RecoveryStats()
+	if s.Commits!=1||s.PostCommitFailures!=1||s.Aborts!=0{t.Fatalf("metrics=%+v",s)}
+	t.Log("PASS post-commit replay failure kept old epoch fenced and freeze cleared")
+}
+
+func TestPostCommitFailureCanRecoverToNextEpoch(t *testing.T){
+	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-2");defer cancel()
+	fired:=false
+	p.recovery.postCommitFault=func(stage string)error{
+		if stage=="replay_write"&&!fired{fired=true;return errors.New("candidate-2 died")}
+		return nil
+	}
+	res,err:=p.CommitPreparedRecovery(ctx,ctl)
+	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("first result=%+v err=%v",res,err)}
+	p.recovery.postCommitFault=nil
+	_,peer:=peerOfferFor(t,p,"candidate-3")
+	if err:=p.ReconcileRecovery("candidate-3",peer);err!=nil{t.Fatal(err)}
+	var out bytes.Buffer
+	res,err=p.CommitRecovery(ctx,"candidate-3",Carrier{In:bytes.NewReader(nil),Out:&out})
+	if err!=nil{t.Fatal(err)}
+	if !res.Committed||res.Epoch!=3||p.RecoveryEpoch()!=3||p.RecoveryOwner()!="candidate-3"{t.Fatalf("next recovery result=%+v epoch=%d owner=%s",res,p.RecoveryEpoch(),p.RecoveryOwner())}
+	if p.recovery.engine.Authorize(1,"carrier-1")||p.recovery.engine.Authorize(2,"candidate-2"){t.Fatal("older epochs authorized after epoch-3 recovery")}
+	t.Log("PASS post-commit candidate failure recovered forward to epoch 3")
+}
+
+func TestPostCommitFailureDoesNotLeaveSessionFrozen(t *testing.T){
+	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-freeze-cleanup");defer cancel()
+	p.recovery.postCommitFault=func(stage string)error{if stage=="after_authority_commit"{return errors.New("after commit")};return nil}
+	res,err:=p.CommitPreparedRecovery(ctx,ctl)
+	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("result=%+v err=%v",res,err)}
+	if p.recovery.IsFrozen(){t.Fatal("session remained frozen")}
+	next,err:=p.BeginRecovery("candidate-next");if err!=nil{t.Fatalf("new recovery blocked: %v",err)}
+	if next.NextEpoch!=3{t.Fatalf("next epoch=%d",next.NextEpoch)}
+	p.AbortRecovery("candidate-next")
+}
+
+func TestRecoveryCommitMetricsReflectAuthorityChange(t *testing.T){
+	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-metrics");defer cancel()
+	p.recovery.postCommitFault=func(stage string)error{if stage=="after_authority_commit"{return errors.New("post commit metric fault")};return nil}
+	res,err:=p.CommitPreparedRecovery(ctx,ctl)
+	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("result=%+v err=%v",res,err)}
+	s:=p.RecoveryStats()
+	if s.Commits!=1||s.PostCommitFailures!=1||s.CurrentEpoch!=2{t.Fatalf("metrics do not reflect authority change: %+v",s)}
+	if s.Failures["post_commit_failure"]!=1{t.Fatalf("failure reasons=%v",s.Failures)}
+	t.Log("PASS commit metric records authority publish independently of post-commit failure")
+}
