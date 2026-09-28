@@ -84,6 +84,9 @@ func (a *RecoveryAdapter) Stats() RecoveryStats {
 }
 
 func (p *Peer) RecoveryNeeded() <-chan error { return p.recoveryNeeded }
+func (p *Peer) RecordRecoveryFailure(reason string) {
+	if p.recovery!=nil{p.recovery.recordFailure(reason)}
+}
 
 func (p *Peer) PeerIdentity() string { p.mu.Lock(); defer p.mu.Unlock(); return p.peerID }
 func (p *Peer) SessionID() string { p.mu.Lock(); defer p.mu.Unlock(); return p.sessionID }
