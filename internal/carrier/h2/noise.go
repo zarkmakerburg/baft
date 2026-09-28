@@ -87,6 +87,12 @@ func HandlerWithNoise(stream StreamHandler, o NoiseOptions) (http.Handler, error
 			o.Cover.ServeHTTP(w, r)
 			return
 		}
+		// Preserve the legacy single-peer behavior: the identity is known before
+		// the handshake, so a revoked peer must never receive a Noise response.
+		if len(identityByKey) == 0 && o.Revocations != nil && o.Revocations.IsRevoked(o.PeerIdentity, "", "") {
+			o.Cover.ServeHTTP(w, r)
+			return
+		}
 		select {
 		case slots <- struct{}{}:
 		default:
