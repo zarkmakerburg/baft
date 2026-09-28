@@ -48,9 +48,25 @@ type Job struct {
 }
 
 type FinancePolicy struct {
-	NodeID               string `json:"node_id"`
-	CostMicrosPerGiB     int64  `json:"cost_micros_per_gib"`
-	RevenueMicrosPerGiB  int64  `json:"revenue_micros_per_gib"`
+	NodeID              string    `json:"node_id"`
+	CostMicrosPerGiB    int64     `json:"cost_micros_per_gib"`
+	RevenueMicrosPerGiB int64     `json:"revenue_micros_per_gib"`
+	Currency            string    `json:"currency"`
+	EffectiveFrom       time.Time `json:"effective_from"`
+	Version             uint64    `json:"version"`
+}
+
+type FinanceLedgerEntry struct {
+	NodeID         string    `json:"node_id"`
+	Timestamp      time.Time `json:"timestamp"`
+	IngressBytes   uint64    `json:"ingress_bytes"`
+	EgressBytes    uint64    `json:"egress_bytes"`
+	CostMicros     int64     `json:"cost_micros"`
+	RevenueMicros  int64     `json:"revenue_micros"`
+	ProfitMicros   int64     `json:"profit_micros"`
+	Currency       string    `json:"currency"`
+	RateVersion    uint64    `json:"rate_version"`
+	RateEffective  time.Time `json:"rate_effective_from"`
 }
 
 type NodeFinance struct {
@@ -109,10 +125,13 @@ type state struct {
 	Nodes    map[string]Node          `json:"nodes"`
 	Jobs     map[string]Job           `json:"jobs"`
 	Finance   map[string]NodeFinance      `json:"finance,omitempty"`
-	Policies  map[string]FinancePolicy    `json:"finance_policies,omitempty"`
-	Telemetry map[string]TelemetryCursor  `json:"telemetry,omitempty"`
-	History   map[string][]HistoryPoint   `json:"history,omitempty"`
-	NextJob   uint64                      `json:"next_job"`
+	Policies        map[string]FinancePolicy     `json:"finance_policies,omitempty"`
+	RateHistory     map[string][]FinancePolicy   `json:"finance_rate_history,omitempty"`
+	FinanceLedger   []FinanceLedgerEntry         `json:"finance_ledger,omitempty"`
+	Telemetry       map[string]TelemetryCursor   `json:"telemetry,omitempty"`
+	History         map[string][]HistoryPoint    `json:"history,omitempty"`
+	NextJob         uint64                       `json:"next_job"`
+	NextRateVersion uint64                       `json:"next_rate_version,omitempty"`
 }
 
 type Store struct {
@@ -123,7 +142,7 @@ type Store struct {
 
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},NextJob:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},NextJob:1,NextRateVersion:1}}
 	b,err:=os.ReadFile(path)
 	if err==nil {
 		if err:=json.Unmarshal(b,&s.st);err!=nil{return nil,fmt.Errorf("decode BCC state: %w",err)}
@@ -131,9 +150,18 @@ func OpenStore(path string) (*Store, error) {
 		if s.st.Jobs==nil{s.st.Jobs=map[string]Job{}}
 		if s.st.Finance==nil{s.st.Finance=map[string]NodeFinance{}}
 		if s.st.Policies==nil{s.st.Policies=map[string]FinancePolicy{}}
+		if s.st.RateHistory==nil{s.st.RateHistory=map[string][]FinancePolicy{}}
 		if s.st.Telemetry==nil{s.st.Telemetry=map[string]TelemetryCursor{}}
 		if s.st.History==nil{s.st.History=map[string][]HistoryPoint{}}
 		if s.st.NextJob==0{s.st.NextJob=1}
+		if s.st.NextRateVersion==0{s.st.NextRateVersion=1}
+		for id,p:=range s.st.Policies{
+			if len(s.st.RateHistory[id])!=0{continue}
+			if p.Currency==""{p.Currency="IRR"}
+			if p.EffectiveFrom.IsZero(){p.EffectiveFrom=time.Unix(0,0).UTC()}
+			if p.Version==0{p.Version=s.st.NextRateVersion;s.st.NextRateVersion++}
+			s.st.RateHistory[id]=[]FinancePolicy{p}
+		}
 	} else if !errors.Is(err,os.ErrNotExist) {
 		return nil,err
 	}
