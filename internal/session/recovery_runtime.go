@@ -110,6 +110,7 @@ type preparedRecovery struct {
 	published bool
 	finalizing bool
 	finalized bool
+	rebindPending bool
 }
 
 type RecoveryStats struct {
@@ -614,7 +615,23 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		a.mu.Unlock();return recovery.ErrNotPrepared
 	}
 	if !prep.published||!sameRecoveryTransaction(prep.control,ctl){a.mu.Unlock();return recovery.ErrNotPrepared}
-	if prep.finalized{a.mu.Unlock();return nil}
+	if prep.finalized{
+		rebound:=prep.rebindPending
+		if rebound{prep.rebindPending=false}
+		runCtx:=prep.runCtx
+		flows:=append([]preparedFlowRecovery(nil),prep.flows...)
+		a.mu.Unlock()
+		if rebound{
+			p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
+			p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
+			for i:=range flows{
+				fl:=flows[i].flow
+				fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
+				if !closed{p.ensurePumpsAfterRecovery(runCtx,fl)}
+			}
+		}
+		return nil
+	}
 	if a.txnState==RecoveryTxnCommitted||a.txnState==RecoveryTxnUncertain{
 		if err:=a.transitionLocked(RecoveryTxnFinalizing);err!=nil{a.mu.Unlock();return err}
 	}
@@ -666,7 +683,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		if !closed&&!act.pumpsRestored{p.ensurePumpsAfterRecovery(prep.runCtx,fl);act.pumpsRestored=true}
 	}
 	a.mu.Lock()
-	prep.finalizing=false;prep.finalized=true
+	prep.finalizing=false;prep.finalized=true;prep.rebindPending=false
 	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
 	if a.txnState==RecoveryTxnFinalizing{_ = a.transitionLocked(RecoveryTxnFinalized)}else{a.txnState=RecoveryTxnFinalized}
 	a.mu.Unlock()
