@@ -296,8 +296,30 @@ func (p *Peer) currentCarrierIdentity()(uint64,string,uint64){
 }
 
 func (p *Peer) onCarrierFailure(err error) {
-	if s:=p.senderNow();s!=nil { s.stop(ErrCarrierUnavailable) }
+	_,_,_,generation:=p.currentCarrier()
+	p.onCarrierFailureForGeneration(err,generation)
+}
+
+// onCarrierFailureForGeneration fences failure reporting to the physical
+// carrier generation that actually failed. A blocked write on an old sender
+// may return only after a newer carrier has committed; that stale error must
+// never stop or invalidate the newer sender.
+func (p *Peer) onCarrierFailureForGeneration(err error,generation uint64) bool {
+	p.mu.Lock()
+	if p.carrierGeneration!=generation {
+		p.mu.Unlock()
+		return false
+	}
+	s:=p.sender
+	p.mu.Unlock()
+	if s!=nil{s.stop(ErrCarrierUnavailable)}
 	select { case p.recoveryNeeded<-err: default: }
+	return true
+}
+
+func (p *Peer) currentSenderState()(*outboundSender,uint64,string,uint64){
+	p.mu.Lock();defer p.mu.Unlock()
+	return p.sender,p.carrierEpoch,p.carrierID,p.carrierGeneration
 }
 
 func (p *Peer) NeedsRecovery() bool {
