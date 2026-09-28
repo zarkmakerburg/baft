@@ -59,10 +59,11 @@ func NewServer(store *Store,adminToken string) (*Server,error) {
 	if strings.TrimSpace(adminToken)==""{return nil,errors.New("admin token is required")}
 	audit,err:=OpenAuditLog(store.path+".audit.jsonl")
 	if err!=nil{return nil,fmt.Errorf("open audit log: %w",err)}
+	initialAlerts:=store.ActiveAlertsSnapshot()
 	return &Server{
 		store:store,adminToken:adminToken,audit:audit,guard:newIPGuard(SecurityConfig{}),trustedProxies:map[string]struct{}{},probeTimeout:1500*time.Millisecond,
 		alertConfig:AlertConfig{TelemetryStaleAfter:3*time.Minute,HandshakeErrorRateMilliPerMin:5000,Interval:15*time.Second},
-		activeAlerts:map[string]Alert{},httpClient:&http.Client{Timeout:5*time.Second},
+		activeAlerts:initialAlerts,httpClient:&http.Client{Timeout:5*time.Second},
 		now:func() time.Time{return time.Now().UTC()},
 	},nil
 }
@@ -420,7 +421,7 @@ func (s *Server) evaluateAlertsAt(ctx context.Context,now time.Time) error {
 		}
 		s.activeAlerts[key]=alert
 	}
-	return nil
+	return s.store.SetActiveAlerts(s.activeAlerts)
 }
 
 func (s *Server) makeAlert(kind,status,nodeID,nodeAlias,routeID string,at time.Time) Alert {
