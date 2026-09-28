@@ -14,7 +14,7 @@ func reserve(t *testing.T) string { t.Helper();ln,e:=net.Listen("tcp","127.0.0.1
 func TestProxyFallsBackToSecondary(t *testing.T){
 	secondary,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)};defer secondary.Close()
 	go func(){for{c,e:=secondary.Accept();if e!=nil{return};go func(x net.Conn){defer x.Close();_,_=io.Copy(x,x)}(c)}}()
-	p:=&Proxy{Listen:reserve(t),Targets:[]Target{{Name:"direct",Address:reserve(t)},{Name:"mesh",Address:secondary.Addr().String()}},DialTimeout:100*time.Millisecond}
+	p:=&Proxy{Listen:reserve(t),Targets:[]Target{{Name:"direct",Address:"127.0.0.1:1"},{Name:"mesh",Address:secondary.Addr().String()}},DialTimeout:100*time.Millisecond}
 	ctx,cancel:=context.WithCancel(context.Background());defer cancel()
 	done:=make(chan error,1);go func(){done<-p.Run(ctx)}()
 	deadline:=time.Now().Add(2*time.Second)
