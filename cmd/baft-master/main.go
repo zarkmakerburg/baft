@@ -48,8 +48,7 @@ func main() {
 	for _, path := range files {
 		cfg, err := config.LoadFile(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "load %s: %v
-", path, err)
+			fmt.Fprintf(os.Stderr, "load %s: %v\\n", path, err)
 			os.Exit(1)
 		}
 		cfgs = append(cfgs, cfg)
@@ -76,8 +75,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("starting BAFT master %s with %d foreign nodes
-", cfgs[0].Node.ID, len(cfgs))
+	fmt.Printf("starting BAFT master %s with %d foreign nodes\\n", cfgs[0].Node.ID, len(cfgs))
 	if err := cluster.NewMaster().Run(ctx, cfgs); err != nil {
 		fmt.Fprintln(os.Stderr, "master stopped:", err)
 		os.Exit(1)
