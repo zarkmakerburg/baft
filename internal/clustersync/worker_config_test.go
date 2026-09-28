@@ -40,12 +40,15 @@ func TestBuildWorkerConfigsMirrorsExactlySixRoutes(t *testing.T) {
 
 func TestChangedRouteIndexesPinpointsSingleNodeUpdate(t *testing.T) {
 	now:=time.Unix(1700000000,0)
-	aManifest,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,testConfigs(t))
-	if err!=nil{t.Fatal(err)}
 	cfgs:=testConfigs(t)
+	aManifest,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,cfgs)
+	if err!=nil{t.Fatal(err)}
+
+	// Reuse the same six peer keys and identities; change exactly one field.
 	cfgs[4].Peer.Address="198.51.100.99:443"
 	bManifest,err:=ManifestFromConfigs("goldapp-baft",2,15*time.Minute,now,cfgs)
 	if err!=nil{t.Fatal(err)}
+
 	a:=snapshotFromManifest(aManifest)
 	b:=snapshotFromManifest(bManifest)
 	got:=ChangedRouteIndexes(a,b)
