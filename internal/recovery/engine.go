@@ -125,6 +125,9 @@ type Engine struct {
 	scheduler EngineScheduler
 	activeFlows map[uint64]string
 	frozenFlows map[uint64]string
+	lastCommittedEpoch uint64
+	lastCommittedCandidate string
+	lastCommittedPlan Plan
 }
 
 func NewEngine(initialEpoch uint64, owner string, opts EngineOptions) (*Engine, error) {
@@ -275,7 +278,15 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 
 func (e *Engine) Commit(next uint64,candidateID string,plan Plan)error{
 	e.mu.Lock()
-	if e.pendingEpoch!=next||e.pendingCandidate!=candidateID||candidateID==""||!e.hasPendingPlan{e.mu.Unlock();return ErrNotPrepared}
+	if candidateID==""{e.mu.Unlock();return ErrNotPrepared}
+	if e.currentEpoch==next {
+		if e.lastCommittedEpoch==next&&e.lastCommittedCandidate==candidateID&&plansEqual(e.lastCommittedPlan,plan){
+			e.mu.Unlock();return nil
+		}
+		if e.owner==candidateID{e.mu.Unlock();return ErrEnginePlanMismatch}
+		e.mu.Unlock();return ErrStaleEpoch
+	}
+	if e.pendingEpoch!=next||e.pendingCandidate!=candidateID||!e.hasPendingPlan{e.mu.Unlock();return ErrNotPrepared}
 	if next!=e.currentEpoch+1{e.mu.Unlock();return ErrStaleEpoch}
 	if !plansEqual(e.pendingPlan,plan){e.mu.Unlock();return ErrEnginePlanMismatch}
 	e.point("commit_locked_before_publish")
@@ -289,6 +300,9 @@ func (e *Engine) Commit(next uint64,candidateID string,plan Plan)error{
 		e.currentEpoch=next
 		e.owner=candidateID
 	}
+	e.lastCommittedEpoch=next
+	e.lastCommittedCandidate=candidateID
+	e.lastCommittedPlan=clonePlan(plan)
 	e.pendingEpoch=0;e.pendingCandidate="";e.pendingPlan=Plan{};e.hasPendingPlan=false;e.frozenFlows=nil
 	e.mu.Unlock();e.point("commit_after_publish");return nil
 }
