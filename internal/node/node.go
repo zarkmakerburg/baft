@@ -519,6 +519,18 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 								sh.peer.EnsureRecoverySignal(session.ErrCommitUncertain)
 								continue
 							}
+							// A snapshot/reconcile mismatch before authority publish can be
+							// transient while the failed generation's last authenticated
+							// ACK/WINDOW frames are settling. AbortRecovery has completed
+							// before recoverDialerShard returns, so retry only this typed
+							// pre-commit class and only while the old carrier remains dead.
+							// Deliberate candidate/readiness/before-commit faults do not
+							// enter this path and therefore cannot livelock.
+							if errors.Is(err,errRecoverySnapshotTransient)&&sh.peer.NeedsRecovery(){
+								sh.peer.DrainRecoverySignals()
+								sh.peer.EnsureRecoverySignal(session.ErrCarrierUnavailable)
+								continue
+							}
 						}
 						sh.peer.DrainRecoverySignals()
 					}
