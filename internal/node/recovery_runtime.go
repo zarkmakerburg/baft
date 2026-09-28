@@ -197,7 +197,10 @@ func (r *Runtime) resolveDialerCommitUncertainty(ctx context.Context,cfg config.
 	keepCarrier:=false
 	defer func(){if !keepCarrier{o.close()}}()
 
-	if err:=session.EncodeRecoveryControl(o.carrier.Out,query);err!=nil{return false,fmt.Errorf("%w: status query: %v",session.ErrCommitUncertain,err)}
+	queryCopies:=r.recoveryControlCopiesForTest("dialer_status_query_send",&query)
+	for i:=0;i<queryCopies;i++{
+		if err:=session.EncodeRecoveryControl(o.carrier.Out,query);err!=nil{return false,fmt.Errorf("%w: status query: %v",session.ErrCommitUncertain,err)}
+	}
 	if err:=r.recoveryFail("status_query_after_send");err!=nil{return false,fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)}
 	fr,err:=protocol.Decode(o.carrier.In);if err!=nil{return false,fmt.Errorf("%w: status reply: %v",session.ErrCommitUncertain,err)}
 	reply,err:=session.DecodeRecoveryControl(fr);if err!=nil{return false,fmt.Errorf("%w: status reply decode: %v",session.ErrCommitUncertain,err)}
@@ -223,12 +226,21 @@ func (r *Runtime) resolveDialerCommitUncertainty(ctx context.Context,cfg config.
 			_ = sh.peer.MarkCommitUncertain(commitCtl)
 			return false,fmt.Errorf("%w: resolution ack: %v",session.ErrCommitUncertain,err)
 		}
-		fr,err=protocol.Decode(o.carrier.In);if err!=nil{
-			_ = sh.peer.MarkCommitUncertain(commitCtl)
-			return false,fmt.Errorf("%w: resolution ack reply: %v",session.ErrCommitUncertain,err)
+		for {
+			fr,err=protocol.Decode(o.carrier.In);if err!=nil{
+				_ = sh.peer.MarkCommitUncertain(commitCtl)
+				return false,fmt.Errorf("%w: resolution ack reply: %v",session.ErrCommitUncertain,err)
+			}
+			peerCtl,err:=session.DecodeRecoveryControl(fr);if err!=nil{return false,err}
+			if peerCtl.Phase==session.RecoveryPhaseStatusReply {
+				if err:=sh.peer.ValidateStatusReply(peerCtl);err!=nil{return false,fmt.Errorf("%w: duplicate status reply: %v",session.ErrCommitUncertain,err)}
+				if peerCtl.Status!=session.RecoveryResolutionCommitted{return false,session.ErrCommitUncertain}
+				continue
+			}
+			if peerCtl.Phase!=session.RecoveryPhaseCommitAck{return false,recovery.ErrStateMismatch}
+			if err:=sh.peer.ValidateRecoveryControl(peerCtl,session.RecoveryPhaseCommitAck);err!=nil{return false,err}
+			break
 		}
-		peerAck,err:=session.DecodeRecoveryControl(fr);if err!=nil{return false,err}
-		if err:=sh.peer.ValidateRecoveryControl(peerAck,session.RecoveryPhaseCommitAck);err!=nil{return false,err}
 		if err:=sh.peer.FinalizeRecoveryCommit(ctx,commitCtl);err!=nil{return false,err}
 		return true,nil
 	case session.RecoveryResolutionConflict,session.RecoveryResolutionUnknown:
@@ -354,17 +366,27 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 
 	switch reply.Status{
 	case session.RecoveryResolutionCommitted:
-		fr,err:=protocol.Decode(in);if err!=nil{
-			_ = p.MarkCommitUncertain(query)
-			return fmt.Errorf("%w: resolution finalize ack: %v",session.ErrCommitUncertain,err)
+		for {
+			fr,err:=protocol.Decode(in);if err!=nil{
+				_ = p.MarkCommitUncertain(query)
+				return fmt.Errorf("%w: resolution finalize ack: %v",session.ErrCommitUncertain,err)
+			}
+			ctl,err:=session.DecodeRecoveryControl(fr);if err!=nil{return err}
+			if ctl.Phase==session.RecoveryPhaseStatusQuery {
+				dupReply,err:=p.EvaluateCommitStatus(ctl);if err!=nil{return err}
+				if dupReply.Status!=session.RecoveryResolutionCommitted{return session.ErrCommitUncertain}
+				copies:=r.recoveryControlCopiesForTest("listener_status_reply_send",&dupReply)
+				for i:=0;i<copies;i++{if err:=session.EncodeRecoveryControl(out,dupReply);err!=nil{return err}}
+				continue
+			}
+			if ctl.Phase!=session.RecoveryPhaseCommitAck{return recovery.ErrStateMismatch}
+			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommitAck);err!=nil{return err}
+			commitCtl:=query;commitCtl.Phase=session.RecoveryPhaseCommit;commitCtl.Status=session.RecoveryResolutionNone
+			if err:=p.FinalizeRecoveryCommit(hctx,commitCtl);err!=nil{return err}
+			if err:=session.EncodeRecoveryControl(out,ctl);err!=nil{return err}
+			<-hctx.Done()
+			return nil
 		}
-		ack,err:=session.DecodeRecoveryControl(fr);if err!=nil{return err}
-		if err:=p.ValidateRecoveryControl(ack,session.RecoveryPhaseCommitAck);err!=nil{return err}
-		commitCtl:=query;commitCtl.Phase=session.RecoveryPhaseCommit;commitCtl.Status=session.RecoveryResolutionNone
-		if err:=p.FinalizeRecoveryCommit(hctx,commitCtl);err!=nil{return err}
-		if err:=session.EncodeRecoveryControl(out,ack);err!=nil{return err}
-		<-hctx.Done()
-		return nil
 	case session.RecoveryResolutionNotCommitted:
 		return nil
 	case session.RecoveryResolutionConflict,session.RecoveryResolutionUnknown:
