@@ -216,7 +216,7 @@ func (s *Store) SetHealth(nodeID,health string,checked time.Time) error {
 
 func (s *Store) SetFinancePolicy(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64) error {
 	if costMicrosPerGiB<0||revenueMicrosPerGiB<0{return errors.New("finance rates must be non-negative")}
-	if costMicrosPerGiB>1_000_000_000_000||revenueMicrosPerGiB>1_000_000_000_000{return errors.New("finance rates are unreasonably large")}
+	if costMicrosPerGiB>1_000_000_000||revenueMicrosPerGiB>1_000_000_000{return errors.New("finance rates are unreasonably large")}
 	s.mu.Lock();defer s.mu.Unlock()
 	if _,ok:=s.st.Nodes[nodeID];!ok{return errors.New("node not found")}
 	s.st.Policies[nodeID]=FinancePolicy{NodeID:nodeID,CostMicrosPerGiB:costMicrosPerGiB,RevenueMicrosPerGiB:revenueMicrosPerGiB}
