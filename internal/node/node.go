@@ -23,6 +23,7 @@ import (
 	"github.com/zarkmakerburg/baft/internal/routes"
 	"github.com/zarkmakerburg/baft/internal/securityinternal"
 	"github.com/zarkmakerburg/baft/internal/session"
+	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
 type Runtime struct {
@@ -30,6 +31,9 @@ type Runtime struct {
 	Resources   *resources.Allocator
 	peerMu      sync.Mutex
 	peers       map[*session.Peer]struct{}
+	ingressBytes    atomic.Uint64
+	egressBytes     atomic.Uint64
+	handshakeErrors atomic.Uint64
 }
 
 func NewRuntime() *Runtime {
@@ -52,6 +56,18 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	if cfg.Telemetry.Enabled {
+		tokenEnv := cfg.Telemetry.AgentTokenEnv
+		if tokenEnv == "" { tokenEnv = "BAFT_AGENT_TOKEN" }
+		token := os.Getenv(tokenEnv)
+		if token == "" { return fmt.Errorf("telemetry agent token environment %s is empty", tokenEnv) }
+		interval := 60 * time.Second
+		if cfg.Telemetry.IntervalSeconds > 0 { interval = time.Duration(cfg.Telemetry.IntervalSeconds) * time.Second }
+		exp, err := telemetry.New(cfg.Node.ID, cfg.Telemetry.BCCURL, token, interval, r.telemetrySnapshot)
+		if err != nil { return err }
+		go exp.Run(runCtx)
+	}
 
 	metricsDone, stopMetrics, err := r.startMetrics(runCtx, cfg.Management.MetricsListen)
 	if err != nil {
@@ -171,6 +187,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			NodeID: cfg.Node.ID, ExpectedPeerNodeID: expected,
 			ProfileID: cfg.Transport.Profile, ProfileVersion: 1, ConfigRevision: "config-v1",
 			Resources: r.Resources,
+			TrafficObserver: func(in,out uint64){ r.ingressBytes.Add(in); r.egressBytes.Add(out) },
 		})
 		if err != nil {
 			return err
@@ -192,6 +209,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		handler, err = carrierh2.HandlerWithNoise(stream, carrierh2.NoiseOptions{
 			Handshake: nc, PeerIdentity: legacyIdentity, AllowedPeers: allowedPeers,
 			Cover: cover, Revocations: r.Revocations,
+			OnHandshakeError: func(){ r.handshakeErrors.Add(1) },
 		})
 		if err != nil {
 			return err
@@ -280,6 +298,7 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 				return e
 			}
 			resp, pw, secure, err = client.OpenNoise(ctx, nc)
+			if err != nil { r.handshakeErrors.Add(1) }
 		} else {
 			pr, writer := io.Pipe()
 			pw = writer
@@ -301,6 +320,7 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			NodeID: cfg.Node.ID, ExpectedPeerNodeID: expectedPeerNode, ShardID: uint8(i),
 			ProfileID: cfg.Transport.Profile, ProfileVersion: 1, ConfigRevision: "config-v1",
 			Resources: r.Resources,
+			TrafficObserver: func(in,out uint64){ r.ingressBytes.Add(in); r.egressBytes.Add(out) },
 		})
 		if err != nil {
 			_ = pw.Close()
@@ -451,4 +471,17 @@ func nodeIDFromIdentity(identity string) (string, error) {
 		return "", fmt.Errorf("invalid peer node identity")
 	}
 	return id, nil
+}
+
+
+func (r *Runtime) telemetrySnapshot() telemetry.Snapshot {
+	r.peerMu.Lock()
+	active := uint64(len(r.peers))
+	r.peerMu.Unlock()
+	return telemetry.Snapshot{
+		IngressBytes: r.ingressBytes.Load(),
+		EgressBytes: r.egressBytes.Load(),
+		ActiveSessions: active,
+		HandshakeErrors: r.handshakeErrors.Load(),
+	}
 }
