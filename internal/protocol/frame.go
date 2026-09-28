@@ -27,6 +27,7 @@ const (
 	TypeFin FrameType = 0x23
 	TypeFinAck FrameType = 0x24
 	TypeReset FrameType = 0x25
+	TypeFinAckConfirm FrameType = 0x26
 	TypeResumeState FrameType = 0x30
 	TypeResumeDone FrameType = 0x31
 	TypeReady FrameType = 0x32
@@ -43,7 +44,7 @@ type Frame struct { Type FrameType; StreamID uint64; Offset uint64; Payload []by
 
 func validType(t FrameType) bool {
 	switch t {
-	case TypeHello, TypeHelloAck, TypeOpen, TypeOpenOK, TypeOpenErr, TypeData, TypeAck, TypeWindow, TypeFin, TypeFinAck, TypeReset, TypeResumeState, TypeResumeDone, TypeReady, TypePing, TypePong, TypeGoAway, TypeProfilePropose, TypeProfileAccept, TypeProfileCommit, TypePadding:
+	case TypeHello, TypeHelloAck, TypeOpen, TypeOpenOK, TypeOpenErr, TypeData, TypeAck, TypeWindow, TypeFin, TypeFinAck, TypeReset, TypeFinAckConfirm, TypeResumeState, TypeResumeDone, TypeReady, TypePing, TypePong, TypeGoAway, TypeProfilePropose, TypeProfileAccept, TypeProfileCommit, TypePadding:
 		return true
 	default:
 		return false
@@ -71,7 +72,7 @@ func validateFrame(f Frame) error {
 		if f.Offset != 0 { return errors.New("frame type requires offset=0") }
 	}
 	switch f.Type {
-	case TypeAck, TypeWindow, TypeFin, TypeFinAck:
+	case TypeAck, TypeWindow, TypeFin, TypeFinAck, TypeFinAckConfirm:
 		if len(f.Payload) != 0 { return errors.New("frame type requires empty payload") }
 	case TypePing, TypePong:
 		if len(f.Payload) != 8 { return errors.New("PING/PONG payload must be exactly 8 bytes") }
