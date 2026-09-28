@@ -220,6 +220,13 @@ func (p *Peer) RecoveryFrozen() bool {
 	return p.recovery.IsFrozen()
 }
 
+func (p *Peer) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
+	if p.recovery==nil{return}
+	p.recovery.mu.Lock()
+	p.recovery.postCommitFault=fn
+	p.recovery.mu.Unlock()
+}
+
 func (p *Peer) RecoveryStats() RecoveryStats {
 	if p.recovery==nil{return RecoveryStats{CurrentEpoch:1,Failures:map[string]uint64{}}}
 	return p.recovery.Stats()
