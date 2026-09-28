@@ -18,6 +18,7 @@ import (
 
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/node"
+	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/recordshape"
 	"github.com/zarkmakerburg/baft/internal/securityinternal"
 	"github.com/zarkmakerburg/baft/internal/session"
@@ -789,4 +790,159 @@ func TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries(t
 	close(releaseRetry)
 	irDone,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,12)
 	t.Logf("PASS matrix L mismatched resolution digest failed closed then exact retry converged epoch=%d hash=%x",irDone.Epoch,h)
+}
+
+
+func waitSingleFlowFrontier(t *testing.T,r *node.Runtime,pred func(session.RecoveryFlowFrontier)bool) session.RecoveryFlowFrontier {
+	t.Helper()
+	deadline:=time.Now().Add(8*time.Second)
+	for {
+		states:=r.RecoveryAuthoritiesForTest()
+		if len(states)==1&&len(states[0].Flows)==1&&pred(states[0].Flows[0]){return states[0].Flows[0]}
+		if time.Now().After(deadline){t.Fatalf("frontier wait timeout states=%+v",states)}
+		time.Sleep(2*time.Millisecond)
+	}
+}
+
+func TestFinalACKLossAfterDialerPublishConvergesBothFinalized(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	beforeProcess:=make(chan struct{})
+	release:=make(chan struct{})
+	var once sync.Once
+	var fired atomic.Bool
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="before_listener_finalize_process"&&!fired.Swap(true){
+			once.Do(func(){close(beforeProcess)})
+			<-release
+			return errors.New("drop FINALIZE after wire delivery before listener acceptance")
+		}
+		return nil
+	})
+
+	// Cut carrier N to start the N+1 replacement.
+	p.proxy.CutAll()
+	select{case <-beforeProcess:case <-time.After(8*time.Second):t.Fatal("listener never reached deterministic pre-FINALIZE-accept barrier")}
+	irMid:=oneRecoveryAuthority(t,p.irRuntime)
+	exMid:=oneRecoveryAuthority(t,p.exRuntime)
+	if irMid.Epoch!=2||exMid.Epoch!=2{t.Fatalf("authority not published before finalization cut ir=%+v ex=%+v",irMid,exMid)}
+	if irMid.CandidateID==""||irMid.CandidateID!=exMid.CandidateID||irMid.PlanDigest==""||irMid.PlanDigest!=exMid.PlanDigest||irMid.SessionID!=exMid.SessionID{
+		t.Fatalf("transaction identity diverged before finalization cut ir=%+v ex=%+v",irMid,exMid)
+	}
+	if irMid.Owner=="shard-0-carrier-1"||exMid.Owner=="shard-0-carrier-1"{t.Fatalf("old epoch/owner re-authorized ir=%+v ex=%+v",irMid,exMid)}
+
+	// FINALIZE has been decoded by Listener but is deliberately not accepted.
+	// Kill that physical generation, then let both endpoints enter resolution.
+	p.proxy.CutAll()
+	close(release)
+
+	irFinal,exFinal:=waitAuthorityPair(t,p,2,true)
+	if irFinal.TxnState!=session.RecoveryTxnFinalized||exFinal.TxnState!=session.RecoveryTxnFinalized{
+		t.Fatalf("distributed finalization did not converge ir=%+v ex=%+v",irFinal,exFinal)
+	}
+	if irFinal.CandidateID!=irMid.CandidateID||exFinal.CandidateID!=irMid.CandidateID||
+		irFinal.PlanDigest!=irMid.PlanDigest||exFinal.PlanDigest!=irMid.PlanDigest||
+		irFinal.SessionID!=irMid.SessionID||exFinal.SessionID!=irMid.SessionID{
+		t.Fatalf("resolution changed transaction identity mid_ir=%+v final_ir=%+v final_ex=%+v",irMid,irFinal,exFinal)
+	}
+	if irFinal.CarrierGeneration<=irMid.CarrierGeneration||exFinal.CarrierGeneration<=exMid.CarrierGeneration{
+		t.Fatalf("resolution did not bind a new physical carrier mid_ir=%+v final_ir=%+v mid_ex=%+v final_ex=%+v",irMid,irFinal,exMid,exFinal)
+	}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during finalization resolution accepts_delta=%d",n)}
+
+	payload:=make([]byte,384*1024+113)
+	for i:=range payload{payload[i]=byte((i*41+17)%251)}
+	h:=assertEchoHashOnExistingFlow(t,c,payload)
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened after finalization convergence accepts_delta=%d",n)}
+	t.Logf("PASS FINALIZE write/accept asymmetry converged exact txn candidate=%s digest=%s generation=%d->%d hash=%x",irFinal.CandidateID,irFinal.PlanDigest,irMid.CarrierGeneration,irFinal.CarrierGeneration,h)
+}
+
+func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	var mode atomic.Int32
+	mode.Store(1)
+	oldBlocked:=make(chan struct{})
+	oldRelease:=make(chan struct{})
+	replayBlocked:=make(chan struct{})
+	replayRelease:=make(chan struct{})
+	var oldOnce,replayOnce sync.Once
+	p.exRuntime.SetRecoveryFrameHookForTest(func(stage string,fr protocol.Frame)bool{
+		if stage!="before_data_accept"{return false}
+		switch mode.Load(){
+		case 1:
+			oldOnce.Do(func(){close(oldBlocked)})
+			<-oldRelease
+			return true
+		case 2:
+			replayOnce.Do(func(){close(replayBlocked)})
+			<-replayRelease
+			return true
+		default:
+			return false
+		}
+	})
+
+	payload:=make([]byte,3*protocol.MaxPayloadSize+777)
+	for i:=range payload{payload[i]=byte((i*29+7)%251)}
+	wantHash:=sha256.Sum256(payload)
+	got:=make([]byte,len(payload))
+	readDone:=make(chan error,1)
+	go func(){_,err:=io.ReadFull(c,got);readDone<-err}()
+	writeDone:=make(chan error,1)
+	go func(){_,err:=c.Write(payload);writeDone<-err}()
+
+	select{case <-oldBlocked:case <-time.After(8*time.Second):t.Fatal("old carrier DATA never reached pre-accept barrier")}
+	// Ensure at least two DATA frames have been produced locally while the
+	// peer-accepted frontier remains behind the blocked first frame.
+	before:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{
+		return f.TxNext>=f.PeerAccepted+2*protocol.MaxPayloadSize
+	})
+	if before.PeerAccepted>=before.TxNext{t.Fatalf("expected unaccepted old-carrier bytes frontier=%+v",before)}
+
+	var writeOnce sync.Once
+	replayWritten:=make(chan struct{})
+	releaseWriter:=make(chan struct{})
+	p.irRuntime.SetRecoveryPostCommitFaultForTest(func(stage string)error{
+		if stage=="after_replay_write"{
+			fired:=false
+			writeOnce.Do(func(){fired=true;close(replayWritten)})
+			if fired{
+				<-releaseWriter
+				return errors.New("cut after replay write success before peer acceptance")
+			}
+		}
+		return nil
+	})
+
+	mode.Store(2)
+	p.proxy.CutAll()
+	close(oldRelease)
+
+	select{case <-replayBlocked:case <-time.After(8*time.Second):t.Fatal("replacement replay never reached receiver pre-accept barrier")}
+	select{case <-replayWritten:case <-time.After(8*time.Second):t.Fatal("sender never reported successful replay write")}
+	mid:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return true})
+	if mid.PeerAccepted>=mid.TxNext{t.Fatalf("local replay write incorrectly advanced peer-accepted frontier: %+v",mid)}
+	if mid.PeerAccepted>before.PeerAccepted{t.Fatalf("peer-accepted frontier advanced without receiver acceptance before=%+v mid=%+v",before,mid)}
+
+	// Kill generation 2 while the receiver has decoded but not accepted frame
+	// #1. The exact finalized transaction must rebind and conservatively resend
+	// from the unchanged peer-accepted offset.
+	p.proxy.CutAll()
+	mode.Store(3)
+	close(replayRelease)
+	close(releaseWriter)
+
+	select{case err:=<-writeDone:if err!=nil{t.Fatalf("client payload write: %v",err)};case <-time.After(12*time.Second):t.Fatal("client write timeout")}
+	select{case err:=<-readDone:if err!=nil{t.Fatalf("client payload read: %v",err)};case <-time.After(20*time.Second):t.Fatal("client payload read timeout")}
+	have:=sha256.Sum256(got)
+	if !bytes.Equal(got,payload)||have!=wantHash{t.Fatalf("replay delivery mismatch got_hash=%x want_hash=%x",have,wantHash)}
+	irFinal,exFinal:=waitAuthorityPair(t,p,2,true)
+	if irFinal.CandidateID!=exFinal.CandidateID||irFinal.PlanDigest!=exFinal.PlanDigest{t.Fatalf("same transaction not preserved ir=%+v ex=%+v",irFinal,exFinal)}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during replay retry accepts_delta=%d",n)}
+	t.Logf("PASS local write != peer acceptance; conservative replay deduped application bytes hash=%x accepted_before=%d accepted_mid=%d",have,before.PeerAccepted,mid.PeerAccepted)
 }
