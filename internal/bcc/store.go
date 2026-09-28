@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -292,15 +293,44 @@ func (s *Store) SetHealth(nodeID,health string,latencyMS int64,checked time.Time
 }
 
 
+func validCurrency(v string) bool {
+	if v==""{return false}
+	if len(v)<3||len(v)>8{return false}
+	for _,r:=range v{
+		if !(r>='A'&&r<='Z'){return false}
+	}
+	return true
+}
+
 func (s *Store) SetFinancePolicy(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64) error {
+	// Legacy/test helper: effective from Unix epoch so historical fixture
+	// timestamps remain deterministic. Production API uses SetFinancePolicyAt.
+	return s.SetFinancePolicyAt(nodeID,costMicrosPerGiB,revenueMicrosPerGiB,"IRR",time.Unix(0,0).UTC())
+}
+
+func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64,currency string,effectiveFrom time.Time) error {
 	if costMicrosPerGiB<0||revenueMicrosPerGiB<0{return errors.New("finance rates must be non-negative")}
 	if costMicrosPerGiB>1_000_000_000||revenueMicrosPerGiB>1_000_000_000{return errors.New("finance rates are unreasonably large")}
+	currency=strings.ToUpper(strings.TrimSpace(currency))
+	if currency==""{currency="IRR"}
+	if !validCurrency(currency){return errors.New("invalid currency code")}
+	if effectiveFrom.IsZero(){effectiveFrom=time.Now().UTC()}
+	effectiveFrom=effectiveFrom.UTC()
+
 	s.mu.Lock();defer s.mu.Unlock()
 	if _,ok:=s.st.Nodes[nodeID];!ok{return errors.New("node not found")}
-	s.st.Policies[nodeID]=FinancePolicy{NodeID:nodeID,CostMicrosPerGiB:costMicrosPerGiB,RevenueMicrosPerGiB:revenueMicrosPerGiB}
-	f:=s.st.Finance[nodeID];f.NodeID=nodeID
-	s.recalculateFinanceLocked(&f)
-	s.st.Finance[nodeID]=f
+	p:=FinancePolicy{
+		NodeID:nodeID,CostMicrosPerGiB:costMicrosPerGiB,RevenueMicrosPerGiB:revenueMicrosPerGiB,
+		Currency:currency,EffectiveFrom:effectiveFrom,Version:s.st.NextRateVersion,
+	}
+	s.st.NextRateVersion++
+	h:=append(s.st.RateHistory[nodeID],p)
+	sort.SliceStable(h,func(i,j int)bool{
+		if h[i].EffectiveFrom.Equal(h[j].EffectiveFrom){return h[i].Version<h[j].Version}
+		return h[i].EffectiveFrom.Before(h[j].EffectiveFrom)
+	})
+	s.st.RateHistory[nodeID]=h
+	s.st.Policies[nodeID]=p
 	return s.saveLocked()
 }
 
@@ -309,31 +339,70 @@ func moneyForBytes(bytes uint64,rate int64) int64 {
 	const gib uint64 = 1 << 30
 	whole:=bytes/gib
 	rem:=bytes%gib
-	if whole>uint64((1<<63-1)/rate){return 1<<63-1}
+	if whole>uint64(math.MaxInt64/rate){return math.MaxInt64}
 	base:=int64(whole)*rate
 	fraction:=int64((rem*uint64(rate))/gib)
-	if base>(1<<63-1)-fraction{return 1<<63-1}
+	if base>math.MaxInt64-fraction{return math.MaxInt64}
 	return base+fraction
 }
 
-func (s *Store) recalculateFinanceLocked(f *NodeFinance) {
-	p:=s.st.Policies[f.NodeID]
-	total:=f.IngressBytes+f.EgressBytes
-	f.CostMicros=moneyForBytes(total,p.CostMicrosPerGiB)
-	f.RevenueMicros=moneyForBytes(total,p.RevenueMicrosPerGiB)
-	f.ProfitMicros=f.RevenueMicros-f.CostMicros
+func satAdd(a,b int64) int64 {
+	if b>0&&a>math.MaxInt64-b{return math.MaxInt64}
+	if b<0&&a<math.MinInt64-b{return math.MinInt64}
+	return a+b
+}
+
+func (s *Store) rateAtLocked(nodeID string,at time.Time) (FinancePolicy,bool) {
+	h:=s.st.RateHistory[nodeID]
+	var chosen FinancePolicy
+	ok:=false
+	for _,p:=range h{
+		if p.EffectiveFrom.After(at){break}
+		chosen=p;ok=true
+	}
+	if ok{return chosen,true}
+	p,ok:=s.st.Policies[nodeID]
+	if ok{
+		if p.Currency==""{p.Currency="IRR"}
+		return p,true
+	}
+	return FinancePolicy{NodeID:nodeID,Currency:"IRR"},false
+}
+
+func (s *Store) appendFinanceLocked(nodeID string,at time.Time,ingressBytes,egressBytes uint64) error {
+	if ingressBytes==0&&egressBytes==0{return nil}
+	if ^uint64(0)-ingressBytes<egressBytes{return errors.New("traffic total overflow")}
+	total:=ingressBytes+egressBytes
+	p,_:=s.rateAtLocked(nodeID,at)
+	if p.Currency==""{p.Currency="IRR"}
+	cost:=moneyForBytes(total,p.CostMicrosPerGiB)
+	revenue:=moneyForBytes(total,p.RevenueMicrosPerGiB)
+	profit:=revenue-cost
+
+	f:=s.st.Finance[nodeID]
+	f.NodeID=nodeID
+	if ^uint64(0)-f.IngressBytes<ingressBytes||^uint64(0)-f.EgressBytes<egressBytes{return errors.New("traffic counter overflow")}
+	f.IngressBytes+=ingressBytes
+	f.EgressBytes+=egressBytes
+	f.CostMicros=satAdd(f.CostMicros,cost)
+	f.RevenueMicros=satAdd(f.RevenueMicros,revenue)
+	f.ProfitMicros=satAdd(f.ProfitMicros,profit)
+	f.UpdatedAt=at.UTC()
+	s.st.Finance[nodeID]=f
+	s.st.FinanceLedger=append(s.st.FinanceLedger,FinanceLedgerEntry{
+		NodeID:nodeID,Timestamp:at.UTC(),IngressBytes:ingressBytes,EgressBytes:egressBytes,
+		CostMicros:cost,RevenueMicros:revenue,ProfitMicros:profit,Currency:p.Currency,
+		RateVersion:p.Version,RateEffective:p.EffectiveFrom,
+	})
+	return nil
 }
 
 func (s *Store) AddTraffic(nodeID,token string,ingressBytes,egressBytes uint64) (NodeFinance,error) {
 	s.mu.Lock();defer s.mu.Unlock()
 	if !s.authorizedLocked(nodeID,token){return NodeFinance{},errors.New("agent authentication failed")}
-	f:=s.st.Finance[nodeID];f.NodeID=nodeID
-	if ^uint64(0)-f.IngressBytes<ingressBytes||^uint64(0)-f.EgressBytes<egressBytes{return NodeFinance{},errors.New("traffic counter overflow")}
-	f.IngressBytes+=ingressBytes;f.EgressBytes+=egressBytes;f.UpdatedAt=time.Now().UTC()
-	s.recalculateFinanceLocked(&f)
-	s.st.Finance[nodeID]=f
+	if err:=s.appendFinanceLocked(nodeID,time.Now().UTC(),ingressBytes,egressBytes);err!=nil{return NodeFinance{},err}
 	if err:=s.saveLocked();err!=nil{return NodeFinance{},err}
-	return f,nil
+	return s.st.Finance[nodeID],nil
 }
 
 func (s *Store) FinanceSnapshot() []NodeFinance {
@@ -341,13 +410,11 @@ func (s *Store) FinanceSnapshot() []NodeFinance {
 	out:=make([]NodeFinance,0,len(s.st.Nodes))
 	for id:=range s.st.Nodes{
 		f:=s.st.Finance[id];f.NodeID=id
-		s.recalculateFinanceLocked(&f)
 		out=append(out,f)
 	}
 	sort.Slice(out,func(i,j int)bool{return out[i].NodeID<out[j].NodeID})
 	return out
 }
-
 
 func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemetry.Report) (NodeFinance,bool,error) {
 	if report.NodeID==""||report.BootID==""||report.Sequence==0{return NodeFinance{},false,errors.New("invalid telemetry identity")}
