@@ -11,7 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -53,6 +53,10 @@ jobs:
         run: |
           go test ./internal/bcc -run '^TestMonitoringAlertsAndSevenDayHistory$' -count=1 -v
           go test ./tests/integration -run '^TestRouteDisconnectTurnsMonitoringDownWithin30Seconds$' -count=1 -v
+      - name: Step 5.3 finance and monitoring completion evidence
+        run: |
+          go test ./internal/bcc -run 'TestForcedStaleAlertFiresOnceAndResolvesOnce|TestWebhookSecretNeverAppearsInAPIResponses|TestFinanceRateChangeMidDayUsesEffectiveVersion|TestFinanceDailyMonthlyAndClusterSumsMatch|TestFinanceTehranDayBoundary|TestFinanceDuplicateAndOutOfOrderDoNotChangeReports|TestFinanceReportAPIAndCSV' -count=1 -v
+          go test ./tests/integration -run '^TestBadNoiseHandshakeIncrementsTelemetryAndReachesBCC$' -count=1 -v
       - name: Race detector
         run: go test -race ./...
       - name: Vet
