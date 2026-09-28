@@ -60,7 +60,8 @@ func (p *Peer) RecoveryTransactionIdentity()(RecoveryControl,bool){
 func (p *Peer) HasCommitUncertainty() bool {
 	if p.recovery==nil{return false}
 	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
-	return a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnFinalizationUncertain
+	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnFinalizationUncertain{return true}
+	return a.txnState==RecoveryTxnFinalized&&a.prepared!=nil&&!a.prepared.activationComplete
 }
 
 func (p *Peer) MarkRecoveryPrepared(ctl RecoveryControl) error {
@@ -206,6 +207,10 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 func (p *Peer) CommitStatusQuery() (RecoveryControl,error) {
 	if p.recovery==nil{return RecoveryControl{},errors.New("recovery is disabled")}
 	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
+	if a.txnState==RecoveryTxnFinalized&&a.prepared!=nil&&!a.prepared.activationComplete{
+		q:=a.lastCommit;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
+		return q,nil
+	}
 	if a.txnState!=RecoveryTxnUncertain&&a.txnState!=RecoveryTxnCommitSent&&a.txnState!=RecoveryTxnFinalizationUncertain{return RecoveryControl{},ErrCommitUncertain}
 	if a.uncertain.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
 	q:=a.uncertain;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
