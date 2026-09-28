@@ -377,35 +377,39 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 	a.mu.Unlock()
 
 	if prep!=nil {
-		if err:=p.RebindPreparedRecovery(ctx,ctl,c);err!=nil{return err}
-		a.mu.Lock();prep=a.prepared;sender:=prep.sender;runCtx:=prep.runCtx;a.mu.Unlock()
-		p.mu.Lock();oldSender:=p.sender;p.carrier=c;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.carrierGeneration++;p.sender=sender;p.mu.Unlock()
-		p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
-		if oldSender!=nil&&oldSender!=sender{oldSender.stop(ErrCarrierUnavailable)}
-		if sender!=nil&&!sender.isStarted(){p.wg.Add(1);go func(){defer p.wg.Done();sender.run(runCtx)}()}
-		// Do not wake the session reader until COMMIT status exchange is complete.
-		return nil
+		// Status-resolution carrier remains control-plane-only until the exact
+		// transaction has distributed FINALIZED proof. Rebind only prepared
+		// replay state here; FinalizeRecoveryCommit performs the data-plane
+		// activation after FINALIZE/FINALIZE_ACK.
+		return p.RebindPreparedRecovery(ctx,ctl,c)
 	}
 
+	// A finalized transaction may be rebound after its prior physical carrier
+	// disappeared even if no replay actions remain. Build a synthetic prepared
+	// carrier so activation is still deferred until status/finalization control
+	// exchange is complete; never let application frames race control frames.
 	newSender:=newOutboundSender(&frameWriter{w:c.Out},p.recoveryEnabled)
 	p.mu.Lock()
 	flows:=make([]*flow,0,len(p.flows))
 	for _,fl:=range p.flows{flows=append(flows,fl)}
 	runCtx:=p.runCtx
-	oldSender:=p.sender
-	p.carrier=c;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.carrierGeneration++;p.sender=newSender
 	p.mu.Unlock()
+	if runCtx==nil{runCtx=ctx}
+	preparedFlows:=make([]preparedFlowRecovery,0,len(flows))
 	for _,fl:=range flows{
 		fl.mu.Lock();open:=fl.openOK&&!fl.closed;fl.mu.Unlock()
-		if open{if err:=newSender.addFlow(fl.id);err!=nil{return err}}
+		if open{
+			if err:=newSender.addFlow(fl.id);err!=nil{return err}
+			preparedFlows=append(preparedFlows,preparedFlowRecovery{flow:fl,pumpsRestored:true})
+		}
 	}
-	if runCtx==nil{runCtx=ctx}
-	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
-	p.wg.Add(1);go func(){defer p.wg.Done();newSender.run(runCtx)}()
-	p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
-	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
-	// No prepared replay actions remain on this exact committed transaction,
-	// so application delivery may resume on the rebound carrier immediately.
-	p.signalReplacementReady()
+	prep=&preparedRecovery{
+		control:ctl,carrier:c,sender:newSender,runCtx:runCtx,flows:preparedFlows,
+		published:true,finalized:true,activationComplete:true,rebindPending:true,
+	}
+	a.mu.Lock()
+	if a.prepared==nil{a.prepared=prep}else{prep=a.prepared}
+	a.mu.Unlock()
+	if prep!=a.prepared{return recovery.ErrStateMismatch}
 	return nil
 }
