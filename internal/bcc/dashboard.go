@@ -20,7 +20,7 @@ canvas{width:100%;height:240px;background:#0b1019;border-radius:12px;margin-top:
 @media(max-width:820px){.grid,.kpis{grid-template-columns:1fr 1fr}.wrap{padding:12px}.tablewrap{overflow:auto}}@media(max-width:520px){.grid,.kpis{grid-template-columns:1fr}}
 </style></head>
 <body><div class="wrap">
-<div class="top"><div><h1>BAFT Command Center</h1><div class="muted">Operational monitoring · Step 5.2</div></div><button class="alt" onclick="setToken()">Admin Token</button></div>
+<div class="top"><div><h1>BAFT Command Center</h1><div class="muted">Operational monitoring & finance · Step 5.3</div></div><button class="alt" onclick="setToken()">Admin Token</button></div>
 
 <div class="card">
 <div class="top"><b>Live Monitoring</b><span id="monitorTime" class="muted">—</span></div>
@@ -41,8 +41,17 @@ canvas{width:100%;height:240px;background:#0b1019;border-radius:12px;margin-top:
 <div class="actions"><button onclick="deploy()">One-Click Deploy Selected</button><button class="alt" onclick="enroll()">Enroll Worker Across Foreign Nodes</button><button class="alt" onclick="loadAll()">Refresh</button></div></div>
 
 <div class="card"><b>Recent Jobs</b><div id="jobs" class="muted" style="margin-top:10px">Admin token required.</div></div>
-<div class="card"><div class="top"><b>Node Finance</b><button class="alt" onclick="setFinance()">Set Rates</button></div>
+<div class="card"><div class="top"><b>Node Finance</b><button class="alt" onclick="setFinance()">Set Versioned Rate</button></div>
 <div class="tablewrap"><table><thead><tr><th>Node</th><th>Traffic GiB</th><th>Cost</th><th>Revenue</th><th>Profit</th></tr></thead><tbody id="financeRows"></tbody></table></div></div>
+
+<div class="card"><div class="top"><b>Finance Reports</b><span class="muted">Default timezone: Asia/Tehran</span></div>
+<div class="grid" style="margin-top:12px">
+<select id="reportPeriod"><option value="daily">Daily</option><option value="monthly">Monthly</option></select>
+<input id="reportFrom" type="date"><input id="reportTo" type="date"><input id="reportTZ" value="Asia/Tehran" placeholder="Timezone">
+<button onclick="loadFinanceReport()">Load Report</button><button class="alt" onclick="downloadFinanceCSV()">Download CSV</button>
+</div>
+<div class="tablewrap"><table><thead><tr><th>Period</th><th>Scope</th><th>Node</th><th>Ingress</th><th>Egress</th><th>Cost</th><th>Revenue</th><th>Profit</th><th>Currency</th></tr></thead><tbody id="reportRows"></tbody></table></div>
+</div>
 </div>
 <script>
 const q=s=>document.querySelector(s);let nodes=[],monitor=[];
@@ -55,7 +64,7 @@ function rate(v){return (Number(v||0)/1000).toFixed(2)+'/min'}
 function routeHTML(rs){if(!rs||!rs.length)return '<span class=muted>—</span>';return rs.map(r=>'<div class=route><span class="badge '+esc(r.status)+'">'+esc(r.status)+'</span><span>'+esc(r.route_id)+'</span><span class=muted>'+((r.latency_ms??-1)>=0?esc(r.latency_ms)+' ms':'—')+' · '+esc(r.probe_kind||'')+'</span></div>').join('')}
 async function loadNodes(){let r=await fetch('/api/nodes');nodes=await r.json();q('#count').textContent=nodes.length+' nodes';q('#rows').innerHTML=nodes.map(n=>'<tr><td><input type=checkbox class=pick value="'+esc(n.id)+'"></td><td>'+esc(n.alias)+'</td><td>'+esc(n.id)+'</td><td>'+esc(n.address)+'</td><td>'+esc(n.role)+'</td><td><span class="badge '+esc(n.health)+'">'+esc(n.health)+'</span> '+((n.latency_ms??-1)>=0?esc(n.latency_ms)+' ms':'')+'</td><td>'+esc(n.last_checked||'—')+'</td></tr>').join('')}
 async function loadMonitoring(){if(!token())return;let r=await fetch('/api/monitoring',{headers:ah()});if(!r.ok)return;monitor=await r.json();q('#monitorTime').textContent=new Date().toLocaleTimeString();q('#kNodes').textContent=monitor.length;q('#kUp').textContent=monitor.filter(x=>x.status==='up').length;q('#kDown').textContent=monitor.filter(x=>x.status==='down').length;q('#kUnknown').textContent=monitor.filter(x=>x.status==='unknown').length;
-q('#monitorRows').innerHTML=monitor.map(n=>'<tr><td><b>'+esc(n.alias)+'</b><div class=muted>'+esc(n.node_id)+'</div></td><td><span class="badge '+esc(n.status)+'">'+esc(n.status)+'</span></td><td>'+((n.latency_ms??-1)>=0?esc(n.latency_ms)+' ms':'—')+'<div class=muted>TCP health-check</div></td><td>'+rate(n.handshake_error_rate_milli_per_min)+'</td><td>'+ago(n.last_seen)+'</td><td>'+esc(n.active_sessions||0)+'</td><td>'+routeHTML(n.routes)+'</td></tr>').join('');
+q('#monitorRows').innerHTML=monitor.map(n=>'<tr><td><b>'+esc(n.alias)+'</b><div class=muted>'+esc(n.node_id)+'</div></td><td><span class="badge '+esc(n.status)+'">'+esc(n.status)+'</span></td><td>'+((n.noise_latency_ms??-1)>=0?esc(n.noise_latency_ms)+' ms':'—')+'<div class=muted>Noise RTT</div></td><td>'+((n.latency_ms??-1)>=0?esc(n.latency_ms)+' ms':'—')+'<div class=muted>TCP health-check</div></td><td>'+rate(n.handshake_error_rate_milli_per_min)+'</td><td>'+ago(n.last_seen)+'</td><td>'+esc(n.active_sessions||0)+'</td><td>'+routeHTML(n.routes)+'</td></tr>').join('');
 let sel=q('#historyNode'),cur=sel.value;sel.innerHTML=monitor.map(n=>'<option value="'+esc(n.node_id)+'">'+esc(n.alias)+'</option>').join('');if(cur&&monitor.some(n=>n.node_id===cur))sel.value=cur;if(!sel.dataset.loaded&&monitor.length){sel.dataset.loaded='1';loadHistory()}}
 async function loadJobs(){if(!token())return;let r=await fetch('/api/jobs',{headers:ah()});if(!r.ok)return;let j=await r.json();q('#jobs').innerHTML=j.slice(0,20).map(x=>'<div>'+esc(x.id)+' · '+esc(x.type)+' · '+esc(x.node_id)+' · <b>'+esc(x.status)+'</b></div>').join('')||'No jobs'}
 function micros(v){return (Number(v||0)/1000000).toFixed(4)}
@@ -65,7 +74,11 @@ function drawHistory(points){let c=q('#historyCanvas'),x=c.getContext('2d'),w=c.
 async function saveNode(){let body={ID:q('#nid').value,Alias:q('#alias').value,Address:q('#addr').value,Role:q('#role').value,PublicKey:q('#pub').value,AgentToken:q('#agent').value};let r=await fetch('/api/nodes',{method:'POST',headers:ah(),body:JSON.stringify(body)});if(!r.ok)alert(await r.text());else loadAll()}
 async function deploy(){let ids=[...document.querySelectorAll('.pick:checked')].map(x=>x.value);let version=prompt('BAFT version');if(!version)return;let r=await fetch('/api/deploy',{method:'POST',headers:ah(),body:JSON.stringify({node_ids:ids,version})});alert(r.ok?'Deploy jobs queued':await r.text());loadJobs()}
 async function enroll(){let worker_id=prompt('Worker node ID');if(!worker_id)return;let n=nodes.find(x=>x.id===worker_id);let public_key=n?.public_key||prompt('Worker public key');if(!public_key)return;let r=await fetch('/api/enroll',{method:'POST',headers:ah(),body:JSON.stringify({worker_id,public_key})});alert(r.ok?'Enrollment jobs queued':await r.text());loadJobs()}
-async function setFinance(){let node_id=prompt('Node ID');if(!node_id)return;let cost=prompt('Cost micros per GiB','0');let revenue=prompt('Revenue micros per GiB','0');if(cost===null||revenue===null)return;let r=await fetch('/api/finance',{method:'POST',headers:ah(),body:JSON.stringify({node_id,cost_micros_per_gib:Number(cost),revenue_micros_per_gib:Number(revenue)})});alert(r.ok?'Finance rates updated':await r.text());loadFinance()}
+async function setFinance(){let node_id=prompt('Node ID');if(!node_id)return;let cost=prompt('Cost micros per GiB','0');let revenue=prompt('Revenue micros per GiB','0');let currency=prompt('Currency code','IRR')||'IRR';let effective_from=prompt('Effective from RFC3339 (blank = now)','')||'';if(cost===null||revenue===null)return;let r=await fetch('/api/finance',{method:'POST',headers:ah(),body:JSON.stringify({node_id,cost_micros_per_gib:Number(cost),revenue_micros_per_gib:Number(revenue),currency,effective_from})});alert(r.ok?'Versioned finance rate saved':await r.text());loadFinance()}
+function reportURL(format){let p=q('#reportPeriod').value,f=q('#reportFrom').value,t=q('#reportTo').value,z=q('#reportTZ').value||'Asia/Tehran';return '/api/finance/report?period='+encodeURIComponent(p)+'&from='+encodeURIComponent(f)+'&to='+encodeURIComponent(t)+'&tz='+encodeURIComponent(z)+(format?'&format='+format:'')}
+async function loadFinanceReport(){if(!token())return;let r=await fetch(reportURL(''),{headers:ah()});if(!r.ok){alert(await r.text());return}let data=await r.json();q('#reportRows').innerHTML=data.rows.map(x=>'<tr><td>'+esc(x.period)+'</td><td>'+esc(x.scope)+'</td><td>'+esc(x.node_id||'ALL')+'</td><td>'+esc(x.ingress_bytes)+'</td><td>'+esc(x.egress_bytes)+'</td><td>'+esc(x.cost_micros)+'</td><td>'+esc(x.revenue_micros)+'</td><td>'+esc(x.profit_micros)+'</td><td>'+esc(x.currency)+'</td></tr>').join('')}
+async function downloadFinanceCSV(){if(!token())return;let r=await fetch(reportURL('csv'),{headers:ah()});if(!r.ok){alert(await r.text());return}let blob=await r.blob(),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='baft-finance-'+q('#reportPeriod').value+'.csv';a.click();URL.revokeObjectURL(u)}
+function initReportDates(){let d=new Date(),to=d.toISOString().slice(0,10),first=new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),1)).toISOString().slice(0,10);q('#reportFrom').value=first;q('#reportTo').value=to}
 async function loadAll(){await loadNodes();await Promise.all([loadMonitoring(),loadJobs(),loadFinance()])}
-loadAll();setInterval(()=>{loadMonitoring();loadFinance()},5000);
+initReportDates();loadAll();setInterval(()=>{loadMonitoring();loadFinance()},5000);
 </script></body></html>`
