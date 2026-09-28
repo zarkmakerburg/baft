@@ -301,6 +301,10 @@ func (p *Peer) onCarrierFailure(err error) {
 
 func (p *Peer) NeedsRecovery() bool {
 	if !p.recoveryEnabled{return false}
+	// Transaction uncertainty/unfinished finalized activation requires an exact
+	// status-resolution carrier even if the last sender has not yet observed a
+	// transport write failure.
+	if p.HasCommitUncertainty(){return true}
 	s:=p.senderNow()
 	return s==nil||s.isStopped()
 }
