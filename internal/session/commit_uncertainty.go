@@ -129,6 +129,7 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 	old:=prep.sender
 	prep.carrier=c
 	prep.sender=newSender
+	prep.rebindPending=true
 	if p.runCtx!=nil{prep.runCtx=p.runCtx}else{prep.runCtx=ctx}
 	a.mu.Unlock()
 	if old!=nil{old.stop(ErrCarrierUnavailable)}
