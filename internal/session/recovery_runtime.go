@@ -266,7 +266,7 @@ func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) 
 		if resendFIN { if err:=newSender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{return err} }
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
-		if !closed { p.startPump(ctx,fl);p.startTargetPump(ctx,fl) }
+		if !closed { p.ensurePumpsAfterRecovery(ctx,fl) }
 	}
 	a.replayed.Add(replayed);a.commits.Add(1)
 	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.hasPlan=false;a.mu.Unlock()
