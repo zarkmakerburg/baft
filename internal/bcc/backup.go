@@ -20,7 +20,7 @@ import (
 
 const (
 	backupMagic = "BAFT-BCC-BACKUP"
-	BackupSchemaVersion = 1
+	BackupSchemaVersion = 2
 )
 
 type BackupHeader struct {
@@ -82,6 +82,12 @@ func normalizeState(st *state){
 	if st.ActiveAlerts==nil{st.ActiveAlerts=map[string]Alert{}}
 	if st.NextJob==0{st.NextJob=1}
 	if st.NextRateVersion==0{st.NextRateVersion=1}
+	if st.NextTelemetryIngestID==0{
+		var maxIngest uint64
+		for _,cur:=range st.Telemetry{if cur.IngestID>maxIngest{maxIngest=cur.IngestID}}
+		st.NextTelemetryIngestID=maxIngest+1
+		if st.NextTelemetryIngestID==0{st.NextTelemetryIngestID=1}
+	}
 }
 
 func cloneState(st state)(state,error){
@@ -225,6 +231,9 @@ func auditContainsAnchor(entries []AuditEntry,seq uint64,hash string) bool {
 func cursorAhead(cur,bak TelemetryCursor,hasBak bool) bool {
 	if cur.NodeID==""{return false}
 	if !hasBak{return true}
+	if cur.IngestID!=0||bak.IngestID!=0{return cur.IngestID>bak.IngestID}
+	// Compatibility for pre-schema-v2 in-memory state only. New v2 backups
+	// always carry server-side ingestion ids and never rely on node clocks.
 	if cur.BootID==bak.BootID{return cur.Sequence>bak.Sequence}
 	return cur.LastTelemetry.After(bak.LastTelemetry)
 }
@@ -278,6 +287,7 @@ func mergeAntiRollback(restored *state,current state,createdAt time.Time){
 		}
 	}
 	if current.NextRateVersion>restored.NextRateVersion{restored.NextRateVersion=current.NextRateVersion}
+	if current.NextTelemetryIngestID>restored.NextTelemetryIngestID{restored.NextTelemetryIngestID=current.NextTelemetryIngestID}
 }
 
 func stateBytes(st state)([]byte,error){
