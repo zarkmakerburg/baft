@@ -18,11 +18,20 @@ import (
 
 const DefaultQueueLimit = 120
 
+type RouteSnapshot struct {
+	RouteID    string `json:"route_id"`
+	Status     string `json:"status"`
+	LatencyMS  int64  `json:"latency_ms"`
+	ErrorCount uint64 `json:"error_count"`
+	ProbeKind  string `json:"probe_kind"`
+}
+
 type Snapshot struct {
 	IngressBytes    uint64
 	EgressBytes     uint64
 	ActiveSessions  uint64
 	HandshakeErrors uint64
+	Routes          []RouteSnapshot
 }
 
 type Report struct {
@@ -32,8 +41,9 @@ type Report struct {
 	IngressBytes    uint64 `json:"ingress_bytes"`
 	EgressBytes     uint64 `json:"egress_bytes"`
 	ActiveSessions  uint64 `json:"active_sessions"`
-	HandshakeErrors uint64 `json:"handshake_errors"`
-	TimestampUnix   int64  `json:"timestamp_unix"`
+	HandshakeErrors uint64          `json:"handshake_errors"`
+	Routes          []RouteSnapshot `json:"routes,omitempty"`
+	TimestampUnix   int64           `json:"timestamp_unix"`
 }
 
 type Source func() Snapshot
@@ -48,6 +58,7 @@ type Exporter struct {
 	Source     Source
 	Client     *http.Client
 
+	flushMu sync.Mutex
 	mu      sync.Mutex
 	nextSeq uint64
 	queue   []Report
@@ -95,6 +106,7 @@ func (e *Exporter) sample(now time.Time) {
 		NodeID:e.NodeID,BootID:e.BootID,Sequence:e.nextSeq,
 		IngressBytes:s.IngressBytes,EgressBytes:s.EgressBytes,
 		ActiveSessions:s.ActiveSessions,HandshakeErrors:s.HandshakeErrors,
+		Routes:append([]RouteSnapshot(nil),s.Routes...),
 		TimestampUnix:now.Unix(),
 	}
 	limit:=e.QueueLimit
@@ -125,6 +137,8 @@ func (e *Exporter) sendReport(ctx context.Context,r Report) error {
 }
 
 func (e *Exporter) flush(ctx context.Context) error {
+	e.flushMu.Lock()
+	defer e.flushMu.Unlock()
 	for {
 		e.mu.Lock()
 		if len(e.queue)==0{e.mu.Unlock();return nil}
