@@ -94,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/agent/ack",s.agentAck)
 	m.HandleFunc("/api/agent/traffic",s.agentTraffic)
 	m.HandleFunc("/api/finance",s.finance)
+	m.HandleFunc("/api/finance/report",s.financeReport)
 	m.HandleFunc("/api/monitoring",s.monitoring)
 	m.HandleFunc("/api/history",s.history)
 	return m
@@ -207,12 +208,42 @@ func (s *Server) finance(w http.ResponseWriter,r *http.Request){
 			NodeID string `json:"node_id"`
 			CostMicrosPerGiB int64 `json:"cost_micros_per_gib"`
 			RevenueMicrosPerGiB int64 `json:"revenue_micros_per_gib"`
+			Currency string `json:"currency"`
+			EffectiveFrom string `json:"effective_from,omitempty"`
 		}
 		if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
-		if err:=s.store.SetFinancePolicy(in.NodeID,in.CostMicrosPerGiB,in.RevenueMicrosPerGiB);err!=nil{http.Error(w,err.Error(),400);return}
-		writeJSON(w,http.StatusOK,map[string]bool{"ok":true})
+		effective:=s.now().UTC()
+		if strings.TrimSpace(in.EffectiveFrom)!=""{
+			parsed,err:=time.Parse(time.RFC3339,in.EffectiveFrom)
+			if err!=nil{http.Error(w,"effective_from must be RFC3339",400);return}
+			effective=parsed.UTC()
+		}
+		if err:=s.store.SetFinancePolicyAt(in.NodeID,in.CostMicrosPerGiB,in.RevenueMicrosPerGiB,in.Currency,effective);err!=nil{http.Error(w,err.Error(),400);return}
+		h:=s.store.RateHistory(in.NodeID)
+		writeJSON(w,http.StatusOK,map[string]any{"ok":true,"rate":h[len(h)-1]})
 	default:http.Error(w,"method not allowed",405)
 	}
+}
+
+func (s *Server) financeReport(w http.ResponseWriter,r *http.Request){
+	if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
+	if !s.admin(w,r){return}
+	q:=r.URL.Query()
+	period:=q.Get("period")
+	if period==""{period="daily"}
+	tz:=q.Get("tz")
+	if tz==""{tz="Asia/Tehran"}
+	rows,err:=s.store.FinanceReport(period,q.Get("from"),q.Get("to"),tz)
+	if err!=nil{http.Error(w,err.Error(),400);return}
+	if q.Get("format")=="csv"{
+		b,err:=FinanceReportCSV(rows);if err!=nil{http.Error(w,err.Error(),500);return}
+		w.Header().Set("Content-Type","text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition","attachment; filename=baft-finance-"+period+".csv")
+		w.WriteHeader(http.StatusOK)
+		_,_=w.Write(b)
+		return
+	}
+	writeJSON(w,http.StatusOK,map[string]any{"period":period,"timezone":tz,"rows":rows})
 }
 
 
