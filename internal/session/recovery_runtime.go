@@ -125,6 +125,7 @@ type RecoveryFlowFrontier struct {
 	StreamID uint64
 	ReplaySource uint64
 	PeerAccepted uint64
+	TxNext uint64
 	FinSent bool
 	FinAcked bool
 	FinAckSent bool
@@ -274,7 +275,7 @@ func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
 		fl.mu.Lock()
 		src:=sources[fl.id]
 		if _,ok:=sources[fl.id];!ok{src=fl.txAcked}
-		out=append(out,RecoveryFlowFrontier{StreamID:fl.id,ReplaySource:src,PeerAccepted:fl.txAcked,FinSent:fl.finSent,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,FinAckConfirmed:fl.finAckConfirmed})
+		out=append(out,RecoveryFlowFrontier{StreamID:fl.id,ReplaySource:src,PeerAccepted:fl.txAcked,TxNext:fl.txNext,FinSent:fl.finSent,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,FinAckConfirmed:fl.finAckConfirmed})
 		fl.mu.Unlock()
 	}
 	return out
@@ -346,6 +347,16 @@ func (p *Peer) HandleCarrierFrame(ctx context.Context,epoch uint64,carrierID str
 func (p *Peer) handleFrameFrom(ctx context.Context,epoch uint64,carrierID string,fr protocol.Frame) error {
 	if p.recovery!=nil && !p.recovery.engine.Authorize(epoch,carrierID) {
 		return recovery.ErrStaleEpoch
+	}
+	if p.recoveryEnabled{
+		stage:=""
+		switch fr.Type{
+		case protocol.TypeData:stage="before_data_accept"
+		case protocol.TypeFin:stage="before_fin_accept"
+		case protocol.TypeFinAck:stage="before_fin_ack_accept"
+		case protocol.TypeFinAckConfirm:stage="before_fin_ack_confirm_accept"
+		}
+		if stage!=""&&p.dropRecoveryFrameForTest(stage,fr){return nil}
 	}
 	return p.handleFrame(ctx,fr)
 }
