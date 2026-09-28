@@ -216,6 +216,7 @@ func (s *Store) SetHealth(nodeID,health string,checked time.Time) error {
 
 func (s *Store) SetFinancePolicy(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64) error {
 	if costMicrosPerGiB<0||revenueMicrosPerGiB<0{return errors.New("finance rates must be non-negative")}
+	if costMicrosPerGiB>1_000_000_000_000||revenueMicrosPerGiB>1_000_000_000_000{return errors.New("finance rates are unreasonably large")}
 	s.mu.Lock();defer s.mu.Unlock()
 	if _,ok:=s.st.Nodes[nodeID];!ok{return errors.New("node not found")}
 	s.st.Policies[nodeID]=FinancePolicy{NodeID:nodeID,CostMicrosPerGiB:costMicrosPerGiB,RevenueMicrosPerGiB:revenueMicrosPerGiB}
@@ -227,7 +228,14 @@ func (s *Store) SetFinancePolicy(nodeID string,costMicrosPerGiB,revenueMicrosPer
 
 func moneyForBytes(bytes uint64,rate int64) int64 {
 	if rate<=0||bytes==0{return 0}
-	return int64((bytes*uint64(rate))/(1<<30))
+	const gib uint64 = 1 << 30
+	whole:=bytes/gib
+	rem:=bytes%gib
+	if whole>uint64((1<<63-1)/rate){return 1<<63-1}
+	base:=int64(whole)*rate
+	fraction:=int64((rem*uint64(rate))/gib)
+	if base>(1<<63-1)-fraction{return 1<<63-1}
+	return base+fraction
 }
 
 func (s *Store) recalculateFinanceLocked(f *NodeFinance) {
