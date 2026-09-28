@@ -214,10 +214,11 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 	}
 	if role == Dialer {
 		p.nextID = 1
-		p.sessionID, err = randomHex128()
+		sid,err:=randomHex128()
 		if err != nil {
 			return nil, err
 		}
+		p.sessionID=sid
 	} else {
 		p.nextID = 2
 	}
