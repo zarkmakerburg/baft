@@ -448,14 +448,16 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 					case <-ctx.Done():return
 					case <-sh.peer.RecoveryNeeded():
 						if !sh.peer.NeedsRecovery(){continue}
-						if err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh);err!=nil&&ctx.Err()==nil{
-							// A recovery transaction that fails before authority commit is
-							// non-fatal to the Runtime. AbortRecovery leaves the old epoch
-							// authoritative and the live Session registered so a later
-							// carrier replacement can retry. Post-commit failures are also
-							// represented in Session recovery state and must never be
-							// treated as permission to roll back the old epoch.
+						err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh)
+						if err!=nil&&ctx.Err()==nil{
+							// A recovery transaction failure is non-fatal to the Runtime.
+							// Pre-commit abort leaves the old epoch authoritative. A
+							// post-commit failure keeps the new epoch fenced/committed and
+							// onCarrierFailure queues the next recovery transaction.
 							log.Printf("baft shard %d recovery attempt failed: %v",index,err)
+							if errors.Is(err,session.ErrPostCommitFailure){
+								continue
+							}
 						}
 						sh.peer.DrainRecoverySignals()
 					}
