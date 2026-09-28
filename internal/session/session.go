@@ -99,6 +99,7 @@ type Peer struct {
 	replacementWait    chan struct{}
 	carrierID          string
 	carrierEpoch       uint64
+	carrierGeneration  uint64
 	peerBootID         string
 	runCtx             context.Context
 	recoveryGate       sync.Mutex
@@ -212,7 +213,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		epoch: "1", readyCh: make(chan struct{}), trafficObserver: opts.TrafficObserver,
 		latencyObserver: opts.LatencyObserver, pingInterval: opts.PingInterval,
 		recoveryEnabled: opts.RecoveryEnabled, recoveryRetention: opts.RecoveryRetention,
-		recoveryNeeded: make(chan error,1), carrierSwitchWait: make(chan struct{}), replacementWait: make(chan struct{}), carrierEpoch:1,
+		recoveryNeeded: make(chan error,1), carrierSwitchWait: make(chan struct{}), replacementWait: make(chan struct{}), carrierEpoch:1, carrierGeneration:1,
 	}
 	if role == Dialer {
 		p.nextID = 1
@@ -283,11 +284,11 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 		}
 	}
 	if first != nil {
-		epoch,carrierID:=p.currentCarrierIdentity()
+		epoch,carrierID,_:=p.currentCarrierIdentity()
 		if err:=p.handleFrameFrom(runCtx,epoch,carrierID,*first);err!=nil{return err}
 	}
 	for {
-		carrier,epoch,carrierID:=p.currentCarrier()
+		carrier,epoch,carrierID,generation:=p.currentCarrier()
 		f, err := protocol.Decode(carrier.In)
 		if err != nil {
 			if ctx.Err() != nil { return ctx.Err() }
@@ -296,7 +297,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 				return err
 			}
 			p.onCarrierFailure(err)
-			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID);err!=nil{return err}
+			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);err!=nil{return err}
 			continue
 		}
 		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil {
@@ -1028,7 +1029,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			if p.recoveryEnabled {
 				epoch,owner:=p.currentCarrierIdentity()
 				p.onCarrierFailure(err)
-				if werr:=p.waitForReplacement(ctx,epoch,owner);werr==nil{continue}
+				if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
 			}
 			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
 			return
@@ -1060,9 +1061,9 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			}
 			if err := p.senderNow().sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
 				if p.recoveryEnabled {
-					epoch,owner:=p.currentCarrierIdentity()
+					epoch,owner,generation:=p.currentCarrierIdentity()
 					p.onCarrierFailure(err)
-					if werr:=p.waitForReplacement(ctx,epoch,owner);werr==nil{continue}
+					if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
 				}
 				return
 			}
