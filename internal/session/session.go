@@ -98,6 +98,7 @@ type Peer struct {
 	carrierEpoch       uint64
 	peerBootID         string
 	runCtx             context.Context
+	recoveryGate       sync.Mutex
 }
 
 type replayChunk struct {
@@ -237,6 +238,7 @@ func randomHex128() (string, error) {
 }
 
 func (p *Peer) senderNow() *outboundSender {
+	if !p.recoveryEnabled{return p.sender}
 	p.mu.Lock()
 	s:=p.sender
 	p.mu.Unlock()
@@ -309,6 +311,7 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 	if err := p.waitReady(ctx); err != nil {
 		return err
 	}
+	if p.recoveryEnabled{p.recoveryGate.Lock();defer p.recoveryGate.Unlock()}
 	if p.recovery!=nil && p.recovery.IsFrozen(){ return recovery.ErrResumeFrozen }
 	id, err := p.allocateStreamID()
 	if err != nil {
@@ -652,6 +655,7 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 	if p.role != Listener {
 		return errors.New("dialer received unexpected OPEN")
 	}
+	if p.recoveryEnabled{p.recoveryGate.Lock();defer p.recoveryGate.Unlock()}
 	if p.recovery!=nil && p.recovery.IsFrozen(){ return recovery.ErrResumeFrozen }
 	req, err := protocol.DecodeOpen(fr.Payload)
 	if err != nil {
