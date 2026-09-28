@@ -54,6 +54,10 @@ type RecoveryAuthoritySnapshot struct {
 	Epoch uint64
 	Owner string
 	Frozen bool
+	TxnState session.RecoveryTxnState
+	CandidateID string
+	NextEpoch uint64
+	PlanDigest string
 }
 
 func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
@@ -69,7 +73,10 @@ func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
 	r.peerMu.Unlock()
 	out:=make([]RecoveryAuthoritySnapshot,0,len(peers))
 	for _,p:=range peers{
-		out=append(out,RecoveryAuthoritySnapshot{Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),Frozen:p.RecoveryFrozen()})
+		tx,ok:=p.RecoveryTransactionIdentity()
+		s:=RecoveryAuthoritySnapshot{Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),Frozen:p.RecoveryFrozen(),TxnState:p.RecoveryTransactionState()}
+		if ok{s.CandidateID=tx.CandidateID;s.NextEpoch=tx.NextEpoch;s.PlanDigest=tx.PlanDigest}
+		out=append(out,s)
 	}
 	return out
 }
