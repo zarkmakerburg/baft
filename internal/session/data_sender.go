@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
@@ -30,15 +31,18 @@ type outboundSender struct {
 	stopped      bool
 	stopErr      error
 	controlBurst int
+	recoverable bool
 }
 
-func newOutboundSender(writer *frameWriter) *outboundSender {
+func newOutboundSender(writer *frameWriter, recoverable ...bool) *outboundSender {
+	r:=false;if len(recoverable)>0{r=recoverable[0]}
 	return &outboundSender{
 		data:    scheduler.NewPADL(scheduler.DefaultPADLMaxSkips),
 		control: resources.NewDefaultControlQueue(),
 		writer:  writer,
 		wake:    make(chan struct{}, 1),
 		done:    make(chan struct{}),
+		recoverable:r,
 	}
 }
 
@@ -192,7 +196,7 @@ func (s *outboundSender) run(ctx context.Context) {
 		err := s.writer.send(req.frame)
 		req.done <- err
 		if err != nil {
-			s.stop(err)
+			if s.recoverable { s.stop(fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)) } else { s.stop(err) }
 			return
 		}
 	}
