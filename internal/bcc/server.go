@@ -44,6 +44,10 @@ type Server struct {
 	trustedProxies map[string]struct{}
 	auditAnchorWebhook string
 	auditAnchorInterval time.Duration
+	auditAnchorRetryBase time.Duration
+	auditAnchorRetryMax time.Duration
+	anchorOutbox *AuditAnchorOutbox
+	anchorWake chan struct{}
 	probeTimeout time.Duration
 	alertConfig AlertConfig
 	alertMu sync.Mutex
@@ -60,11 +64,17 @@ func NewServer(store *Store,adminToken string) (*Server,error) {
 	if strings.TrimSpace(adminToken)==""{return nil,errors.New("admin token is required")}
 	audit,err:=OpenAuditLog(store.path+".audit.jsonl")
 	if err!=nil{return nil,fmt.Errorf("open audit log: %w",err)}
+	outbox,err:=OpenAuditAnchorOutbox(store.path+".audit-anchor-outbox.json")
+	if err!=nil{return nil,fmt.Errorf("open audit anchor outbox: %w",err)}
+	entries,err:=audit.List(0)
+	if err!=nil{return nil,fmt.Errorf("read audit for outbox reconcile: %w",err)}
+	if err:=outbox.ReconcileSecurityAudit(entries);err!=nil{return nil,fmt.Errorf("reconcile audit anchor outbox: %w",err)}
 	initialAlerts:=store.ActiveAlertsSnapshot()
 	return &Server{
 		store:store,adminToken:adminToken,audit:audit,guard:newIPGuard(SecurityConfig{}),trustedProxies:map[string]struct{}{},probeTimeout:1500*time.Millisecond,
 		alertConfig:AlertConfig{TelemetryStaleAfter:3*time.Minute,HandshakeErrorRateMilliPerMin:5000,Interval:15*time.Second},
 		activeAlerts:initialAlerts,httpClient:&http.Client{Timeout:5*time.Second},
+		auditAnchorRetryBase:time.Second,auditAnchorRetryMax:time.Minute,anchorOutbox:outbox,anchorWake:make(chan struct{},1),
 		now:func() time.Time{return time.Now().UTC()},
 	},nil
 }
