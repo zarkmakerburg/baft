@@ -140,6 +140,7 @@ type state struct {
 	Telemetry       map[string]TelemetryCursor   `json:"telemetry,omitempty"`
 	History         map[string][]HistoryPoint    `json:"history,omitempty"`
 	ActiveAlerts    map[string]Alert             `json:"active_alerts,omitempty"`
+	RetiredBootIDs  map[string]map[string]bool   `json:"retired_boot_ids,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`
@@ -154,7 +155,7 @@ type Store struct {
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
 	if err:=recoverRestoreTransaction(path);err!=nil{return nil,fmt.Errorf("recover interrupted restore: %w",err)}
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
 	b,err:=os.ReadFile(path)
 	if err==nil {
 		if err:=json.Unmarshal(b,&s.st);err!=nil{return nil,fmt.Errorf("decode BCC state: %w",err)}
@@ -166,6 +167,7 @@ func OpenStore(path string) (*Store, error) {
 		if s.st.Telemetry==nil{s.st.Telemetry=map[string]TelemetryCursor{}}
 		if s.st.History==nil{s.st.History=map[string][]HistoryPoint{}}
 		if s.st.ActiveAlerts==nil{s.st.ActiveAlerts=map[string]Alert{}}
+		if s.st.RetiredBootIDs==nil{s.st.RetiredBootIDs=map[string]map[string]bool{}}
 		if s.st.NextJob==0{s.st.NextJob=1}
 		if s.st.NextRateVersion==0{s.st.NextRateVersion=1}
 		if s.st.NextTelemetryIngestID==0{
@@ -506,6 +508,11 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	if !telemetry.VerifyHashedToken(authHash,signature,body){return NodeFinance{},false,ErrAgentAuthentication}
 
 	prev:=s.st.Telemetry[report.NodeID]
+	retired:=s.st.RetiredBootIDs[report.NodeID]
+	if retired!=nil&&retired[report.BootID]{
+		f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
+		return f,true,nil
+	}
 	if prev.BootID==report.BootID && report.Sequence<=prev.Sequence {
 		f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
 		return f,true,nil
@@ -518,6 +525,10 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 		din=report.IngressBytes-prev.IngressBytes
 		dout=report.EgressBytes-prev.EgressBytes
 	}else{
+		if prev.BootID!=""&&prev.BootID!=report.BootID{
+			if s.st.RetiredBootIDs[report.NodeID]==nil{s.st.RetiredBootIDs[report.NodeID]=map[string]bool{}}
+			s.st.RetiredBootIDs[report.NodeID][prev.BootID]=true
+		}
 		din=report.IngressBytes
 		dout=report.EgressBytes
 	}
@@ -621,4 +632,14 @@ func (s *Store) SetActiveAlerts(alerts map[string]Alert) error {
 	s.mu.Lock();defer s.mu.Unlock()
 	s.st.ActiveAlerts=cloneAlerts(alerts)
 	return s.saveLocked()
+}
+
+
+func (s *Store) RetiredBootIDs(nodeID string) []string {
+	s.mu.Lock();defer s.mu.Unlock()
+	m:=s.st.RetiredBootIDs[nodeID]
+	out:=make([]string,0,len(m))
+	for id:=range m{out=append(out,id)}
+	sort.Strings(out)
+	return out
 }
