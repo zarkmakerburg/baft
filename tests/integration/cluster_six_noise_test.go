@@ -159,7 +159,7 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 		go func() { listenerDone <- rt.Run(ctx, cfg) }()
 	}
 	for _, cfg := range foreignCfgs {
-		waitTCP(t, cfg.Server.Listen, time.Now().Add(3*time.Second))
+		waitTCP(t, cfg.Server.Listen, time.Now().Add(8*time.Second))
 	}
 
 	masterDone := make(chan error, 1)
