@@ -80,7 +80,7 @@ func TestRuntimeTelemetryReachesBCCExactlyOnce(t *testing.T){
 	ir.Routes[0].Listen=reserveAddress(t)
 	ir.TLS=ex.TLS
 	ir.Noise=&config.Noise{KeyFile:irPath,PeerPublicKey:exPub,RecordShaping:recordshape.Config{}}
-	ir.Telemetry=config.Telemetry{Enabled:true,BCCURL:bccHTTP.URL,AgentTokenEnv:"BAFT_AGENT_TOKEN",IntervalSeconds:1}
+	ir.Telemetry=config.Telemetry{Enabled:true,BCCURL:bccHTTP.URL,AgentTokenEnv:"BAFT_AGENT_TOKEN",IntervalSeconds:1,RouteProbeIntervalSeconds:1}
 
 	if err:=config.Validate(ex);err!=nil{t.Fatalf("EX config: %v",err)}
 	if err:=config.Validate(ir);err!=nil{t.Fatalf("IR config: %v",err)}
@@ -106,14 +106,14 @@ func TestRuntimeTelemetryReachesBCCExactlyOnce(t *testing.T){
 	for{
 		fs:=store.FinanceSnapshot()
 		cur,ok:=store.TelemetrySnapshot("ir-telemetry")
-		if len(fs)==1&&ok&&fs[0].IngressBytes==payloadSize&&fs[0].EgressBytes==payloadSize&&cur.ActiveSessions>=1&&cur.HandshakeErrors==0{
+		if len(fs)==1&&ok&&fs[0].IngressBytes==payloadSize&&fs[0].EgressBytes==payloadSize&&cur.ActiveSessions>=1&&cur.HandshakeErrors==0&&cur.NoiseLatencyMS>=0&&len(cur.Routes)>0&&cur.Routes[0].ProbeKind=="noise"{
 			total:=uint64(payloadSize*2)
 			wantCost:=int64((total*uint64(costRate))/(1<<30))
 			wantRevenue:=int64((total*uint64(revenueRate))/(1<<30))
 			if fs[0].CostMicros!=wantCost||fs[0].RevenueMicros!=wantRevenue||fs[0].ProfitMicros!=wantRevenue-wantCost{
 				t.Fatalf("finance mismatch got=%+v want cost=%d revenue=%d",fs[0],wantCost,wantRevenue)
 			}
-			t.Logf("PASS runtime->BCC exact telemetry ingress=%d egress=%d active_sessions=%d sequence=%d",fs[0].IngressBytes,fs[0].EgressBytes,cur.ActiveSessions,cur.Sequence)
+			t.Logf("PASS runtime->BCC exact telemetry ingress=%d egress=%d active_sessions=%d noise_rtt_ms=%d route_probe=%s sequence=%d",fs[0].IngressBytes,fs[0].EgressBytes,cur.ActiveSessions,cur.NoiseLatencyMS,cur.Routes[0].ProbeKind,cur.Sequence)
 			break
 		}
 		if time.Now().After(deadline){
