@@ -30,6 +30,7 @@ type Node struct {
 	AgentTokenHash string    `json:"agent_token_hash,omitempty"`
 	Health         string    `json:"health"`
 	LastChecked    time.Time `json:"last_checked,omitempty"`
+	LatencyMS      int64     `json:"latency_ms"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -69,8 +70,36 @@ type TelemetryCursor struct {
 	IngressBytes    uint64    `json:"ingress_bytes"`
 	EgressBytes     uint64    `json:"egress_bytes"`
 	ActiveSessions  uint64    `json:"active_sessions"`
-	HandshakeErrors uint64    `json:"handshake_errors"`
-	LastTelemetry   time.Time `json:"last_telemetry"`
+	HandshakeErrors             uint64                    `json:"handshake_errors"`
+	HandshakeErrorRateMilliMin  int64                     `json:"handshake_error_rate_milli_per_min"`
+	Routes                      []telemetry.RouteSnapshot `json:"routes,omitempty"`
+	LastTelemetry               time.Time                 `json:"last_telemetry"`
+}
+
+type HistoryPoint struct {
+	Timestamp                   time.Time                 `json:"timestamp"`
+	IngressBytes                uint64                    `json:"ingress_bytes"`
+	EgressBytes                 uint64                    `json:"egress_bytes"`
+	ActiveSessions              uint64                    `json:"active_sessions"`
+	HandshakeErrorRateMilliMin  int64                     `json:"handshake_error_rate_milli_per_min"`
+	NodeHealth                  string                    `json:"node_health"`
+	LatencyMS                   int64                     `json:"latency_ms"`
+	Routes                      []telemetry.RouteSnapshot `json:"routes,omitempty"`
+}
+
+type MonitoringNode struct {
+	NodeID                     string                    `json:"node_id"`
+	Alias                      string                    `json:"alias"`
+	Address                    string                    `json:"address"`
+	Role                       string                    `json:"role"`
+	Status                     string                    `json:"status"`
+	HealthCheckStatus          string                    `json:"health_check_status"`
+	LatencyMS                  int64                     `json:"latency_ms"`
+	LastSeen                   time.Time                 `json:"last_seen,omitempty"`
+	ActiveSessions             uint64                    `json:"active_sessions"`
+	HandshakeErrors            uint64                    `json:"handshake_errors"`
+	HandshakeErrorRateMilliMin int64                     `json:"handshake_error_rate_milli_per_min"`
+	Routes                     []telemetry.RouteSnapshot `json:"routes,omitempty"`
 }
 
 type state struct {
@@ -79,6 +108,7 @@ type state struct {
 	Finance   map[string]NodeFinance      `json:"finance,omitempty"`
 	Policies  map[string]FinancePolicy    `json:"finance_policies,omitempty"`
 	Telemetry map[string]TelemetryCursor  `json:"telemetry,omitempty"`
+	History   map[string][]HistoryPoint   `json:"history,omitempty"`
 	NextJob   uint64                      `json:"next_job"`
 }
 
@@ -90,7 +120,7 @@ type Store struct {
 
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},NextJob:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},NextJob:1}}
 	b,err:=os.ReadFile(path)
 	if err==nil {
 		if err:=json.Unmarshal(b,&s.st);err!=nil{return nil,fmt.Errorf("decode BCC state: %w",err)}
@@ -99,6 +129,7 @@ func OpenStore(path string) (*Store, error) {
 		if s.st.Finance==nil{s.st.Finance=map[string]NodeFinance{}}
 		if s.st.Policies==nil{s.st.Policies=map[string]FinancePolicy{}}
 		if s.st.Telemetry==nil{s.st.Telemetry=map[string]TelemetryCursor{}}
+		if s.st.History==nil{s.st.History=map[string][]HistoryPoint{}}
 		if s.st.NextJob==0{s.st.NextJob=1}
 	} else if !errors.Is(err,os.ErrNotExist) {
 		return nil,err
@@ -220,11 +251,11 @@ func (s *Store) AckJob(nodeID,token,jobID,status,message string) error {
 	return s.saveLocked()
 }
 
-func (s *Store) SetHealth(nodeID,health string,checked time.Time) error {
+func (s *Store) SetHealth(nodeID,health string,latencyMS int64,checked time.Time) error {
 	if health!="up"&&health!="down"&&health!="unknown"{return errors.New("invalid health")}
 	s.mu.Lock();defer s.mu.Unlock()
 	n,ok:=s.st.Nodes[nodeID];if !ok{return errors.New("node not found")}
-	n.Health=health;n.LastChecked=checked.UTC();s.st.Nodes[nodeID]=n
+	n.Health=health;n.LatencyMS=latencyMS;n.LastChecked=checked.UTC();s.st.Nodes[nodeID]=n
 	return s.saveLocked()
 }
 
@@ -315,12 +346,33 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	f.IngressBytes+=din;f.EgressBytes+=dout;f.UpdatedAt=time.Now().UTC()
 	s.recalculateFinanceLocked(&f)
 	s.st.Finance[report.NodeID]=f
+	ts:=time.Unix(report.TimestampUnix,0).UTC()
+	rateMilli:=int64(0)
+	if prev.BootID==report.BootID && !prev.LastTelemetry.IsZero() && ts.After(prev.LastTelemetry) {
+		deltaErrors:=report.HandshakeErrors-prev.HandshakeErrors
+		deltaMillis:=ts.Sub(prev.LastTelemetry).Milliseconds()
+		if deltaMillis>0 { rateMilli=int64(deltaErrors)*60_000_000/deltaMillis }
+	}
+	routes:=append([]telemetry.RouteSnapshot(nil),report.Routes...)
 	s.st.Telemetry[report.NodeID]=TelemetryCursor{
 		NodeID:report.NodeID,BootID:report.BootID,Sequence:report.Sequence,
 		IngressBytes:report.IngressBytes,EgressBytes:report.EgressBytes,
 		ActiveSessions:report.ActiveSessions,HandshakeErrors:report.HandshakeErrors,
-		LastTelemetry:time.Unix(report.TimestampUnix,0).UTC(),
+		HandshakeErrorRateMilliMin:rateMilli,Routes:routes,LastTelemetry:ts,
 	}
+	n=s.st.Nodes[report.NodeID]
+	point:=HistoryPoint{
+		Timestamp:ts,IngressBytes:report.IngressBytes,EgressBytes:report.EgressBytes,
+		ActiveSessions:report.ActiveSessions,HandshakeErrorRateMilliMin:rateMilli,
+		NodeHealth:n.Health,LatencyMS:n.LatencyMS,Routes:routes,
+	}
+	h:=s.st.History[report.NodeID]
+	cutoff:=time.Now().UTC().Add(-7*24*time.Hour)
+	keep:=h[:0]
+	for _,p:=range h { if !p.Timestamp.Before(cutoff) { keep=append(keep,p) } }
+	keep=append(keep,point)
+	if len(keep)>10080 { keep=keep[len(keep)-10080:] }
+	s.st.History[report.NodeID]=keep
 	if err:=s.saveLocked();err!=nil{return NodeFinance{},false,err}
 	return f,false,nil
 }
@@ -329,4 +381,44 @@ func (s *Store) TelemetrySnapshot(nodeID string) (TelemetryCursor,bool) {
 	s.mu.Lock();defer s.mu.Unlock()
 	v,ok:=s.st.Telemetry[nodeID]
 	return v,ok
+}
+
+
+func (s *Store) MonitoringSnapshot(now time.Time,staleAfter time.Duration) []MonitoringNode {
+	if staleAfter<=0{staleAfter=3*time.Minute}
+	s.mu.Lock();defer s.mu.Unlock()
+	out:=make([]MonitoringNode,0,len(s.st.Nodes))
+	for id,n:=range s.st.Nodes{
+		cur,hasTelemetry:=s.st.Telemetry[id]
+		status:="unknown"
+		if n.Health=="down"{status="down"}
+		if hasTelemetry {
+			if now.Sub(cur.LastTelemetry)>staleAfter { status="down" } else if n.Health=="up" { status="up" }
+		}
+		routes:=append([]telemetry.RouteSnapshot(nil),cur.Routes...)
+		if hasTelemetry&&now.Sub(cur.LastTelemetry)>staleAfter {
+			for i:=range routes { routes[i].Status="unknown" }
+		}
+		out=append(out,MonitoringNode{
+			NodeID:id,Alias:n.Alias,Address:n.Address,Role:n.Role,Status:status,
+			HealthCheckStatus:n.Health,LatencyMS:n.LatencyMS,LastSeen:cur.LastTelemetry,
+			ActiveSessions:cur.ActiveSessions,HandshakeErrors:cur.HandshakeErrors,
+			HandshakeErrorRateMilliMin:cur.HandshakeErrorRateMilliMin,Routes:routes,
+		})
+	}
+	sort.Slice(out,func(i,j int)bool{return out[i].Alias<out[j].Alias})
+	return out
+}
+
+func (s *Store) History(nodeID string,now time.Time) []HistoryPoint {
+	s.mu.Lock();defer s.mu.Unlock()
+	cutoff:=now.UTC().Add(-7*24*time.Hour)
+	src:=s.st.History[nodeID]
+	out:=make([]HistoryPoint,0,len(src))
+	for _,p:=range src{
+		if p.Timestamp.Before(cutoff){continue}
+		cp:=p;cp.Routes=append([]telemetry.RouteSnapshot(nil),p.Routes...)
+		out=append(out,cp)
+	}
+	return out
 }
