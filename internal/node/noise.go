@@ -10,11 +10,15 @@ import (
 	"github.com/zarkmakerburg/baft/internal/securityinternal"
 )
 
-func noiseConfig(cfg config.Config) (securityinternal.HandshakeConfig, error) {
-	if err := requirePrivateKeyPermissions(cfg.Noise.KeyFile); err != nil {
-		return securityinternal.HandshakeConfig{}, err
+func loadNoiseStatic(path string) (securityinternal.KeyPair, error) {
+	if err := requirePrivateKeyPermissions(path); err != nil {
+		return securityinternal.KeyPair{}, err
 	}
-	key, err := securityinternal.LoadKeyPair(cfg.Noise.KeyFile)
+	return securityinternal.LoadKeyPair(path)
+}
+
+func noiseConfig(cfg config.Config) (securityinternal.HandshakeConfig, error) {
+	key, err := loadNoiseStatic(cfg.Noise.KeyFile)
 	if err != nil {
 		return securityinternal.HandshakeConfig{}, err
 	}
@@ -24,6 +28,32 @@ func noiseConfig(cfg config.Config) (securityinternal.HandshakeConfig, error) {
 	}
 	return securityinternal.HandshakeConfig{Static: key, PeerStatic: pub, RecordShaping: cfg.Noise.RecordShaping}, nil
 }
+
+func noiseListenerOptions(cfg config.Config) (securityinternal.HandshakeConfig, map[string][]byte, string, error) {
+	key, err := loadNoiseStatic(cfg.Noise.KeyFile)
+	if err != nil {
+		return securityinternal.HandshakeConfig{}, nil, "", err
+	}
+	hs := securityinternal.HandshakeConfig{Static:key, RecordShaping:cfg.Noise.RecordShaping}
+	if len(cfg.Noise.AllowedPeerPublicKeys) == 0 {
+		pub, err := securityinternal.DecodePublicKey(cfg.Noise.PeerPublicKey)
+		if err != nil {
+			return securityinternal.HandshakeConfig{}, nil, "", err
+		}
+		hs.PeerStatic = pub
+		return hs, nil, cfg.Server.AllowedPeerIdentities[0], nil
+	}
+	allowed := make(map[string][]byte, len(cfg.Noise.AllowedPeerPublicKeys))
+	for identity, encoded := range cfg.Noise.AllowedPeerPublicKeys {
+		pub, err := securityinternal.DecodePublicKey(encoded)
+		if err != nil {
+			return securityinternal.HandshakeConfig{}, nil, "", fmt.Errorf("Noise peer %s: %w",identity,err)
+		}
+		allowed[identity] = pub
+	}
+	return hs, allowed, "", nil
+}
+
 func coverHandler(path string) (http.Handler, error) {
 	if path == "" {
 		return nil, nil
