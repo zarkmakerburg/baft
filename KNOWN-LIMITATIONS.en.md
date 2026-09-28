@@ -14,3 +14,7 @@
 - final systemd/installer/config rollback/certificate rotation/support-bundle operations are incomplete.
 - no real Iran↔EX pilot has been run.
 - no universal throughput, undetectability, or guaranteed-connectivity claim has been established.
+
+
+## Step 5.7 recovery scope
+ECRL runtime recovery is limited to **same-process carrier replacement** for an already-live session. It does not persist recovery snapshots across process restart or machine reboot, and it does not claim process-restart resume. A peer BootID change during recovery fails closed. Subscription Engine work is out of scope. Record Shaping, Morphing, and Stealth behavior are unchanged by Step 5.7.
