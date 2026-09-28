@@ -49,6 +49,28 @@ type Runtime struct {
 	bootID          string
 }
 
+type RecoveryAuthoritySnapshot struct {
+	Epoch uint64
+	Owner string
+	Frozen bool
+}
+
+func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
+	r.recoveryFault=fn
+}
+
+func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	out:=make([]RecoveryAuthoritySnapshot,0,len(peers))
+	for _,p:=range peers{
+		out=append(out,RecoveryAuthoritySnapshot{Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),Frozen:p.RecoveryFrozen()})
+	}
+	return out
+}
+
 func NewRuntime() *Runtime {
 	r:=&Runtime{
 		Revocations: identity.NewRevocationSet(),
