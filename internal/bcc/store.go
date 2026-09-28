@@ -71,6 +71,7 @@ type TelemetryCursor struct {
 	EgressBytes     uint64    `json:"egress_bytes"`
 	ActiveSessions  uint64    `json:"active_sessions"`
 	HandshakeErrors             uint64                    `json:"handshake_errors"`
+	NoiseLatencyMS              int64                     `json:"noise_latency_ms"`
 	HandshakeErrorRateMilliMin  int64                     `json:"handshake_error_rate_milli_per_min"`
 	Routes                      []telemetry.RouteSnapshot `json:"routes,omitempty"`
 	LastTelemetry               time.Time                 `json:"last_telemetry"`
@@ -81,6 +82,7 @@ type HistoryPoint struct {
 	IngressBytes                uint64                    `json:"ingress_bytes"`
 	EgressBytes                 uint64                    `json:"egress_bytes"`
 	ActiveSessions              uint64                    `json:"active_sessions"`
+	NoiseLatencyMS              int64                     `json:"noise_latency_ms"`
 	HandshakeErrorRateMilliMin  int64                     `json:"handshake_error_rate_milli_per_min"`
 	NodeHealth                  string                    `json:"node_health"`
 	LatencyMS                   int64                     `json:"latency_ms"`
@@ -98,6 +100,7 @@ type MonitoringNode struct {
 	LastSeen                   time.Time                 `json:"last_seen,omitempty"`
 	ActiveSessions             uint64                    `json:"active_sessions"`
 	HandshakeErrors            uint64                    `json:"handshake_errors"`
+	NoiseLatencyMS             int64                     `json:"noise_latency_ms"`
 	HandshakeErrorRateMilliMin int64                     `json:"handshake_error_rate_milli_per_min"`
 	Routes                     []telemetry.RouteSnapshot `json:"routes,omitempty"`
 }
@@ -359,12 +362,12 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 		NodeID:report.NodeID,BootID:report.BootID,Sequence:report.Sequence,
 		IngressBytes:report.IngressBytes,EgressBytes:report.EgressBytes,
 		ActiveSessions:report.ActiveSessions,HandshakeErrors:report.HandshakeErrors,
-		HandshakeErrorRateMilliMin:rateMilli,Routes:routes,LastTelemetry:ts,
+		NoiseLatencyMS:report.NoiseLatencyMS,HandshakeErrorRateMilliMin:rateMilli,Routes:routes,LastTelemetry:ts,
 	}
 	n=s.st.Nodes[report.NodeID]
 	point:=HistoryPoint{
 		Timestamp:ts,IngressBytes:report.IngressBytes,EgressBytes:report.EgressBytes,
-		ActiveSessions:report.ActiveSessions,HandshakeErrorRateMilliMin:rateMilli,
+		ActiveSessions:report.ActiveSessions,NoiseLatencyMS:report.NoiseLatencyMS,HandshakeErrorRateMilliMin:rateMilli,
 		NodeHealth:n.Health,LatencyMS:n.LatencyMS,Routes:routes,
 	}
 	h:=s.st.History[report.NodeID]
@@ -403,7 +406,7 @@ func (s *Store) MonitoringSnapshot(now time.Time,staleAfter time.Duration) []Mon
 		out=append(out,MonitoringNode{
 			NodeID:id,Alias:n.Alias,Address:n.Address,Role:n.Role,Status:status,
 			HealthCheckStatus:n.Health,LatencyMS:n.LatencyMS,LastSeen:cur.LastTelemetry,
-			ActiveSessions:cur.ActiveSessions,HandshakeErrors:cur.HandshakeErrors,
+			ActiveSessions:cur.ActiveSessions,HandshakeErrors:cur.HandshakeErrors,NoiseLatencyMS:cur.NoiseLatencyMS,
 			HandshakeErrorRateMilliMin:cur.HandshakeErrorRateMilliMin,Routes:routes,
 		})
 	}
