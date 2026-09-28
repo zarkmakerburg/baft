@@ -93,6 +93,8 @@ type Peer struct {
 	recoveryRetention  time.Duration
 	recovery           *RecoveryAdapter
 	recoveryNeeded     chan error
+	carrierSwitchMu    sync.Mutex
+	carrierSwitchWait  chan struct{}
 	replacementMu      sync.Mutex
 	replacementWait    chan struct{}
 	carrierID          string
@@ -210,7 +212,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		epoch: "1", readyCh: make(chan struct{}), trafficObserver: opts.TrafficObserver,
 		latencyObserver: opts.LatencyObserver, pingInterval: opts.PingInterval,
 		recoveryEnabled: opts.RecoveryEnabled, recoveryRetention: opts.RecoveryRetention,
-		recoveryNeeded: make(chan error,1), replacementWait: make(chan struct{}), carrierEpoch:1,
+		recoveryNeeded: make(chan error,1), carrierSwitchWait: make(chan struct{}), replacementWait: make(chan struct{}), carrierEpoch:1,
 	}
 	if role == Dialer {
 		p.nextID = 1
@@ -294,13 +296,13 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 				return err
 			}
 			p.onCarrierFailure(err)
-			if err:=p.waitForReplacement(runCtx,epoch,carrierID);err!=nil{return err}
+			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID);err!=nil{return err}
 			continue
 		}
 		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil {
 			if p.recoveryEnabled && errors.Is(err,ErrCarrierUnavailable) {
 				p.onCarrierFailure(err)
-				if werr:=p.waitForReplacement(runCtx,epoch,carrierID);werr!=nil{return werr}
+				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID);werr!=nil{return werr}
 				continue
 			}
 			return err
