@@ -408,8 +408,13 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 		published:true,finalized:true,activationComplete:true,rebindPending:true,
 	}
 	a.mu.Lock()
-	if a.prepared==nil{a.prepared=prep}else{prep=a.prepared}
+	if a.prepared==nil{
+		a.prepared=prep
+		a.mu.Unlock()
+		return nil
+	}
 	a.mu.Unlock()
-	if prep!=a.prepared{return recovery.ErrStateMismatch}
-	return nil
+	// Another exact rebind won the race; update that prepared transaction
+	// through the normal control-only rebind path.
+	return p.RebindPreparedRecovery(ctx,ctl,c)
 }
