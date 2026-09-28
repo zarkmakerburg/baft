@@ -774,6 +774,9 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 			}
 			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			a.replayed.Add(uint64(len(fr.Payload)))
+			if a.postCommitFault!=nil {
+				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			}
 		}
 
 		fl.mu.Lock()
@@ -786,12 +789,18 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 				if err:=a.postCommitFault("fin_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			}
 			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			if a.postCommitFault!=nil {
+				if err:=a.postCommitFault("after_fin_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			}
 		}
 		if ackPeerFIN {
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("fin_ack_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			}
 			if err:=p.ackRemoteFin(fl);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			if a.postCommitFault!=nil {
+				if err:=a.postCommitFault("after_fin_ack_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			}
 		}
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
