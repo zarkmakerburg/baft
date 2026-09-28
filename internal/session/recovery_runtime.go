@@ -574,6 +574,37 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	return nil
 }
 
+func (p *Peer) MarkPostCommitFailure(err error,ctl RecoveryControl) error {
+	if err==nil{err=ErrCarrierUnavailable}
+	_,out:=p.markPostCommitFailure(err,ctl)
+	return out
+}
+
+func (p *Peer) HandleRecoveryControlFrame(fr protocol.Frame) error {
+	ctl,err:=DecodeRecoveryControl(fr);if err!=nil{return err}
+	switch ctl.Phase {
+	case RecoveryPhaseCommit:
+		ack,err:=p.HandleCommittedRecoveryControl(ctl);if err!=nil{return err}
+		return p.senderNow().sendControl(protocol.Frame{Type:protocol.TypeResumeDone,Payload:mustRecoveryControlPayload(ack)})
+	case RecoveryPhaseCommitAck:
+		// A duplicate/lost-ACK retry acknowledgement for an already committed
+		// transaction has no application side effects.
+		a:=p.recovery
+		if a==nil{return recovery.ErrStateMismatch}
+		a.mu.Lock();last:=a.lastCommit;a.mu.Unlock()
+		if !sameRecoveryTransaction(last,ctl){return recovery.ErrStateMismatch}
+		return nil
+	default:
+		return recovery.ErrStateMismatch
+	}
+}
+
+func mustRecoveryControlPayload(ctl RecoveryControl) []byte {
+	b,err:=json.Marshal(ctl)
+	if err!=nil{panic(err)}
+	return b
+}
+
 func (p *Peer) CommitPreparedRecovery(ctx context.Context,ctl RecoveryControl)(CommitResult,error){
 	res,err:=p.PublishRecoveryCommit(ctl)
 	if err!=nil{return res,err}
