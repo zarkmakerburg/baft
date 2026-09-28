@@ -72,8 +72,16 @@ jobs:
         run: |
           go test ./internal/config -run '^TestValidateSameProcessRecoveryScope$' -count=1 -v
           go test ./internal/node -run 'TestRuntimeCandidateSetupFailureKeepsOldOwner|TestRuntimeSnapshotExchangeFailureKeepsOldOwner|TestRuntimeFailureImmediatelyBeforeCommitKeepsOldOwner' -count=1 -v
-          go test ./internal/session -run 'TestOldEpochFramesRejectedAfterCommit|TestRecoveryFailureBeforeCommitKeepsOldOwner|TestRecoveryFailureImmediatelyBeforeCommitKeepsOldOwner|TestRecoveryPeerBootChangeFailsClosed|TestCompetingRecoveryCandidatesSingleWinner|TestRecoveryDuringFINPreservesCloseSemantics|TestRecoveryDuringFINPreservesPendingFinAck|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestRecoveryBoundedReplayMissingBytesFailsClosed|TestRecoveryFreezeRejectsNewOpenOnLiveSession|TestRecoveryDisabledBaselineUnchanged' -count=1 -v
-          go test ./tests/integration -run '^TestRuntimeCarrierReplacementPreservesActiveFlow$' -count=3 -v
+          go test ./internal/session -run 'TestOldEpochFramesRejectedAfterCommit|TestRecoveryFailureBeforeCommitKeepsOldOwner|TestRecoveryFailureImmediatelyBeforeCommitKeepsOldOwner|TestRecoveryPeerBootChangeFailsClosed|TestCompetingRecoveryCandidatesSingleWinner|TestRecoveryDuringFINPreservesCloseSemantics|TestRecoveryDuringFINPreservesPendingFinAck|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestRecoveryBoundedReplayMissingBytesFailsClosed|TestRecoveryFreezeRejectsNewOpenOnLiveSession|TestRecoveryDisabledBaselineUnchanged|TestDuplicateCommitIsIdempotent|TestLostCommitACKRetryIsIdempotent|TestPlanDigestMismatchRejectsCommit|TestPostCommitReplayFailureNeverReauthorizesOldEpoch|TestPostCommitFailureCanRecoverToNextEpoch|TestPostCommitFailureDoesNotLeaveSessionFrozen|TestRecoveryCommitMetricsReflectAuthorityChange' -count=1 -v
+          go test ./tests/integration -run 'TestTwoRuntimeDialerPreCommitFailureKeepsBothOldEpoch|TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch' -count=1 -v
+          go test ./tests/integration -run '^TestRuntimeCarrierReplacementPreservesActiveFlow
+      - name: Race detector
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Protocol fuzz smoke
+        run: go test ./internal/protocol -run '^$' -fuzz '^FuzzDecode$' -fuzztime 10s
+ -count=3 -v
           go test ./tests/integration -run 'TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestRecoveryTelemetryFinanceRemainExact' -count=1 -v
       - name: Race detector
         run: go test -race ./...
