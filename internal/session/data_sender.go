@@ -320,3 +320,10 @@ func (s *outboundSender) isStopped() bool {
 	s.mu.Lock();defer s.mu.Unlock()
 	return s.stopped
 }
+
+
+func (s *outboundSender) isStarted() bool {
+	if s==nil{return false}
+	s.mu.Lock();defer s.mu.Unlock()
+	return s.started&&!s.stopped
+}
