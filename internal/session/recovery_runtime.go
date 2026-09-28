@@ -793,10 +793,17 @@ func mustRecoveryControlPayload(ctl RecoveryControl) []byte {
 	return b
 }
 
+// CommitPreparedRecovery is an in-package convenience path used by
+// deterministic engine/session tests. It models an already obtained exact
+// peer FINALIZE proof before local activation. Runtime distributed recovery
+// performs the real FINALIZE/FINALIZE_ACK exchange in internal/node.
 func (p *Peer) CommitPreparedRecovery(ctx context.Context,ctl RecoveryControl)(CommitResult,error){
 	res,err:=p.PublishRecoveryCommit(ctl)
 	if err!=nil{return res,err}
-	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{return res,err}
+	finalCtl:=ctl;finalCtl.Phase=RecoveryPhaseFinalize;finalCtl.Status=RecoveryResolutionNone
+	if err:=p.MarkFinalizationStarted(finalCtl);err!=nil{return res,err}
+	if err:=p.CompleteRecoveryFinalization(finalCtl);err!=nil{return res,err}
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{return res,err}
 	return res,nil
 }
 
