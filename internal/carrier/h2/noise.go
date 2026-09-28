@@ -23,6 +23,7 @@ type NoiseOptions struct {
 	HandshakeTimeout time.Duration
 	MaxPending       int
 	Revocations      RevocationWatcher
+	OnHandshakeError func()
 }
 
 func DefaultCover() http.Handler {
@@ -121,6 +122,7 @@ func HandlerWithNoise(stream StreamHandler, o NoiseOptions) (http.Handler, error
 		_ = controller.SetWriteDeadline(time.Time{})
 		<-slots
 		if err != nil {
+			if o.OnHandshakeError != nil { o.OnHandshakeError() }
 			if !out.started {
 				o.Cover.ServeHTTP(w, r)
 			}
