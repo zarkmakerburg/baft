@@ -168,6 +168,15 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 	if p.recovery==nil{return RecoveryOffer{},errors.New("recovery is disabled")}
 	a:=p.recovery
 	a.attempts.Add(1)
+	a.mu.Lock()
+	if a.frozen {
+		pending:=a.pendingCandidate
+		a.mu.Unlock()
+		if pending==candidateID{return RecoveryOffer{},recovery.ErrResumeFrozen}
+		a.recordFailure("lease_conflict")
+		return RecoveryOffer{},recovery.ErrLeaseConflict
+	}
+	a.mu.Unlock()
 	snap,routes,err:=p.recoverySnapshot();if err!=nil{a.recordFailure("snapshot_exchange");return RecoveryOffer{},err}
 	ids:=make([]recovery.FlowIdentity,0,len(snap.Flows))
 	for _,f:=range snap.Flows{ids=append(ids,recovery.FlowIdentity{StreamID:f.StreamID,OpenNonce:f.OpenNonce})}
