@@ -743,15 +743,11 @@ func (p *Peer) PublishRecoveryCommit(ctl RecoveryControl)(CommitResult,error){
 	}
 	a.mu.Unlock()
 
-	// This is the authority boundary. Old epoch is fenced from here onward.
-	// Candidate activation/replay is intentionally deferred until the peer has
-	// acknowledged the same committed transaction identity.
-	p.writer.mu.Lock();p.writer.w=prep.carrier.Out;p.writer.mu.Unlock()
-	p.mu.Lock()
-	p.carrier=prep.carrier;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.carrierGeneration++
-	oldSender:=p.sender;p.sender=prep.sender
-	p.mu.Unlock()
-	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
+	// This is the authority boundary only. Old epoch is fenced from here
+	// onward, but the candidate remains control-plane-only until distributed
+	// FINALIZE proof exists. Installing p.sender/p.carrier here would allow
+	// live pumps or pingLoop to race recovery control frames on the same
+	// physical stream before FINALIZE/FINALIZE_ACK completes.
 	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},nil
 }
 
@@ -783,6 +779,31 @@ func (p *Peer) waitReplayAccepted(ctx context.Context,fl *flow,want uint64,sende
 	}
 }
 
+func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryControl) error {
+	if prep==nil||prep.sender==nil||prep.carrier.In==nil||prep.carrier.Out==nil{return recovery.ErrNotPrepared}
+	// Keep lock order writer -> peer consistent with generation fencing.
+	p.writer.mu.Lock()
+	p.mu.Lock()
+	oldSender:=p.sender
+	p.writer.w=prep.carrier.Out
+	p.carrier=prep.carrier
+	p.carrierID=ctl.CandidateID
+	p.carrierEpoch=ctl.NextEpoch
+	p.carrierGeneration++
+	p.sender=prep.sender
+	p.mu.Unlock()
+	p.writer.mu.Unlock()
+	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stop(ErrCarrierUnavailable)}
+	runCtx:=prep.runCtx
+	if runCtx==nil{runCtx=p.runCtx}
+	if runCtx==nil{return errors.New("session run context unavailable")}
+	if !prep.sender.isStarted(){
+		p.wg.Add(1)
+		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
+	}
+	return nil
+}
+
 func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) error {
 	if p.recovery==nil{return errors.New("recovery is disabled")}
 	a:=p.recovery
@@ -807,6 +828,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		flows:=append([]preparedFlowRecovery(nil),prep.flows...)
 		a.mu.Unlock()
 		if rebound{
+			if err:=p.activatePreparedCarrier(prep,ctl);err!=nil{return err}
 			p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 			p.signalReplacementReady()
 			for i:=range flows{
@@ -823,12 +845,10 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	if prep.sender==nil||prep.sender.isStopped(){
 		_,e:=p.markPostCommitFailure(ErrCarrierUnavailable,ctl);return e
 	}
-	sender:=prep.sender
-	runCtx:=prep.runCtx
-	if !sender.isStarted(){p.wg.Add(1);go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(sender,runCtx)}
-	// From here the session reader may consume ACK/FIN evidence from the
-	// committed carrier. The recovery-control handler must no longer Decode
-	// application frames from this carrier.
+	// Distributed FINALIZED proof is now present. Only at this point may the
+	// candidate become the live data-plane carrier. Recovery control has
+	// finished consuming frames, so session reader/pumps can safely take over.
+	if err:=p.activatePreparedCarrier(prep,ctl);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
