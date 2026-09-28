@@ -142,23 +142,34 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	if err:=r.recoveryFail("before_commit");err!=nil{sh.peer.RecordRecoveryFailure("commit");return fmt.Errorf("before commit: %w",err)}
 
 	commitCtl:=prepared;commitCtl.Phase=session.RecoveryPhaseCommit
+	commitCopies:=r.recoveryControlCopiesForTest("dialer_commit_send",&commitCtl)
 	if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{return fmt.Errorf("commit send: %w",err)}
 	if err:=sh.peer.MarkCommitSent(commitCtl);err!=nil{return err}
+	for i:=1;i<commitCopies;i++{
+		if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{
+			_ = sh.peer.MarkCommitUncertain(commitCtl)
+			return fmt.Errorf("%w: duplicate commit send: %v",session.ErrCommitUncertain,err)
+		}
+	}
 	if err:=r.recoveryFail("after_commit_sent_before_ack");err!=nil{
 		_ = sh.peer.MarkCommitUncertain(commitCtl)
 		return fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)
 	}
-	fr,err=protocol.Decode(o.carrier.In);if err!=nil{
-		_ = sh.peer.MarkCommitUncertain(commitCtl)
-		return fmt.Errorf("%w: commit ack: %v",session.ErrCommitUncertain,err)
-	}
-	peerAck,err:=session.DecodeRecoveryControl(fr);if err!=nil{
-		_ = sh.peer.MarkCommitUncertain(commitCtl)
-		return fmt.Errorf("%w: decode commit ack: %v",session.ErrCommitUncertain,err)
-	}
-	if err:=sh.peer.ValidateRecoveryControl(peerAck,session.RecoveryPhaseCommitAck);err!=nil{
-		_ = sh.peer.MarkCommitUncertain(commitCtl)
-		return fmt.Errorf("%w: validate commit ack: %v",session.ErrCommitUncertain,err)
+	ackReads:=r.recoveryControlCopiesForTest("dialer_commit_ack_reads",&commitCtl)
+	if ackReads<commitCopies{ackReads=commitCopies}
+	for i:=0;i<ackReads;i++{
+		fr,err=protocol.Decode(o.carrier.In);if err!=nil{
+			_ = sh.peer.MarkCommitUncertain(commitCtl)
+			return fmt.Errorf("%w: commit ack: %v",session.ErrCommitUncertain,err)
+		}
+		peerAck,err:=session.DecodeRecoveryControl(fr);if err!=nil{
+			_ = sh.peer.MarkCommitUncertain(commitCtl)
+			return fmt.Errorf("%w: decode commit ack: %v",session.ErrCommitUncertain,err)
+		}
+		if err:=sh.peer.ValidateRecoveryControl(peerAck,session.RecoveryPhaseCommitAck);err!=nil{
+			_ = sh.peer.MarkCommitUncertain(commitCtl)
+			return fmt.Errorf("%w: validate commit ack: %v",session.ErrCommitUncertain,err)
+		}
 	}
 
 	res,err:=sh.peer.PublishRecoveryCommit(commitCtl)
@@ -296,9 +307,16 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 				return true,fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)
 			}
 			ack:=ctl;ack.Phase=session.RecoveryPhaseCommitAck
-			if err:=session.EncodeRecoveryControl(out,ack);err!=nil{
+			if err:=r.recoveryFail("before_commit_ack_write");err!=nil{
 				_ = p.MarkCommitUncertain(ctl)
-				return true,fmt.Errorf("%w: commit ack: %v",session.ErrCommitUncertain,err)
+				return true,fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)
+			}
+			ackCopies:=r.recoveryControlCopiesForTest("listener_commit_ack_send",&ack)
+			for i:=0;i<ackCopies;i++{
+				if err:=session.EncodeRecoveryControl(out,ack);err!=nil{
+					_ = p.MarkCommitUncertain(ctl)
+					return true,fmt.Errorf("%w: commit ack: %v",session.ErrCommitUncertain,err)
+				}
 			}
 			if err:=r.recoveryFail("after_commit_ack_write");err!=nil{
 				_ = p.MarkCommitUncertain(ctl)
@@ -330,7 +348,8 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 		if err:=p.RememberNotCommitted(query);err!=nil{return err}
 	}
 	if err:=r.recoveryFail("before_status_reply");err!=nil{return err}
-	if err:=session.EncodeRecoveryControl(out,reply);err!=nil{return err}
+	replyCopies:=r.recoveryControlCopiesForTest("listener_status_reply_send",&reply)
+	for i:=0;i<replyCopies;i++{if err:=session.EncodeRecoveryControl(out,reply);err!=nil{return err}}
 	if err:=r.recoveryFail("after_status_reply_write");err!=nil{return err}
 
 	switch reply.Status{
