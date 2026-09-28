@@ -205,6 +205,9 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 			if !published{return true,recovery.ErrStateMismatch}
 			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommitAck);err!=nil{return true,err}
 			if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return true,err}
+			// The session reader now owns candidate frames. Keep the HTTP/2
+			// request alive; returning here would close the committed carrier.
+			<-hctx.Done()
 			return true,nil
 		default:
 			return true,recovery.ErrStateMismatch
