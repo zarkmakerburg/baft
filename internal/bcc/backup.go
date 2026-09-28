@@ -79,6 +79,7 @@ func normalizeState(st *state){
 	if st.RateHistory==nil{st.RateHistory=map[string][]FinancePolicy{}}
 	if st.Telemetry==nil{st.Telemetry=map[string]TelemetryCursor{}}
 	if st.History==nil{st.History=map[string][]HistoryPoint{}}
+	if st.ActiveAlerts==nil{st.ActiveAlerts=map[string]Alert{}}
 	if st.NextJob==0{st.NextJob=1}
 	if st.NextRateVersion==0{st.NextRateVersion=1}
 }
@@ -138,6 +139,7 @@ func (s *Server) snapshotBackupPayload()(backupPayload,AuditAnchor,error){
 	for k,v:=range s.activeAlerts{active[k]=v}
 	ac:=s.alertConfig
 	s.alertMu.Unlock()
+	st.ActiveAlerts=cloneAlerts(active)
 
 	return backupPayload{
 		State:st,
@@ -325,6 +327,10 @@ func (s *Server) RestoreFromFile(path string,key []byte) error {
 	s.alertMu.Lock()
 	s.activeAlerts=make(map[string]Alert,len(payload.Alerts.ActiveAlerts))
 	for k,v:=range payload.Alerts.ActiveAlerts{s.activeAlerts[k]=v}
+	s.store.mu.Lock()
+	s.store.st.ActiveAlerts=cloneAlerts(s.activeAlerts)
+	_ = s.store.saveLocked()
+	s.store.mu.Unlock()
 	if payload.Alerts.TelemetryStaleAfterNanos>0{s.alertConfig.TelemetryStaleAfter=time.Duration(payload.Alerts.TelemetryStaleAfterNanos)}
 	if payload.Alerts.HandshakeErrorRateMilliPerMin>0{s.alertConfig.HandshakeErrorRateMilliPerMin=payload.Alerts.HandshakeErrorRateMilliPerMin}
 	if payload.Alerts.IntervalNanos>0{s.alertConfig.Interval=time.Duration(payload.Alerts.IntervalNanos)}
