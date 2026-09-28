@@ -45,6 +45,7 @@ type Runtime struct {
 	sessionMu       sync.Mutex
 	sessions        map[string]*session.Peer
 	recoverySeq     atomic.Uint64
+	recoveryFaultMu sync.RWMutex
 	recoveryFault   func(string) error
 	bootID          string
 }
@@ -56,7 +57,9 @@ type RecoveryAuthoritySnapshot struct {
 }
 
 func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
+	r.recoveryFaultMu.Lock()
 	r.recoveryFault=fn
+	r.recoveryFaultMu.Unlock()
 }
 
 func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
