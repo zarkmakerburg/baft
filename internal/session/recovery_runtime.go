@@ -25,6 +25,11 @@ type RecoveryOffer struct {
 	Routes      map[uint64]string `json:"routes"`
 }
 
+type RecoveryDone struct {
+	CandidateID string `json:"candidate_id"`
+	NextEpoch uint64 `json:"next_epoch"`
+}
+
 type RecoveryStats struct {
 	Attempts      uint64
 	Commits       uint64
@@ -79,6 +84,7 @@ func (a *RecoveryAdapter) Stats() RecoveryStats {
 
 func (p *Peer) RecoveryNeeded() <-chan error { return p.recoveryNeeded }
 
+func (p *Peer) PeerIdentity() string { p.mu.Lock(); defer p.mu.Unlock(); return p.peerID }
 func (p *Peer) SessionID() string { p.mu.Lock(); defer p.mu.Unlock(); return p.sessionID }
 func (p *Peer) BootID() string { p.mu.Lock(); defer p.mu.Unlock(); return p.bootID }
 func (p *Peer) PeerBootID() string { p.mu.Lock(); defer p.mu.Unlock(); return p.peerBootID }
@@ -301,4 +307,19 @@ func DecodeRecoveryOffer(fr protocol.Frame)(RecoveryOffer,error){
 	if err:=dec.Decode(&o);err!=nil{return RecoveryOffer{},err}
 	if o.CandidateID==""||o.NextEpoch==0||o.Snapshot.SessionID==""{return RecoveryOffer{},recovery.ErrStateMismatch}
 	return o,nil
+}
+
+
+func EncodeRecoveryDone(w io.Writer,done RecoveryDone) error {
+	if done.CandidateID==""||done.NextEpoch==0{return recovery.ErrStateMismatch}
+	b,err:=json.Marshal(done);if err!=nil{return err}
+	return protocol.Encode(w,protocol.Frame{Type:protocol.TypeResumeDone,Payload:b})
+}
+func DecodeRecoveryDone(fr protocol.Frame)(RecoveryDone,error){
+	if fr.Type!=protocol.TypeResumeDone{return RecoveryDone{},errors.New("expected RESUME_DONE")}
+	dec:=json.NewDecoder(bytes.NewReader(fr.Payload));dec.DisallowUnknownFields()
+	var d RecoveryDone
+	if err:=dec.Decode(&d);err!=nil{return RecoveryDone{},err}
+	if d.CandidateID==""||d.NextEpoch==0{return RecoveryDone{},recovery.ErrStateMismatch}
+	return d,nil
 }
