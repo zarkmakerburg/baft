@@ -74,8 +74,12 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 		if token == "" { return fmt.Errorf("telemetry agent token environment %s is empty", tokenEnv) }
 		interval := 60 * time.Second
 		if cfg.Telemetry.IntervalSeconds > 0 { interval = time.Duration(cfg.Telemetry.IntervalSeconds) * time.Second }
-		exp, err := telemetry.New(cfg.Node.ID, cfg.Telemetry.BCCURL, token, interval, r.telemetrySnapshot)
-		if err != nil { return err }
+		spoolPath:=strings.TrimSpace(cfg.Telemetry.SpoolPath)
+		if spoolPath==""{spoolPath=cfg.Management.UnixSocket+".telemetry-spool.json"}
+		queueLimit:=cfg.Telemetry.SpoolMaxPending
+		if queueLimit<=0{queueLimit=telemetry.DefaultQueueLimit}
+		exp, err := telemetry.NewPersistent(cfg.Node.ID, cfg.Telemetry.BCCURL, token, spoolPath, interval, queueLimit, r.telemetrySnapshot)
+		if err != nil { return fmt.Errorf("telemetry spool: %w",err) }
 		go exp.Run(runCtx)
 		probeInterval := 10 * time.Second
 		if cfg.Telemetry.RouteProbeIntervalSeconds > 0 {
