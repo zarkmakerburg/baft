@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -124,5 +123,4 @@ func TestNoiseListenerAcceptsAndSeparatesTwoIRPeers(t *testing.T) {
 			t.Fatalf("%s shutdown timed out",name)
 		}
 	}
-	fmt.Sprint()
 }
