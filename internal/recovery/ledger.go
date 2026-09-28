@@ -157,8 +157,10 @@ func Reconcile(local, peer Snapshot, expectedPeerBootID string) (Plan, error) {
 			PeerAckAdvanceTo: lf.RxAccepted,
 			LocalReleaseThrough: lf.TxAcked,
 			PeerReleaseThrough: pf.TxAcked,
-			LocalFinAckCanAdvance: pf.FinAckSent && !lf.FinAcked,
-			PeerFinAckCanAdvance: lf.FinAckSent && !pf.FinAcked,
+			// FIN_ACK write success is not acceptance proof. The sender of a
+			// FIN_ACK learns peer acceptance only after FIN_ACK_CONFIRM.
+			LocalFinAckCanAdvance: pf.FinAckConfirmed && !lf.FinAcked,
+			PeerFinAckCanAdvance: lf.FinAckConfirmed && !pf.FinAcked,
 			LocalFinAckConfirmCanAdvance: pf.FinAcked && lf.FinAckSent && !lf.FinAckConfirmed,
 			PeerFinAckConfirmCanAdvance: lf.FinAcked && pf.FinAckSent && !pf.FinAckConfirmed,
 		})
