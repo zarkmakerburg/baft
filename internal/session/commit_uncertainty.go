@@ -154,10 +154,12 @@ func (p *Peer) CompleteRecoveryFinalization(ctl RecoveryControl) error {
 	default:
 		a.mu.Unlock();return fmt.Errorf("%w: finalize completion from %s",ErrRecoveryTransition,a.txnState)
 	}
+	// FINALIZED is distributed transaction evidence only. Keep the flow set
+	// frozen until local replay/FIN activation completes. This prevents fresh
+	// OPEN/data-path mutation from racing the evidence-based replay frontier.
+	a.uncertain=RecoveryControl{}
 	if a.prepared!=nil{a.prepared.finalizing=false;a.prepared.finalized=true}
-	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
 	a.mu.Unlock()
-	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
 	return nil
 }
 
