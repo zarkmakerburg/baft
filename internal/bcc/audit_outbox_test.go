@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -186,18 +187,9 @@ func TestAuditAnchorACKRemovesPendingAndProvidesIdempotencyKey(t *testing.T){
 	if len(app.anchorOutbox.Pending())!=0{t.Fatalf("2xx did not ACK pending=%+v",app.anchorOutbox.Pending())}
 	got,keys:=recv.snapshot()
 	if len(got)!=1||len(keys)!=1||keys[0]==""{t.Fatalf("receiver anchors=%+v keys=%v",got,keys)}
-	wantKey:="baft-audit:"+json.Number(string(rune(0))).String()
-	_ = wantKey
-	expected:="baft-audit:"+formatUint(got[0].Sequence)+":"+got[0].Hash
+	expected:="baft-audit:"+strconv.FormatUint(got[0].Sequence,10)+":"+got[0].Hash
 	if keys[0]!=expected{t.Fatalf("idempotency key=%q want=%q",keys[0],expected)}
 	if app.anchorOutbox.AckedThrough()<got[0].Sequence{t.Fatalf("acked through=%d anchor=%d",app.anchorOutbox.AckedThrough(),got[0].Sequence)}
 	t.Logf("PASS 2xx ACK removed pending idempotency_key=%s",keys[0])
 }
 
-func formatUint(v uint64) string {
-	if v==0{return "0"}
-	var buf [20]byte
-	i:=len(buf)
-	for v>0{i--;buf[i]=byte('0'+v%10);v/=10}
-	return string(buf[i:])
-}
