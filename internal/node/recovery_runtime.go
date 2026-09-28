@@ -422,8 +422,10 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 	if p.PeerIdentity()!=peer.Identity{return errors.New("recovery status peer identity mismatch")}
 	reply,err:=p.EvaluateCommitStatus(query);if err!=nil{return err}
 
-	if reply.Status==session.RecoveryResolutionCommitted{
-		commitCtl:=query;commitCtl.Phase=session.RecoveryPhaseCommit;commitCtl.Status=session.RecoveryResolutionNone
+	commitCtl:=query
+	commitCtl.Phase=session.RecoveryPhaseCommit
+	commitCtl.Status=session.RecoveryResolutionNone
+	if reply.Status==session.RecoveryResolutionCommitted||reply.Status==session.RecoveryResolutionFinalized{
 		if err:=p.RebindCommittedCarrier(hctx,commitCtl,session.Carrier{In:in,Out:out});err!=nil{return err}
 	}
 	if reply.Status==session.RecoveryResolutionNotCommitted{
@@ -431,31 +433,53 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 	}
 	if err:=r.recoveryFail("before_status_reply");err!=nil{return err}
 	replyCopies:=r.recoveryControlCopiesForTest("listener_status_reply_send",&reply)
+	if replyCopies<1{replyCopies=1}
 	for i:=0;i<replyCopies;i++{if err:=session.EncodeRecoveryControl(out,reply);err!=nil{return err}}
 	if err:=r.recoveryFail("after_status_reply_write");err!=nil{return err}
 
 	switch reply.Status{
-	case session.RecoveryResolutionCommitted:
+	case session.RecoveryResolutionCommitted,session.RecoveryResolutionFinalized:
 		for {
-			fr,err:=protocol.Decode(in);if err!=nil{
-				_ = p.MarkCommitUncertain(query)
-				return fmt.Errorf("%w: resolution finalize ack: %v",session.ErrCommitUncertain,err)
+			fr,err:=protocol.Decode(in)
+			if err!=nil{
+				if p.RecoveryTransactionState()!=session.RecoveryTxnFinalized{
+					finalCtl:=commitCtl;finalCtl.Phase=session.RecoveryPhaseFinalize
+					_ = p.MarkFinalizationUncertain(finalCtl)
+				}
+				return fmt.Errorf("%w: resolution finalization: %v",session.ErrFinalizationUncertain,err)
 			}
 			ctl,err:=session.DecodeRecoveryControl(fr);if err!=nil{return err}
-			if ctl.Phase==session.RecoveryPhaseStatusQuery {
+			switch ctl.Phase{
+			case session.RecoveryPhaseStatusQuery:
 				dupReply,err:=p.EvaluateCommitStatus(ctl);if err!=nil{return err}
-				if dupReply.Status!=session.RecoveryResolutionCommitted{return session.ErrCommitUncertain}
+				if dupReply.Status!=session.RecoveryResolutionCommitted&&dupReply.Status!=session.RecoveryResolutionFinalized{return session.ErrCommitUncertain}
 				copies:=r.recoveryControlCopiesForTest("listener_status_reply_send",&dupReply)
+				if copies<1{copies=1}
 				for i:=0;i<copies;i++{if err:=session.EncodeRecoveryControl(out,dupReply);err!=nil{return err}}
 				continue
+			case session.RecoveryPhaseCommitAck:
+				if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommitAck);err!=nil{return err}
+				if err:=session.EncodeRecoveryControl(out,ctl);err!=nil{return err}
+				continue
+			case session.RecoveryPhaseFinalize:
+				if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseFinalize);err!=nil{return err}
+				if err:=p.MarkFinalizationStarted(ctl);err!=nil{return err}
+				if err:=r.recoveryFail("before_resolution_finalize_process");err!=nil{
+					_ = p.MarkFinalizationUncertain(ctl)
+					return fmt.Errorf("%w: %v",session.ErrFinalizationUncertain,err)
+				}
+				if err:=p.CompleteRecoveryFinalization(ctl);err!=nil{return err}
+				ack:=ctl;ack.Phase=session.RecoveryPhaseFinalizeAck
+				copies:=r.recoveryControlCopiesForTest("listener_finalize_ack_send",&ack)
+				if copies<1{copies=1}
+				for i:=0;i<copies;i++{if err:=session.EncodeRecoveryControl(out,ack);err!=nil{return err}}
+				if err:=r.recoveryFail("after_resolution_finalize_ack_write");err!=nil{return err}
+				if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return err}
+				<-hctx.Done()
+				return nil
+			default:
+				return recovery.ErrStateMismatch
 			}
-			if ctl.Phase!=session.RecoveryPhaseCommitAck{return recovery.ErrStateMismatch}
-			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommitAck);err!=nil{return err}
-			commitCtl:=query;commitCtl.Phase=session.RecoveryPhaseCommit;commitCtl.Status=session.RecoveryResolutionNone
-			if err:=p.FinalizeRecoveryCommit(hctx,commitCtl);err!=nil{return err}
-			if err:=session.EncodeRecoveryControl(out,ctl);err!=nil{return err}
-			<-hctx.Done()
-			return nil
 		}
 	case session.RecoveryResolutionNotCommitted:
 		return nil
@@ -465,4 +489,3 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 		return recovery.ErrStateMismatch
 	}
 }
-
