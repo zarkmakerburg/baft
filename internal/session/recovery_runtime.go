@@ -401,9 +401,17 @@ func (p *Peer) HandleCarrierFrame(ctx context.Context,epoch uint64,carrierID str
 	return p.handleFrameFrom(ctx,epoch,carrierID,fr)
 }
 
-func (p *Peer) handleFrameFrom(ctx context.Context,epoch uint64,carrierID string,fr protocol.Frame) error {
-	if p.recovery!=nil && !p.recovery.engine.Authorize(epoch,carrierID) {
-		return recovery.ErrStaleEpoch
+func (p *Peer) handleFrameFrom(ctx context.Context,epoch uint64,carrierID string,fr protocol.Frame,generation ...uint64) error {
+	if p.recovery!=nil {
+		if !p.recovery.engine.Authorize(epoch,carrierID) {
+			return recovery.ErrStaleEpoch
+		}
+		if len(generation)>0 {
+			currentEpoch,currentCarrier,currentGeneration:=p.currentCarrierIdentity()
+			if generation[0]!=currentGeneration||epoch!=currentEpoch||carrierID!=currentCarrier {
+				return recovery.ErrStaleEpoch
+			}
+		}
 	}
 	if p.recoveryEnabled{
 		stage:=""
