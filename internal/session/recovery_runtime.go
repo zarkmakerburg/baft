@@ -338,6 +338,12 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 		a.mu.Unlock()
 		return RecoveryOffer{},ErrCommitUncertain
 	}
+	if a.txnState==RecoveryTxnFinalized||a.txnState==RecoveryTxnAborted {
+		// lastCommit/lastNotCommitted are durable-in-process identity evidence,
+		// but prepared activation state belongs only to the completed transaction.
+		a.prepared=nil
+		a.uncertain=RecoveryControl{}
+	}
 	if a.frozen {
 		pending:=a.pendingCandidate
 		a.mu.Unlock()
@@ -635,7 +641,6 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	if a.postCommitFault!=nil {
 		if err:=a.postCommitFault("after_authority_commit");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 	}
-	var replayed uint64
 	for i:=range prep.flows{
 		act:=&prep.flows[i]
 		fl:=act.flow
@@ -653,7 +658,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 			}
 			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			act.replayApplied++
-			replayed+=uint64(len(fr.Payload))
+			a.replayed.Add(uint64(len(fr.Payload)))
 		}
 		if act.resendFIN&&!act.finSentApplied {
 			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:act.finFinal});err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
@@ -667,7 +672,6 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
 		if !closed&&!act.pumpsRestored{p.ensurePumpsAfterRecovery(prep.runCtx,fl);act.pumpsRestored=true}
 	}
-	a.replayed.Add(replayed)
 	a.mu.Lock()
 	prep.finalizing=false;prep.finalized=true
 	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
