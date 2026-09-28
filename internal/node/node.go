@@ -465,6 +465,7 @@ func (r *Runtime) metricsSnapshot() baftmetrics.Snapshot {
 		out.ReplayUsedBytes = rs.ReplayUsed
 		out.TotalUsedBytes = rs.TotalUsed
 	}
+	out.RecoveryFailures = map[string]uint64{}
 	for _, p := range peers {
 		s := p.ConservationSnapshot()
 		out.ActiveFlows += len(s.Flows)
@@ -478,6 +479,13 @@ func (r *Runtime) metricsSnapshot() baftmetrics.Snapshot {
 			}
 			out.ReplayOutstandingBytes += f.ReplayOutstanding
 		}
+		rs:=p.RecoveryStats()
+		out.RecoveryAttempts += rs.Attempts
+		out.RecoveryCommits += rs.Commits
+		out.RecoveryAborts += rs.Aborts
+		out.RecoveryReplayedBytes += rs.ReplayedBytes
+		if rs.CurrentEpoch > out.RecoveryCurrentEpoch { out.RecoveryCurrentEpoch = rs.CurrentEpoch }
+		for reason,n:=range rs.Failures { out.RecoveryFailures[reason]+=n }
 	}
 	return out
 }
