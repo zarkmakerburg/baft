@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -264,4 +265,144 @@ func TestBackupKeyComesOnlyFromEnvironment(t *testing.T){
 	if !bytes.Equal(got,key){t.Fatal("decoded backup key mismatch")}
 	t.Setenv("BAFT_BCC_BACKUP_KEY","not-base64")
 	if _,err:=BackupKeyFromEnv();err==nil{t.Fatal("invalid env backup key accepted")}
+}
+
+
+func TestTelemetryBootIDAntiRollbackEqualTimestampUsesIngestID(t *testing.T){
+	dir:=t.TempDir()
+	store,_:=OpenStore(filepath.Join(dir,"state.json"))
+	const token="boot-equal-token"
+	_,_ = store.UpsertNode(Node{ID:"n1",Alias:"N1",Address:"127.0.0.1:32501",Role:"foreign"},token)
+	_ = store.SetFinancePolicyAt("n1",100,300,"IRR",time.Unix(0,0))
+	app,_:=NewServer(store,"admin")
+	base:=time.Date(2026,9,28,12,0,0,0,time.UTC)
+
+	first:=telemetry.Report{NodeID:"n1",BootID:"boot-a",Sequence:1,IngressBytes:100,EgressBytes:200,TimestampUnix:base.Unix()}
+	applyTelemetryDirect(t,store,token,first)
+	path:=filepath.Join(dir,"equal.baftbak")
+	if _,err:=app.BackupToFile(path,backupTestKey(),base.Add(time.Minute));err!=nil{t.Fatal(err)}
+
+	second:=telemetry.Report{NodeID:"n1",BootID:"boot-b",Sequence:1,IngressBytes:40,EgressBytes:60,TimestampUnix:base.Unix()}
+	applyTelemetryDirect(t,store,token,second)
+	before:=store.FinanceSnapshot()[0]
+	curBefore,_:=store.TelemetrySnapshot("n1")
+	if curBefore.BootID!="boot-b"||curBefore.IngestID<2{t.Fatalf("missing server ingestion marker: %+v",curBefore)}
+
+	if err:=app.RestoreFromFile(path,backupTestKey());err!=nil{t.Fatal(err)}
+	curAfter,_:=store.TelemetrySnapshot("n1")
+	if curAfter.BootID!="boot-b"||curAfter.IngestID!=curBefore.IngestID{t.Fatalf("cursor rolled back before=%+v after=%+v",curBefore,curAfter)}
+	afterRestore:=store.FinanceSnapshot()[0]
+	if !reflect.DeepEqual(before,afterRestore){t.Fatalf("finance rolled back before=%+v after=%+v",before,afterRestore)}
+
+	body,_:=json.Marshal(second)
+	if _,dup,err:=store.ApplyTelemetry(token,telemetry.Sign(token,body),body,second);err!=nil||!dup{t.Fatalf("replay duplicate=%v err=%v",dup,err)}
+	afterReplay:=store.FinanceSnapshot()[0]
+	if !reflect.DeepEqual(afterRestore,afterReplay){t.Fatalf("equal-timestamp replay changed finance before=%+v after=%+v",afterRestore,afterReplay)}
+	t.Logf("PASS boot-ID anti-rollback equal timestamp ingest_id=%d duplicate=true",curAfter.IngestID)
+}
+
+func TestTelemetryBootIDAntiRollbackClockSkewUsesIngestID(t *testing.T){
+	dir:=t.TempDir()
+	store,_:=OpenStore(filepath.Join(dir,"state.json"))
+	const token="boot-skew-token"
+	_,_ = store.UpsertNode(Node{ID:"n1",Alias:"N1",Address:"127.0.0.1:32502",Role:"foreign"},token)
+	_ = store.SetFinancePolicyAt("n1",100,300,"IRR",time.Unix(0,0))
+	app,_:=NewServer(store,"admin")
+	base:=time.Date(2026,9,28,12,0,0,0,time.UTC)
+
+	first:=telemetry.Report{NodeID:"n1",BootID:"boot-a",Sequence:1,IngressBytes:100,EgressBytes:200,TimestampUnix:base.Unix()}
+	applyTelemetryDirect(t,store,token,first)
+	path:=filepath.Join(dir,"skew.baftbak")
+	if _,err:=app.BackupToFile(path,backupTestKey(),base.Add(time.Minute));err!=nil{t.Fatal(err)}
+
+	second:=telemetry.Report{NodeID:"n1",BootID:"boot-b",Sequence:1,IngressBytes:50,EgressBytes:70,TimestampUnix:base.Add(-2*time.Hour).Unix()}
+	applyTelemetryDirect(t,store,token,second)
+	curBefore,_:=store.TelemetrySnapshot("n1")
+	before:=store.FinanceSnapshot()[0]
+	if err:=app.RestoreFromFile(path,backupTestKey());err!=nil{t.Fatal(err)}
+	curAfter,_:=store.TelemetrySnapshot("n1")
+	if curAfter.IngestID!=curBefore.IngestID||curAfter.BootID!="boot-b"{t.Fatalf("clock-skew cursor rolled back before=%+v after=%+v",curBefore,curAfter)}
+	if !reflect.DeepEqual(before,store.FinanceSnapshot()[0]){t.Fatal("clock-skew restore changed finance")}
+
+	body,_:=json.Marshal(second)
+	if _,dup,err:=store.ApplyTelemetry(token,telemetry.Sign(token,body),body,second);err!=nil||!dup{t.Fatalf("skew replay duplicate=%v err=%v",dup,err)}
+	beforeNew:=store.FinanceSnapshot()[0]
+	third:=second;third.Sequence=2;third.IngressBytes=80;third.EgressBytes=110;third.TimestampUnix=base.Add(-3*time.Hour).Unix()
+	applyTelemetryDirect(t,store,token,third)
+	final:=store.FinanceSnapshot()[0]
+	if final.IngressBytes!=beforeNew.IngressBytes+30||final.EgressBytes!=beforeNew.EgressBytes+40{
+		t.Fatalf("new telemetry did not add exact delta before=%+v final=%+v",beforeNew,final)
+	}
+	t.Logf("PASS boot-ID anti-rollback clock skew ingest_id=%d new_delta=30/40",curAfter.IngestID)
+}
+
+func TestRestoreFaultInjectionLeavesStateAndAuditUnchanged(t *testing.T){
+	stages:=[]string{"state_stage_write","audit_stage_write","audit_verify","before_commit","after_state_commit"}
+	for _,stage:=range stages{
+		t.Run(stage,func(t *testing.T){
+			dir:=t.TempDir()
+			store,_:=OpenStore(filepath.Join(dir,"state.json"))
+			app,_:=NewServer(store,"admin")
+			t.Setenv("RESTORE_FAULT_TOKEN_"+strings.ToUpper(strings.ReplaceAll(stage,"_","X")),"tok")
+			envName:="RESTORE_FAULT_TOKEN_"+strings.ToUpper(strings.ReplaceAll(stage,"_","X"))
+			rr:=httptest.NewRecorder()
+			app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/nodes","admin",map[string]any{
+				"ID":"n1","Alias":"N1","Address":"127.0.0.1:32601","Role":"foreign","AgentTokenEnv":envName,
+			}))
+			if rr.Code!=http.StatusCreated{t.Fatalf("register status=%d body=%s",rr.Code,rr.Body.String())}
+			path:=filepath.Join(dir,"backup.baftbak")
+			if _,err:=app.BackupToFile(path,backupTestKey(),time.Now().UTC());err!=nil{t.Fatal(err)}
+			beforeState:=stateJSONForTest(t,store)
+			beforeAudit,err:=os.ReadFile(app.audit.path);if err!=nil{t.Fatal(err)}
+
+			app.restoreFault=func(got string) error {
+				if got==stage{return errors.New("injected "+stage)}
+				return nil
+			}
+			if err:=app.RestoreFromFile(path,backupTestKey());err==nil{t.Fatalf("restore unexpectedly succeeded at %s",stage)}
+			app.restoreFault=nil
+
+			afterState:=stateJSONForTest(t,store)
+			afterAudit,err:=os.ReadFile(app.audit.path);if err!=nil{t.Fatal(err)}
+			if !bytes.Equal(beforeState,afterState){t.Fatalf("state changed after %s",stage)}
+			if !bytes.Equal(beforeAudit,afterAudit){t.Fatalf("audit changed after %s",stage)}
+			if err:=app.audit.Verify();err!=nil{t.Fatalf("audit invalid after %s: %v",stage,err)}
+
+			req:=httptest.NewRequest(http.MethodGet,"/api/nodes",nil)
+			resp:=httptest.NewRecorder();app.Handler().ServeHTTP(resp,req)
+			if resp.Code!=http.StatusOK{t.Fatalf("BCC not operational after %s status=%d",stage,resp.Code)}
+		})
+	}
+	t.Log("PASS restore fault injection left existing state/audit unchanged and BCC operational")
+}
+
+func TestRestoreRejectsCorruptCurrentAuditBeforeMutation(t *testing.T){
+	dir:=t.TempDir()
+	store,_:=OpenStore(filepath.Join(dir,"state.json"))
+	app,_:=NewServer(store,"admin")
+	t.Setenv("CORRUPT_AUDIT_NODE","token")
+	rr:=httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/nodes","admin",map[string]any{
+		"ID":"n1","Alias":"N1","Address":"127.0.0.1:32701","Role":"foreign","AgentTokenEnv":"CORRUPT_AUDIT_NODE",
+	}))
+	if rr.Code!=http.StatusCreated{t.Fatalf("register status=%d",rr.Code)}
+	path:=filepath.Join(dir,"backup.baftbak")
+	if _,err:=app.BackupToFile(path,backupTestKey(),time.Now().UTC());err!=nil{t.Fatal(err)}
+
+	rr=httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/finance","admin",map[string]any{
+		"node_id":"n1","cost_micros_per_gib":10,"revenue_micros_per_gib":20,"currency":"IRR",
+	}))
+	if rr.Code!=http.StatusOK{t.Fatalf("finance status=%d body=%s",rr.Code,rr.Body.String())}
+	beforeState:=stateJSONForTest(t,store)
+	raw,err:=os.ReadFile(app.audit.path);if err!=nil{t.Fatal(err)}
+	corrupt:=bytes.Replace(raw,[]byte("finance.rate.change"),[]byte("finance.rate.changf"),1)
+	if bytes.Equal(raw,corrupt){t.Fatal("failed to corrupt current audit")}
+	if err:=os.WriteFile(app.audit.path,corrupt,0600);err!=nil{t.Fatal(err)}
+
+	if err:=app.RestoreFromFile(path,backupTestKey());err==nil{t.Fatal("restore accepted corrupt current audit")}
+	if !bytes.Equal(beforeState,stateJSONForTest(t,store)){t.Fatal("restore mutated state despite corrupt current audit")}
+	afterAudit,err:=os.ReadFile(app.audit.path);if err!=nil{t.Fatal(err)}
+	if !bytes.Equal(corrupt,afterAudit){t.Fatal("restore rewrote corrupt current audit before rejection")}
+	t.Log("PASS corrupt current audit rejected before any restore mutation")
 }
