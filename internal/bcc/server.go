@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -106,9 +107,16 @@ func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 		writeJSON(w,http.StatusOK,s.store.ListNodes())
 	case http.MethodPost:
 		if !s.admin(w,r){return}
-		var in struct{ID,Alias,Address,Role,PublicKey,AgentToken string}
+		var in struct{ID,Alias,Address,Role,PublicKey,AgentTokenEnv string}
 		if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
-		n,err:=s.store.UpsertNode(Node{ID:in.ID,Alias:in.Alias,Address:in.Address,Role:in.Role,PublicKey:in.PublicKey},in.AgentToken)
+		agentToken:=""
+		if strings.TrimSpace(in.AgentTokenEnv)!=""{
+			if strings.ContainsAny(in.AgentTokenEnv,"=\x00"){http.Error(w,"invalid agent token env name",400);return}
+			var ok bool
+			agentToken,ok=os.LookupEnv(in.AgentTokenEnv)
+			if !ok||agentToken==""{http.Error(w,"agent token environment variable is empty",400);return}
+		}
+		n,err:=s.store.UpsertNode(Node{ID:in.ID,Alias:in.Alias,Address:in.Address,Role:in.Role,PublicKey:in.PublicKey},agentToken)
 		if err!=nil{http.Error(w,err.Error(),400);return}
 		writeJSON(w,http.StatusCreated,n)
 	default:http.Error(w,"method not allowed",405)
