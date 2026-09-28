@@ -31,6 +31,7 @@ type Snapshot struct {
 	EgressBytes     uint64
 	ActiveSessions  uint64
 	HandshakeErrors uint64
+	NoiseLatencyMS  int64
 	Routes          []RouteSnapshot
 }
 
@@ -42,6 +43,7 @@ type Report struct {
 	EgressBytes     uint64 `json:"egress_bytes"`
 	ActiveSessions  uint64 `json:"active_sessions"`
 	HandshakeErrors uint64          `json:"handshake_errors"`
+	NoiseLatencyMS  int64           `json:"noise_latency_ms"`
 	Routes          []RouteSnapshot `json:"routes,omitempty"`
 	TimestampUnix   int64           `json:"timestamp_unix"`
 }
@@ -106,7 +108,7 @@ func (e *Exporter) sample(now time.Time) {
 		NodeID:e.NodeID,BootID:e.BootID,Sequence:e.nextSeq,
 		IngressBytes:s.IngressBytes,EgressBytes:s.EgressBytes,
 		ActiveSessions:s.ActiveSessions,HandshakeErrors:s.HandshakeErrors,
-		Routes:append([]RouteSnapshot(nil),s.Routes...),
+		NoiseLatencyMS:s.NoiseLatencyMS,Routes:append([]RouteSnapshot(nil),s.Routes...),
 		TimestampUnix:now.Unix(),
 	}
 	limit:=e.QueueLimit
