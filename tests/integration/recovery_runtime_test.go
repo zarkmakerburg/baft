@@ -69,6 +69,8 @@ type recoveryRuntimePair struct{
 	targetLn net.Listener
 	targetAccepts atomic.Int64
 	targetBaseline int64
+	exRuntime *node.Runtime
+	irRuntime *node.Runtime
 }
 
 func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
@@ -137,9 +139,11 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 
 	ctx,cancel:=context.WithTimeout(context.Background(),30*time.Second)
 	pair.ctx=ctx;pair.cancel=cancel;pair.ex=ex;pair.ir=ir;pair.exDone=make(chan error,1);pair.irDone=make(chan error,1)
-	go func(){pair.exDone<-node.NewRuntime().Run(ctx,ex)}()
+	pair.exRuntime=node.NewRuntime()
+	pair.irRuntime=node.NewRuntime()
+	go func(){pair.exDone<-pair.exRuntime.Run(ctx,ex)}()
 	waitTCP(t,ex.Server.Listen,time.Now().Add(6*time.Second))
-	go func(){pair.irDone<-node.NewRuntime().Run(ctx,ir)}()
+	go func(){pair.irDone<-pair.irRuntime.Run(ctx,ir)}()
 	waitTCP(t,ir.Routes[0].Listen,time.Now().Add(8*time.Second))
 	time.Sleep(50*time.Millisecond)
 	pair.targetBaseline=pair.targetAccepts.Load()
@@ -152,6 +156,39 @@ func (p *recoveryRuntimePair) close(t *testing.T){
 	for name,ch:=range map[string]<-chan error{"ex":p.exDone,"ir":p.irDone}{
 		select{case err:=<-ch:if err!=nil&&!errors.Is(err,context.Canceled){t.Fatalf("%s runtime: %v",name,err)}
 		case <-time.After(5*time.Second):t.Fatalf("%s runtime shutdown timeout",name)}
+	}
+}
+
+func (p *recoveryRuntimePair) closeAllowErrors(){
+	p.cancel();p.proxy.Close();_ = p.targetLn.Close()
+	for _,ch:=range []<-chan error{p.exDone,p.irDone}{
+		select{case <-ch:case <-time.After(5*time.Second):}
+	}
+}
+
+func openRecoveryFlow(t *testing.T,p *recoveryRuntimePair) net.Conn {
+	t.Helper()
+	c,err:=net.DialTimeout("tcp",p.ir.Routes[0].Listen,time.Second);if err!=nil{t.Fatal(err)}
+	_ = c.SetDeadline(time.Now().Add(10*time.Second))
+	probe:=[]byte("commit-safety-probe")
+	if _,err:=c.Write(probe);err!=nil{c.Close();t.Fatal(err)}
+	got:=make([]byte,len(probe))
+	if _,err:=io.ReadFull(c,got);err!=nil{c.Close();t.Fatal(err)}
+	if !bytes.Equal(got,probe){c.Close();t.Fatal("probe echo mismatch")}
+	return c
+}
+
+func assertRuntimeOldAuthority(t *testing.T,name string,r *node.Runtime){
+	t.Helper()
+	deadline:=time.Now().Add(2*time.Second)
+	for{
+		s:=r.RecoveryAuthoritiesForTest()
+		if len(s)==1{
+			if s[0].Epoch!=1||s[0].Owner!="shard-0-carrier-1"{t.Fatalf("%s authority=%+v",name,s[0])}
+			return
+		}
+		if time.Now().After(deadline){t.Fatalf("%s authority snapshots=%+v",name,s)}
+		time.Sleep(5*time.Millisecond)
 	}
 }
 
@@ -248,4 +285,49 @@ func TestRuntimeRecoveryRouteIdentityIsolation(t *testing.T){
 	for i,c:=range conns{want:=[]byte{0xa5,byte(i)};if _,err:=c.Write(want);err!=nil{t.Fatal(err)};got:=make([]byte,2);if _,err:=io.ReadFull(c,got);err!=nil{t.Fatal(err)};if !bytes.Equal(got,want){t.Fatalf("route %d identity mixed got=%v want=%v",i,got,want)};_ = c.Close()}
 	if n:=p.targetAccepts.Load()-p.targetBaseline;n!=6{t.Fatalf("route recovery reopened/mixed target flows test_accepts=%d baseline=%d total=%d",n,p.targetBaseline,p.targetAccepts.Load())}
 	t.Log("PASS six route/session identities remained isolated across replacement")
+}
+
+
+func TestTwoRuntimeDialerPreCommitFailureKeepsBothOldEpoch(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1)
+	defer p.closeAllowErrors()
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	reached:=make(chan struct{});release:=make(chan struct{})
+	var once sync.Once
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="before_commit"{
+			once.Do(func(){close(reached)})
+			<-release
+			return errors.New("dialer precommit injected")
+		}
+		return nil
+	})
+	p.proxy.CutAll()
+	select{case <-reached:case <-time.After(5*time.Second):t.Fatal("dialer precommit hook not reached")}
+	assertRuntimeOldAuthority(t,"dialer",p.irRuntime)
+	assertRuntimeOldAuthority(t,"listener",p.exRuntime)
+	close(release)
+	t.Log("PASS two real runtimes stayed on old epoch during dialer precommit failure")
+}
+
+func TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1)
+	defer p.closeAllowErrors()
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	reached:=make(chan struct{});release:=make(chan struct{})
+	var once sync.Once
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="listener_before_commit"{
+			once.Do(func(){close(reached)})
+			<-release
+			return errors.New("listener precommit injected")
+		}
+		return nil
+	})
+	p.proxy.CutAll()
+	select{case <-reached:case <-time.After(5*time.Second):t.Fatal("listener precommit hook not reached")}
+	assertRuntimeOldAuthority(t,"dialer",p.irRuntime)
+	assertRuntimeOldAuthority(t,"listener",p.exRuntime)
+	close(release)
+	t.Log("PASS two real runtimes stayed on old epoch during listener precommit failure")
 }
