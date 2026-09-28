@@ -228,10 +228,11 @@ func TestMonitoringAlertsAndSevenDayHistory(t *testing.T){
 	}
 
 	view:=store.MonitoringSnapshot(time.Now(),3*time.Minute)
-	if len(view)!=1||view[0].Status!="up"||view[0].LatencyMS!=7||view[0].HandshakeErrorRateMilliMin<5000{
+	if len(view)!=2||view[0].NodeID!="n-monitor"||view[0].Status!="up"||view[0].LatencyMS!=7||view[0].HandshakeErrorRateMilliMin<5000{
 		t.Fatalf("monitoring view=%+v",view)
 	}
 	if len(view[0].Routes)!=1||view[0].Routes[0].Status!="down"{t.Fatalf("route view=%+v",view[0].Routes)}
+	if view[1].NodeID!="n-stale"||view[1].Status!="down"||len(view[1].Routes)!=1||view[1].Routes[0].Status!="unknown"{t.Fatalf("stale view=%+v",view[1])}
 
 	// A sample older than seven days must not survive retention.
 	old:=second
