@@ -26,12 +26,13 @@ func TestValidateIR(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsRecoveryBefore03(t *testing.T) {
-	c := validIR()
-	c.Recovery.Enabled = true
-	if err := Validate(c); err == nil {
-		t.Fatal("expected recovery to be rejected")
-	}
+func TestValidateSameProcessRecoveryScope(t *testing.T) {
+	c:=validIR();c.Recovery.Enabled=true;c.Recovery.Mode="same_process"
+	if err:=Validate(c);err!=nil{t.Fatalf("same-process recovery should validate: %v",err)}
+	c.Recovery.Durable=true
+	if err:=Validate(c);err==nil{t.Fatal("durable/process-restart recovery must be rejected in step 5.7")}
+	c.Recovery.Durable=false;c.Recovery.Mode="process_restart"
+	if err:=Validate(c);err==nil{t.Fatal("process-restart recovery mode must be rejected")}
 }
 
 func TestDecodeJSONRejectsUnknownField(t *testing.T) {
