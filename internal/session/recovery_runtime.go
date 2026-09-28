@@ -592,6 +592,7 @@ func (p *Peer) PublishRecoveryCommit(ctl RecoveryControl)(CommitResult,error){
 	a:=p.recovery
 	a.mu.Lock()
 	if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl)&&a.engine.CurrentEpoch()==ctl.NextEpoch&&a.engine.Owner()==ctl.CandidateID{
+		if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain{a.txnState=RecoveryTxnCommitted}
 		a.mu.Unlock()
 		return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},nil
 	}
