@@ -99,7 +99,7 @@ func Handler(provider Provider) http.Handler {
 
 		fmt.Fprintln(w, "# HELP baft_recovery_failures_total Recovery failures by bounded reason.")
 		fmt.Fprintln(w, "# TYPE baft_recovery_failures_total counter")
-		for _,reason:=range []string{"candidate_setup","snapshot_exchange","peer_restart","state_mismatch","replay_unavailable","lease_conflict","commit","other"} {
+		for _,reason:=range []string{"candidate_setup","snapshot_exchange","peer_restart","state_mismatch","replay_unavailable","lease_conflict","commit","post_commit_failure","other"} {
 			fmt.Fprintf(w, "baft_recovery_failures_total{reason=%q} %d\n", reason, s.RecoveryFailures[reason])
 		}
 	})
