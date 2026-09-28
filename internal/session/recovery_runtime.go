@@ -15,9 +15,13 @@ import (
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/recovery"
+	"github.com/zarkmakerburg/baft/internal/resources"
 )
 
-var ErrCarrierUnavailable = errors.New("session carrier unavailable")
+var (
+	ErrCarrierUnavailable = errors.New("session carrier unavailable")
+	ErrPostCommitFailure = errors.New("recovery post-commit failure")
+)
 
 type RecoveryOffer struct {
 	CandidateID string            `json:"candidate_id"`
@@ -82,6 +86,7 @@ type RecoveryStats struct {
 type RecoveryAdapter struct {
 	peer *Peer
 	beforeCommit func() error
+	postCommitFault func(string) error
 	engine *recovery.Engine
 	mu sync.Mutex
 	frozen bool
@@ -332,81 +337,244 @@ func (p *Peer) validateReplayPlan(plan recovery.Plan) error {
 	return nil
 }
 
-func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) error {
-	if c.In==nil||c.Out==nil{return errors.New("candidate carrier input/output required")}
-	if p.recovery==nil{return errors.New("recovery is disabled")}
+type recoveryDigestSide struct {
+	ReplayFrom uint64 `json:"replay_from"`
+	AckAdvanceTo uint64 `json:"ack_advance_to"`
+	ReleaseThrough uint64 `json:"release_through"`
+	FinAckCanAdvance bool `json:"fin_ack_can_advance"`
+}
+type recoveryDigestFlow struct {
+	StreamID uint64 `json:"stream_id"`
+	OpenNonce string `json:"open_nonce"`
+	Route string `json:"route"`
+	SideA recoveryDigestSide `json:"side_a"`
+	SideB recoveryDigestSide `json:"side_b"`
+}
+type recoveryDigestEnvelope struct {
+	SessionID string `json:"session_id"`
+	CurrentEpoch uint64 `json:"current_epoch"`
+	NextEpoch uint64 `json:"next_epoch"`
+	CandidateID string `json:"candidate_id"`
+	Flows []recoveryDigestFlow `json:"flows"`
+}
+
+func recoverySideLess(a,b recoveryDigestSide) bool {
+	ab,_:=json.Marshal(a);bb,_:=json.Marshal(b)
+	return bytes.Compare(ab,bb)<0
+}
+
+func recoveryPlanDigest(plan recovery.Plan,snap recovery.Snapshot,routes map[uint64]string,candidateID string,next uint64)(string,error){
+	if plan.SessionID==""||candidateID==""||next!=plan.Epoch+1{return "",recovery.ErrStateMismatch}
+	nonce:=make(map[uint64]string,len(snap.Flows))
+	for _,f:=range snap.Flows{nonce[f.StreamID]=f.OpenNonce}
+	flows:=make([]recoveryDigestFlow,0,len(plan.Flows))
+	for _,fp:=range plan.Flows{
+		n:=nonce[fp.StreamID];route,ok:=routes[fp.StreamID]
+		if n==""||!ok{return "",recovery.ErrStateMismatch}
+		a:=recoveryDigestSide{ReplayFrom:fp.LocalReplayFrom,AckAdvanceTo:fp.LocalAckAdvanceTo,ReleaseThrough:fp.LocalReleaseThrough,FinAckCanAdvance:fp.LocalFinAckCanAdvance}
+		b:=recoveryDigestSide{ReplayFrom:fp.PeerReplayFrom,AckAdvanceTo:fp.PeerAckAdvanceTo,ReleaseThrough:fp.PeerReleaseThrough,FinAckCanAdvance:fp.PeerFinAckCanAdvance}
+		if recoverySideLess(b,a){a,b=b,a}
+		flows=append(flows,recoveryDigestFlow{StreamID:fp.StreamID,OpenNonce:n,Route:route,SideA:a,SideB:b})
+	}
+	sort.Slice(flows,func(i,j int)bool{return flows[i].StreamID<flows[j].StreamID})
+	raw,err:=json.Marshal(recoveryDigestEnvelope{SessionID:plan.SessionID,CurrentEpoch:plan.Epoch,NextEpoch:next,CandidateID:candidateID,Flows:flows})
+	if err!=nil{return "",err}
+	sum:=sha256.Sum256(raw)
+	return fmt.Sprintf("%x",sum[:]),nil
+}
+
+func sameRecoveryTransaction(a,b RecoveryControl) bool {
+	return a.SessionID!=""&&a.SessionID==b.SessionID&&a.CandidateID==b.CandidateID&&a.NextEpoch==b.NextEpoch&&a.PlanDigest!=""&&a.PlanDigest==b.PlanDigest
+}
+
+func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Carrier)(RecoveryControl,error){
+	if c.In==nil||c.Out==nil{return RecoveryControl{},errors.New("candidate carrier input/output required")}
+	if p.recovery==nil{return RecoveryControl{},errors.New("recovery is disabled")}
 	a:=p.recovery
 	a.mu.Lock()
-	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return recovery.ErrNotPrepared}
-	plan:=a.pendingPlan
-	a.mu.Unlock()
-	next:=a.engine.CurrentEpoch()+1
-	if err:=p.validateReplayPlan(plan);err!=nil{a.recordFailure("replay_unavailable");return err}
-	if a.beforeCommit!=nil {
-		if err:=a.beforeCommit();err!=nil{a.recordFailure("commit");return err}
+	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return RecoveryControl{},recovery.ErrNotPrepared}
+	plan:=cloneRecoveryPlan(a.pendingPlan)
+	snap:=cloneRecoverySnapshot(a.pendingSnapshot)
+	routes:=cloneRecoveryRoutes(a.pendingRoutes)
+	if a.prepared!=nil {
+		ctl:=a.prepared.control
+		a.mu.Unlock()
+		if ctl.CandidateID!=candidateID{return RecoveryControl{},recovery.ErrStateMismatch}
+		return ctl,nil
 	}
-	if err:=a.engine.Commit(next,candidateID,plan);err!=nil{a.recordFailure("commit");return err}
+	a.mu.Unlock()
+	if err:=p.validateReplayPlan(plan);err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
+	next:=a.engine.CurrentEpoch()+1
+	digest,err:=recoveryPlanDigest(plan,snap,routes,candidateID,next)
+	if err!=nil{a.recordFailure("state_mismatch");return RecoveryControl{},err}
+	ctl:=RecoveryControl{Phase:RecoveryPhasePrepared,SessionID:plan.SessionID,CandidateID:candidateID,NextEpoch:next,PlanDigest:digest}
 
-	p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
-	newSender:=newOutboundSender(&p.writer,p.recoveryEnabled)
+	candidateWriter:=&frameWriter{w:c.Out}
+	newSender:=newOutboundSender(candidateWriter,p.recoveryEnabled)
 	p.mu.Lock()
-	p.carrier=c;p.carrierID=candidateID;p.carrierEpoch=next
-	oldSender:=p.sender
-	p.sender=newSender
 	runCtx:=p.runCtx
-	flows:=make([]*flow,0,len(p.flows));for _,fl:=range p.flows{flows=append(flows,fl)}
+	flowMap:=make(map[uint64]*flow,len(p.flows));for id,fl:=range p.flows{flowMap[id]=fl}
 	p.mu.Unlock()
 	if runCtx==nil{runCtx=ctx}
-	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
-	for _,fl:=range flows {
-		fl.mu.Lock();open:=fl.openOK&&!fl.closed;fl.mu.Unlock()
-		if open { if err:=newSender.addFlow(fl.id);err!=nil{return err} }
-	}
-	p.wg.Add(1);go func(){defer p.wg.Done();newSender.run(runCtx)}()
-
-	// Epoch/owner are committed and the candidate is now authoritative. Wake
-	// only the session reader here so ACK/WINDOW from bounded replay can drain.
-	// Application pumps remain blocked on replacementWait until replay finishes.
-	p.carrierSwitchMu.Lock()
-	close(p.carrierSwitchWait)
-	p.carrierSwitchWait=make(chan struct{})
-	p.carrierSwitchMu.Unlock()
-
-	var replayed uint64
-	for _,fp:=range plan.Flows {
-		fl,err:=p.getOpenFlow(fp.StreamID);if err!=nil{return err}
-		if fp.LocalAckAdvanceTo>0 { if err:=fl.onAck(fp.LocalAckAdvanceTo);err!=nil{return err} }
-		frames,n,err:=fl.replayFramesFrom(fp.LocalReplayFrom);if err!=nil{return err}
-		for _,fr:=range frames { if err:=newSender.sendData(ctx,fl,fr);err!=nil{return err} }
-		replayed+=n
+	prep:=&preparedRecovery{control:ctl,carrier:c,sender:newSender,runCtx:runCtx,flows:make([]preparedFlowRecovery,0,len(plan.Flows))}
+	for _,fp:=range plan.Flows{
+		fl:=flowMap[fp.StreamID]
+		if fl==nil{return RecoveryControl{},recovery.ErrStateMismatch}
 		fl.mu.Lock()
-		if fp.LocalFinAckCanAdvance { fl.finAcked=true }
-		resendFIN:=fl.finSent&&!fl.finAcked
+		if !fl.openOK||fl.closed{fl.mu.Unlock();return RecoveryControl{},recovery.ErrStateMismatch}
+		if fp.LocalAckAdvanceTo>fl.txNext{fl.mu.Unlock();return RecoveryControl{},recovery.ErrStateMismatch}
+		var release int64
+		if fp.LocalAckAdvanceTo>fl.txAcked{
+			for _,ch:=range fl.replay{if ch.end<=fp.LocalAckAdvanceTo{release+=int64(ch.end-ch.start)}}
+		}
+		if fp.LocalFinAckCanAdvance&&!fl.finSent{fl.mu.Unlock();return RecoveryControl{},recovery.ErrStateMismatch}
+		effectiveFinAcked:=fl.finAcked||fp.LocalFinAckCanAdvance
+		resendFIN:=fl.finSent&&!effectiveFinAcked
 		final:=fl.txNext
 		ackPeerFIN:=fl.finRecv&&!fl.finAckSent&&fl.rxWritten==fl.finRecvFinal
 		fl.mu.Unlock()
-		if resendFIN { if err:=newSender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{return err} }
-		if ackPeerFIN { if err:=p.ackRemoteFin(fl);err!=nil{return err} }
+		if release>0 {
+			if err:=fl.allocator.CanRelease(fl.resourceID,resources.Replay,release);err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
+		}
+		frames,n,err:=fl.replayFramesFrom(fp.LocalReplayFrom);if err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
+		if err:=newSender.addFlow(fl.id);err!=nil{a.recordFailure("candidate_setup");return RecoveryControl{},err}
+		prep.flows=append(prep.flows,preparedFlowRecovery{flow:fl,replay:frames,replayed:n,ackAdvance:fp.LocalAckAdvanceTo,finAckAdvance:fp.LocalFinAckCanAdvance,resendFIN:resendFIN,finFinal:final,ackPeerFIN:ackPeerFIN})
+	}
+	a.mu.Lock()
+	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return RecoveryControl{},recovery.ErrNotPrepared}
+	a.prepared=prep
+	a.mu.Unlock()
+	return ctl,nil
+}
+
+func cloneRecoveryPlan(p recovery.Plan) recovery.Plan {
+	out:=p
+	out.Flows=append([]recovery.FlowPlan(nil),p.Flows...)
+	return out
+}
+
+func (p *Peer) ValidateRecoveryControl(ctl RecoveryControl,phase RecoveryPhase) error {
+	if p.recovery==nil{return errors.New("recovery is disabled")}
+	if ctl.Phase!=phase||ctl.SessionID!=p.SessionID()||ctl.CandidateID==""||ctl.NextEpoch==0||ctl.PlanDigest==""{return recovery.ErrStateMismatch}
+	a:=p.recovery
+	a.mu.Lock();defer a.mu.Unlock()
+	if a.prepared!=nil {
+		expected:=a.prepared.control
+		expected.Phase=phase
+		if !sameRecoveryTransaction(expected,ctl){return recovery.ErrStateMismatch}
+		return nil
+	}
+	if a.lastCommit.SessionID!="" {
+		expected:=a.lastCommit;expected.Phase=phase
+		if sameRecoveryTransaction(expected,ctl){return nil}
+		if a.lastCommit.NextEpoch==ctl.NextEpoch{return recovery.ErrStateMismatch}
+	}
+	return recovery.ErrNotPrepared
+}
+
+func (p *Peer) markPostCommitFailure(err error,ctl RecoveryControl)(CommitResult,error){
+	a:=p.recovery
+	a.postCommitFailures.Add(1)
+	a.recordFailure("post_commit_failure")
+	a.mu.Lock()
+	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil
+	a.mu.Unlock()
+	p.onCarrierFailure(err)
+	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},fmt.Errorf("%w: %v",ErrPostCommitFailure,err)
+}
+
+func (p *Peer) CommitPreparedRecovery(ctx context.Context,ctl RecoveryControl)(CommitResult,error){
+	if p.recovery==nil{return CommitResult{},errors.New("recovery is disabled")}
+	a:=p.recovery
+	a.mu.Lock()
+	if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl)&&a.engine.CurrentEpoch()==ctl.NextEpoch&&a.engine.Owner()==ctl.CandidateID{
+		a.mu.Unlock()
+		return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},nil
+	}
+	if a.lastCommit.NextEpoch==ctl.NextEpoch&&a.lastCommit.SessionID!=""&&!sameRecoveryTransaction(a.lastCommit,ctl){
+		a.mu.Unlock();return CommitResult{},recovery.ErrStateMismatch
+	}
+	prep:=a.prepared
+	if prep==nil||!sameRecoveryTransaction(prep.control,ctl){a.mu.Unlock();return CommitResult{},recovery.ErrNotPrepared}
+	plan:=cloneRecoveryPlan(a.pendingPlan)
+	a.mu.Unlock()
+
+	if a.beforeCommit!=nil {
+		if err:=a.beforeCommit();err!=nil{a.recordFailure("commit");return CommitResult{Committed:false,Epoch:a.engine.CurrentEpoch()},err}
+	}
+	if err:=a.engine.Commit(ctl.NextEpoch,ctl.CandidateID,plan);err!=nil{a.recordFailure("commit");return CommitResult{Committed:false,Epoch:a.engine.CurrentEpoch()},err}
+	a.commits.Add(1)
+	a.mu.Lock();a.lastCommit=ctl;a.lastCommit.Phase=RecoveryPhaseCommit;a.mu.Unlock()
+
+	// Authority has changed. From this point every error is post-commit and
+	// MUST NOT be treated as a rollback to the previous epoch.
+	p.writer.mu.Lock();p.writer.w=prep.carrier.Out;p.writer.mu.Unlock()
+	p.mu.Lock()
+	p.carrier=prep.carrier;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch
+	oldSender:=p.sender;p.sender=prep.sender
+	p.mu.Unlock()
+	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
+	p.wg.Add(1);go func(){defer p.wg.Done();prep.sender.run(prep.runCtx)}()
+
+	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
+
+	if a.postCommitFault!=nil {
+		if err:=a.postCommitFault("after_authority_commit");err!=nil{return p.markPostCommitFailure(err,ctl)}
+	}
+	var replayed uint64
+	for _,act:=range prep.flows{
+		fl:=act.flow
+		if act.ackAdvance>0 { if err:=fl.onAck(act.ackAdvance);err!=nil{return p.markPostCommitFailure(err,ctl)} }
+		if act.finAckAdvance { fl.mu.Lock();fl.finAcked=true;fl.mu.Unlock() }
+		for _,fr:=range act.replay {
+			if a.postCommitFault!=nil {
+				if err:=a.postCommitFault("replay_write");err!=nil{return p.markPostCommitFailure(err,ctl)}
+			}
+			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{return p.markPostCommitFailure(err,ctl)}
+		}
+		replayed+=act.replayed
+		if act.resendFIN {
+			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:act.finFinal});err!=nil{return p.markPostCommitFailure(err,ctl)}
+		}
+		if act.ackPeerFIN {
+			if err:=p.ackRemoteFin(fl);err!=nil{return p.markPostCommitFailure(err,ctl)}
+		}
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
-		if !closed { p.ensurePumpsAfterRecovery(runCtx,fl) }
+		if !closed{p.ensurePumpsAfterRecovery(prep.runCtx,fl)}
 	}
-	a.replayed.Add(replayed);a.commits.Add(1)
-	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.mu.Unlock()
-	p.replacementMu.Lock()
-	close(p.replacementWait)
-	p.replacementWait=make(chan struct{})
-	p.replacementMu.Unlock()
-	return nil
+	a.replayed.Add(replayed)
+	a.mu.Lock()
+	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil
+	a.mu.Unlock()
+	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
+	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},nil
+}
+
+func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier)(CommitResult,error){
+	ctl,err:=p.PrepareRecoveryCommit(ctx,candidateID,c)
+	if err!=nil{return CommitResult{Committed:false,Epoch:p.RecoveryEpoch()},err}
+	ctl.Phase=RecoveryPhaseCommit
+	return p.CommitPreparedRecovery(ctx,ctl)
 }
 
 func (p *Peer) AbortRecovery(candidateID string) {
 	if p.recovery==nil{return}
 	a:=p.recovery
+	a.mu.Lock()
+	if !a.frozen||a.pendingCandidate!=candidateID {
+		a.mu.Unlock()
+		return
+	}
 	next:=a.engine.CurrentEpoch()+1
+	a.mu.Unlock()
 	a.engine.Abort(next,candidateID)
 	a.aborts.Add(1)
-	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.mu.Unlock()
+	a.mu.Lock()
+	if a.pendingCandidate==candidateID {
+		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil
+	}
+	a.mu.Unlock()
 }
 
 func (f *flow) replayFramesFrom(from uint64)([]protocol.Frame,uint64,error){
@@ -447,16 +615,26 @@ func DecodeRecoveryOffer(fr protocol.Frame)(RecoveryOffer,error){
 }
 
 
-func EncodeRecoveryDone(w io.Writer,done RecoveryDone) error {
-	if done.CandidateID==""||done.NextEpoch==0{return recovery.ErrStateMismatch}
-	b,err:=json.Marshal(done);if err!=nil{return err}
+func EncodeRecoveryControl(w io.Writer,ctl RecoveryControl) error {
+	if ctl.Phase==""||ctl.SessionID==""||ctl.CandidateID==""||ctl.NextEpoch==0||ctl.PlanDigest==""{return recovery.ErrStateMismatch}
+	b,err:=json.Marshal(ctl);if err!=nil{return err}
 	return protocol.Encode(w,protocol.Frame{Type:protocol.TypeResumeDone,Payload:b})
 }
-func DecodeRecoveryDone(fr protocol.Frame)(RecoveryDone,error){
-	if fr.Type!=protocol.TypeResumeDone{return RecoveryDone{},errors.New("expected RESUME_DONE")}
+func DecodeRecoveryControl(fr protocol.Frame)(RecoveryControl,error){
+	if fr.Type!=protocol.TypeResumeDone{return RecoveryControl{},errors.New("expected RESUME_DONE")}
 	dec:=json.NewDecoder(bytes.NewReader(fr.Payload));dec.DisallowUnknownFields()
-	var d RecoveryDone
-	if err:=dec.Decode(&d);err!=nil{return RecoveryDone{},err}
-	if d.CandidateID==""||d.NextEpoch==0{return RecoveryDone{},recovery.ErrStateMismatch}
-	return d,nil
+	var ctl RecoveryControl
+	if err:=dec.Decode(&ctl);err!=nil{return RecoveryControl{},err}
+	switch ctl.Phase {
+	case RecoveryPhasePrepared,RecoveryPhaseCommitReady,RecoveryPhaseCommit,RecoveryPhaseCommitAck:
+	default:return RecoveryControl{},recovery.ErrStateMismatch
+	}
+	if ctl.SessionID==""||ctl.CandidateID==""||ctl.NextEpoch==0||ctl.PlanDigest==""{return RecoveryControl{},recovery.ErrStateMismatch}
+	return ctl,nil
+}
+
+func (p *Peer) HandleCommittedRecoveryControl(ctl RecoveryControl)(RecoveryControl,error){
+	if ctl.Phase!=RecoveryPhaseCommit{return RecoveryControl{},recovery.ErrStateMismatch}
+	if err:=p.ValidateRecoveryControl(ctl,RecoveryPhaseCommit);err!=nil{return RecoveryControl{},err}
+	return RecoveryControl{Phase:RecoveryPhaseCommitAck,SessionID:ctl.SessionID,CandidateID:ctl.CandidateID,NextEpoch:ctl.NextEpoch,PlanDigest:ctl.PlanDigest},nil
 }
