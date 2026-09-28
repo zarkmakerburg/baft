@@ -10,8 +10,6 @@ import (
 	"github.com/zarkmakerburg/baft/internal/recordshape"
 )
 
-// WorkerTemplate contains only local Worker material. Secrets are deliberately
-// not carried by the cluster token.
 type WorkerTemplate struct {
 	NodeID string
 	NoiseKeyFile string
@@ -34,15 +32,13 @@ func (t WorkerTemplate) validate() error {
 	return nil
 }
 
-// BuildWorkerConfigs converts a verified Snapshot into six dialer configs.
-// Record shaping is intentionally disabled here: the sync layer mirrors
-// connectivity identity and routes without distributing traffic-obfuscation
-// policy or Master secrets.
+// BuildWorkerConfigs converts a verified dynamic Snapshot into one dialer
+// config per remote node. Record shaping is intentionally disabled here.
 func BuildWorkerConfigs(s Snapshot, t WorkerTemplate) ([]config.Config, error) {
 	if err := t.validate(); err != nil { return nil, err }
-	if len(s.Routes) != RequiredNodes { return nil, fmt.Errorf("worker requires exactly %d mirrored nodes", RequiredNodes) }
+	if len(s.Routes) < MinNodes { return nil, fmt.Errorf("worker requires at least %d mirrored node", MinNodes) }
 
-	out := make([]config.Config, 0, RequiredNodes)
+	out := make([]config.Config, 0, len(s.Routes))
 	nextRoutePort := t.RouteBasePort
 	seenAddr := map[string]struct{}{}
 	for i, r := range s.Routes {
@@ -57,7 +53,7 @@ func BuildWorkerConfigs(s Snapshot, t WorkerTemplate) ([]config.Config, error) {
 			if remote == "" { return nil, fmt.Errorf("route %d/%d remote route is empty", i+1, j+1) }
 			if nextRoutePort > 65535 { return nil, errors.New("route listener port range exhausted") }
 			routes = append(routes, config.Route{
-				ID: fmt.Sprintf("mirror-%02d-%02d", i+1, j+1),
+				ID: fmt.Sprintf("mirror-%04d-%02d", i+1, j+1),
 				Listen: net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", nextRoutePort)),
 				RemoteRoute: remote,
 				Direction: "outbound",
@@ -69,29 +65,16 @@ func BuildWorkerConfigs(s Snapshot, t WorkerTemplate) ([]config.Config, error) {
 
 		cfg := config.Config{
 			SchemaVersion: config.SchemaVersion,
-			Noise: &config.Noise{
-				KeyFile: t.NoiseKeyFile,
-				PeerPublicKey: r.NoisePublicKey,
-				RecordShaping: recordshape.Config{},
-			},
+			Noise: &config.Noise{KeyFile:t.NoiseKeyFile, PeerPublicKey:r.NoisePublicKey, RecordShaping:recordshape.Config{}},
 			Node: config.Node{ID:t.NodeID, Role:"dialer"},
-			Peer: &config.Peer{
-				Address:r.Address,
-				ServerName:r.ServerName,
-				AllowedIdentity:r.AllowedIdentity,
-			},
+			Peer: &config.Peer{Address:r.Address, ServerName:r.ServerName, AllowedIdentity:r.AllowedIdentity},
 			TLS:t.TLS,
-			Transport:config.Transport{
-				Primary:"h2",
-				H3Enabled:false,
-				Shards:r.Shards,
-				Profile:r.TransportProfile,
-			},
+			Transport:config.Transport{Primary:"h2", H3Enabled:false, Shards:r.Shards, Profile:r.TransportProfile},
 			Limits:t.Limits,
 			Recovery:config.Recovery{Enabled:false,RetentionSeconds:30},
 			Routes:routes,
 			Management:config.Management{
-				UnixSocket:filepath.Join(t.StateDir,fmt.Sprintf("worker-%02d.sock",i+1)),
+				UnixSocket:filepath.Join(t.StateDir,fmt.Sprintf("worker-%04d.sock",i+1)),
 				MetricsListen:net.JoinHostPort("127.0.0.1",fmt.Sprintf("%d",metricsPort)),
 			},
 			Logging:config.Logging{Level:"info",Payload:false},
