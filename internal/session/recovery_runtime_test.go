@@ -114,7 +114,13 @@ func TestRecoveryDuringFINPreservesCloseSemantics(t *testing.T){
 	if _,err:=p.CommitRecovery(ctx,"carrier-2",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
 	fl,_:=p.getOpenFlow(1)
 	fl.mu.Lock();sent,acked,closed:=fl.finSent,fl.finAcked,fl.closed;fl.mu.Unlock()
-	if !sent||!acked||closed{t.Fatalf("FIN state sent=%v acked=%v closed=%v",sent,acked,closed)}
+	if !sent||acked||closed{t.Fatalf("FIN state sent=%v acked=%v closed=%v",sent,acked,closed)}
+	foundFIN:=false
+	for out.Len()>0{
+		fr,err:=protocol.Decode(&out);if err!=nil{t.Fatal(err)}
+		if fr.Type==protocol.TypeFin&&fr.StreamID==1{foundFIN=true}
+	}
+	if !foundFIN{t.Fatal("ambiguous FIN acknowledgement did not cause idempotent FIN retry")}
 }
 
 func TestMultiFlowCarrierReplacementNoDuplicateOrLoss(t *testing.T){
