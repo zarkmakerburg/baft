@@ -10,6 +10,7 @@ on:
       - 'internal/carrier/**'
       - 'tests/integration/**'
       - '.github/workflows/stagec-soak.yml'
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 concurrency:
