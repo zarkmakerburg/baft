@@ -157,10 +157,11 @@ func Reconcile(local, peer Snapshot, expectedPeerBootID string) (Plan, error) {
 			PeerAckAdvanceTo: lf.RxAccepted,
 			LocalReleaseThrough: lf.TxAcked,
 			PeerReleaseThrough: pf.TxAcked,
-			// FIN_ACK write success is not acceptance proof. The sender of a
-			// FIN_ACK learns peer acceptance only after FIN_ACK_CONFIRM.
-			LocalFinAckCanAdvance: pf.FinAckConfirmed && !lf.FinAcked,
-			PeerFinAckCanAdvance: lf.FinAckConfirmed && !pf.FinAcked,
+			// FIN_ACK write success is not acceptance proof. Same-process
+			// recovery never fabricates FinAcked from peer write state; an
+			// ambiguous FIN_ACK is retried and accepted idempotently.
+			LocalFinAckCanAdvance: false,
+			PeerFinAckCanAdvance: false,
 			LocalFinAckConfirmCanAdvance: pf.FinAcked && lf.FinAckSent && !lf.FinAckConfirmed,
 			PeerFinAckConfirmCanAdvance: lf.FinAcked && pf.FinAckSent && !pf.FinAckConfirmed,
 		})
