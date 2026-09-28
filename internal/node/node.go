@@ -46,7 +46,6 @@ type Runtime struct {
 	sessions        map[string]*session.Peer
 	recoverySeq     atomic.Uint64
 	recoveryFaultMu sync.RWMutex
-	recoveryFaultMu sync.RWMutex
 	recoveryFault   func(string) error
 	bootID          string
 }
