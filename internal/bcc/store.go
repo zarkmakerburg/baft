@@ -22,7 +22,7 @@ const (
 	JobDeployBAFT  = "deploy_baft"
 )
 
-var ErrAgentAuthentication = ErrAgentAuthentication
+var ErrAgentAuthentication = errors.New("agent authentication failed")
 
 type Node struct {
 	ID             string    `json:"id"`
@@ -274,12 +274,18 @@ func (s *Store) CreateDeployJobs(nodeIDs []string,version string) ([]Job,error) 
 	return out,s.saveLocked()
 }
 
-func (s *Store) authorizedLocked(nodeID,token string) bool {
+func (s *Store) authorizedHashLocked(nodeID,token string,now time.Time)(string,bool) {
 	n,ok:=s.st.Nodes[nodeID]
-	if !ok||n.Revoked||token==""{return false}
+	if !ok||n.Revoked||token==""{return "",false}
 	h:=tokenHash(token)
-	if n.AgentTokenHash!=""&&n.AgentTokenHash==h{return true}
-	return n.PreviousAgentTokenHash!=""&&n.PreviousAgentTokenHash==h&&time.Now().UTC().Before(n.PreviousAgentTokenUntil)
+	if n.AgentTokenHash!=""&&n.AgentTokenHash==h{return h,true}
+	if n.PreviousAgentTokenHash!=""&&n.PreviousAgentTokenHash==h&&now.UTC().Before(n.PreviousAgentTokenUntil){return h,true}
+	return "",false
+}
+
+func (s *Store) authorizedLocked(nodeID,token string) bool {
+	_,ok:=s.authorizedHashLocked(nodeID,token,time.Now().UTC())
+	return ok
 }
 
 func (s *Store) RotateAgentToken(nodeID,newToken string,now time.Time,grace time.Duration)(Node,error){
@@ -483,8 +489,10 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	if report.NodeID==""||report.BootID==""||report.Sequence==0{return NodeFinance{},false,errors.New("invalid telemetry identity")}
 	s.mu.Lock();defer s.mu.Unlock()
 	n,ok:=s.st.Nodes[report.NodeID]
-	if !ok||n.AgentTokenHash==""||tokenHash(token)!=n.AgentTokenHash{return NodeFinance{},false,ErrAgentAuthentication}
-	if !telemetry.VerifyHashedToken(n.AgentTokenHash,signature,body){return NodeFinance{},false,errors.New("telemetry signature invalid")}
+	if !ok{return NodeFinance{},false,ErrAgentAuthentication}
+	authHash,authorized:=s.authorizedHashLocked(report.NodeID,token,time.Now().UTC())
+	if !authorized{return NodeFinance{},false,ErrAgentAuthentication}
+	if !telemetry.VerifyHashedToken(authHash,signature,body){return NodeFinance{},false,ErrAgentAuthentication}
 
 	prev:=s.st.Telemetry[report.NodeID]
 	if prev.BootID==report.BootID && report.Sequence<=prev.Sequence {
