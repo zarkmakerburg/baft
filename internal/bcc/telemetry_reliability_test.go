@@ -3,6 +3,8 @@ package bcc
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
@@ -33,27 +35,36 @@ func TestCrashAfterServerCommitBeforeLocalACKExactlyOnceFinance(t *testing.T){
 	const token="crash-ack-token"
 	_,err=store.UpsertNode(Node{ID:"n1",Alias:"N1",Address:"127.0.0.1:34001",Role:"foreign"},token);if err!=nil{t.Fatal(err)}
 	if err:=store.SetFinancePolicy("n1",100,300);err!=nil{t.Fatal(err)}
-	app,err:=NewServer(store,"admin");if err!=nil{t.Fatal(err)}
-	srv:=httptest.NewServer(app.Handler());defer srv.Close()
+
+	// The fault server commits through the real Store path, then tears down the
+	// TCP connection before any HTTP response reaches the exporter.
+	crashSrv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		body,err:=io.ReadAll(r.Body);if err!=nil{return}
+		var rep telemetry.Report
+		if err:=json.Unmarshal(body,&rep);err!=nil{return}
+		if _,_,err:=store.ApplyTelemetry(token,r.Header.Get("X-BAFT-Signature"),body,rep);err!=nil{t.Errorf("server commit: %v",err);return}
+		hj,ok:=w.(http.Hijacker)
+		if !ok{t.Error("response writer cannot hijack");return}
+		conn,_,err:=hj.Hijack();if err!=nil{t.Errorf("hijack: %v",err);return}
+		_ = conn.Close()
+	}))
 
 	spoolPath:=filepath.Join(dir,"telemetry.spool")
-	e1,err:=telemetry.NewPersistent("n1",srv.URL,token,spoolPath,time.Second,10,func()telemetry.Snapshot{
+	e1,err:=telemetry.NewPersistent("n1",crashSrv.URL,token,spoolPath,time.Second,10,func()telemetry.Snapshot{
 		return telemetry.Snapshot{IngressBytes:1<<30,EgressBytes:0}
 	});if err!=nil{t.Fatal(err)}
-	crashed:=false
-	e1.SetAfterSendBeforeACKForTest(func(telemetry.Report) error{
-		if !crashed{crashed=true;return context.Canceled}
-		return nil
-	})
-	if err:=e1.SendOnce(context.Background());err==nil{t.Fatal("expected injected crash-before-ACK")}
-	if e1.QueueLength()!=1{t.Fatalf("pending after injected crash=%d",e1.QueueLength())}
+	if err:=e1.SendOnce(context.Background());err==nil{t.Fatal("expected connection loss after server commit")}
+	crashSrv.Close()
+	if e1.QueueLength()!=1{t.Fatalf("pending after crash-before-ACK=%d",e1.QueueLength())}
 	before:=store.FinanceSnapshot()[0]
 	ledgerBefore,historyBefore:=ledgerHistoryCounts(store,"n1")
 	if before.IngressBytes!=1<<30||before.CostMicros!=100||before.RevenueMicros!=300{t.Fatalf("first financial commit=%+v",before)}
 	if ledgerBefore!=1||historyBefore!=1{t.Fatalf("first commit ledger=%d history=%d",ledgerBefore,historyBefore)}
 
+	app,err:=NewServer(store,"admin");if err!=nil{t.Fatal(err)}
+	srv:=httptest.NewServer(app.Handler());defer srv.Close()
 	e2,err:=telemetry.NewPersistent("n1",srv.URL,token,spoolPath,time.Second,10,func()telemetry.Snapshot{return telemetry.Snapshot{}});if err!=nil{t.Fatal(err)}
-	if err:=e2.FlushForTest(context.Background());err!=nil{t.Fatal(err)}
+	if err:=e2.FlushPending(context.Background());err!=nil{t.Fatal(err)}
 	if e2.QueueLength()!=0{t.Fatalf("queue not ACKed after replay=%d",e2.QueueLength())}
 	after:=store.FinanceSnapshot()[0]
 	ledgerAfter,historyAfter:=ledgerHistoryCounts(store,"n1")
