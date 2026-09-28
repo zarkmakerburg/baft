@@ -3,7 +3,7 @@
 # وضعیت پروژه
 
 > نسخه انگلیسی: [STATUS.en.md](STATUS.en.md)  
-> تاریخ این گزارش: 2026-09-27
+> تاریخ این گزارش: 2026-09-28
 
 ## مخزن
 
@@ -16,7 +16,7 @@
 - **Stage A:** کامل برای scope تعریف‌شده.
 - **Stage B:** کامل برای secure vertical slice تعریف‌شده.
 - **Stage C:** از نظر پیاده‌سازی اصلی نزدیک به بسته‌شدن است؛ فقط soak مستقل باید PASS شود.
-- **Stage D به بعد:** هنوز کامل نشده‌اند.
+- **Stage D:** بخش same-process ECRL تا Step 5.7 وارد Runtime شده و تست شده است، اما Stage D کامل یا production-ready اعلام نشده است؛ process-restart/machine-reboot resume و snapshot پایدار ECRL همچنان پیاده نشده‌اند.
 
 ## Stage A
 
@@ -113,24 +113,30 @@ workflow مستقل `stagec-soak` اضافه شده است. این workflow mult
 
 ## Stage D و بعد
 
-### ECRL design gate
+### ECRL runtime gate — وضعیت فعلی Step 5.7
 
-ECRL فعلاً فقط در سطح **فرضیه پژوهشی** نگه داشته می‌شود. بررسی prior art اجباری، مدل تهدید، invariantهای I0–I6 و معیارهای ابطال F01–F10 در [docs/fa/15-stage-d-ecrl.md](docs/fa/15-stage-d-ecrl.md) ثبت شده‌اند.
+بررسی prior art، مدل تهدید، invariantهای I0–I6 و معیارهای ابطال F01–F10 همچنان در [docs/fa/15-stage-d-ecrl.md](docs/fa/15-stage-d-ecrl.md) مرجع طراحی هستند. از Step 5.7، بخش محدود و مشخصی از ECRL از حالت model/test-only وارد Runtime واقعی شده است.
 
-prototype موجود تا زمان ساخت falsification suite و carrier-replacement integration **نتیجه مهندسی پشتیبانی‌شده محسوب نمی‌شود** و توسعه‌ی wire/session resume باید از سند جدید پیروی کند.
+موارد پیاده‌سازی و تست‌شده در همین scope:
 
+- تعویض Carrier برای Session زنده در **همان process**؛
+- same-process epoch fencing و رد frame مربوط به owner/epoch قدیمی؛
+- bounded replay از Plan اعتبارسنجی‌شده و buffer موجود؛
+- حفظ Flowهای TCP فعال، FIN/FIN_ACK، multi-flow و route identity؛
+- commit safety با validation/materialization پیش از authority commit، Plan Digest canonical، barrier دوطرفه، commit idempotent و post-commit failure accounting؛
+- پیوستگی telemetry و finance بدون double-count در replacement.
 
+مواردی که همچنان پیاده نشده‌اند یا ادعا نمی‌شوند:
 
-هنوز به‌عنوان قابلیت کامل وجود ندارند:
-
-- resume کامل؛
-- epoch fencing؛
-- snapshot/replay/tombstone؛
-- duplicate-free Carrier replacement؛
+- process-restart resume؛
+- machine-reboot resume؛
+- durable ECRL session snapshots؛
 - endpoint pool/relay production path؛
 - benchmark رسمی 60s × 5؛
 - systemd/packaging/operations کامل؛
 - real-path pilot.
+
+این وضعیت به معنی production-ready بودن کل BAFT یا کامل‌شدن تمام Stage D نیست.
 
 ## اصل ثبت وضعیت
 
@@ -166,7 +172,7 @@ prototype موجود تا زمان ساخت falsification suite و carrier-repla
 
 `SecurityInternal` و تست H2 آن پیاده‌سازی و validate شده‌اند، اما هنوز به data path اصلی `node.Runtime` متصل نشده‌اند. بنابراین این مرحله «لایه امنیت داخلی validated» است، نه ادعای اینکه تمام BAFT production tunnel هم‌اکنون Noise-enabled شده است.
 
-Stage D/Replay همچنان **متوقف** است.
+این عبارت وضعیت تاریخی R2 را ثبت می‌کرد؛ وضعیت فعلی ECRL در بخش Step 5.7 همین سند ملاک است.
 
 ### Stealth
 
@@ -175,7 +181,7 @@ random packet-size/timing morphing با هدف شکست سامانه‌های ت
 
 ## R3 safe — Bounded Record Shaping
 
-Stage D همچنان **PAUSED** است.
+این بخش وضعیت تاریخی R3 safe را ثبت می‌کند؛ وضعیت فعلی ECRL در بخش Step 5.7 پایین سند ملاک است.
 
 این شاخه یک لایه‌ی `internal/recordshape` بعد از Noise transport encryption و قبل از write روی wire اضافه می‌کند. رفتار آن:
 
@@ -223,7 +229,7 @@ Installer گزینه‌ی زیر را دارد:
 
 ## R3.1 — نامزد بررسی v0.2-Pro
 
-Padding احتمالی نرمال/لاپلاس، jitter قابل تنظیم و پاسخ HTML پیش از ورود به Session پیاده شد. حالت صریح Noise با peer pin‌شده اکنون به Runtime متصل است. آزمون‌های محلی و Differential مدل/موتور ECRL پاس شدند؛ Stage D و recovery همچنان متوقف‌اند.
+Padding احتمالی نرمال/لاپلاس، jitter قابل تنظیم و پاسخ HTML پیش از ورود به Session پیاده شد. حالت صریح Noise با peer pin‌شده اکنون به Runtime متصل است. آزمون‌های محلی و Differential مدل/موتور ECRL در آن مقطع پاس شدند؛ توقف Stage D/recovery مربوط به همان مقطع تاریخی است و وضعیت فعلی در بخش Step 5.7 پایین سند ثبت شده است.
 
 [گزارش سه‌بخشی هوشا و شواهد](reports/HOOSHA-R3.1.md). این بخش وضعیت فعلی شاخه R3.1 است و توضیحات R2/R3 بالا سوابق تاریخی‌اند. نسخه نهایی v0.2-Pro، نصب VM تازه، حفظ سرعت با jitter و اثبات مقاومت فیلترینگ هنوز تأیید نشده‌اند.
 
