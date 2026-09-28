@@ -91,6 +91,7 @@ type TelemetryCursor struct {
 	NodeID          string    `json:"node_id"`
 	BootID          string    `json:"boot_id"`
 	Sequence        uint64    `json:"sequence"`
+	IngestID        uint64    `json:"ingest_id"`
 	IngressBytes    uint64    `json:"ingress_bytes"`
 	EgressBytes     uint64    `json:"egress_bytes"`
 	ActiveSessions  uint64    `json:"active_sessions"`
@@ -140,7 +141,8 @@ type state struct {
 	History         map[string][]HistoryPoint    `json:"history,omitempty"`
 	ActiveAlerts    map[string]Alert             `json:"active_alerts,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
-	NextRateVersion uint64                       `json:"next_rate_version,omitempty"`
+	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
+	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`
 }
 
 type Store struct {
@@ -151,7 +153,7 @@ type Store struct {
 
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},NextJob:1,NextRateVersion:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
 	b,err:=os.ReadFile(path)
 	if err==nil {
 		if err:=json.Unmarshal(b,&s.st);err!=nil{return nil,fmt.Errorf("decode BCC state: %w",err)}
@@ -165,6 +167,12 @@ func OpenStore(path string) (*Store, error) {
 		if s.st.ActiveAlerts==nil{s.st.ActiveAlerts=map[string]Alert{}}
 		if s.st.NextJob==0{s.st.NextJob=1}
 		if s.st.NextRateVersion==0{s.st.NextRateVersion=1}
+		if s.st.NextTelemetryIngestID==0{
+			var maxIngest uint64
+			for _,cur:=range s.st.Telemetry{if cur.IngestID>maxIngest{maxIngest=cur.IngestID}}
+			s.st.NextTelemetryIngestID=maxIngest+1
+			if s.st.NextTelemetryIngestID==0{s.st.NextTelemetryIngestID=1}
+		}
 		for id,p:=range s.st.Policies{
 			if len(s.st.RateHistory[id])!=0{continue}
 			if p.Currency==""{p.Currency="IRR"}
@@ -514,6 +522,10 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	}
 
 	ts:=time.Unix(report.TimestampUnix,0).UTC()
+	ingestID:=s.st.NextTelemetryIngestID
+	if ingestID==0{ingestID=1}
+	if ingestID==^uint64(0){return NodeFinance{},false,errors.New("telemetry ingestion id exhausted")}
+	s.st.NextTelemetryIngestID=ingestID+1
 	if err:=s.appendFinanceLocked(report.NodeID,ts,din,dout);err!=nil{return NodeFinance{},false,err}
 	f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
 	rateMilli:=int64(0)
@@ -524,7 +536,7 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	}
 	routes:=append([]telemetry.RouteSnapshot(nil),report.Routes...)
 	s.st.Telemetry[report.NodeID]=TelemetryCursor{
-		NodeID:report.NodeID,BootID:report.BootID,Sequence:report.Sequence,
+		NodeID:report.NodeID,BootID:report.BootID,Sequence:report.Sequence,IngestID:ingestID,
 		IngressBytes:report.IngressBytes,EgressBytes:report.EgressBytes,
 		ActiveSessions:report.ActiveSessions,HandshakeErrors:report.HandshakeErrors,
 		NoiseLatencyMS:report.NoiseLatencyMS,HandshakeErrorRateMilliMin:rateMilli,Routes:routes,LastTelemetry:ts,
