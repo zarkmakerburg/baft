@@ -107,13 +107,24 @@ func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 		writeJSON(w,http.StatusOK,s.store.ListNodes())
 	case http.MethodPost:
 		if !s.admin(w,r){return}
-		var in struct{ID,Alias,Address,Role,PublicKey,AgentTokenEnv string}
+		var in struct{
+			ID,Alias,Address,Role,PublicKey string
+			AgentTokenEnv string
+			AgentToken string
+			AgentTokenEnvSnake string `json:"agent_token_env"`
+			AgentTokenSnake string `json:"agent_token"`
+		}
 		if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
+		if in.AgentToken!=""||in.AgentTokenSnake!=""{
+			http.Error(w,"raw agent token is forbidden; use agent token environment variable",400);return
+		}
+		envName:=strings.TrimSpace(in.AgentTokenEnv)
+		if envName==""{envName=strings.TrimSpace(in.AgentTokenEnvSnake)}
 		agentToken:=""
-		if strings.TrimSpace(in.AgentTokenEnv)!=""{
-			if strings.ContainsAny(in.AgentTokenEnv,"=\x00"){http.Error(w,"invalid agent token env name",400);return}
+		if envName!=""{
+			if strings.ContainsAny(envName,"=\x00"){http.Error(w,"invalid agent token env name",400);return}
 			var ok bool
-			agentToken,ok=os.LookupEnv(in.AgentTokenEnv)
+			agentToken,ok=os.LookupEnv(envName)
 			if !ok||agentToken==""{http.Error(w,"agent token environment variable is empty",400);return}
 		}
 		n,err:=s.store.UpsertNode(Node{ID:in.ID,Alias:in.Alias,Address:in.Address,Role:in.Role,PublicKey:in.PublicKey},agentToken)
