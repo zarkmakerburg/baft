@@ -764,12 +764,21 @@ func (p *Peer) HandleRecoveryControlFrame(fr protocol.Frame) error {
 		ack,err:=p.HandleCommittedRecoveryControl(ctl);if err!=nil{return err}
 		return p.senderNow().sendControl(protocol.Frame{Type:protocol.TypeResumeDone,Payload:mustRecoveryControlPayload(ack)})
 	case RecoveryPhaseCommitAck:
-		// A duplicate/lost-ACK retry acknowledgement for an already committed
-		// transaction has no application side effects.
 		a:=p.recovery
 		if a==nil{return recovery.ErrStateMismatch}
 		a.mu.Lock();last:=a.lastCommit;a.mu.Unlock()
 		if !sameRecoveryTransaction(last,ctl){return recovery.ErrStateMismatch}
+		return nil
+	case RecoveryPhaseFinalize:
+		if err:=p.ValidateRecoveryControl(ctl,RecoveryPhaseFinalize);err!=nil{return err}
+		if err:=p.MarkFinalizationStarted(ctl);err!=nil{return err}
+		if err:=p.CompleteRecoveryFinalization(ctl);err!=nil{return err}
+		ack:=ctl;ack.Phase=RecoveryPhaseFinalizeAck
+		return p.senderNow().sendControl(protocol.Frame{Type:protocol.TypeResumeDone,Payload:mustRecoveryControlPayload(ack)})
+	case RecoveryPhaseFinalizeAck:
+		// Duplicate FINALIZE_ACK after the distributed proof has already been
+		// consumed is side-effect free.
+		if err:=p.ValidateRecoveryControl(ctl,RecoveryPhaseFinalizeAck);err!=nil{return err}
 		return nil
 	default:
 		return recovery.ErrStateMismatch
