@@ -17,6 +17,7 @@ type Snapshot struct {
 	RecoveryAttempts      uint64
 	RecoveryCommits       uint64
 	RecoveryAborts        uint64
+	RecoveryPostCommitFailures uint64
 	RecoveryCurrentEpoch  uint64
 	RecoveryReplayedBytes uint64
 	RecoveryFailures      map[string]uint64
@@ -83,6 +84,10 @@ func Handler(provider Provider) http.Handler {
 		fmt.Fprintln(w, "# HELP baft_recovery_aborts_total Aborted same-process carrier recoveries.")
 		fmt.Fprintln(w, "# TYPE baft_recovery_aborts_total counter")
 		fmt.Fprintf(w, "baft_recovery_aborts_total %d\n", s.RecoveryAborts)
+		fmt.Fprintln(w, "# HELP baft_recovery_post_commit_failures_total Failures after ECRL authority commit; old epochs remain fenced.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_post_commit_failures_total counter")
+		fmt.Fprintf(w, "baft_recovery_post_commit_failures_total %d\n", s.RecoveryPostCommitFailures)
+
 
 		fmt.Fprintln(w, "# HELP baft_recovery_current_epoch Highest current ECRL session epoch in this runtime.")
 		fmt.Fprintln(w, "# TYPE baft_recovery_current_epoch gauge")
