@@ -2,6 +2,8 @@ package bcc
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -135,4 +137,30 @@ func TestFinanceDuplicateAndOutOfOrderDoNotChangeReports(t *testing.T){
 		t.Fatalf("CSV format unexpected: %s",csvText)
 	}
 	t.Log("PASS duplicate/out-of-order left finance report unchanged")
+}
+
+
+func TestFinanceReportAPIAndCSV(t *testing.T){
+	s,err:=OpenStore(t.TempDir()+"/state.json");if err!=nil{t.Fatal(err)}
+	const token="api-agent"
+	_,_ = s.UpsertNode(Node{ID:"api-node",Alias:"API",Address:"127.0.0.1:26001",Role:"foreign"},token)
+	_ = s.SetFinancePolicyAt("api-node",100,250,"IRR",time.Unix(0,0))
+	applyFinanceReport(t,s,"api-node",token,"api-boot",1,time.Date(2026,9,28,12,0,0,0,time.UTC),1<<30,0)
+	app,_:=NewServer(s,"admin")
+
+	req:=httptest.NewRequest(http.MethodGet,"/api/finance/report?period=daily&from=2026-09-28&to=2026-09-28&tz=Asia%2FTehran",nil)
+	req.Header.Set("Authorization","Bearer admin")
+	rr:=httptest.NewRecorder();app.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("JSON report status=%d body=%s",rr.Code,rr.Body.String())}
+	if !strings.Contains(rr.Body.String(),"\"scope\":\"cluster\"")||!strings.Contains(rr.Body.String(),"\"currency\":\"IRR\""){t.Fatalf("JSON report=%s",rr.Body.String())}
+
+	req=httptest.NewRequest(http.MethodGet,"/api/finance/report?period=monthly&from=2026-09-01&to=2026-09-30&tz=Asia%2FTehran&format=csv",nil)
+	req.Header.Set("Authorization","Bearer admin")
+	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("CSV report status=%d body=%s",rr.Code,rr.Body.String())}
+	if ct:=rr.Header().Get("Content-Type");!strings.HasPrefix(ct,"text/csv"){t.Fatalf("content-type=%s",ct)}
+	if !strings.Contains(rr.Body.String(),"period,scope,node_id,ingress_bytes,egress_bytes,cost_micros,revenue_micros,profit_micros,currency"){
+		t.Fatalf("CSV header=%s",rr.Body.String())
+	}
+	t.Log("PASS finance JSON+CSV API")
 }
