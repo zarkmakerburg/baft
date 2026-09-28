@@ -896,7 +896,7 @@ func (p *Peer) MarkPostCommitFailure(err error,ctl RecoveryControl) error {
 	return out
 }
 
-func (p *Peer) WaitRecoveryCarrierStopped(ctl RecoveryControl) {
+func (p *Peer) StopAndWaitRecoveryCarrier(ctl RecoveryControl) {
 	if p.recovery==nil{return}
 	a:=p.recovery
 	a.mu.Lock()
@@ -905,6 +905,7 @@ func (p *Peer) WaitRecoveryCarrierStopped(ctl RecoveryControl) {
 	s:=prep.sender
 	a.mu.Unlock()
 	if s==nil{return}
+	s.stop(ErrCarrierUnavailable)
 	<-s.done
 }
 
