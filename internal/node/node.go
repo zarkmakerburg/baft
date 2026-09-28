@@ -590,6 +590,10 @@ func (r *Runtime) metricsSnapshot() baftmetrics.Snapshot {
 		out.RecoveryCommits += rs.Commits
 		out.RecoveryAborts += rs.Aborts
 		out.RecoveryPostCommitFailures += rs.PostCommitFailures
+		out.RecoveryCommitUncertain += rs.CommitUncertain
+		out.RecoveryCommitResolutionCommitted += rs.ResolutionCommitted
+		out.RecoveryCommitResolutionNotCommitted += rs.ResolutionNotCommitted
+		out.RecoveryCommitResolutionConflict += rs.ResolutionConflict
 		out.RecoveryReplayedBytes += rs.ReplayedBytes
 		if rs.CurrentEpoch > out.RecoveryCurrentEpoch { out.RecoveryCurrentEpoch = rs.CurrentEpoch }
 		for reason,n:=range rs.Failures { out.RecoveryFailures[reason]+=n }
