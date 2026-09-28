@@ -519,18 +519,6 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 								sh.peer.EnsureRecoverySignal(session.ErrCommitUncertain)
 								continue
 							}
-							// Before authority publication, an asynchronous snapshot may be
-							// rejected while residual frames from the failed carrier are still
-							// draining. Abort has already preserved the old epoch. If the old
-							// physical carrier is actually unavailable, retry with a fresh
-							// candidate/snapshot instead of stranding active flows until their
-							// retention timer expires. If the old carrier is usable, NeedsRecovery
-							// is false and no automatic retry occurs.
-							if sh.peer.NeedsRecovery(){
-								sh.peer.DrainRecoverySignals()
-								sh.peer.EnsureRecoverySignal(session.ErrCarrierUnavailable)
-								continue
-							}
 						}
 						sh.peer.DrainRecoverySignals()
 					}
