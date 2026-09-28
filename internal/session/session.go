@@ -211,7 +211,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		p.nextID = 2
 	}
 	p.dial = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
-	p.sender = newOutboundSender(&p.writer)
+	p.sender = newOutboundSender(&p.writer,p.recoveryEnabled)
 	if p.recoveryEnabled {
 		if p.recoveryRetention <= 0 { p.recoveryRetention = 30 * time.Second }
 		if p.recoveryRetention > 300*time.Second { return nil, errors.New("recovery retention exceeds 300 seconds") }
