@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
@@ -149,4 +150,92 @@ func TestFinancialTrafficSync(t *testing.T){
 	app.Handler().ServeHTTP(rr,signedTelemetryReq(t,"wrong-token",rep))
 	if rr.Code!=http.StatusUnauthorized{t.Fatalf("unauthorized traffic accepted status=%d",rr.Code)}
 	t.Logf("PASS signed idempotent finance sync ingress=%d egress=%d",all[0].IngressBytes,all[0].EgressBytes)
+}
+
+
+func TestMonitoringAlertsAndSevenDayHistory(t *testing.T){
+	alerts:=make(chan Alert,8)
+	webhook:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		defer r.Body.Close()
+		var a Alert
+		if err:=json.NewDecoder(r.Body).Decode(&a);err!=nil{t.Error(err);http.Error(w,"bad json",400);return}
+		alerts<-a
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer webhook.Close()
+
+	store,err:=OpenStore(filepath.Join(t.TempDir(),"state.json"));if err!=nil{t.Fatal(err)}
+	const token="monitor-agent"
+	_,err=store.UpsertNode(Node{ID:"n-monitor",Alias:"Monitor Node",Address:"127.0.0.1:25001",Role:"foreign"},token)
+	if err!=nil{t.Fatal(err)}
+	if err:=store.SetHealth("n-monitor","up",7,time.Now());err!=nil{t.Fatal(err)}
+	app,_:=NewServer(store,"admin")
+	if err:=app.ConfigureAlerts(AlertConfig{
+		WebhookURL:webhook.URL,TelemetryStaleAfter:3*time.Minute,
+		HandshakeErrorRateMilliPerMin:5000,Interval:time.Second,
+	});err!=nil{t.Fatal(err)}
+
+	now:=time.Now().UTC().Truncate(time.Second)
+	first:=telemetry.Report{
+		NodeID:"n-monitor",BootID:"boot-monitor",Sequence:1,
+		IngressBytes:100,EgressBytes:200,ActiveSessions:1,HandshakeErrors:0,
+		Routes:[]telemetry.RouteSnapshot{{RouteID:"route-a",Status:"up",LatencyMS:5,ProbeKind:"tcp"}},
+		TimestampUnix:now.Add(-time.Minute).Unix(),
+	}
+	rr:=httptest.NewRecorder();app.Handler().ServeHTTP(rr,signedTelemetryReq(t,token,first))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("first telemetry status=%d body=%s",rr.Code,rr.Body.String())}
+
+	second:=first
+	second.Sequence=2
+	second.IngressBytes=300
+	second.EgressBytes=500
+	second.HandshakeErrors=10
+	second.Routes=[]telemetry.RouteSnapshot{{RouteID:"route-a",Status:"down",LatencyMS:-1,ErrorCount:1,ProbeKind:"tcp"}}
+	second.TimestampUnix=now.Unix()
+	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,signedTelemetryReq(t,token,second))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("second telemetry status=%d body=%s",rr.Code,rr.Body.String())}
+
+	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
+	gotTypes:=map[string]bool{}
+	deadline:=time.After(2*time.Second)
+	for len(gotTypes)<2{
+		select{
+		case a:=<-alerts:
+			gotTypes[a.Type]=true
+		case <-deadline:
+			t.Fatalf("alerts=%v",gotTypes)
+		}
+	}
+	if !gotTypes["handshake_error_rate"]||!gotTypes["route_down"]{t.Fatalf("unexpected alerts=%v",gotTypes)}
+
+	view:=store.MonitoringSnapshot(time.Now(),3*time.Minute)
+	if len(view)!=1||view[0].Status!="up"||view[0].LatencyMS!=7||view[0].HandshakeErrorRateMilliMin<5000{
+		t.Fatalf("monitoring view=%+v",view)
+	}
+	if len(view[0].Routes)!=1||view[0].Routes[0].Status!="down"{t.Fatalf("route view=%+v",view[0].Routes)}
+
+	// A sample older than seven days must not survive retention.
+	old:=second
+	old.BootID="old-boot"
+	old.Sequence=1
+	old.TimestampUnix=now.Add(-8*24*time.Hour).Unix()
+	old.IngressBytes=1
+	old.EgressBytes=1
+	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,signedTelemetryReq(t,token,old))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("old telemetry status=%d body=%s",rr.Code,rr.Body.String())}
+
+	fresh:=second
+	fresh.BootID="fresh-boot"
+	fresh.Sequence=1
+	fresh.TimestampUnix=now.Unix()
+	fresh.IngressBytes=10
+	fresh.EgressBytes=20
+	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,signedTelemetryReq(t,token,fresh))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("fresh telemetry status=%d body=%s",rr.Code,rr.Body.String())}
+	h:=store.History("n-monitor",now)
+	for _,p:=range h{
+		if p.Timestamp.Before(now.Add(-7*24*time.Hour)){t.Fatalf("expired history retained: %+v",p)}
+	}
+	if len(h)==0{t.Fatal("expected retained history")}
+	t.Logf("PASS monitoring webhook alerts=%v history_points=%d",gotTypes,len(h))
 }
