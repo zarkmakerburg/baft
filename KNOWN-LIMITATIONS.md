@@ -8,8 +8,8 @@
 - Stage C هنوز رسماً بسته نشده؛ slow-receiver، PADL، shared-budget و metrics سبزند، اما workflow مستقل soak باید PASS شود.
 - COR-01 پاس‌شده correctness روی runner/local networking است و benchmark اینترنت عمومی نیست.
 - allocator، TWRL، PADL و control scheduling وارد data path شده‌اند؛ shared-budget چند Shard تست شده، اما soak تکرارشونده هنوز گیت باز است.
-- resume، epoch fencing، snapshot، replay روی Carrier جایگزین و tombstone پیاده‌سازی کامل ندارند.
-- resume بعد از Process restart وعده داده نشده است.
+- تعویض Carrier در همان process، epoch fencing در همان process و bounded replay در Step 5.7 پیاده‌سازی و تست شده‌اند.
+- snapshot پایدار ECRL، resume بعد از process restart و resume بعد از reboot ماشین پیاده‌سازی یا ادعا نشده‌اند.
 - endpoint pool/relay production path کامل نشده است.
 - H3 و Worker جزو مسیر پایه فعال نیستند.
 - benchmark رسمی 60s × 5 و profiler campaign کامل نشده است.
@@ -20,6 +20,6 @@
 
 
 ## محدوده Recovery در Step 5.7
-اتصال ECRL به Runtime در این مرحله فقط برای **تعویض Carrier در همان process و همان Session زنده** است. snapshot بازیابی بین restart پردازه یا reboot ماشین پایدار نمی‌شود و هیچ ادعایی برای process-restart resume وجود ندارد. تغییر BootID سمت peer هنگام recovery به‌صورت fail-closed رد می‌شود. Subscription Engine خارج از scope است و Record Shaping / Morphing / Stealth در Step 5.7 تغییری نکرده‌اند.
+اتصال ECRL به Runtime در این مرحله فقط برای **تعویض Carrier در همان process و همان Session زنده** است. epoch fencing همان process و bounded replay بر اساس Plan اعتبارسنجی‌شده پیاده‌سازی و تست شده‌اند. Commit recovery دارای transaction صریح prepared/commit، Plan Digest canonical و هویت idempotent است. snapshot بازیابی بین restart پردازه یا reboot ماشین پایدار نمی‌شود و هیچ ادعایی برای process-restart resume وجود ندارد. تغییر BootID سمت peer هنگام recovery به‌صورت fail-closed رد می‌شود. Subscription Engine خارج از scope است و Record Shaping / Morphing / Stealth در Step 5.7 تغییری نکرده‌اند.
 
 </div>
