@@ -530,3 +530,263 @@ func TestDistributedCommitDisconnectBeforePublishProvesAbortSafe(t *testing.T){
 	if p.targetAccepts.Load()!=targetBefore{t.Fatalf("target TCP reopened before=%d after=%d",targetBefore,p.targetAccepts.Load())}
 	t.Logf("PASS authority Dialer 1->pending/uncertain->proven NOT_COMMITTED->1->2 Listener 1->1->2 payload_hash=%x",hash)
 }
+
+
+func waitDialerCommitUncertain(t *testing.T,p *recoveryRuntimePair) (node.RecoveryAuthoritySnapshot,node.RecoveryAuthoritySnapshot) {
+	t.Helper()
+	deadline:=time.Now().Add(8*time.Second)
+	for {
+		ir:=p.irRuntime.RecoveryAuthoritiesForTest()
+		ex:=p.exRuntime.RecoveryAuthoritiesForTest()
+		if len(ir)==1&&len(ex)==1&&ir[0].Epoch==1&&ir[0].TxnState==session.RecoveryTxnUncertain&&ir[0].Frozen&&ex[0].Epoch==2 {
+			return ir[0],ex[0]
+		}
+		if time.Now().After(deadline){t.Fatalf("commit uncertainty not reached ir=%+v ex=%+v",ir,ex)}
+		time.Sleep(5*time.Millisecond)
+	}
+}
+
+func assertResolvedTransactionAndFlow(t *testing.T,p *recoveryRuntimePair,c net.Conn,targetBefore int64,seed int)(node.RecoveryAuthoritySnapshot,node.RecoveryAuthoritySnapshot,[32]byte){
+	t.Helper()
+	ir,ex:=waitAuthorityPair(t,p,2,true)
+	if ir.Owner==""||ir.Owner!=ex.Owner{t.Fatalf("authority owners differ ir=%+v ex=%+v",ir,ex)}
+	if ir.PlanDigest==""||ir.PlanDigest!=ex.PlanDigest{t.Fatalf("authority digests differ ir=%+v ex=%+v",ir,ex)}
+	payload:=make([]byte,256*1024+seed*17+73)
+	for i:=range payload{payload[i]=byte((i*(seed+17)+seed*11+7)%251)}
+	h:=assertEchoHashOnExistingFlow(t,c,payload)
+	if p.targetAccepts.Load()!=targetBefore{t.Fatalf("target TCP reopened before=%d after=%d",targetBefore,p.targetAccepts.Load())}
+	return ir,ex,h
+}
+
+func installOneShotPostPublishUncertainty(p *recoveryRuntimePair) {
+	var fired atomic.Bool
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="after_listener_publish_before_commit_ack"&&fired.CompareAndSwap(false,true){
+			return errors.New("deterministic post-publish ACK loss")
+		}
+		return nil
+	})
+}
+
+func TestDistributedCommitFaultCCommitACKWriteCutResolves(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	entered:=make(chan struct{});release:=make(chan struct{})
+	var once sync.Once
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="before_commit_ack_write"{
+			first:=false
+			once.Do(func(){first=true;close(entered)})
+			if first{<-release}
+		}
+		return nil
+	})
+	p.proxy.CutAll()
+	select{case <-entered:case <-time.After(8*time.Second):t.Fatal("listener never reached COMMIT_ACK write barrier")}
+	ex:=oneRecoveryAuthority(t,p.exRuntime);ir:=oneRecoveryAuthority(t,p.irRuntime)
+	if ex.Epoch!=2||ir.Epoch!=1{t.Fatalf("authority before ACK-write cut ir=%+v ex=%+v",ir,ex)}
+	p.proxy.CutAll();close(release)
+	irDone,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,3)
+	t.Logf("PASS matrix C ACK-write cut resolved exact txn epoch=%d digest=%s hash=%x",irDone.Epoch,irDone.PlanDigest,h)
+}
+
+func TestDistributedCommitFaultDACKWrittenButNotDecodedResolves(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	ackWritten:=make(chan struct{});releaseListener:=make(chan struct{});dialerSkipped:=make(chan struct{})
+	var ackOnce sync.Once
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="after_commit_ack_write"{
+			first:=false
+			ackOnce.Do(func(){first=true;close(ackWritten)})
+			if first{<-releaseListener}
+		}
+		return nil
+	})
+	var skipOnce atomic.Bool
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="after_commit_sent_before_ack"&&skipOnce.CompareAndSwap(false,true){
+			<-ackWritten
+			close(dialerSkipped)
+			return errors.New("ACK intentionally not decoded")
+		}
+		return nil
+	})
+	p.proxy.CutAll()
+	select{case <-dialerSkipped:case <-time.After(8*time.Second):t.Fatal("dialer did not skip written ACK")}
+	close(releaseListener)
+	irDone,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,4)
+	t.Logf("PASS matrix D ACK written but not decoded resolved epoch=%d digest=%s hash=%x",irDone.Epoch,irDone.PlanDigest,h)
+}
+
+func TestDistributedCommitFaultEDuplicateCOMMITIdempotent(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	p.irRuntime.SetRecoveryControlHookForTest(func(stage string,ctl *session.RecoveryControl)int{
+		if stage=="dialer_commit_send"{return 2}
+		return 1
+	})
+	p.proxy.CutAll()
+	ir,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,5)
+	if ir.Epoch!=2{t.Fatalf("duplicate COMMIT advanced epoch more than once: %+v",ir)}
+	t.Logf("PASS matrix E duplicate COMMIT idempotent epoch=%d hash=%x",ir.Epoch,h)
+}
+
+func TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	p.exRuntime.SetRecoveryControlHookForTest(func(stage string,ctl *session.RecoveryControl)int{
+		if stage=="listener_commit_ack_send"{return 2}
+		return 1
+	})
+	p.irRuntime.SetRecoveryControlHookForTest(func(stage string,ctl *session.RecoveryControl)int{
+		if stage=="dialer_commit_ack_reads"{return 2}
+		return 1
+	})
+	p.proxy.CutAll()
+	ir,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,6)
+	if ir.Epoch!=2{t.Fatalf("duplicate COMMIT_ACK changed epoch: %+v",ir)}
+	t.Logf("PASS matrix F duplicate COMMIT_ACK idempotent epoch=%d hash=%x",ir.Epoch,h)
+}
+
+func TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	var fired atomic.Bool
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="after_final_ack_send"&&fired.CompareAndSwap(false,true){
+			p.proxy.CutAll()
+			return errors.New("candidate died before dialer finalize")
+		}
+		return nil
+	})
+	p.proxy.CutAll()
+	ir,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,7)
+	if !fired.Load(){t.Fatal("pre-finalize candidate failure hook did not fire")}
+	t.Logf("PASS matrix G candidate failure before finalize resolved committed epoch=%d hash=%x",ir.Epoch,h)
+}
+
+func TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	var fired atomic.Bool
+	p.irRuntime.SetRecoveryPostCommitFaultForTest(func(stage string)error{
+		if stage=="after_authority_commit"&&fired.CompareAndSwap(false,true){
+			p.proxy.CutAll()
+			return errors.New("candidate died after finalize started")
+		}
+		return nil
+	})
+	p.proxy.CutAll()
+	ir,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,8)
+	if !fired.Load(){t.Fatal("post-finalize-start fault did not fire")}
+	t.Logf("PASS matrix H finalize-start failure retried idempotently epoch=%d hash=%x",ir.Epoch,h)
+}
+
+func TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.closeAllowErrors()
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	installOneShotPostPublishUncertainty(p)
+	statusEntered:=make(chan struct{});releaseStatus:=make(chan struct{})
+	var once sync.Once
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="status_query_after_send"{
+			first:=false
+			once.Do(func(){first=true;close(statusEntered)})
+			if first{<-releaseStatus}
+		}
+		return nil
+	})
+	p.proxy.CutAll()
+	select{case <-statusEntered:case <-time.After(8*time.Second):t.Fatal("status resolution never began")}
+	ir,ex:=waitDialerCommitUncertain(t,p)
+	if _,ok:=interface{}(session.ErrCommitUncertain).(error);!ok{t.Fatal("invalid uncertainty error")}
+	if err:=p.irRuntime.BeginRecoveryForTest("fresh-bypass");!errors.Is(err,session.ErrCommitUncertain){
+		t.Fatalf("fresh transaction bypassed unresolved uncertainty err=%v ir=%+v ex=%+v",err,ir,ex)
+	}
+	close(releaseStatus)
+	irDone,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,9)
+	t.Logf("PASS matrix I unresolved COMMIT_UNCERTAIN blocked fresh recovery then converged epoch=%d hash=%x",irDone.Epoch,h)
+}
+
+func TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	var publishFail atomic.Bool
+	replyWritten:=make(chan struct{});releaseReply:=make(chan struct{})
+	var replyOnce sync.Once
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="after_listener_publish_before_commit_ack"&&publishFail.CompareAndSwap(false,true){
+			return errors.New("force initial uncertainty")
+		}
+		if stage=="after_status_reply_write"{
+			first:=false
+			replyOnce.Do(func(){first=true;close(replyWritten)})
+			if first{<-releaseReply}
+		}
+		return nil
+	})
+	dropped:=make(chan struct{})
+	var dropOnce atomic.Bool
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="status_query_after_send"&&dropOnce.CompareAndSwap(false,true){
+			<-replyWritten
+			close(dropped)
+			return errors.New("status reply deliberately not decoded")
+		}
+		return nil
+	})
+	p.proxy.CutAll()
+	select{case <-dropped:case <-time.After(8*time.Second):t.Fatal("status reply loss interleaving not reached")}
+	close(releaseReply)
+	ir,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,10)
+	t.Logf("PASS matrix J lost status reply retried exact transaction epoch=%d digest=%s hash=%x",ir.Epoch,ir.PlanDigest,h)
+}
+
+func TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	installOneShotPostPublishUncertainty(p)
+	p.irRuntime.SetRecoveryControlHookForTest(func(stage string,ctl *session.RecoveryControl)int{
+		if stage=="dialer_status_query_send"{return 2}
+		return 1
+	})
+	p.exRuntime.SetRecoveryControlHookForTest(func(stage string,ctl *session.RecoveryControl)int{
+		if stage=="listener_status_reply_send"{return 2}
+		return 1
+	})
+	p.proxy.CutAll()
+	ir,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,11)
+	t.Logf("PASS matrix K duplicate STATUS query/reply idempotent epoch=%d digest=%s hash=%x",ir.Epoch,ir.PlanDigest,h)
+}
+
+func TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	installOneShotPostPublishUncertainty(p)
+	var mutated atomic.Bool
+	p.exRuntime.SetRecoveryControlHookForTest(func(stage string,ctl *session.RecoveryControl)int{
+		if stage=="listener_status_reply_send"&&mutated.CompareAndSwap(false,true){
+			if len(ctl.PlanDigest)>2{ctl.PlanDigest="00"+ctl.PlanDigest[2:]}else{ctl.PlanDigest="00"}
+		}
+		return 1
+	})
+	var queryCount atomic.Int32
+	retrySeen:=make(chan struct{});releaseRetry:=make(chan struct{})
+	p.irRuntime.SetRecoveryControlHookForTest(func(stage string,ctl *session.RecoveryControl)int{
+		if stage=="dialer_status_query_send"{
+			n:=queryCount.Add(1)
+			if n==2{close(retrySeen);<-releaseRetry}
+		}
+		return 1
+	})
+	p.proxy.CutAll()
+	select{case <-retrySeen:case <-time.After(8*time.Second):t.Fatalf("mismatched status digest did not force exact retry ir=%+v ex=%+v",p.irRuntime.RecoveryAuthoritiesForTest(),p.exRuntime.RecoveryAuthoritiesForTest())}
+	ir,ex:=waitDialerCommitUncertain(t,p)
+	if !mutated.Load()||ir.Epoch!=1||ex.Epoch!=2||ir.CandidateID!=ex.CandidateID{
+		t.Fatalf("digest mismatch did not fail closed ir=%+v ex=%+v mutated=%v",ir,ex,mutated.Load())
+	}
+	close(releaseRetry)
+	irDone,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,12)
+	t.Logf("PASS matrix L mismatched resolution digest failed closed then exact retry converged epoch=%d hash=%x",irDone.Epoch,h)
+}
