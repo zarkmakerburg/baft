@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -216,7 +217,10 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		if err != nil { return err }
 		if cfg.Recovery.Enabled {
 			first,err:=protocol.Decode(in);if err!=nil{return err}
-			if handled,err:=r.handleIncomingRecovery(hctx,cfg,in,out,peer,first);handled{return err}
+			if handled,err:=r.handleIncomingRecovery(hctx,cfg,in,out,peer,first);handled{
+				if err!=nil{log.Printf("baft recovery candidate rejected: %v",err)}
+				return err
+			}
 			if first.Type!=protocol.TypeHello{return errors.New("new carrier must begin with HELLO or RESUME_STATE")}
 			h,err:=protocol.DecodeHello(first.Payload);if err!=nil{return err}
 			owner:=fmt.Sprintf("shard-%d-carrier-1",h.ShardID)
