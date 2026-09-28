@@ -98,13 +98,14 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	candidate:=r.nextRecoveryCandidate(index)
 	local,err:=sh.peer.BeginRecovery(candidate)
 	if err!=nil{return err}
-	committed:=false
-	defer func(){if !committed{sh.peer.AbortRecovery(candidate)}}()
+	published:=false
+	defer func(){if !published{sh.peer.AbortRecovery(candidate)}}()
 	if err:=r.recoveryFail("candidate_setup");err!=nil{sh.peer.RecordRecoveryFailure("candidate_setup");return fmt.Errorf("candidate setup: %w",err)}
 
 	o,err:=r.openRuntimeCarrier(ctx,cfg,tlsCfg)
 	if err!=nil{sh.peer.RecordRecoveryFailure("candidate_setup");return fmt.Errorf("candidate setup: %w",err)}
-	defer func(){if !committed{o.close()}}()
+	keepCarrier:=false
+	defer func(){if !keepCarrier{o.close()}}()
 	if err:=r.recoveryFail("snapshot_exchange");err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
 
 	if err:=session.EncodeRecoveryOffer(o.carrier.Out,local);err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
@@ -112,17 +113,44 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	peer,err:=session.DecodeRecoveryOffer(fr);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("snapshot exchange: %w",err)}
 	if err:=sh.peer.ReconcileRecovery(candidate,peer);err!=nil{return err}
 
-	if err:=session.EncodeRecoveryDone(o.carrier.Out,session.RecoveryDone{CandidateID:candidate,NextEpoch:local.NextEpoch});err!=nil{
-		sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("pre-commit barrier: %w",err)
-	}
-	fr,err=protocol.Decode(o.carrier.In);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("pre-commit barrier: %w",err)}
-	done,err:=session.DecodeRecoveryDone(fr);if err!=nil{sh.peer.RecordRecoveryFailure("snapshot_exchange");return fmt.Errorf("pre-commit barrier: %w",err)}
-	if done.CandidateID!=candidate||done.NextEpoch!=local.NextEpoch{sh.peer.RecordRecoveryFailure("state_mismatch");return errors.New("recovery commit barrier mismatch")}
+	prepared,err:=sh.peer.PrepareRecoveryCommit(ctx,candidate,o.carrier)
+	if err!=nil{return err}
+	if err:=session.EncodeRecoveryControl(o.carrier.Out,prepared);err!=nil{return fmt.Errorf("prepared exchange: %w",err)}
+	fr,err=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("prepared exchange: %w",err)}
+	peerPrepared,err:=session.DecodeRecoveryControl(fr);if err!=nil{return fmt.Errorf("prepared exchange: %w",err)}
+	if err:=sh.peer.ValidateRecoveryControl(peerPrepared,session.RecoveryPhasePrepared);err!=nil{return err}
+
+	ready:=prepared;ready.Phase=session.RecoveryPhaseCommitReady
+	if err:=session.EncodeRecoveryControl(o.carrier.Out,ready);err!=nil{return fmt.Errorf("commit readiness: %w",err)}
+	fr,err=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("commit readiness: %w",err)}
+	peerReady,err:=session.DecodeRecoveryControl(fr);if err!=nil{return fmt.Errorf("commit readiness: %w",err)}
+	if err:=sh.peer.ValidateRecoveryControl(peerReady,session.RecoveryPhaseCommitReady);err!=nil{return err}
+
+	// Both endpoints are reconciled and PREPARED. This is the last dialer
+	// failure point at which neither authority has changed.
 	if err:=r.recoveryFail("before_commit");err!=nil{sh.peer.RecordRecoveryFailure("commit");return fmt.Errorf("before commit: %w",err)}
 
-	if err:=sh.peer.CommitRecovery(ctx,candidate,o.carrier);err!=nil{return err}
-	sh.replaceCarrier(o)
-	committed=true
+	commitCtl:=prepared;commitCtl.Phase=session.RecoveryPhaseCommit
+	if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{return fmt.Errorf("commit send: %w",err)}
+	fr,err=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("commit ack: %w",err)}
+	peerAck,err:=session.DecodeRecoveryControl(fr);if err!=nil{return fmt.Errorf("commit ack: %w",err)}
+	if err:=sh.peer.ValidateRecoveryControl(peerAck,session.RecoveryPhaseCommitAck);err!=nil{return err}
+
+	res,err:=sh.peer.PublishRecoveryCommit(commitCtl)
+	if err!=nil{return err}
+	if !res.Committed{return errors.New("recovery authority was not committed")}
+	published=true
+	sh.replaceCarrier(o);keepCarrier=true
+
+	// Final ACK tells the listener that both authorities now name the same
+	// transaction. Duplicate ACK is harmless and improves ACK-loss recovery.
+	finalAck:=commitCtl;finalAck.Phase=session.RecoveryPhaseCommitAck
+	if err:=session.EncodeRecoveryControl(o.carrier.Out,finalAck);err!=nil{
+		return sh.peer.MarkPostCommitFailure(fmt.Errorf("final commit ack: %w",err),commitCtl)
+	}
+	_ = session.EncodeRecoveryControl(o.carrier.Out,finalAck)
+
+	if err:=sh.peer.FinalizeRecoveryCommit(ctx,commitCtl);err!=nil{return err}
 	return nil
 }
 
@@ -135,24 +163,51 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 
 	local,err:=p.BeginRecovery(remote.CandidateID)
 	if err!=nil{return true,err}
-	committed:=false
-	defer func(){if !committed{p.AbortRecovery(remote.CandidateID)}}()
+	published:=false
+	defer func(){if !published{p.AbortRecovery(remote.CandidateID)}}()
 	if local.NextEpoch!=remote.NextEpoch{return true,errors.New("recovery epoch mismatch")}
 	if err:=p.ReconcileRecovery(remote.CandidateID,remote);err!=nil{return true,err}
 	if err:=session.EncodeRecoveryOffer(out,local);err!=nil{return true,fmt.Errorf("snapshot exchange: %w",err)}
 
-	fr,err:=protocol.Decode(in);if err!=nil{return true,fmt.Errorf("pre-commit barrier: %w",err)}
-	done,err:=session.DecodeRecoveryDone(fr);if err!=nil{return true,fmt.Errorf("pre-commit barrier: %w",err)}
-	if done.CandidateID!=remote.CandidateID||done.NextEpoch!=remote.NextEpoch{return true,errors.New("recovery commit barrier mismatch")}
-	if err:=session.EncodeRecoveryDone(out,session.RecoveryDone{CandidateID:remote.CandidateID,NextEpoch:remote.NextEpoch});err!=nil{
-		return true,fmt.Errorf("pre-commit barrier: %w",err)
-	}
-	if err:=p.CommitRecovery(hctx,remote.CandidateID,session.Carrier{In:in,Out:out});err!=nil{return true,err}
-	committed=true
+	prepared,err:=p.PrepareRecoveryCommit(hctx,remote.CandidateID,session.Carrier{In:in,Out:out})
+	if err!=nil{return true,err}
+	fr,err:=protocol.Decode(in);if err!=nil{return true,fmt.Errorf("prepared exchange: %w",err)}
+	peerPrepared,err:=session.DecodeRecoveryControl(fr);if err!=nil{return true,fmt.Errorf("prepared exchange: %w",err)}
+	if err:=p.ValidateRecoveryControl(peerPrepared,session.RecoveryPhasePrepared);err!=nil{return true,err}
+	if err:=session.EncodeRecoveryControl(out,prepared);err!=nil{return true,fmt.Errorf("prepared exchange: %w",err)}
 
-	// The existing session goroutine owns candidate reads after Commit. Keep
-	// this authenticated HTTP/2 request alive until its carrier is replaced,
-	// closed, or the runtime shuts down.
-	<-hctx.Done()
-	return true,nil
+	fr,err=protocol.Decode(in);if err!=nil{return true,fmt.Errorf("commit readiness: %w",err)}
+	ready,err:=session.DecodeRecoveryControl(fr);if err!=nil{return true,fmt.Errorf("commit readiness: %w",err)}
+	if err:=p.ValidateRecoveryControl(ready,session.RecoveryPhaseCommitReady);err!=nil{return true,err}
+	if err:=r.recoveryFail("listener_before_commit");err!=nil{p.RecordRecoveryFailure("commit");return true,fmt.Errorf("listener before commit: %w",err)}
+	readyAck:=prepared;readyAck.Phase=session.RecoveryPhaseCommitReady
+	if err:=session.EncodeRecoveryControl(out,readyAck);err!=nil{return true,fmt.Errorf("commit readiness: %w",err)}
+
+	for {
+		fr,err=protocol.Decode(in);if err!=nil{
+			if published{return true,p.MarkPostCommitFailure(fmt.Errorf("commit exchange: %w",err),prepared)}
+			return true,fmt.Errorf("commit exchange: %w",err)
+		}
+		ctl,err:=session.DecodeRecoveryControl(fr);if err!=nil{return true,err}
+		switch ctl.Phase {
+		case session.RecoveryPhaseCommit:
+			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommit);err!=nil{return true,err}
+			res,err:=p.PublishRecoveryCommit(ctl)
+			if err!=nil{return true,err}
+			if !res.Committed{return true,errors.New("listener authority was not committed")}
+			published=true
+			ack:=ctl;ack.Phase=session.RecoveryPhaseCommitAck
+			if err:=session.EncodeRecoveryControl(out,ack);err!=nil{return true,p.MarkPostCommitFailure(fmt.Errorf("commit ack: %w",err),ctl)}
+			// If the first ACK is lost, a duplicate COMMIT is accepted below
+			// and receives the same idempotent ACK without another epoch/replay.
+		case session.RecoveryPhaseCommitAck:
+			if !published{return true,recovery.ErrStateMismatch}
+			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommitAck);err!=nil{return true,err}
+			if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return true,err}
+			return true,nil
+		default:
+			return true,recovery.ErrStateMismatch
+		}
+	}
 }
+
