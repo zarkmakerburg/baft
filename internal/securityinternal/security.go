@@ -78,12 +78,13 @@ func DecodePublicKey(s string) ([]byte, error) {
 }
 
 type HandshakeConfig struct {
-	Context           context.Context
-	Static            KeyPair
-	PeerStatic        []byte
-	OneTimePairingPSK []byte
-	Prologue          []byte
-	RecordShaping     recordshape.Config
+	Context            context.Context
+	Static             KeyPair
+	PeerStatic         []byte
+	AllowedPeerStatics [][]byte
+	OneTimePairingPSK  []byte
+	Prologue           []byte
+	RecordShaping      recordshape.Config
 }
 
 func (c HandshakeConfig) prologue() []byte {
@@ -200,11 +201,19 @@ func Responder(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, []byte, er
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(cfg.PeerStatic) == 0 && len(cfg.OneTimePairingPSK) == 0 {
+	if len(cfg.PeerStatic) != 0 && len(cfg.AllowedPeerStatics) != 0 {
+		return nil, nil, errors.New("securityinternal: configure either one pinned peer or an allowlist, not both")
+	}
+	if len(cfg.PeerStatic) == 0 && len(cfg.AllowedPeerStatics) == 0 && len(cfg.OneTimePairingPSK) == 0 {
 		return nil, nil, ErrPairingRequired
 	}
 	if len(cfg.PeerStatic) != 0 && len(cfg.PeerStatic) != 32 {
 		return nil, nil, errors.New("securityinternal: expected initiator static key must be 32 bytes")
+	}
+	for _, pub := range cfg.AllowedPeerStatics {
+		if len(pub) != 32 {
+			return nil, nil, errors.New("securityinternal: allowlisted initiator static key must be 32 bytes")
+		}
 	}
 
 	ncfg := noise.Config{
@@ -237,6 +246,18 @@ func Responder(r io.Reader, w io.Writer, cfg HandshakeConfig) (*Conn, []byte, er
 	}
 	if len(cfg.PeerStatic) != 0 && !bytes.Equal(peerStatic, cfg.PeerStatic) {
 		return nil, nil, ErrPeerStaticMismatch
+	}
+	if len(cfg.PeerStatic) == 0 && len(cfg.AllowedPeerStatics) != 0 {
+		allowed := false
+		for _, pub := range cfg.AllowedPeerStatics {
+			if bytes.Equal(peerStatic, pub) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil, nil, ErrPeerStaticMismatch
+		}
 	}
 
 	msg2, cs1, cs2, err := hs.WriteMessage(nil, nil)
