@@ -18,6 +18,10 @@ type Snapshot struct {
 	RecoveryCommits       uint64
 	RecoveryAborts        uint64
 	RecoveryPostCommitFailures uint64
+	RecoveryCommitUncertain uint64
+	RecoveryCommitResolutionCommitted uint64
+	RecoveryCommitResolutionNotCommitted uint64
+	RecoveryCommitResolutionConflict uint64
 	RecoveryCurrentEpoch  uint64
 	RecoveryReplayedBytes uint64
 	RecoveryFailures      map[string]uint64
@@ -87,6 +91,22 @@ func Handler(provider Provider) http.Handler {
 		fmt.Fprintln(w, "# HELP baft_recovery_post_commit_failures_total Failures after ECRL authority commit; old epochs remain fenced.")
 		fmt.Fprintln(w, "# TYPE baft_recovery_post_commit_failures_total counter")
 		fmt.Fprintf(w, "baft_recovery_post_commit_failures_total %d\n", s.RecoveryPostCommitFailures)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commit_uncertain_total Commit transactions that entered distributed uncertainty after COMMIT was sent or locally published.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commit_uncertain_total counter")
+		fmt.Fprintf(w, "baft_recovery_commit_uncertain_total %d\n", s.RecoveryCommitUncertain)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commit_resolution_committed_total Uncertain transactions resolved as committed.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commit_resolution_committed_total counter")
+		fmt.Fprintf(w, "baft_recovery_commit_resolution_committed_total %d\n", s.RecoveryCommitResolutionCommitted)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commit_resolution_not_committed_total Uncertain transactions resolved with authenticated NOT_COMMITTED proof.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commit_resolution_not_committed_total counter")
+		fmt.Fprintf(w, "baft_recovery_commit_resolution_not_committed_total %d\n", s.RecoveryCommitResolutionNotCommitted)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commit_resolution_conflict_total Uncertain transaction resolutions that failed closed as conflict or unknown.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commit_resolution_conflict_total counter")
+		fmt.Fprintf(w, "baft_recovery_commit_resolution_conflict_total %d\n", s.RecoveryCommitResolutionConflict)
 
 
 		fmt.Fprintln(w, "# HELP baft_recovery_current_epoch Highest current ECRL session epoch in this runtime.")
