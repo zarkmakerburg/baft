@@ -25,6 +25,8 @@ const (
 	maxClosedFlowTombstones         = 256
 )
 
+var ErrRecoverableDataGap = errors.New("recoverable DATA gap on recovery carrier")
+
 type Role uint8
 
 const (
@@ -876,6 +878,14 @@ func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
 	fl.mu.Unlock()
 	ack, duplicate, err := fl.acceptData(fr.Offset, fr.Payload)
 	if err != nil {
+		if p.recoveryEnabled && errors.Is(err,ErrRecoverableDataGap) {
+			// A later replay frame can still be buffered on a physical carrier
+			// whose earlier frame was written but never accepted. Local write
+			// order is not peer-delivery proof. Preserve the Flow and force an
+			// exact-transaction carrier rebind so replay restarts from the
+			// ACK-derived frontier. Recovery-disabled behavior remains unchanged.
+			return fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)
+		}
 		return p.sendReset(fl, protocol.ErrorFlowControl)
 	}
 	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeAck, StreamID: fl.id, Offset: ack}); err != nil {
@@ -893,7 +903,14 @@ func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
 func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 	fl.mu.Lock()
 	if finalOffset != fl.rxNext {
+		accepted:=fl.rxNext
 		fl.mu.Unlock()
+		if p.recoveryEnabled && finalOffset>accepted {
+			// A FIN written after DATA may outlive the physical carrier even when
+			// the preceding DATA was not peer-accepted. Do not turn that delivery
+			// ambiguity into an application reset; rebind and replay exact state.
+			return fmt.Errorf("%w: FIN ahead of accepted DATA",ErrCarrierUnavailable)
+		}
 		return errors.New("FIN final_offset does not match accepted data")
 	}
 	if fl.finRecv && fl.finRecvFinal != finalOffset {
@@ -1252,7 +1269,7 @@ func (f *flow) acceptData(offset uint64, payload []byte) (uint64, bool, error) {
 		return 0, false, errors.New("FLOW_CONTROL_ERROR")
 	}
 	if offset > f.rxNext {
-		return 0, false, errors.New("DATA gap is not allowed")
+		return 0, false, ErrRecoverableDataGap
 	}
 	if end <= f.rxNext {
 		return f.rxNext, true, nil
