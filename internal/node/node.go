@@ -42,6 +42,7 @@ type Runtime struct {
 	sessionMu       sync.Mutex
 	sessions        map[string]*session.Peer
 	recoverySeq     atomic.Uint64
+	recoveryFault   func(string) error
 }
 
 func NewRuntime() *Runtime {
