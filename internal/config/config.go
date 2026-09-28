@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"strings"
 )
 
@@ -23,6 +24,7 @@ type Config struct {
 	Recovery      Recovery   `json:"recovery"`
 	Routes        []Route    `json:"routes"`
 	Management    Management `json:"management"`
+	Telemetry     Telemetry  `json:"telemetry,omitempty"`
 	Logging       Logging    `json:"logging"`
 }
 
@@ -76,6 +78,12 @@ type Route struct {
 type Management struct {
 	UnixSocket    string `json:"unix_socket"`
 	MetricsListen string `json:"metrics_listen"`
+}
+type Telemetry struct {
+	Enabled         bool   `json:"enabled"`
+	BCCURL          string `json:"bcc_url,omitempty"`
+	AgentTokenEnv   string `json:"agent_token_env,omitempty"`
+	IntervalSeconds int    `json:"interval_seconds,omitempty"`
 }
 type Logging struct {
 	Level   string `json:"level"`
@@ -158,6 +166,9 @@ func Validate(c Config) error {
 		return errors.New("management.unix_socket is required")
 	}
 	if err := validateLoopbackListen(c.Management.MetricsListen, "management.metrics_listen"); err != nil {
+		return err
+	}
+	if err := validateTelemetry(c.Telemetry); err != nil {
 		return err
 	}
 	seen := make(map[string]struct{}, len(c.Routes))
@@ -244,5 +255,25 @@ func validateFixedTarget(addr string) error {
 	if net.ParseIP(host) == nil {
 		return errors.New("baseline target must be a fixed IP address")
 	}
+	return nil
+}
+
+
+func validateTelemetry(t Telemetry) error {
+	if !t.Enabled { return nil }
+	if t.BCCURL=="" { return errors.New("telemetry.bcc_url is required when enabled") }
+	u,err:=url.Parse(t.BCCURL);if err!=nil||u.Host==""{return errors.New("telemetry.bcc_url must be an absolute URL")}
+	if u.RawQuery!=""||u.Fragment!=""||u.User!=nil{return errors.New("telemetry.bcc_url must not contain credentials, query, or fragment")}
+	if u.Path!=""&&u.Path!="/"{return errors.New("telemetry.bcc_url must not contain an API path")}
+	if u.Scheme!="https"{
+		host:=u.Hostname()
+		ip:=net.ParseIP(host)
+		if u.Scheme!="http"||!(host=="localhost"||(ip!=nil&&ip.IsLoopback())) {
+			return errors.New("telemetry.bcc_url must use https except on loopback")
+		}
+	}
+	if t.IntervalSeconds<0||t.IntervalSeconds>3600{return errors.New("telemetry.interval_seconds is out of range")}
+	if t.IntervalSeconds>0&&t.IntervalSeconds<1{return errors.New("telemetry.interval_seconds is too small")}
+	if strings.ContainsAny(t.AgentTokenEnv,"=\x00"){return errors.New("telemetry.agent_token_env is invalid")}
 	return nil
 }
