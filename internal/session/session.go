@@ -54,6 +54,7 @@ type Options struct {
 	RecoveryEnabled    bool
 	RecoveryRetention  time.Duration
 	CarrierID          string
+	BootID             string
 }
 
 type Peer struct {
@@ -190,9 +191,14 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 	if opts.Resources == nil {
 		opts.Resources = defaultAllocator()
 	}
-	bootID, err := randomHex128()
-	if err != nil {
-		return nil, err
+	bootID:=opts.BootID
+	if bootID=="" {
+		var err error
+		bootID,err=randomHex128()
+		if err!=nil{return nil,err}
+	} else {
+		b,err:=hex.DecodeString(bootID)
+		if err!=nil||len(b)!=16||bootID!=hex.EncodeToString(b){return nil,errors.New("boot_id must be lowercase 128-bit hex")}
 	}
 	p := &Peer{
 		role: role, carrier: c, writer: frameWriter{w: c.Out}, peerID: peerID,
