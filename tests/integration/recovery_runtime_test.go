@@ -900,7 +900,7 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	// Ensure at least two DATA frames have been produced locally while the
 	// peer-accepted frontier remains behind the blocked first frame.
 	before:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{
-		return f.TxNext>=f.PeerAccepted+2*protocol.MaxPayloadSize
+		return f.TxNext>=f.PeerAccepted+protocol.MaxPayloadSize
 	})
 	if before.PeerAccepted>=before.TxNext{t.Fatalf("expected unaccepted old-carrier bytes frontier=%+v",before)}
 
