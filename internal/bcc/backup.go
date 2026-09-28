@@ -310,6 +310,7 @@ func (s *Server) RestoreFromFile(path string,key []byte) error {
 
 	restored,err:=cloneState(payload.State);if err!=nil{return err}
 	mergeAntiRollback(&restored,current,header.CreatedAt)
+	restored.ActiveAlerts=cloneAlerts(payload.Alerts.ActiveAlerts)
 	stateData,err:=stateBytes(restored);if err!=nil{return err}
 	if err:=writeAtomic(s.store.path,stateData,0600);err!=nil{return err}
 
@@ -325,12 +326,7 @@ func (s *Server) RestoreFromFile(path string,key []byte) error {
 	}
 
 	s.alertMu.Lock()
-	s.activeAlerts=make(map[string]Alert,len(payload.Alerts.ActiveAlerts))
-	for k,v:=range payload.Alerts.ActiveAlerts{s.activeAlerts[k]=v}
-	s.store.mu.Lock()
-	s.store.st.ActiveAlerts=cloneAlerts(s.activeAlerts)
-	_ = s.store.saveLocked()
-	s.store.mu.Unlock()
+	s.activeAlerts=cloneAlerts(payload.Alerts.ActiveAlerts)
 	if payload.Alerts.TelemetryStaleAfterNanos>0{s.alertConfig.TelemetryStaleAfter=time.Duration(payload.Alerts.TelemetryStaleAfterNanos)}
 	if payload.Alerts.HandshakeErrorRateMilliPerMin>0{s.alertConfig.HandshakeErrorRateMilliPerMin=payload.Alerts.HandshakeErrorRateMilliPerMin}
 	if payload.Alerts.IntervalNanos>0{s.alertConfig.Interval=time.Duration(payload.Alerts.IntervalNanos)}
