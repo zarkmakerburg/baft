@@ -141,6 +141,8 @@ type RecoveryAdapter struct {
 	prepared *preparedRecovery
 	lastCommit RecoveryControl
 	lastNotCommitted RecoveryControl
+	lastResolutionCommitted RecoveryControl
+	lastResolutionConflict RecoveryControl
 	txnState RecoveryTxnState
 	uncertain RecoveryControl
 	attempts atomic.Uint64
