@@ -23,6 +23,7 @@ type FlowSnapshot struct {
 	FinRecv     bool
 	FinAcked    bool
 	FinAckSent  bool
+	FinAckConfirmed bool
 }
 
 type Snapshot struct {
@@ -42,6 +43,8 @@ type FlowPlan struct {
 	PeerReleaseThrough     uint64
 	LocalFinAckCanAdvance  bool
 	PeerFinAckCanAdvance   bool
+	LocalFinAckConfirmCanAdvance bool
+	PeerFinAckConfirmCanAdvance  bool
 }
 
 type Plan struct {
@@ -74,6 +77,9 @@ func (s Snapshot) Validate() error {
 		}
 		if f.FinAckSent && !f.FinRecv {
 			return fmt.Errorf("%w: FIN_ACK sent before FIN received on stream %d", ErrStateMismatch, f.StreamID)
+		}
+		if f.FinAckConfirmed && !f.FinAckSent {
+			return fmt.Errorf("%w: FIN_ACK confirmed before FIN_ACK sent on stream %d", ErrStateMismatch, f.StreamID)
 		}
 	}
 	return nil
@@ -136,6 +142,12 @@ func Reconcile(local, peer Snapshot, expectedPeerBootID string) (Plan, error) {
 		if pf.FinAcked && !lf.FinAckSent {
 			return Plan{}, fmt.Errorf("%w: peer FIN_ACK receive without local FIN_ACK send", ErrStateMismatch)
 		}
+		if lf.FinAckConfirmed && !pf.FinAcked {
+			return Plan{}, fmt.Errorf("%w: local FIN_ACK confirmation without peer FIN_ACK acceptance", ErrStateMismatch)
+		}
+		if pf.FinAckConfirmed && !lf.FinAcked {
+			return Plan{}, fmt.Errorf("%w: peer FIN_ACK confirmation without local FIN_ACK acceptance", ErrStateMismatch)
+		}
 
 		out.Flows = append(out.Flows, FlowPlan{
 			StreamID: lf.StreamID,
@@ -147,6 +159,8 @@ func Reconcile(local, peer Snapshot, expectedPeerBootID string) (Plan, error) {
 			PeerReleaseThrough: pf.TxAcked,
 			LocalFinAckCanAdvance: pf.FinAckSent && !lf.FinAcked,
 			PeerFinAckCanAdvance: lf.FinAckSent && !pf.FinAcked,
+			LocalFinAckConfirmCanAdvance: pf.FinAcked && lf.FinAckSent && !lf.FinAckConfirmed,
+			PeerFinAckConfirmCanAdvance: lf.FinAcked && pf.FinAckSent && !pf.FinAckConfirmed,
 		})
 	}
 	sort.Slice(out.Flows, func(i, j int) bool { return out.Flows[i].StreamID < out.Flows[j].StreamID })
