@@ -355,3 +355,123 @@ func TestRecoveryCommitMetricsReflectAuthorityChange(t *testing.T){
 	if s.Failures["post_commit_failure"]!=1{t.Fatalf("failure reasons=%v",s.Failures)}
 	t.Log("PASS commit metric records authority publish independently of post-commit failure")
 }
+
+
+func makeUncertainFixture(t *testing.T,candidate string)(*Peer,context.Context,context.CancelFunc,RecoveryControl){
+	t.Helper()
+	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,candidate)
+	if err:=p.MarkCommitSent(ctl);err!=nil{cancel();t.Fatal(err)}
+	if err:=p.MarkCommitUncertain(ctl);err!=nil{cancel();t.Fatal(err)}
+	return p,ctx,cancel,ctl
+}
+
+func statusReplyFor(ctl RecoveryControl,status RecoveryResolutionStatus) RecoveryControl {
+	r:=ctl
+	r.Phase=RecoveryPhaseStatusReply
+	r.Status=status
+	return r
+}
+
+func TestCommitUncertainCannotAbortWithoutProof(t *testing.T){
+	p,_,cancel,ctl:=makeUncertainFixture(t,"candidate-uncertain-abort");defer cancel()
+	p.AbortRecovery(ctl.CandidateID)
+	if p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatalf("uncertain abort changed authority epoch=%d owner=%s",p.RecoveryEpoch(),p.RecoveryOwner())}
+	if p.RecoveryTransactionState()!=RecoveryTxnUncertain||!p.RecoveryFrozen(){t.Fatalf("state=%s frozen=%v",p.RecoveryTransactionState(),p.RecoveryFrozen())}
+	t.Log("PASS COMMIT_UNCERTAIN cannot be rolled back without proof")
+}
+
+func TestCommittedResolutionCatchesUpExactTransaction(t *testing.T){
+	p,ctx,cancel,ctl:=makeUncertainFixture(t,"candidate-catchup");defer cancel()
+	reply:=statusReplyFor(ctl,RecoveryResolutionCommitted)
+	if err:=p.NoteCommittedResolution(reply);err!=nil{t.Fatal(err)}
+	if err:=p.NoteCommittedResolution(reply);err!=nil{t.Fatal(err)}
+	var out bytes.Buffer
+	if err:=p.RebindPreparedRecovery(ctx,ctl,Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+	res,err:=p.PublishRecoveryCommit(ctl);if err!=nil{t.Fatal(err)}
+	if !res.Committed||res.Epoch!=ctl.NextEpoch{t.Fatalf("result=%+v",res)}
+	if p.RecoveryEpoch()!=2||p.RecoveryOwner()!=ctl.CandidateID{t.Fatalf("authority=%d/%s",p.RecoveryEpoch(),p.RecoveryOwner())}
+	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	s:=p.RecoveryStats()
+	if s.Commits!=1||s.ResolutionCommitted!=1{t.Fatalf("metrics=%+v",s)}
+	if p.RecoveryFrozen(){t.Fatal("catch-up remained frozen")}
+	t.Log("PASS committed proof caught up exact transaction identity once")
+}
+
+func TestNotCommittedResolutionAllowsAbort(t *testing.T){
+	p,_,cancel,ctl:=makeUncertainFixture(t,"candidate-not-committed");defer cancel()
+	reply:=statusReplyFor(ctl,RecoveryResolutionNotCommitted)
+	if err:=p.ResolveNotCommitted(reply);err!=nil{t.Fatal(err)}
+	if p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatalf("authority=%d/%s",p.RecoveryEpoch(),p.RecoveryOwner())}
+	if p.RecoveryFrozen()||p.RecoveryTransactionState()!=RecoveryTxnAborted{t.Fatalf("state=%s frozen=%v",p.RecoveryTransactionState(),p.RecoveryFrozen())}
+	next,err:=p.BeginRecovery("candidate-after-proof");if err!=nil{t.Fatal(err)}
+	if next.NextEpoch!=2{t.Fatalf("next epoch=%d",next.NextEpoch)}
+	p.AbortRecovery("candidate-after-proof")
+	t.Log("PASS authenticated NOT_COMMITTED proof permits abort and fresh recovery")
+}
+
+func TestConflictingResolutionFailsClosed(t *testing.T){
+	p,_,cancel,ctl:=makeUncertainFixture(t,"candidate-conflict");defer cancel()
+	reply:=statusReplyFor(ctl,RecoveryResolutionConflict)
+	if err:=p.NoteResolutionConflict(reply);!errors.Is(err,ErrCommitUncertain){t.Fatalf("conflict err=%v",err)}
+	if p.RecoveryTransactionState()!=RecoveryTxnUncertain||!p.RecoveryFrozen(){t.Fatalf("state=%s frozen=%v",p.RecoveryTransactionState(),p.RecoveryFrozen())}
+	if _,err:=p.BeginRecovery("candidate-bypass");!errors.Is(err,ErrCommitUncertain){t.Fatalf("fresh recovery bypass err=%v",err)}
+	t.Log("PASS conflict/unknown resolution fails closed")
+}
+
+func TestUncertainBlocksFreshRecovery(t *testing.T){
+	p,_,cancel,_:=makeUncertainFixture(t,"candidate-block");defer cancel()
+	if _,err:=p.BeginRecovery("candidate-new");!errors.Is(err,ErrCommitUncertain){t.Fatalf("fresh recovery err=%v",err)}
+	if p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatal("blocked recovery changed authority")}
+}
+
+func TestDuplicateResolutionIsIdempotent(t *testing.T){
+	p,_,cancel,ctl:=makeUncertainFixture(t,"candidate-resolution-idem");defer cancel()
+	reply:=statusReplyFor(ctl,RecoveryResolutionNotCommitted)
+	if err:=p.ResolveNotCommitted(reply);err!=nil{t.Fatal(err)}
+	if err:=p.ResolveNotCommitted(reply);err!=nil{t.Fatal(err)}
+	s:=p.RecoveryStats()
+	if s.ResolutionNotCommitted!=1||s.Aborts!=1{t.Fatalf("duplicate NOT_COMMITTED changed counters: %+v",s)}
+	if p.RecoveryEpoch()!=1||p.RecoveryOwner()!="carrier-1"{t.Fatal("duplicate resolution changed authority")}
+	t.Log("PASS duplicate status resolution is idempotent")
+}
+
+func TestFinalizeRetryIsIdempotent(t *testing.T){
+	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-finalize-retry");defer cancel()
+	fl,_:=p.getOpenFlow(1)
+	fl.mu.Lock()
+	fl.replay=[]replayChunk{
+		{start:0,end:2,data:[]byte{1,2}},
+		{start:2,end:4,data:[]byte{3,4}},
+	}
+	fl.mu.Unlock()
+	// Re-materialize after changing the replay chunk boundaries.
+	p.recovery.mu.Lock();p.recovery.prepared=nil;p.recovery.txnState=RecoveryTxnPreparing;p.recovery.mu.Unlock()
+	var first bytes.Buffer
+	prepared,err:=p.PrepareRecoveryCommit(ctx,ctl.CandidateID,Carrier{In:bytes.NewReader(nil),Out:&first});if err!=nil{t.Fatal(err)}
+	if err:=p.MarkRecoveryCommitReady(prepared);err!=nil{t.Fatal(err)}
+	ctl=prepared;ctl.Phase=RecoveryPhaseCommit
+	calls:=0
+	p.recovery.postCommitFault=func(stage string)error{
+		if stage=="replay_write"{calls++;if calls==2{return errors.New("fail after replay prefix")}}
+		return nil
+	}
+	res,err:=p.CommitPreparedRecovery(ctx,ctl)
+	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("result=%+v err=%v",res,err)}
+	reply:=statusReplyFor(ctl,RecoveryResolutionCommitted)
+	if err:=p.NoteCommittedResolution(reply);err!=nil{t.Fatal(err)}
+	p.recovery.postCommitFault=nil
+	var second bytes.Buffer
+	if err:=p.RebindCommittedCarrier(ctx,ctl,Carrier{In:bytes.NewReader(nil),Out:&second});err!=nil{t.Fatal(err)}
+	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	var data []byte
+	for _,buf:=range []*bytes.Buffer{&first,&second}{
+		for buf.Len()>0{
+			fr,e:=protocol.Decode(buf);if e!=nil{t.Fatal(e)}
+			if fr.Type==protocol.TypeData{data=append(data,fr.Payload...)}
+		}
+	}
+	if !bytes.Equal(data,[]byte{1,2,3,4}){t.Fatalf("finalize retry duplicated/lost replay data=%v",data)}
+	if p.RecoveryStats().ReplayedBytes!=4{t.Fatalf("replayed bytes=%d",p.RecoveryStats().ReplayedBytes)}
+	t.Log("PASS finalize retry resumed after applied prefix without duplicate application bytes")
+}
