@@ -1,28 +1,55 @@
 package bcc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
+type AlertConfig struct {
+	WebhookURL                    string
+	TelemetryStaleAfter           time.Duration
+	HandshakeErrorRateMilliPerMin int64
+	Interval                      time.Duration
+}
+
+type Alert struct {
+	Type      string    `json:"type"`
+	NodeID    string    `json:"node_id"`
+	RouteID   string    `json:"route_id,omitempty"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 type Server struct {
 	store *Store
 	adminToken string
 	probeTimeout time.Duration
+	alertConfig AlertConfig
+	alertMu sync.Mutex
+	activeAlerts map[string]bool
+	httpClient *http.Client
 }
 
 func NewServer(store *Store,adminToken string) (*Server,error) {
 	if store==nil{return nil,errors.New("store is required")}
 	if strings.TrimSpace(adminToken)==""{return nil,errors.New("admin token is required")}
-	return &Server{store:store,adminToken:adminToken,probeTimeout:1500*time.Millisecond},nil
+	return &Server{
+		store:store,adminToken:adminToken,probeTimeout:1500*time.Millisecond,
+		alertConfig:AlertConfig{TelemetryStaleAfter:3*time.Minute,HandshakeErrorRateMilliPerMin:5000,Interval:15*time.Second},
+		activeAlerts:map[string]bool{},httpClient:&http.Client{Timeout:5*time.Second},
+	},nil
 }
 
 func bearer(r *http.Request) string {
@@ -63,6 +90,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/agent/ack",s.agentAck)
 	m.HandleFunc("/api/agent/traffic",s.agentTraffic)
 	m.HandleFunc("/api/finance",s.finance)
+	m.HandleFunc("/api/monitoring",s.monitoring)
+	m.HandleFunc("/api/history",s.history)
 	return m
 }
 
@@ -126,10 +155,16 @@ func (s *Server) agentAck(w http.ResponseWriter,r *http.Request){
 func (s *Server) ProbeOnce(ctx context.Context){
 	for _,n:=range s.store.ListNodes(){
 		d:=net.Dialer{Timeout:s.probeTimeout}
-		c,err:=d.DialContext(ctx,"tcp",n.Address)
+		start:=time.Now()
+		conn,err:=d.DialContext(ctx,"tcp",n.Address)
 		health:="down"
-		if err==nil{health="up";_ = c.Close()}
-		_ = s.store.SetHealth(n.ID,health,time.Now())
+		latency:=int64(-1)
+		if err==nil{
+			health="up"
+			latency=time.Since(start).Milliseconds()
+			_ = conn.Close()
+		}
+		_ = s.store.SetHealth(n.ID,health,latency,time.Now())
 	}
 }
 
@@ -174,4 +209,88 @@ func (s *Server) finance(w http.ResponseWriter,r *http.Request){
 		writeJSON(w,http.StatusOK,map[string]bool{"ok":true})
 	default:http.Error(w,"method not allowed",405)
 	}
+}
+
+
+func (s *Server) monitoring(w http.ResponseWriter,r *http.Request){
+	if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
+	if !s.admin(w,r){return}
+	writeJSON(w,http.StatusOK,s.store.MonitoringSnapshot(time.Now().UTC(),s.alertConfig.TelemetryStaleAfter))
+}
+
+func (s *Server) history(w http.ResponseWriter,r *http.Request){
+	if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
+	if !s.admin(w,r){return}
+	nodeID:=strings.TrimSpace(r.URL.Query().Get("node_id"))
+	if nodeID==""{http.Error(w,"node_id is required",400);return}
+	writeJSON(w,http.StatusOK,s.store.History(nodeID,time.Now().UTC()))
+}
+
+func (s *Server) ConfigureAlerts(cfg AlertConfig) error {
+	if cfg.TelemetryStaleAfter<=0{cfg.TelemetryStaleAfter=3*time.Minute}
+	if cfg.HandshakeErrorRateMilliPerMin<=0{cfg.HandshakeErrorRateMilliPerMin=5000}
+	if cfg.Interval<=0{cfg.Interval=15*time.Second}
+	if cfg.WebhookURL!=""{
+		u,err:=url.Parse(cfg.WebhookURL)
+		if err!=nil||u.Host==""||(u.Scheme!="http"&&u.Scheme!="https"){return errors.New("alert webhook must be an absolute http/https URL")}
+	}
+	s.alertConfig=cfg
+	return nil
+}
+
+func (s *Server) StartAlertLoop(ctx context.Context) {
+	_ = s.EvaluateAlertsOnce(ctx)
+	t:=time.NewTicker(s.alertConfig.Interval);defer t.Stop()
+	for{
+		select{
+		case <-ctx.Done():return
+		case <-t.C:_ = s.EvaluateAlertsOnce(ctx)
+		}
+	}
+}
+
+func (s *Server) EvaluateAlertsOnce(ctx context.Context) error {
+	now:=time.Now().UTC()
+	view:=s.store.MonitoringSnapshot(now,s.alertConfig.TelemetryStaleAfter)
+	current:=map[string]Alert{}
+	for _,n:=range view{
+		if !n.LastSeen.IsZero()&&now.Sub(n.LastSeen)>s.alertConfig.TelemetryStaleAfter{
+			key:="telemetry_stale:"+n.NodeID
+			current[key]=Alert{Type:"telemetry_stale",NodeID:n.NodeID,Message:"telemetry has exceeded stale threshold",Timestamp:now}
+		}
+		if n.HandshakeErrorRateMilliMin>=s.alertConfig.HandshakeErrorRateMilliPerMin{
+			key:="handshake_error_rate:"+n.NodeID
+			current[key]=Alert{Type:"handshake_error_rate",NodeID:n.NodeID,Message:"handshake error rate exceeded threshold",Timestamp:now}
+		}
+		for _,route:=range n.Routes{
+			if route.Status=="down"{
+				key:="route_down:"+n.NodeID+":"+route.RouteID
+				current[key]=Alert{Type:"route_down",NodeID:n.NodeID,RouteID:route.RouteID,Message:"route reported down",Timestamp:now}
+			}
+		}
+	}
+
+	s.alertMu.Lock()
+	defer s.alertMu.Unlock()
+	for key:=range s.activeAlerts{
+		if _,ok:=current[key];!ok{delete(s.activeAlerts,key)}
+	}
+	for key,alert:=range current{
+		if s.activeAlerts[key]{continue}
+		if s.alertConfig.WebhookURL!=""{
+			if err:=s.sendWebhook(ctx,alert);err!=nil{return err}
+		}
+		s.activeAlerts[key]=true
+	}
+	return nil
+}
+
+func (s *Server) sendWebhook(ctx context.Context,alert Alert) error {
+	body,err:=json.Marshal(alert);if err!=nil{return err}
+	req,err:=http.NewRequestWithContext(ctx,http.MethodPost,s.alertConfig.WebhookURL,bytes.NewReader(body));if err!=nil{return err}
+	req.Header.Set("Content-Type","application/json")
+	resp,err:=s.httpClient.Do(req);if err!=nil{return err}
+	defer resp.Body.Close()
+	if resp.StatusCode<200||resp.StatusCode>=300{return fmt.Errorf("alert webhook status %d",resp.StatusCode)}
+	return nil
 }
