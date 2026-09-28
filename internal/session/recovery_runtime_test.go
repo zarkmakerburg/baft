@@ -238,15 +238,24 @@ func prepareCommitFixture(t *testing.T,candidate string)(*Peer,context.Context,c
 	return p,ctx,cancel,out,ctl
 }
 
+func proveFinalizationForTest(t *testing.T,p *Peer,ctl RecoveryControl) RecoveryControl {
+	t.Helper()
+	finalCtl:=ctl;finalCtl.Phase=RecoveryPhaseFinalize;finalCtl.Status=RecoveryResolutionNone
+	if err:=p.MarkFinalizationStarted(finalCtl);err!=nil{t.Fatal(err)}
+	if err:=p.CompleteRecoveryFinalization(finalCtl);err!=nil{t.Fatal(err)}
+	return finalCtl
+}
+
 func TestDuplicateCommitIsIdempotent(t *testing.T){
 	p,ctx,cancel,out,ctl:=prepareCommitFixture(t,"candidate-idempotent");defer cancel()
 	first,err:=p.PublishRecoveryCommit(ctl);if err!=nil{t.Fatal(err)}
 	second,err:=p.PublishRecoveryCommit(ctl);if err!=nil{t.Fatal(err)}
 	if !first.Committed||!second.Committed||first.Epoch!=2||second.Epoch!=2{t.Fatalf("results first=%+v second=%+v",first,second)}
 	if got:=p.RecoveryStats().Commits;got!=1{t.Fatalf("authority commit counter=%d",got)}
-	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	finalCtl:=proveFinalizationForTest(t,p,ctl)
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{t.Fatal(err)}
 	before:=append([]byte(nil),out.Bytes()...)
-	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{t.Fatal(err)}
 	if !bytes.Equal(before,out.Bytes()){t.Fatal("duplicate finalize replayed application bytes")}
 	if p.RecoveryEpoch()!=2||p.RecoveryOwner()!="candidate-idempotent"{t.Fatal("duplicate commit changed authority")}
 	t.Log("PASS duplicate COMMIT kept one authority transition and one replay")
@@ -259,7 +268,8 @@ func TestLostCommitACKRetryIsIdempotent(t *testing.T){
 	ack2,err:=p.HandleCommittedRecoveryControl(ctl);if err!=nil{t.Fatal(err)}
 	if !sameRecoveryTransaction(ack1,ack2)||ack1.Phase!=RecoveryPhaseCommitAck||ack2.Phase!=RecoveryPhaseCommitAck{t.Fatalf("acks differ %+v %+v",ack1,ack2)}
 	if got:=p.RecoveryStats().Commits;got!=1{t.Fatalf("duplicate COMMIT incremented commits=%d",got)}
-	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	finalCtl:=proveFinalizationForTest(t,p,ctl)
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{t.Fatal(err)}
 	before:=len(out.Bytes())
 	if _,err:=p.PublishRecoveryCommit(ctl);err!=nil{t.Fatal(err)}
 	if got:=len(out.Bytes());got!=before{t.Fatalf("ACK retry caused replay bytes before=%d after=%d",before,got)}
@@ -284,7 +294,12 @@ func resolveCommittedForTest(t *testing.T,p *Peer,ctx context.Context,ctl Recove
 	var rebound bytes.Buffer
 	if err:=p.RebindCommittedCarrier(ctx,ctl,Carrier{In:bytes.NewReader(nil),Out:&rebound});err!=nil{t.Fatal(err)}
 	p.recovery.postCommitFault=nil
-	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	finalCtl:=ctl;finalCtl.Phase=RecoveryPhaseFinalize
+	if p.RecoveryTransactionState()!=RecoveryTxnFinalized{
+		if err:=p.MarkFinalizationStarted(finalCtl);err!=nil{t.Fatal(err)}
+		if err:=p.CompleteRecoveryFinalization(finalCtl);err!=nil{t.Fatal(err)}
+	}
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{t.Fatal(err)}
 }
 
 func TestPostCommitReplayFailureNeverReauthorizesOldEpoch(t *testing.T){
@@ -301,7 +316,7 @@ func TestPostCommitReplayFailureNeverReauthorizesOldEpoch(t *testing.T){
 	if p.recovery.engine.Authorize(1,"carrier-1"){t.Fatal("old epoch re-authorized after post-commit failure")}
 	p.AbortRecovery("candidate-postfail")
 	if p.RecoveryEpoch()!=2||p.RecoveryOwner()!="candidate-postfail"{t.Fatal("Abort pretended to roll back committed authority")}
-	if !p.RecoveryFrozen()||p.RecoveryTransactionState()!=RecoveryTxnUncertain{t.Fatalf("post-commit uncertainty state=%s frozen=%v",p.RecoveryTransactionState(),p.RecoveryFrozen())}
+	if !p.RecoveryFrozen()||p.RecoveryTransactionState()!=RecoveryTxnFinalized{t.Fatalf("post-finalization delivery state=%s frozen=%v",p.RecoveryTransactionState(),p.RecoveryFrozen())}
 	if _,err:=p.BeginRecovery("fresh-before-resolution");!errors.Is(err,ErrCommitUncertain){t.Fatalf("fresh recovery bypassed uncertainty: %v",err)}
 	resolveCommittedForTest(t,p,ctx,ctl)
 	if p.RecoveryFrozen(){t.Fatal("resolved transaction remained permanently frozen")}
@@ -390,7 +405,8 @@ func TestCommittedResolutionCatchesUpExactTransaction(t *testing.T){
 	res,err:=p.PublishRecoveryCommit(ctl);if err!=nil{t.Fatal(err)}
 	if !res.Committed||res.Epoch!=ctl.NextEpoch{t.Fatalf("result=%+v",res)}
 	if p.RecoveryEpoch()!=2||p.RecoveryOwner()!=ctl.CandidateID{t.Fatalf("authority=%d/%s",p.RecoveryEpoch(),p.RecoveryOwner())}
-	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
+	finalCtl:=proveFinalizationForTest(t,p,ctl)
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{t.Fatal(err)}
 	s:=p.RecoveryStats()
 	if s.Commits!=1||s.ResolutionCommitted!=1{t.Fatalf("metrics=%+v",s)}
 	if p.RecoveryFrozen(){t.Fatal("catch-up remained frozen")}
