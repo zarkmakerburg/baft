@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
+	"github.com/zarkmakerburg/baft/internal/recovery"
 	"github.com/zarkmakerburg/baft/internal/resources"
 	"github.com/zarkmakerburg/baft/internal/routes"
 )
@@ -50,6 +51,9 @@ type Options struct {
 	TrafficObserver    TrafficObserver
 	LatencyObserver    LatencyObserver
 	PingInterval       time.Duration
+	RecoveryEnabled    bool
+	RecoveryRetention  time.Duration
+	CarrierID          string
 }
 
 type Peer struct {
@@ -84,6 +88,15 @@ type Peer struct {
 	trafficObserver    TrafficObserver
 	latencyObserver    LatencyObserver
 	pingInterval       time.Duration
+	recoveryEnabled    bool
+	recoveryRetention  time.Duration
+	recovery           *RecoveryAdapter
+	recoveryNeeded     chan error
+	replacementReady   chan struct{}
+	carrierID          string
+	carrierEpoch       uint64
+	peerBootID         string
+	runCtx             context.Context
 }
 
 type replayChunk struct {
@@ -183,6 +196,8 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		profileVersion: opts.ProfileVersion, configRevision: opts.ConfigRevision,
 		epoch: "1", readyCh: make(chan struct{}), trafficObserver: opts.TrafficObserver,
 		latencyObserver: opts.LatencyObserver, pingInterval: opts.PingInterval,
+		recoveryEnabled: opts.RecoveryEnabled, recoveryRetention: opts.RecoveryRetention,
+		recoveryNeeded: make(chan error,1), replacementReady: make(chan struct{},1), carrierEpoch:1,
 	}
 	if role == Dialer {
 		p.nextID = 1
@@ -195,6 +210,15 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 	}
 	p.dial = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
 	p.sender = newOutboundSender(&p.writer)
+	if p.recoveryEnabled {
+		if p.recoveryRetention <= 0 { p.recoveryRetention = 30 * time.Second }
+		if p.recoveryRetention > 300*time.Second { return nil, errors.New("recovery retention exceeds 300 seconds") }
+		p.carrierID = opts.CarrierID
+		if p.carrierID == "" { p.carrierID = "carrier-1" }
+		eng, err := recovery.NewEngine(1,p.carrierID,recovery.EngineOptions{})
+		if err != nil { return nil, err }
+		p.recovery = newRecoveryAdapter(p,eng)
+	}
 	return p, nil
 }
 
@@ -206,8 +230,17 @@ func randomHex128() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func (p *Peer) Run(ctx context.Context) error {
+func (p *Peer) Run(ctx context.Context) error { return p.run(ctx,nil) }
+
+func (p *Peer) RunWithFirstFrame(ctx context.Context, first protocol.Frame) error {
+	return p.run(ctx,&first)
+}
+
+func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 	runCtx, cancel := context.WithCancel(ctx)
+	p.mu.Lock()
+	p.runCtx = runCtx
+	p.mu.Unlock()
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
@@ -219,28 +252,30 @@ func (p *Peer) Run(ctx context.Context) error {
 		p.wg.Wait()
 	}()
 	if p.role == Dialer {
-		if err := p.sendHello(); err != nil {
-			return err
-		}
+		if err := p.sendHello(); err != nil { return err }
 		if p.pingInterval > 0 {
 			p.wg.Add(1)
-			go func() {
-				defer p.wg.Done()
-				p.pingLoop(runCtx)
-			}()
+			go func() { defer p.wg.Done(); p.pingLoop(runCtx) }()
 		}
 	}
+	if first != nil {
+		epoch,carrierID:=p.currentCarrierIdentity()
+		if err:=p.handleFrameFrom(runCtx,epoch,carrierID,*first);err!=nil{return err}
+	}
 	for {
-		f, err := protocol.Decode(p.carrier.In)
+		carrier,epoch,carrierID:=p.currentCarrier()
+		f, err := protocol.Decode(carrier.In)
 		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, io.EOF) {
-				return ctx.Err()
+			if ctx.Err() != nil { return ctx.Err() }
+			if !p.recoveryEnabled {
+				if errors.Is(err,io.EOF){return ctx.Err()}
+				return err
 			}
-			return err
+			p.onCarrierFailure(err)
+			if err:=p.waitForReplacement(runCtx,epoch,carrierID);err!=nil{return err}
+			continue
 		}
-		if err := p.handleFrame(runCtx, f); err != nil {
-			return err
-		}
+		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil { return err }
 	}
 }
 
@@ -486,6 +521,7 @@ func (p *Peer) handleHello(fr protocol.Frame) error {
 	}
 	p.helloSeen = true
 	p.sessionID = h.SessionID
+	p.peerBootID = h.BootID
 	p.epoch = h.Epoch
 	p.shardID = h.ShardID
 	ack := protocol.HelloAck{
@@ -526,6 +562,7 @@ func (p *Peer) handleHelloAck(fr protocol.Frame) error {
 		return errors.New("HELLO_ACK state mismatch")
 	}
 	p.helloSeen = true
+	p.peerBootID = ack.PeerBootID
 	p.mu.Unlock()
 	return p.sendReady()
 }
