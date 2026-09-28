@@ -227,9 +227,6 @@ Padding احتمالی نرمال/لاپلاس، jitter قابل تنظیم و �
 
 [گزارش سه‌بخشی هوشا و شواهد](reports/HOOSHA-R3.1.md). این بخش وضعیت فعلی شاخه R3.1 است و توضیحات R2/R3 بالا سوابق تاریخی‌اند. نسخه نهایی v0.2-Pro، نصب VM تازه، حفظ سرعت با jitter و اثبات مقاومت فیلترینگ هنوز تأیید نشده‌اند.
 
-</div>
-
-
 ## وضعیت Steps 5.1 تا 5.7 روی شاخه Release — 2026-09-28
 
 روی `release-v1-goldapp`، گیت‌های regression مربوط به Steps 5.1 تا 5.6 برای telemetry امضاشده و idempotent، monitoring مسیرها، گزارش مالی، سخت‌سازی BCC، backup/audit anchoring و persistent telemetry reliability در CI پاس شده‌اند.
@@ -237,3 +234,5 @@ Padding احتمالی نرمال/لاپلاس، jitter قابل تنظیم و �
 در Step 5.7، ECRL به Session واقعی Runtime برای **تعویض Carrier فقط در همان process** متصل شده است. محدوده تست‌شده شامل حفظ Flow فعال، epoch fencing در همان process، bounded replay، رد fail-closed تغییر BootID سمت peer، competing candidates، بازیابی FIN/FIN_ACK، multi-flow، جداسازی هویت شش route و پیوستگی telemetry/finance است. Commit safety نیز validation/materialization قبل از commit، Plan Digest canonical، barrier دوطرفه prepared/commit، نتیجه صریح committed/uncommitted، هویت commit idempotent و accounting جداگانه خطاهای post-commit را دارد.
 
 این وضعیت به معنی production-ready بودن BAFT نیست. process-restart resume، machine-reboot resume و snapshot پایدار ECRL پیاده‌سازی یا ادعا نشده‌اند. Subscription Engine نیز بخشی از Step 5.7 نیست.
+
+</div>
