@@ -63,8 +63,10 @@ type Limits struct {
 	ReplayMaxMiB      int `json:"replay_max_mib"`
 }
 type Recovery struct {
-	Enabled          bool `json:"enabled"`
-	RetentionSeconds int  `json:"retention_seconds"`
+	Enabled          bool   `json:"enabled"`
+	RetentionSeconds int    `json:"retention_seconds"`
+	Mode             string `json:"mode,omitempty"`
+	Durable          bool   `json:"durable,omitempty"`
 }
 type Route struct {
 	ID           string   `json:"id"`
@@ -156,11 +158,15 @@ func Validate(c Config) error {
 	if c.Limits.ReceiveMaxMiB > poolMiB || c.Limits.ReplayMaxMiB > c.Limits.DataMemoryMiB-poolMiB {
 		return errors.New("per-flow receive/replay cap exceeds its non-borrowing global pool")
 	}
-	if c.Recovery.Enabled {
-		return errors.New("recovery.enabled=true is unsupported before BAFT 0.3")
-	}
 	if c.Recovery.RetentionSeconds < 0 || c.Recovery.RetentionSeconds > 300 {
 		return errors.New("recovery.retention_seconds is out of range")
+	}
+	if c.Recovery.Enabled {
+		if c.Recovery.Mode!="" && c.Recovery.Mode!="same_process" { return errors.New("recovery.mode supports only same_process in BAFT 0.3") }
+		if c.Recovery.Durable { return errors.New("durable/process-restart recovery is unsupported in step 5.7") }
+		if c.Recovery.RetentionSeconds==0 { return errors.New("recovery.retention_seconds must be positive when recovery is enabled") }
+	} else if c.Recovery.Durable {
+		return errors.New("recovery.durable requires an unsupported process-restart mode")
 	}
 	if c.Logging.Payload {
 		return errors.New("logging.payload must be false")
