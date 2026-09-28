@@ -721,6 +721,34 @@ func (p *Peer) PublishRecoveryCommit(ctl RecoveryControl)(CommitResult,error){
 	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},nil
 }
 
+
+func (p *Peer) waitReplayAccepted(ctx context.Context,fl *flow,want uint64,sender *outboundSender) error {
+	if want==0{return nil}
+	t:=time.NewTimer(p.recoveryRetention)
+	defer t.Stop()
+	for {
+		fl.mu.Lock()
+		if fl.txAcked>=want { fl.mu.Unlock(); return nil }
+		if fl.closed { fl.mu.Unlock(); return ErrCarrierUnavailable }
+		wait:=fl.ackWait
+		fl.mu.Unlock()
+		if wait==nil {
+			return ErrCarrierUnavailable
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-sender.done:
+			return ErrCarrierUnavailable
+		case <-t.C:
+			// Timeout is not delivery proof. Treat the frame as unaccepted and
+			// force exact-transaction rebind/resolution on a new carrier.
+			return fmt.Errorf("%w: replay acceptance proof timeout",ErrCarrierUnavailable)
+		case <-wait:
+		}
+	}
+}
+
 func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) error {
 	if p.recovery==nil{return errors.New("recovery is disabled")}
 	a:=p.recovery
@@ -808,6 +836,12 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			}
+			// A successful carrier write is not delivery evidence. Do not send a
+			// later replay offset until the peer has ACKed this frame. If the
+			// ACK is missing or the carrier dies, the exact transaction is rebound
+			// and this same frame is conservatively replayed from txAcked.
+			end:=fr.Offset+uint64(len(fr.Payload))
+			if err:=p.waitReplayAccepted(ctx,fl,end,prep.sender);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 		}
 
 		fl.mu.Lock()
