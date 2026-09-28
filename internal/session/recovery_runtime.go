@@ -47,6 +47,8 @@ type RecoveryAdapter struct {
 	frozen bool
 	pendingCandidate string
 	pendingPlan recovery.Plan
+	pendingSnapshot recovery.Snapshot
+	pendingRoutes map[uint64]string
 	hasPlan bool
 	attempts atomic.Uint64
 	commits atomic.Uint64
@@ -57,6 +59,17 @@ type RecoveryAdapter struct {
 
 func newRecoveryAdapter(p *Peer, eng *recovery.Engine) *RecoveryAdapter {
 	return &RecoveryAdapter{peer:p,engine:eng,failures:map[string]uint64{}}
+}
+
+func cloneRecoverySnapshot(s recovery.Snapshot) recovery.Snapshot {
+	out:=s
+	out.Flows=append([]recovery.FlowSnapshot(nil),s.Flows...)
+	return out
+}
+func cloneRecoveryRoutes(in map[uint64]string) map[uint64]string {
+	out:=make(map[uint64]string,len(in))
+	for k,v:=range in{out[k]=v}
+	return out
 }
 
 func (a *RecoveryAdapter) IsFrozen() bool {
@@ -209,8 +222,15 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 	if err:=a.engine.SetActiveFlows(ids);err!=nil{a.recordFailure("lease_conflict");return RecoveryOffer{},err}
 	next:=a.engine.CurrentEpoch()+1
 	if err:=a.engine.Prepare(next,candidateID);err!=nil{a.recordFailure("lease_conflict");return RecoveryOffer{},err}
-	a.mu.Lock();a.frozen=true;a.pendingCandidate=candidateID;a.pendingPlan=recovery.Plan{};a.hasPlan=false;a.mu.Unlock()
-	return RecoveryOffer{CandidateID:candidateID,NextEpoch:next,Snapshot:snap,Routes:routes},nil
+	a.mu.Lock()
+	a.frozen=true
+	a.pendingCandidate=candidateID
+	a.pendingPlan=recovery.Plan{}
+	a.pendingSnapshot=cloneRecoverySnapshot(snap)
+	a.pendingRoutes=cloneRecoveryRoutes(routes)
+	a.hasPlan=false
+	a.mu.Unlock()
+	return RecoveryOffer{CandidateID:candidateID,NextEpoch:next,Snapshot:cloneRecoverySnapshot(snap),Routes:cloneRecoveryRoutes(routes)},nil
 }
 
 func (p *Peer) ReconcileRecovery(candidateID string,peer RecoveryOffer) error {
@@ -218,11 +238,12 @@ func (p *Peer) ReconcileRecovery(candidateID string,peer RecoveryOffer) error {
 	a:=p.recovery
 	a.mu.Lock()
 	if !a.frozen||a.pendingCandidate!=candidateID { a.mu.Unlock();return recovery.ErrNotPrepared }
+	local:=cloneRecoverySnapshot(a.pendingSnapshot)
+	routes:=cloneRecoveryRoutes(a.pendingRoutes)
 	a.mu.Unlock()
 	if peer.CandidateID!=candidateID||peer.NextEpoch!=a.engine.CurrentEpoch()+1 {
 		a.recordFailure("state_mismatch");return recovery.ErrStateMismatch
 	}
-	local,routes,err:=p.recoverySnapshot();if err!=nil{a.recordFailure("snapshot_exchange");return err}
 	if local.SessionID!=peer.Snapshot.SessionID||len(routes)!=len(peer.Routes){a.recordFailure("state_mismatch");return recovery.ErrStateMismatch}
 	for id,route:=range routes { if peer.Routes[id]!=route { a.recordFailure("state_mismatch");return recovery.ErrStateMismatch } }
 	expected:=p.PeerBootID()
@@ -300,7 +321,7 @@ func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) 
 		if !closed { p.ensurePumpsAfterRecovery(runCtx,fl) }
 	}
 	a.replayed.Add(replayed);a.commits.Add(1)
-	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.hasPlan=false;a.mu.Unlock()
+	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.mu.Unlock()
 	p.replacementMu.Lock()
 	close(p.replacementWait)
 	p.replacementWait=make(chan struct{})
@@ -314,7 +335,7 @@ func (p *Peer) AbortRecovery(candidateID string) {
 	next:=a.engine.CurrentEpoch()+1
 	a.engine.Abort(next,candidateID)
 	a.aborts.Add(1)
-	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.hasPlan=false;a.mu.Unlock()
+	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.mu.Unlock()
 }
 
 func (f *flow) replayFramesFrom(from uint64)([]protocol.Frame,uint64,error){
