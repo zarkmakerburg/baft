@@ -194,9 +194,12 @@ func (s *outboundSender) run(ctx context.Context) {
 		}
 
 		err := s.writer.send(req.frame)
+		if err != nil && s.recoverable {
+			err = fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)
+		}
 		req.done <- err
 		if err != nil {
-			if s.recoverable { s.stop(fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)) } else { s.stop(err) }
+			s.stop(err)
 			return
 		}
 	}
