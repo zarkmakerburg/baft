@@ -37,3 +37,12 @@ Full resume/epoch/snapshot/replay/tombstone semantics, endpoint/relay production
 ## R3.1 current review candidate
 
 Probabilistic normal/Laplace padding, tunable jitter, pinned Noise runtime wiring and pre-authentication HTML fallback are implemented. See [R3.1 guide](docs/en/21-stealth-pro.md) and [Hoosha report](reports/HOOSHA-R3.1.md). Full local tests/race/vet and ECRL differential pass. Stage D remains paused. Fresh-VM provisioning, jitter performance acceptance and real-path detectability validation remain open; v0.2-Pro is not released.
+
+
+## Release branch Steps 5.1–5.7 status (2026-09-28)
+
+On `release-v1-goldapp`, Steps 5.1 through 5.6 have passing CI regression gates for signed/idempotent telemetry, route monitoring, finance reporting, BCC hardening, backup/audit anchoring, and persistent telemetry reliability.
+
+Step 5.7 integrates ECRL with live Runtime sessions for **same-process carrier replacement only**. Tested scope includes active-flow continuity, same-process epoch fencing, bounded replay, peer BootID fail-closed behavior, competing candidates, FIN/FIN_ACK recovery, multi-flow recovery, six-route identity isolation, and telemetry/finance continuity. Recovery commit safety uses pre-commit replay/materialization validation, a canonical plan digest, an explicit two-sided prepared/commit barrier, committed/uncommitted results, idempotent commit identity, and separate post-commit failure accounting.
+
+This does **not** make BAFT production-ready. Process-restart resume, machine-reboot resume, and durable ECRL session snapshots are not implemented or claimed. Subscription Engine work is not part of Step 5.7.
