@@ -81,7 +81,6 @@ type Exporter struct {
 	lastError string
 	spoolHealth string
 
-	afterSendBeforeAck func(Report) error
 }
 
 func NewPersistent(nodeID,bccURL,token,spoolPath string,interval time.Duration,queueLimit int,source Source)(*Exporter,error){
@@ -208,12 +207,14 @@ func (e *Exporter) flush(ctx context.Context) error {
 		r,ok:=e.Spool.First()
 		if !ok{return nil}
 		if err:=e.sendReport(ctx,r);err!=nil{e.setError(err);return err}
-		if e.afterSendBeforeAck!=nil{
-			if err:=e.afterSendBeforeAck(r);err!=nil{e.setError(err);return err}
-		}
 		if err:=e.Spool.Ack(r.BootID,r.Sequence);err!=nil{e.setError(err);return err}
 		e.markSuccess()
 	}
+}
+
+func (e *Exporter) FlushPending(ctx context.Context) error {
+	if e==nil||e.Spool==nil{return errors.New("telemetry exporter is not configured")}
+	return e.flush(ctx)
 }
 
 func (e *Exporter) SendOnce(ctx context.Context) error {
