@@ -262,16 +262,16 @@ func (unavailableCarrierWriter) Write([]byte)(int,error){return 0,ErrCarrierUnav
 
 func (p *Peer) FenceRecoveryCarrierWriter(generation uint64) {
 	if !p.recoveryEnabled{return}
-	// Match Publish/Rebind lock order (writer -> peer) so an in-flight frame
-	// finishes before handler teardown, while a newer generation is never
-	// fenced by an older HTTP stream.
-	p.writer.mu.Lock()
+	// Recovered carriers use generation-local frameWriters owned by their
+	// outboundSender. p.writer belongs to the original carrier and must not be
+	// used as a cross-generation fence. Stop only the sender that still owns
+	// the generation whose HTTP stream is ending; a newer generation is never
+	// affected by an older handler teardown.
 	p.mu.Lock()
-	if p.carrierGeneration==generation{
-		p.writer.w=unavailableCarrierWriter{}
-	}
+	if p.carrierGeneration!=generation{p.mu.Unlock();return}
+	s:=p.sender
 	p.mu.Unlock()
-	p.writer.mu.Unlock()
+	if s!=nil{s.stop(ErrCarrierUnavailable)}
 }
 
 func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
@@ -781,22 +781,21 @@ func (p *Peer) waitReplayAccepted(ctx context.Context,fl *flow,want uint64,sende
 
 func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryControl) error {
 	if prep==nil||prep.sender==nil||prep.carrier.In==nil||prep.carrier.Out==nil{return recovery.ErrNotPrepared}
-	// Keep lock order writer -> peer consistent with generation fencing.
-	p.writer.mu.Lock()
+	// The recovered sender owns its own frameWriter. Do not wait on p.writer:
+	// an in-flight write on the dead generation may still hold that mutex and
+	// must not block FINALIZED data-plane activation for every active flow.
 	p.mu.Lock()
 	oldSender:=p.sender
-	p.writer.w=prep.carrier.Out
 	p.carrier=prep.carrier
 	p.carrierID=ctl.CandidateID
 	p.carrierEpoch=ctl.NextEpoch
 	p.carrierGeneration++
 	p.sender=prep.sender
-	p.mu.Unlock()
-	p.writer.mu.Unlock()
-	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stop(ErrCarrierUnavailable)}
 	runCtx:=prep.runCtx
 	if runCtx==nil{runCtx=p.runCtx}
+	p.mu.Unlock()
 	if runCtx==nil{return errors.New("session run context unavailable")}
+	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stop(ErrCarrierUnavailable)}
 	if !prep.sender.isStarted(){
 		p.wg.Add(1)
 		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
