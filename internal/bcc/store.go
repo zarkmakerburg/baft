@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
 const (
@@ -60,12 +62,24 @@ type NodeFinance struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+type TelemetryCursor struct {
+	NodeID          string    `json:"node_id"`
+	BootID          string    `json:"boot_id"`
+	Sequence        uint64    `json:"sequence"`
+	IngressBytes    uint64    `json:"ingress_bytes"`
+	EgressBytes     uint64    `json:"egress_bytes"`
+	ActiveSessions  uint64    `json:"active_sessions"`
+	HandshakeErrors uint64    `json:"handshake_errors"`
+	LastTelemetry   time.Time `json:"last_telemetry"`
+}
+
 type state struct {
 	Nodes    map[string]Node          `json:"nodes"`
 	Jobs     map[string]Job           `json:"jobs"`
-	Finance  map[string]NodeFinance   `json:"finance,omitempty"`
-	Policies map[string]FinancePolicy `json:"finance_policies,omitempty"`
-	NextJob  uint64                   `json:"next_job"`
+	Finance   map[string]NodeFinance      `json:"finance,omitempty"`
+	Policies  map[string]FinancePolicy    `json:"finance_policies,omitempty"`
+	Telemetry map[string]TelemetryCursor  `json:"telemetry,omitempty"`
+	NextJob   uint64                      `json:"next_job"`
 }
 
 type Store struct {
@@ -76,7 +90,7 @@ type Store struct {
 
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},NextJob:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},NextJob:1}}
 	b,err:=os.ReadFile(path)
 	if err==nil {
 		if err:=json.Unmarshal(b,&s.st);err!=nil{return nil,fmt.Errorf("decode BCC state: %w",err)}
@@ -84,6 +98,7 @@ func OpenStore(path string) (*Store, error) {
 		if s.st.Jobs==nil{s.st.Jobs=map[string]Job{}}
 		if s.st.Finance==nil{s.st.Finance=map[string]NodeFinance{}}
 		if s.st.Policies==nil{s.st.Policies=map[string]FinancePolicy{}}
+		if s.st.Telemetry==nil{s.st.Telemetry=map[string]TelemetryCursor{}}
 		if s.st.NextJob==0{s.st.NextJob=1}
 	} else if !errors.Is(err,os.ErrNotExist) {
 		return nil,err
@@ -268,4 +283,50 @@ func (s *Store) FinanceSnapshot() []NodeFinance {
 	}
 	sort.Slice(out,func(i,j int)bool{return out[i].NodeID<out[j].NodeID})
 	return out
+}
+
+
+func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemetry.Report) (NodeFinance,bool,error) {
+	if report.NodeID==""||report.BootID==""||report.Sequence==0{return NodeFinance{},false,errors.New("invalid telemetry identity")}
+	s.mu.Lock();defer s.mu.Unlock()
+	n,ok:=s.st.Nodes[report.NodeID]
+	if !ok||n.AgentTokenHash==""||tokenHash(token)!=n.AgentTokenHash{return NodeFinance{},false,errors.New("agent authentication failed")}
+	if !telemetry.VerifyHashedToken(n.AgentTokenHash,signature,body){return NodeFinance{},false,errors.New("telemetry signature invalid")}
+
+	prev:=s.st.Telemetry[report.NodeID]
+	if prev.BootID==report.BootID && report.Sequence<=prev.Sequence {
+		f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID;s.recalculateFinanceLocked(&f)
+		return f,true,nil
+	}
+	var din,dout uint64
+	if prev.BootID==report.BootID && prev.BootID!="" {
+		if report.IngressBytes<prev.IngressBytes||report.EgressBytes<prev.EgressBytes||report.HandshakeErrors<prev.HandshakeErrors{
+			return NodeFinance{},false,errors.New("telemetry cumulative counters moved backwards")
+		}
+		din=report.IngressBytes-prev.IngressBytes
+		dout=report.EgressBytes-prev.EgressBytes
+	}else{
+		din=report.IngressBytes
+		dout=report.EgressBytes
+	}
+
+	f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
+	if ^uint64(0)-f.IngressBytes<din||^uint64(0)-f.EgressBytes<dout{return NodeFinance{},false,errors.New("traffic counter overflow")}
+	f.IngressBytes+=din;f.EgressBytes+=dout;f.UpdatedAt=time.Now().UTC()
+	s.recalculateFinanceLocked(&f)
+	s.st.Finance[report.NodeID]=f
+	s.st.Telemetry[report.NodeID]=TelemetryCursor{
+		NodeID:report.NodeID,BootID:report.BootID,Sequence:report.Sequence,
+		IngressBytes:report.IngressBytes,EgressBytes:report.EgressBytes,
+		ActiveSessions:report.ActiveSessions,HandshakeErrors:report.HandshakeErrors,
+		LastTelemetry:time.Unix(report.TimestampUnix,0).UTC(),
+	}
+	if err:=s.saveLocked();err!=nil{return NodeFinance{},false,err}
+	return f,false,nil
+}
+
+func (s *Store) TelemetrySnapshot(nodeID string) (TelemetryCursor,bool) {
+	s.mu.Lock();defer s.mu.Unlock()
+	v,ok:=s.st.Telemetry[nodeID]
+	return v,ok
 }
