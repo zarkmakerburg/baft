@@ -59,6 +59,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/deploy",s.deploy)
 	m.HandleFunc("/api/agent/jobs",s.agentJobs)
 	m.HandleFunc("/api/agent/ack",s.agentAck)
+	m.HandleFunc("/api/agent/traffic",s.agentTraffic)
+	m.HandleFunc("/api/finance",s.finance)
 	return m
 }
 
@@ -138,5 +140,37 @@ func (s *Server) StartHealthLoop(ctx context.Context,interval time.Duration){
 		case <-ctx.Done():return
 		case <-t.C:s.ProbeOnce(ctx)
 		}
+	}
+}
+
+
+func (s *Server) agentTraffic(w http.ResponseWriter,r *http.Request){
+	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
+	var in struct{
+		NodeID string `json:"node_id"`
+		IngressBytes uint64 `json:"ingress_bytes"`
+		EgressBytes uint64 `json:"egress_bytes"`
+	}
+	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
+	f,err:=s.store.AddTraffic(in.NodeID,bearer(r),in.IngressBytes,in.EgressBytes)
+	if err!=nil{http.Error(w,err.Error(),http.StatusUnauthorized);return}
+	writeJSON(w,http.StatusAccepted,f)
+}
+
+func (s *Server) finance(w http.ResponseWriter,r *http.Request){
+	if !s.admin(w,r){return}
+	switch r.Method{
+	case http.MethodGet:
+		writeJSON(w,http.StatusOK,s.store.FinanceSnapshot())
+	case http.MethodPost:
+		var in struct{
+			NodeID string `json:"node_id"`
+			CostMicrosPerGiB int64 `json:"cost_micros_per_gib"`
+			RevenueMicrosPerGiB int64 `json:"revenue_micros_per_gib"`
+		}
+		if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
+		if err:=s.store.SetFinancePolicy(in.NodeID,in.CostMicrosPerGiB,in.RevenueMicrosPerGiB);err!=nil{http.Error(w,err.Error(),400);return}
+		writeJSON(w,http.StatusOK,map[string]bool{"ok":true})
+	default:http.Error(w,"method not allowed",405)
 	}
 }
