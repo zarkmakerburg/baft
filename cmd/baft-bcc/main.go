@@ -27,6 +27,14 @@ func main(){
 		fmt.Fprintln(os.Stderr,"usage: baft-bcc --admin-token-file <file> [--listen 127.0.0.1:8080] [--state-file bcc-state.json]")
 		os.Exit(2)
 	}
+	allowedIPs:=[]string{}
+	for _,part:=range strings.Split(os.Getenv("BAFT_BCC_ALLOWED_LISTEN_IPS"),","){
+		if v:=strings.TrimSpace(part);v!=""{allowedIPs=append(allowedIPs,v)}
+	}
+	if err:=bcc.ValidateListenAddress(*listen,allowedIPs);err!=nil{
+		fmt.Fprintln(os.Stderr,"BCC listen:",err);os.Exit(2)
+	}
+
 	raw,err:=os.ReadFile(*adminTokenFile)
 	if err!=nil{fmt.Fprintln(os.Stderr,"admin token:",err);os.Exit(1)}
 	adminToken:=strings.TrimSpace(string(raw))
