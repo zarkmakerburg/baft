@@ -225,13 +225,13 @@ func (p *Peer) RecoveryStats() RecoveryStats {
 	return p.recovery.Stats()
 }
 
-func (p *Peer) currentCarrier() (Carrier,uint64,string) {
+func (p *Peer) currentCarrier() (Carrier,uint64,string,uint64) {
 	p.mu.Lock(); defer p.mu.Unlock()
-	return p.carrier,p.carrierEpoch,p.carrierID
+	return p.carrier,p.carrierEpoch,p.carrierID,p.carrierGeneration
 }
-func (p *Peer) currentCarrierIdentity()(uint64,string){
+func (p *Peer) currentCarrierIdentity()(uint64,string,uint64){
 	p.mu.Lock();defer p.mu.Unlock()
-	return p.carrierEpoch,p.carrierID
+	return p.carrierEpoch,p.carrierID,p.carrierGeneration
 }
 
 func (p *Peer) onCarrierFailure(err error) {
@@ -251,43 +251,27 @@ func (p *Peer) DrainRecoverySignals() {
 	}
 }
 
-func (p *Peer) waitForCarrierSwitch(ctx context.Context,oldEpoch uint64,oldCarrier string) error {
+func (p *Peer) waitForCarrierSwitch(ctx context.Context,oldEpoch uint64,oldCarrier string,oldGeneration uint64) error {
 	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
 	for {
-		e,id:=p.currentCarrierIdentity()
-		if e>oldEpoch && id!=oldCarrier{return nil}
-		p.carrierSwitchMu.Lock()
-		wait:=p.carrierSwitchWait
-		p.carrierSwitchMu.Unlock()
-		// Re-check after taking the generation channel so a concurrent commit
-		// cannot strand this reader on the next generation.
-		e,id=p.currentCarrierIdentity()
-		if e>oldEpoch && id!=oldCarrier{return nil}
-		select {
-		case <-ctx.Done():return ctx.Err()
-		case <-t.C:return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable)
-		case <-wait:
-		}
+		e,id,g:=p.currentCarrierIdentity()
+		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
+		p.carrierSwitchMu.Lock();wait:=p.carrierSwitchWait;p.carrierSwitchMu.Unlock()
+		e,id,g=p.currentCarrierIdentity()
+		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
+		select{case <-ctx.Done():return ctx.Err();case <-t.C:return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable);case <-wait:}
 	}
 }
 
-func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier string) error {
+func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier string,oldGeneration uint64) error {
 	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
 	for {
-		e,id:=p.currentCarrierIdentity()
-		if e>oldEpoch && id!=oldCarrier{return nil}
-		p.replacementMu.Lock()
-		wait:=p.replacementWait
-		p.replacementMu.Unlock()
-		// Re-check after capturing the broadcast channel so a commit racing with
-		// this waiter cannot move us onto the next generation and strand us.
-		e,id=p.currentCarrierIdentity()
-		if e>oldEpoch && id!=oldCarrier{return nil}
-		select {
-		case <-ctx.Done():return ctx.Err()
-		case <-t.C:return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable)
-		case <-wait:
-		}
+		e,id,g:=p.currentCarrierIdentity()
+		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
+		p.replacementMu.Lock();wait:=p.replacementWait;p.replacementMu.Unlock()
+		e,id,g=p.currentCarrierIdentity()
+		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
+		select{case <-ctx.Done():return ctx.Err();case <-t.C:return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable);case <-wait:}
 	}
 }
 
@@ -606,7 +590,7 @@ func (p *Peer) PublishRecoveryCommit(ctl RecoveryControl)(CommitResult,error){
 	// acknowledged the same committed transaction identity.
 	p.writer.mu.Lock();p.writer.w=prep.carrier.Out;p.writer.mu.Unlock()
 	p.mu.Lock()
-	p.carrier=prep.carrier;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch
+	p.carrier=prep.carrier;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch;p.carrierGeneration++
 	oldSender:=p.sender;p.sender=prep.sender
 	p.mu.Unlock()
 	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
