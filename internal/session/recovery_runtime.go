@@ -619,7 +619,9 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		// is already dead, preserve the transaction for another resolution.
 		_,e:=p.markPostCommitFailure(ErrCarrierUnavailable,ctl);return e
 	}
-	p.wg.Add(1);go func(){defer p.wg.Done();prep.sender.run(prep.runCtx)}()
+	sender:=prep.sender
+	runCtx:=prep.runCtx
+	p.wg.Add(1);go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(sender,runCtx)
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
