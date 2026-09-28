@@ -381,6 +381,8 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			TrafficObserver: func(in,out uint64){ r.ingressBytes.Add(in); r.egressBytes.Add(out) },
 			LatencyObserver: func(rtt time.Duration){ r.noiseLatencyMS.Store(rtt.Milliseconds()) },
 			PingInterval: func() time.Duration { if cfg.Noise!=nil { return 5*time.Second }; return 0 }(),
+			RecoveryEnabled: cfg.Recovery.Enabled, RecoveryRetention: recoveryRetention(cfg),
+			CarrierID: fmt.Sprintf("shard-%d-carrier-1",i),
 		})
 		if err != nil {
 			_ = pw.Close()
@@ -391,6 +393,9 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 		}
 		sh := &dialerShard{peer: p, client: client, pw: pw, body: resp.Body}
 		r.registerPeer(p)
+		if cfg.Recovery.Enabled {
+			if err:=r.registerSession(p);err!=nil{r.unregisterPeer(p);sh.close();r.closeShards(shards);return err}
+		}
 		shards = append(shards, sh)
 		go func(index int, sh *dialerShard) {
 			err := sh.peer.Run(ctx)
@@ -398,6 +403,19 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 				runErr <- fmt.Errorf("shard %d: %w", index, err)
 			}
 		}(i, sh)
+		if cfg.Recovery.Enabled {
+			go func(index int,sh *dialerShard){
+				for{
+					select{
+					case <-ctx.Done():return
+					case <-sh.peer.RecoveryNeeded():
+						if err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh);err!=nil&&ctx.Err()==nil{
+							runErr<-fmt.Errorf("shard %d recovery: %w",index,err);return
+						}
+					}
+				}
+			}(i,sh)
+		}
 	}
 	defer r.closeShards(shards)
 
@@ -464,6 +482,7 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 func (r *Runtime) closeShards(shards []*dialerShard) {
 	for _, sh := range shards {
 		r.unregisterPeer(sh.peer)
+		r.unregisterSession(sh.peer)
 		sh.close()
 	}
 }
