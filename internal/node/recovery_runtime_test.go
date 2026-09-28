@@ -100,8 +100,14 @@ func TestRuntimeFailureImmediatelyBeforeCommitKeepsOldOwner(t *testing.T){
 		if err:=session.EncodeRecoveryOffer(w,remote);err!=nil{return}
 		_ = http.NewResponseController(w).Flush()
 		fr,err=protocol.Decode(r.Body);if err!=nil{return}
-		done,err:=session.DecodeRecoveryDone(fr);if err!=nil{return}
-		if err:=session.EncodeRecoveryDone(w,done);err!=nil{return}
+		prepared,err:=session.DecodeRecoveryControl(fr);if err!=nil{return}
+		if prepared.Phase!=session.RecoveryPhasePrepared{return}
+		if err:=session.EncodeRecoveryControl(w,prepared);err!=nil{return}
+		_ = http.NewResponseController(w).Flush()
+		fr,err=protocol.Decode(r.Body);if err!=nil{return}
+		ready,err:=session.DecodeRecoveryControl(fr);if err!=nil{return}
+		if ready.Phase!=session.RecoveryPhaseCommitReady{return}
+		if err:=session.EncodeRecoveryControl(w,ready);err!=nil{return}
 		_ = http.NewResponseController(w).Flush()
 		<-r.Context().Done()
 	}))
