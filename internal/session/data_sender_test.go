@@ -2,8 +2,11 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"testing"
+	"time"
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/resources"
@@ -101,4 +104,25 @@ func TestOutboundSenderPADLSeesReplayPressure(t *testing.T) {
 	if err:=s.data.Enqueue(scheduler.Item{FlowID:3,Bytes:1,Value:r3});err!=nil{t.Fatal(err)}
 	req,ok:=s.nextLocked();if !ok{t.Fatal("no selection")}
 	if req.frame.StreamID!=3{t.Fatalf("expected low-pressure flow 3, got %d",req.frame.StreamID)}
+}
+
+
+type alwaysFailWriter struct{}
+
+func (alwaysFailWriter) Write([]byte)(int,error){return 0,io.ErrClosedPipe}
+
+func TestRecoverableSenderReturnsCarrierUnavailableToCaller(t *testing.T){
+	s:=newOutboundSender(&frameWriter{w:alwaysFailWriter{}},true)
+	ctx,cancel:=context.WithCancel(context.Background())
+	defer cancel()
+	go s.run(ctx)
+	deadline:=time.Now().Add(time.Second)
+	for{
+		s.mu.Lock();started:=s.started;s.mu.Unlock()
+		if started{break}
+		if time.Now().After(deadline){t.Fatal("sender did not start")}
+		time.Sleep(time.Millisecond)
+	}
+	err:=s.sendControl(protocol.Frame{Type:protocol.TypePing,Payload:make([]byte,8)})
+	if !errors.Is(err,ErrCarrierUnavailable){t.Fatalf("caller received non-recoverable error: %v",err)}
 }
