@@ -99,6 +99,12 @@ func (r *Runtime) openRuntimeCarrier(ctx context.Context,cfg config.Config,tlsCf
 }
 
 func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCfg *tls.Config,index int,sh *dialerShard) error {
+	if sh.peer.HasCommitUncertainty(){
+		resolved,err:=r.resolveDialerCommitUncertainty(ctx,cfg,tlsCfg,sh)
+		if err!=nil{sh.peer.EnsureRecoverySignal(err);return err}
+		if resolved{return nil}
+	}
+
 	candidate:=r.nextRecoveryCandidate(index)
 	local,err:=sh.peer.BeginRecovery(candidate)
 	if err!=nil{return err}
@@ -119,6 +125,7 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 
 	prepared,err:=sh.peer.PrepareRecoveryCommit(ctx,candidate,o.carrier)
 	if err!=nil{return err}
+	if err:=sh.peer.MarkRecoveryPrepared(prepared);err!=nil{return err}
 	if err:=session.EncodeRecoveryControl(o.carrier.Out,prepared);err!=nil{return fmt.Errorf("prepared exchange: %w",err)}
 	fr,err=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("prepared exchange: %w",err)}
 	peerPrepared,err:=session.DecodeRecoveryControl(fr);if err!=nil{return fmt.Errorf("prepared exchange: %w",err)}
@@ -129,16 +136,29 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	fr,err=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("commit readiness: %w",err)}
 	peerReady,err:=session.DecodeRecoveryControl(fr);if err!=nil{return fmt.Errorf("commit readiness: %w",err)}
 	if err:=sh.peer.ValidateRecoveryControl(peerReady,session.RecoveryPhaseCommitReady);err!=nil{return err}
+	if err:=sh.peer.MarkRecoveryCommitReady(prepared);err!=nil{return err}
 
-	// Both endpoints are reconciled and PREPARED. This is the last dialer
-	// failure point at which neither authority has changed.
 	if err:=r.recoveryFail("before_commit");err!=nil{sh.peer.RecordRecoveryFailure("commit");return fmt.Errorf("before commit: %w",err)}
 
 	commitCtl:=prepared;commitCtl.Phase=session.RecoveryPhaseCommit
 	if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{return fmt.Errorf("commit send: %w",err)}
-	fr,err=protocol.Decode(o.carrier.In);if err!=nil{return fmt.Errorf("commit ack: %w",err)}
-	peerAck,err:=session.DecodeRecoveryControl(fr);if err!=nil{return fmt.Errorf("commit ack: %w",err)}
-	if err:=sh.peer.ValidateRecoveryControl(peerAck,session.RecoveryPhaseCommitAck);err!=nil{return err}
+	if err:=sh.peer.MarkCommitSent(commitCtl);err!=nil{return err}
+	if err:=r.recoveryFail("after_commit_sent_before_ack");err!=nil{
+		_ = sh.peer.MarkCommitUncertain(commitCtl)
+		return fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)
+	}
+	fr,err=protocol.Decode(o.carrier.In);if err!=nil{
+		_ = sh.peer.MarkCommitUncertain(commitCtl)
+		return fmt.Errorf("%w: commit ack: %v",session.ErrCommitUncertain,err)
+	}
+	peerAck,err:=session.DecodeRecoveryControl(fr);if err!=nil{
+		_ = sh.peer.MarkCommitUncertain(commitCtl)
+		return fmt.Errorf("%w: decode commit ack: %v",session.ErrCommitUncertain,err)
+	}
+	if err:=sh.peer.ValidateRecoveryControl(peerAck,session.RecoveryPhaseCommitAck);err!=nil{
+		_ = sh.peer.MarkCommitUncertain(commitCtl)
+		return fmt.Errorf("%w: validate commit ack: %v",session.ErrCommitUncertain,err)
+	}
 
 	res,err:=sh.peer.PublishRecoveryCommit(commitCtl)
 	if err!=nil{return err}
@@ -146,16 +166,65 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	published=true
 	sh.replaceCarrier(o);keepCarrier=true
 
-	// Final ACK tells the listener that both authorities now name the same
-	// transaction. Duplicate ACK is harmless and improves ACK-loss recovery.
 	finalAck:=commitCtl;finalAck.Phase=session.RecoveryPhaseCommitAck
 	if err:=session.EncodeRecoveryControl(o.carrier.Out,finalAck);err!=nil{
 		return sh.peer.MarkPostCommitFailure(fmt.Errorf("final commit ack: %w",err),commitCtl)
 	}
-	_ = session.EncodeRecoveryControl(o.carrier.Out,finalAck)
-
+	if err:=r.recoveryFail("after_final_ack_send");err!=nil{
+		return sh.peer.MarkPostCommitFailure(err,commitCtl)
+	}
 	if err:=sh.peer.FinalizeRecoveryCommit(ctx,commitCtl);err!=nil{return err}
 	return nil
+}
+
+func (r *Runtime) resolveDialerCommitUncertainty(ctx context.Context,cfg config.Config,tlsCfg *tls.Config,sh *dialerShard)(bool,error){
+	query,err:=sh.peer.CommitStatusQuery()
+	if err!=nil{return false,err}
+	o,err:=r.openRuntimeCarrier(ctx,cfg,tlsCfg)
+	if err!=nil{return false,fmt.Errorf("%w: status carrier: %v",session.ErrCommitUncertain,err)}
+	keepCarrier:=false
+	defer func(){if !keepCarrier{o.close()}}()
+
+	if err:=session.EncodeRecoveryControl(o.carrier.Out,query);err!=nil{return false,fmt.Errorf("%w: status query: %v",session.ErrCommitUncertain,err)}
+	if err:=r.recoveryFail("status_query_after_send");err!=nil{return false,fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)}
+	fr,err:=protocol.Decode(o.carrier.In);if err!=nil{return false,fmt.Errorf("%w: status reply: %v",session.ErrCommitUncertain,err)}
+	reply,err:=session.DecodeRecoveryControl(fr);if err!=nil{return false,fmt.Errorf("%w: status reply decode: %v",session.ErrCommitUncertain,err)}
+	if err:=sh.peer.ValidateStatusReply(reply);err!=nil{return false,fmt.Errorf("%w: status reply validation: %v",session.ErrCommitUncertain,err)}
+
+	switch reply.Status{
+	case session.RecoveryResolutionNotCommitted:
+		if err:=sh.peer.ResolveNotCommitted(reply);err!=nil{return false,err}
+		return false,nil
+	case session.RecoveryResolutionCommitted:
+		if err:=sh.peer.NoteCommittedResolution(reply);err!=nil{return false,err}
+		commitCtl:=query;commitCtl.Phase=session.RecoveryPhaseCommit;commitCtl.Status=session.RecoveryResolutionNone
+		if sh.peer.RecoveryEpoch()<commitCtl.NextEpoch{
+			if err:=sh.peer.RebindPreparedRecovery(ctx,commitCtl,o.carrier);err!=nil{return false,err}
+			res,err:=sh.peer.PublishRecoveryCommit(commitCtl);if err!=nil{return false,err}
+			if !res.Committed{return false,errors.New("status resolution did not publish local authority")}
+		}else{
+			if err:=sh.peer.RebindCommittedCarrier(ctx,commitCtl,o.carrier);err!=nil{return false,err}
+		}
+		sh.replaceCarrier(o);keepCarrier=true
+		ack:=commitCtl;ack.Phase=session.RecoveryPhaseCommitAck
+		if err:=session.EncodeRecoveryControl(o.carrier.Out,ack);err!=nil{
+			_ = sh.peer.MarkCommitUncertain(commitCtl)
+			return false,fmt.Errorf("%w: resolution ack: %v",session.ErrCommitUncertain,err)
+		}
+		fr,err=protocol.Decode(o.carrier.In);if err!=nil{
+			_ = sh.peer.MarkCommitUncertain(commitCtl)
+			return false,fmt.Errorf("%w: resolution ack reply: %v",session.ErrCommitUncertain,err)
+		}
+		peerAck,err:=session.DecodeRecoveryControl(fr);if err!=nil{return false,err}
+		if err:=sh.peer.ValidateRecoveryControl(peerAck,session.RecoveryPhaseCommitAck);err!=nil{return false,err}
+		if err:=sh.peer.FinalizeRecoveryCommit(ctx,commitCtl);err!=nil{return false,err}
+		return true,nil
+	case session.RecoveryResolutionConflict,session.RecoveryResolutionUnknown:
+		_ = sh.peer.NoteResolutionConflict(reply)
+		return false,session.ErrCommitUncertain
+	default:
+		return false,recovery.ErrStateMismatch
+	}
 }
 
 func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,in io.Reader,out io.Writer,peer carrierh2.PeerInfo,first protocol.Frame)(bool,error){
