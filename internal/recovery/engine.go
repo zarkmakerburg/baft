@@ -270,11 +270,11 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 			PeerAckAdvanceTo: lf.RxAccepted,
 			LocalReleaseThrough: lf.TxAcked,
 			PeerReleaseThrough: pf.TxAcked,
-			// A peer's FIN_ACK write is not proof that we accepted it.
-			// FIN_ACK_CONFIRM is emitted only after FIN_ACK acceptance, so it is
-			// the monotonic evidence required to advance finAcked during recovery.
-			LocalFinAckCanAdvance: pf.FinAckConfirmed && !lf.FinAcked,
-			PeerFinAckCanAdvance: lf.FinAckConfirmed && !pf.FinAcked,
+			// FIN_ACK write success is never synthesized into peer acceptance.
+			// In same-process recovery the receiver records FinAcked itself; if
+			// delivery was ambiguous, the sender retries FIN_ACK idempotently.
+			LocalFinAckCanAdvance: false,
+			PeerFinAckCanAdvance: false,
 			LocalFinAckConfirmCanAdvance: pf.FinAcked && lf.FinAckSent && !lf.FinAckConfirmed,
 			PeerFinAckConfirmCanAdvance: lf.FinAcked && pf.FinAckSent && !pf.FinAckConfirmed,
 		})
