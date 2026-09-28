@@ -27,14 +27,16 @@ table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;
 <table><thead><tr><th></th><th>Alias</th><th>ID</th><th>Address</th><th>Role</th><th>Health</th><th>Last Check</th></tr></thead><tbody id="rows"></tbody></table>
 <div class="actions"><button onclick="deploy()">One-Click Deploy Selected</button><button class="alt" onclick="enroll()">Enroll Worker Across Foreign Nodes</button><button class="alt" onclick="load()">Refresh</button></div></div>
 <div class="card"><b>Recent Jobs</b><div id="jobs" class="muted" style="margin-top:10px">Admin token required to view jobs.</div></div>
+<div class="card"><div class="top"><b>Node Finance</b><button class="alt" onclick="setFinance()">Set Rates</button></div>
+<table><thead><tr><th>Node</th><th>Traffic GiB</th><th>Cost</th><th>Revenue</th><th>Profit</th></tr></thead><tbody id="financeRows"><tr><td colspan="5" class="muted">Admin token required.</td></tr></tbody></table></div>
 </div>
 <script>
 const q=s=>document.querySelector(s);let nodes=[];
 function token(){return localStorage.getItem('bccToken')||''}
-function setToken(){localStorage.setItem('bccToken',prompt('BCC admin token')||'');loadJobs()}
+function setToken(){localStorage.setItem('bccToken',prompt('BCC admin token')||'');loadJobs();loadFinance()}
 function ah(){return {'Authorization':'Bearer '+token(),'Content-Type':'application/json'}}
 async function load(){nodes=await (await fetch('/api/nodes')).json();q('#count').textContent=nodes.length+' nodes';
-q('#rows').innerHTML=nodes.map(n=>'<tr><td><input type=checkbox class=pick value="'+esc(n.id)+'"></td><td>'+esc(n.alias)+'</td><td>'+esc(n.id)+'</td><td>'+esc(n.address)+'</td><td><span class=badge>'+esc(n.role)+'</span></td><td><span class="badge '+esc(n.health)+'">'+esc(n.health)+'</span></td><td>'+esc(n.last_checked||'—')+'</td></tr>').join('');loadJobs()}
+q('#rows').innerHTML=nodes.map(n=>'<tr><td><input type=checkbox class=pick value="'+esc(n.id)+'"></td><td>'+esc(n.alias)+'</td><td>'+esc(n.id)+'</td><td>'+esc(n.address)+'</td><td><span class=badge>'+esc(n.role)+'</span></td><td><span class="badge '+esc(n.health)+'">'+esc(n.health)+'</span></td><td>'+esc(n.last_checked||'—')+'</td></tr>').join('');loadJobs();loadFinance()}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function saveNode(){let body={ID:q('#nid').value,Alias:q('#alias').value,Address:q('#addr').value,Role:q('#role').value,PublicKey:q('#pub').value,AgentToken:q('#agent').value};
 let r=await fetch('/api/nodes',{method:'POST',headers:ah(),body:JSON.stringify(body)});if(!r.ok)alert(await r.text());else load()}
@@ -43,5 +45,8 @@ let r=await fetch('/api/deploy',{method:'POST',headers:ah(),body:JSON.stringify(
 async function enroll(){let worker_id=prompt('Worker node ID');if(!worker_id)return;let n=nodes.find(x=>x.id===worker_id);let public_key=n?.public_key||prompt('Worker public key');if(!public_key)return;
 let r=await fetch('/api/enroll',{method:'POST',headers:ah(),body:JSON.stringify({worker_id,public_key})});alert(r.ok?'Enrollment jobs queued for foreign nodes':await r.text());loadJobs()}
 async function loadJobs(){if(!token())return;let r=await fetch('/api/jobs',{headers:ah()});if(!r.ok){q('#jobs').textContent='Unable to load jobs';return}let j=await r.json();q('#jobs').innerHTML=j.slice(0,20).map(x=>'<div>'+esc(x.id)+' · '+esc(x.type)+' · '+esc(x.node_id)+' · <b>'+esc(x.status)+'</b></div>').join('')||'No jobs'}
+function micros(v){return (Number(v||0)/1000000).toFixed(4)}
+async function loadFinance(){if(!token())return;let r=await fetch('/api/finance',{headers:ah()});if(!r.ok){q('#financeRows').innerHTML='<tr><td colspan="5">Unable to load finance</td></tr>';return}let fs=await r.json();q('#financeRows').innerHTML=fs.map(x=>{let n=nodes.find(n=>n.id===x.node_id);let gib=(Number(x.ingress_bytes||0)+Number(x.egress_bytes||0))/1073741824;return '<tr><td>'+esc(n?.alias||x.node_id)+'</td><td>'+gib.toFixed(3)+'</td><td>'+micros(x.cost_micros)+'</td><td>'+micros(x.revenue_micros)+'</td><td>'+micros(x.profit_micros)+'</td></tr>'}).join('')||'<tr><td colspan="5">No financial data</td></tr>'}
+async function setFinance(){let node_id=prompt('Node ID');if(!node_id)return;let cost=prompt('Cost micros per GiB','0');let revenue=prompt('Revenue micros per GiB','0');if(cost===null||revenue===null)return;let r=await fetch('/api/finance',{method:'POST',headers:ah(),body:JSON.stringify({node_id,cost_micros_per_gib:Number(cost),revenue_micros_per_gib:Number(revenue)})});alert(r.ok?'Finance rates updated':await r.text());loadFinance()}
 load();setInterval(load,5000);
 </script></body></html>`
