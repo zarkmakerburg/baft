@@ -121,6 +121,16 @@ type preparedRecovery struct {
 	rebindPending bool
 }
 
+type RecoveryFlowFrontier struct {
+	StreamID uint64
+	ReplaySource uint64
+	PeerAccepted uint64
+	FinSent bool
+	FinAcked bool
+	FinAckSent bool
+	FinAckConfirmed bool
+}
+
 type RecoveryStats struct {
 	Attempts                    uint64
 	Commits                     uint64
@@ -239,6 +249,35 @@ func (p *Peer) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
 	p.recovery.mu.Lock()
 	p.recovery.postCommitFault=fn
 	p.recovery.mu.Unlock()
+}
+
+func (p *Peer) RecoveryCarrierGeneration() uint64 {
+	p.mu.Lock();defer p.mu.Unlock()
+	return p.carrierGeneration
+}
+
+func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
+	if p.recovery==nil{return nil}
+	a:=p.recovery
+	a.mu.Lock()
+	sources:=map[uint64]uint64{}
+	if a.prepared!=nil{
+		for _,act:=range a.prepared.flows{sources[act.flow.id]=act.replayFrom}
+	}
+	a.mu.Unlock()
+	p.mu.Lock()
+	flows:=make([]*flow,0,len(p.flows));for _,fl:=range p.flows{flows=append(flows,fl)}
+	p.mu.Unlock()
+	sort.Slice(flows,func(i,j int)bool{return flows[i].id<flows[j].id})
+	out:=make([]RecoveryFlowFrontier,0,len(flows))
+	for _,fl:=range flows{
+		fl.mu.Lock()
+		src:=sources[fl.id]
+		if _,ok:=sources[fl.id];!ok{src=fl.txAcked}
+		out=append(out,RecoveryFlowFrontier{StreamID:fl.id,ReplaySource:src,PeerAccepted:fl.txAcked,FinSent:fl.finSent,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,FinAckConfirmed:fl.finAckConfirmed})
+		fl.mu.Unlock()
+	}
+	return out
 }
 
 func (p *Peer) RecoveryStats() RecoveryStats {
