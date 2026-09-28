@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
 func authReq(method,url,token string,body any) *http.Request {
@@ -19,6 +21,16 @@ func authReq(method,url,token string,body any) *http.Request {
 	r:=httptest.NewRequest(method,url,&b)
 	if token!=""{r.Header.Set("Authorization","Bearer "+token)}
 	r.Header.Set("Content-Type","application/json")
+	return r
+}
+
+func signedTelemetryReq(t *testing.T,token string,rep telemetry.Report) *http.Request {
+	t.Helper()
+	body,err:=json.Marshal(rep);if err!=nil{t.Fatal(err)}
+	r:=httptest.NewRequest(http.MethodPost,"/api/agent/traffic",bytes.NewReader(body))
+	r.Header.Set("Authorization","Bearer "+token)
+	r.Header.Set("Content-Type","application/json")
+	r.Header.Set("X-BAFT-Signature",telemetry.Sign(token,body))
 	return r
 }
 
@@ -100,28 +112,41 @@ func TestFinancialTrafficSync(t *testing.T){
 	}))
 	if rr.Code!=http.StatusOK{t.Fatalf("finance policy status=%d body=%s",rr.Code,rr.Body.String())}
 
+	rep:=telemetry.Report{NodeID:"ex-fin",BootID:"boot-a",Sequence:1,IngressBytes:1<<29,EgressBytes:1<<29,ActiveSessions:2,HandshakeErrors:3,TimestampUnix:1700000000}
 	rr=httptest.NewRecorder()
-	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/agent/traffic","agent-fin",map[string]any{
-		"node_id":"ex-fin","ingress_bytes":uint64(1<<29),"egress_bytes":uint64(1<<29),
-	}))
+	app.Handler().ServeHTTP(rr,signedTelemetryReq(t,"agent-fin",rep))
 	if rr.Code!=http.StatusAccepted{t.Fatalf("traffic status=%d body=%s",rr.Code,rr.Body.String())}
-	var got NodeFinance
-	if err:=json.Unmarshal(rr.Body.Bytes(),&got);err!=nil{t.Fatal(err)}
-	if got.CostMicros!=2_000_000||got.RevenueMicros!=5_000_000||got.ProfitMicros!=3_000_000{
-		t.Fatalf("finance=%+v",got)
-	}
+
+	all:=store.FinanceSnapshot()
+	if len(all)!=1||all[0].CostMicros!=2_000_000||all[0].RevenueMicros!=5_000_000||all[0].ProfitMicros!=3_000_000{t.Fatalf("finance=%+v",all)}
+	cur,ok:=store.TelemetrySnapshot("ex-fin")
+	if !ok||cur.Sequence!=1||cur.ActiveSessions!=2||cur.HandshakeErrors!=3{t.Fatalf("cursor=%+v ok=%v",cur,ok)}
+
+	// Exact duplicate and out-of-order reports are acknowledged but never
+	// counted twice.
+	rr=httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr,signedTelemetryReq(t,"agent-fin",rep))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("duplicate status=%d",rr.Code)}
+	older:=rep;older.Sequence=0
+	body,_:=json.Marshal(older)
+	bad:=httptest.NewRequest(http.MethodPost,"/api/agent/traffic",bytes.NewReader(body))
+	bad.Header.Set("Authorization","Bearer agent-fin")
+	bad.Header.Set("X-BAFT-Signature",telemetry.Sign("agent-fin",body))
+	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,bad)
+	if rr.Code==http.StatusAccepted{t.Fatal("invalid sequence zero accepted")}
+
+	all=store.FinanceSnapshot()
+	if all[0].IngressBytes!=1<<29||all[0].EgressBytes!=1<<29{t.Fatalf("duplicate changed finance: %+v",all[0])}
+
+	// Higher sequence uses cumulative counters; only the delta is applied.
+	rep.Sequence=3;rep.IngressBytes+=(1<<20);rep.EgressBytes+=(2<<20)
+	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,signedTelemetryReq(t,"agent-fin",rep))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("delta status=%d body=%s",rr.Code,rr.Body.String())}
+	all=store.FinanceSnapshot()
+	if all[0].IngressBytes!=(1<<29)+(1<<20)||all[0].EgressBytes!=(1<<29)+(2<<20){t.Fatalf("delta mismatch: %+v",all[0])}
 
 	rr=httptest.NewRecorder()
-	app.Handler().ServeHTTP(rr,authReq(http.MethodGet,"/api/finance","admin",nil))
-	if rr.Code!=http.StatusOK{t.Fatalf("finance snapshot status=%d",rr.Code)}
-	var all []NodeFinance
-	if err:=json.Unmarshal(rr.Body.Bytes(),&all);err!=nil{t.Fatal(err)}
-	if len(all)!=1||all[0].ProfitMicros!=3_000_000{t.Fatalf("snapshot=%+v",all)}
-
-	rr=httptest.NewRecorder()
-	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/agent/traffic","wrong-token",map[string]any{
-		"node_id":"ex-fin","ingress_bytes":uint64(1),"egress_bytes":uint64(1),
-	}))
+	app.Handler().ServeHTTP(rr,signedTelemetryReq(t,"wrong-token",rep))
 	if rr.Code!=http.StatusUnauthorized{t.Fatalf("unauthorized traffic accepted status=%d",rr.Code)}
-	t.Logf("PASS finance sync cost=%d revenue=%d profit=%d",got.CostMicros,got.RevenueMicros,got.ProfitMicros)
+	t.Logf("PASS signed idempotent finance sync ingress=%d egress=%d",all[0].IngressBytes,all[0].EgressBytes)
 }
