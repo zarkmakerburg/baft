@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,10 +35,16 @@ type Runtime struct {
 	ingressBytes    atomic.Uint64
 	egressBytes     atomic.Uint64
 	handshakeErrors atomic.Uint64
+	routeMu         sync.Mutex
+	routeStats      map[string]telemetry.RouteSnapshot
 }
 
 func NewRuntime() *Runtime {
-	return &Runtime{Revocations: identity.NewRevocationSet(), peers: map[*session.Peer]struct{}{}}
+	return &Runtime{
+		Revocations: identity.NewRevocationSet(),
+		peers: map[*session.Peer]struct{}{},
+		routeStats: map[string]telemetry.RouteSnapshot{},
+	}
 }
 
 func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
@@ -57,6 +64,7 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	var telemetryExporter *telemetry.Exporter
 	if cfg.Telemetry.Enabled {
 		tokenEnv := cfg.Telemetry.AgentTokenEnv
 		if tokenEnv == "" { tokenEnv = "BAFT_AGENT_TOKEN" }
@@ -66,7 +74,13 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 		if cfg.Telemetry.IntervalSeconds > 0 { interval = time.Duration(cfg.Telemetry.IntervalSeconds) * time.Second }
 		exp, err := telemetry.New(cfg.Node.ID, cfg.Telemetry.BCCURL, token, interval, r.telemetrySnapshot)
 		if err != nil { return err }
+		telemetryExporter = exp
 		go exp.Run(runCtx)
+		probeInterval := 10 * time.Second
+		if cfg.Telemetry.RouteProbeIntervalSeconds > 0 {
+			probeInterval = time.Duration(cfg.Telemetry.RouteProbeIntervalSeconds) * time.Second
+		}
+		go r.routeHealthLoop(runCtx, cfg, probeInterval, exp)
 	}
 
 	metricsDone, stopMetrics, err := r.startMetrics(runCtx, cfg.Management.MetricsListen)
@@ -478,10 +492,66 @@ func (r *Runtime) telemetrySnapshot() telemetry.Snapshot {
 	r.peerMu.Lock()
 	active := uint64(len(r.peers))
 	r.peerMu.Unlock()
+	r.routeMu.Lock()
+	routes := make([]telemetry.RouteSnapshot,0,len(r.routeStats))
+	for _,v := range r.routeStats { routes = append(routes,v) }
+	r.routeMu.Unlock()
+	sort.Slice(routes,func(i,j int)bool{return routes[i].RouteID<routes[j].RouteID})
 	return telemetry.Snapshot{
 		IngressBytes: r.ingressBytes.Load(),
 		EgressBytes: r.egressBytes.Load(),
 		ActiveSessions: active,
 		HandshakeErrors: r.handshakeErrors.Load(),
+		Routes: routes,
+	}
+}
+
+func (r *Runtime) routeHealthLoop(ctx context.Context,cfg config.Config,interval time.Duration,exp *telemetry.Exporter) {
+	if interval<=0{interval=10*time.Second}
+	r.routeMu.Lock()
+	for _,cr:=range cfg.Routes {
+		r.routeStats[cr.ID]=telemetry.RouteSnapshot{RouteID:cr.ID,Status:"unknown",LatencyMS:-1,ProbeKind:"tcp"}
+	}
+	r.routeMu.Unlock()
+
+	probeAll:=func(){
+		changed:=false
+		for _,cr:=range cfg.Routes {
+			addr:=""
+			if cr.Direction=="inbound" { addr=cr.Target } else if cfg.Peer!=nil { addr=cfg.Peer.Address }
+			next:=telemetry.RouteSnapshot{RouteID:cr.ID,Status:"unknown",LatencyMS:-1,ProbeKind:"tcp"}
+			if addr!="" {
+				start:=time.Now()
+				d:=net.Dialer{Timeout:1500*time.Millisecond}
+				conn,err:=d.DialContext(ctx,"tcp",addr)
+				if err==nil {
+					next.Status="up"
+					next.LatencyMS=time.Since(start).Milliseconds()
+					_ = conn.Close()
+					if cr.Direction=="outbound" {
+						r.peerMu.Lock();active:=len(r.peers);r.peerMu.Unlock()
+						if active==0 { next.Status="down" }
+					}
+				} else {
+					next.Status="down"
+				}
+			}
+			r.routeMu.Lock()
+			prev:=r.routeStats[cr.ID]
+			next.ErrorCount=prev.ErrorCount
+			if next.Status=="down" { next.ErrorCount++ }
+			if prev.Status!=next.Status { changed=true }
+			r.routeStats[cr.ID]=next
+			r.routeMu.Unlock()
+		}
+		if changed && exp!=nil { go exp.SendOnce(ctx) }
+	}
+	probeAll()
+	t:=time.NewTicker(interval);defer t.Stop()
+	for{
+		select{
+		case <-ctx.Done():return
+		case <-t.C:probeAll()
+		}
 	}
 }
