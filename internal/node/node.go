@@ -2,7 +2,9 @@ package node
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -43,6 +45,7 @@ type Runtime struct {
 	sessions        map[string]*session.Peer
 	recoverySeq     atomic.Uint64
 	recoveryFault   func(string) error
+	bootID          string
 }
 
 func NewRuntime() *Runtime {
@@ -59,6 +62,11 @@ func NewRuntime() *Runtime {
 func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 	if err := config.Validate(cfg); err != nil {
 		return err
+	}
+	if r.bootID=="" {
+		var b [16]byte
+		if _,err:=rand.Read(b[:]);err!=nil{return fmt.Errorf("runtime boot id: %w",err)}
+		r.bootID=hex.EncodeToString(b[:])
 	}
 	if err := requirePrivateKeyPermissions(cfg.TLS.KeyFile); err != nil {
 		return err
@@ -215,7 +223,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			p,err:=session.New(session.Listener,session.Carrier{In:in,Out:out},peer.Identity,table,session.Options{
 				NodeID:cfg.Node.ID,ExpectedPeerNodeID:expected,
 				ProfileID:cfg.Transport.Profile,ProfileVersion:1,ConfigRevision:"config-v1",
-				Resources:r.Resources,RecoveryEnabled:true,RecoveryRetention:recoveryRetention(cfg),CarrierID:owner,
+				Resources:r.Resources,RecoveryEnabled:true,RecoveryRetention:recoveryRetention(cfg),CarrierID:owner,BootID:r.bootID,
 				TrafficObserver:func(in,out uint64){r.ingressBytes.Add(in);r.egressBytes.Add(out)},
 			})
 			if err!=nil{return err}
@@ -383,7 +391,7 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			LatencyObserver: func(rtt time.Duration){ r.noiseLatencyMS.Store(rtt.Milliseconds()) },
 			PingInterval: func() time.Duration { if cfg.Noise!=nil { return 5*time.Second }; return 0 }(),
 			RecoveryEnabled: cfg.Recovery.Enabled, RecoveryRetention: recoveryRetention(cfg),
-			CarrierID: fmt.Sprintf("shard-%d-carrier-1",i),
+			CarrierID: fmt.Sprintf("shard-%d-carrier-1",i), BootID:r.bootID,
 		})
 		if err != nil {
 			_ = pw.Close()
