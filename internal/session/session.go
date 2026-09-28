@@ -277,7 +277,14 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 			if err:=p.waitForReplacement(runCtx,epoch,carrierID);err!=nil{return err}
 			continue
 		}
-		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil { return err }
+		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil {
+			if p.recoveryEnabled && errors.Is(err,ErrCarrierUnavailable) {
+				p.onCarrierFailure(err)
+				if werr:=p.waitForReplacement(runCtx,epoch,carrierID);werr!=nil{return werr}
+				continue
+			}
+			return err
+		}
 	}
 }
 
