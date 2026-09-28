@@ -22,7 +22,7 @@ import (
 const (
 	TokenPrefix = "BAFT1."
 	TokenVersion = 1
-	RequiredNodes = 6
+	MinNodes = 1
 )
 
 var (
@@ -78,7 +78,7 @@ func ManifestFromConfigs(clusterID string, generation uint64, ttl time.Duration,
 	if strings.TrimSpace(clusterID) == "" { return Manifest{}, errors.New("cluster id is required") }
 	if generation == 0 { return Manifest{}, errors.New("generation must be positive") }
 	if ttl <= 0 || ttl > 24*time.Hour { return Manifest{}, errors.New("ttl must be >0 and <=24h") }
-	if len(cfgs) != RequiredNodes { return Manifest{}, fmt.Errorf("manifest requires exactly %d nodes", RequiredNodes) }
+	if len(cfgs) < MinNodes { return Manifest{}, fmt.Errorf("manifest requires at least %d node", MinNodes) }
 
 	nodes := make([]NodeDescriptor, 0, len(cfgs))
 	seen := map[string]struct{}{}
@@ -195,7 +195,7 @@ func Open(token string, workerPrivate *ecdh.PrivateKey, signingPublic ed25519.Pu
 }
 
 func validateManifest(m Manifest, now time.Time) error {
-	if m.Version != TokenVersion || m.ClusterID == "" || m.Generation == 0 || len(m.Nodes) != RequiredNodes { return ErrInvalidToken }
+	if m.Version != TokenVersion || m.ClusterID == "" || m.Generation == 0 || len(m.Nodes) < MinNodes { return ErrInvalidToken }
 	if m.ExpiresAt <= m.IssuedAt || now.Unix() > m.ExpiresAt { return ErrExpiredToken }
 	nodesRaw, err := json.Marshal(m.Nodes)
 	if err != nil { return ErrInvalidToken }
