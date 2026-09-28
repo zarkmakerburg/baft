@@ -330,8 +330,11 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 	p.recoveryGate.Lock()
 	defer p.recoveryGate.Unlock()
 	a:=p.recovery
-	a.attempts.Add(1)
 	a.mu.Lock()
+	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain {
+		a.mu.Unlock()
+		return RecoveryOffer{},ErrCommitUncertain
+	}
 	if a.frozen {
 		pending:=a.pendingCandidate
 		a.mu.Unlock()
@@ -339,7 +342,9 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 		a.recordFailure("lease_conflict")
 		return RecoveryOffer{},recovery.ErrLeaseConflict
 	}
+	if err:=a.transitionLocked(RecoveryTxnPreparing);err!=nil{a.mu.Unlock();return RecoveryOffer{},err}
 	a.mu.Unlock()
+	a.attempts.Add(1)
 	snap,routes,err:=p.recoverySnapshot();if err!=nil{a.recordFailure("snapshot_exchange");return RecoveryOffer{},err}
 	ids:=make([]recovery.FlowIdentity,0,len(snap.Flows))
 	for _,f:=range snap.Flows{ids=append(ids,recovery.FlowIdentity{StreamID:f.StreamID,OpenNonce:f.OpenNonce})}
@@ -499,6 +504,9 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 	a.mu.Lock()
 	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return RecoveryControl{},recovery.ErrNotPrepared}
 	a.prepared=prep
+	if a.txnState==RecoveryTxnPreparing {
+		if err:=a.transitionLocked(RecoveryTxnPrepared);err!=nil{a.mu.Unlock();return RecoveryControl{},err}
+	}
 	a.mu.Unlock()
 	return ctl,nil
 }
@@ -533,7 +541,17 @@ func (p *Peer) markPostCommitFailure(err error,ctl RecoveryControl)(CommitResult
 	a.postCommitFailures.Add(1)
 	a.recordFailure("post_commit_failure")
 	a.mu.Lock()
-	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil
+	if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl){
+		a.uncertain=ctl;a.uncertain.Phase=RecoveryPhaseCommit
+		switch a.txnState{
+		case RecoveryTxnCommitted,RecoveryTxnFinalizing,RecoveryTxnCommitSent:
+			_ = a.transitionLocked(RecoveryTxnUncertain)
+		case RecoveryTxnUncertain:
+		default:
+			a.txnState=RecoveryTxnUncertain
+		}
+		a.frozen=true
+	}
 	a.mu.Unlock()
 	p.onCarrierFailure(err)
 	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},fmt.Errorf("%w: %v",ErrPostCommitFailure,err)
@@ -561,8 +579,16 @@ func (p *Peer) PublishRecoveryCommit(ctl RecoveryControl)(CommitResult,error){
 	if err:=a.engine.Commit(ctl.NextEpoch,ctl.CandidateID,plan);err!=nil{a.recordFailure("commit");return CommitResult{Committed:false,Epoch:a.engine.CurrentEpoch()},err}
 	a.commits.Add(1)
 	a.mu.Lock()
-	a.lastCommit=ctl;a.lastCommit.Phase=RecoveryPhaseCommit
+	a.lastCommit=ctl;a.lastCommit.Phase=RecoveryPhaseCommit;a.lastCommit.Status=RecoveryResolutionNone
+	a.uncertain=ctl;a.uncertain.Phase=RecoveryPhaseCommit
 	if a.prepared!=nil{a.prepared.published=true}
+	switch a.txnState{
+	case RecoveryTxnCommitReady,RecoveryTxnCommitSent,RecoveryTxnUncertain:
+		_ = a.transitionLocked(RecoveryTxnCommitted)
+	case RecoveryTxnCommitted:
+	default:
+		a.txnState=RecoveryTxnCommitted
+	}
 	a.mu.Unlock()
 
 	// This is the authority boundary. Old epoch is fenced from here onward.
@@ -583,51 +609,69 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	a.mu.Lock()
 	prep:=a.prepared
 	if prep==nil {
-		if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl){a.mu.Unlock();return nil}
+		if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl)&&a.txnState==RecoveryTxnFinalized{a.mu.Unlock();return nil}
 		a.mu.Unlock();return recovery.ErrNotPrepared
 	}
 	if !prep.published||!sameRecoveryTransaction(prep.control,ctl){a.mu.Unlock();return recovery.ErrNotPrepared}
 	if prep.finalized{a.mu.Unlock();return nil}
-	prep.finalized=true
+	if a.txnState==RecoveryTxnCommitted||a.txnState==RecoveryTxnUncertain{
+		if err:=a.transitionLocked(RecoveryTxnFinalizing);err!=nil{a.mu.Unlock();return err}
+	}
+	prep.finalizing=true
 	a.mu.Unlock()
 
+	if prep.sender.isStopped(){
+		// A re-bound resolution carrier installs a fresh sender. If this sender
+		// is already dead, preserve the transaction for another resolution.
+		_,e:=p.markPostCommitFailure(ErrCarrierUnavailable,ctl);return e
+	}
 	p.wg.Add(1);go func(){defer p.wg.Done();prep.sender.run(prep.runCtx)}()
-	// Only now may the session reader consume the committed carrier.
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
 		if err:=a.postCommitFault("after_authority_commit");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 	}
 	var replayed uint64
-	for _,act:=range prep.flows{
+	for i:=range prep.flows{
+		act:=&prep.flows[i]
 		fl:=act.flow
-		if act.ackAdvance>0 { if err:=fl.onAck(act.ackAdvance);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e} }
-		if act.finAckAdvance { fl.mu.Lock();fl.finAcked=true;fl.mu.Unlock() }
-		for _,fr:=range act.replay {
+		if !act.ackApplied&&act.ackAdvance>0 {
+			if err:=fl.onAck(act.ackAdvance);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			act.ackApplied=true
+		}
+		if !act.finAckAdvanceApplied&&act.finAckAdvance {
+			fl.mu.Lock();fl.finAcked=true;fl.mu.Unlock();act.finAckAdvanceApplied=true
+		}
+		for act.replayApplied<len(act.replay) {
+			fr:=act.replay[act.replayApplied]
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			}
 			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			act.replayApplied++
+			replayed+=uint64(len(fr.Payload))
 		}
-		replayed+=act.replayed
-		if act.resendFIN {
+		if act.resendFIN&&!act.finSentApplied {
 			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:act.finFinal});err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			act.finSentApplied=true
 		}
-		if act.ackPeerFIN {
+		if act.ackPeerFIN&&!act.peerFinAckApplied {
 			if err:=p.ackRemoteFin(fl);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			act.peerFinAckApplied=true
 		}
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
-		if !closed{p.ensurePumpsAfterRecovery(prep.runCtx,fl)}
+		if !closed&&!act.pumpsRestored{p.ensurePumpsAfterRecovery(prep.runCtx,fl);act.pumpsRestored=true}
 	}
 	a.replayed.Add(replayed)
 	a.mu.Lock()
-	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil
+	prep.finalizing=false;prep.finalized=true
+	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
+	if a.txnState==RecoveryTxnFinalizing{_ = a.transitionLocked(RecoveryTxnFinalized)}else{a.txnState=RecoveryTxnFinalized}
 	a.mu.Unlock()
 	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
 	return nil
 }
-
 func (p *Peer) MarkPostCommitFailure(err error,ctl RecoveryControl) error {
 	if err==nil{err=ErrCarrierUnavailable}
 	_,out:=p.markPostCommitFailure(err,ctl)
@@ -681,13 +725,18 @@ func (p *Peer) AbortRecovery(candidateID string) {
 		a.mu.Unlock()
 		return
 	}
+	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnCommitted||a.txnState==RecoveryTxnFinalizing||a.txnState==RecoveryTxnFinalized{
+		a.mu.Unlock()
+		return
+	}
 	next:=a.engine.CurrentEpoch()+1
 	a.mu.Unlock()
 	a.engine.Abort(next,candidateID)
 	a.aborts.Add(1)
 	a.mu.Lock()
 	if a.pendingCandidate==candidateID {
-		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil
+		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil;a.uncertain=RecoveryControl{}
+		a.txnState=RecoveryTxnAborted
 	}
 	a.mu.Unlock()
 }
@@ -742,6 +791,11 @@ func DecodeRecoveryControl(fr protocol.Frame)(RecoveryControl,error){
 	if err:=dec.Decode(&ctl);err!=nil{return RecoveryControl{},err}
 	switch ctl.Phase {
 	case RecoveryPhasePrepared,RecoveryPhaseCommitReady,RecoveryPhaseCommit,RecoveryPhaseCommitAck:
+		if ctl.Status!=RecoveryResolutionNone{return RecoveryControl{},recovery.ErrStateMismatch}
+	case RecoveryPhaseStatusQuery:
+		if ctl.Status!=RecoveryResolutionNone{return RecoveryControl{},recovery.ErrStateMismatch}
+	case RecoveryPhaseStatusReply:
+		switch ctl.Status{case RecoveryResolutionCommitted,RecoveryResolutionNotCommitted,RecoveryResolutionConflict,RecoveryResolutionUnknown:default:return RecoveryControl{},recovery.ErrStateMismatch}
 	default:return RecoveryControl{},recovery.ErrStateMismatch
 	}
 	if ctl.SessionID==""||ctl.CandidateID==""||ctl.NextEpoch==0||ctl.PlanDigest==""{return RecoveryControl{},recovery.ErrStateMismatch}
