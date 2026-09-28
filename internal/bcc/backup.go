@@ -111,7 +111,7 @@ func writeAtomic(path string,data []byte,mode os.FileMode) error {
 	if err=f.Sync();err!=nil{_ = f.Close();_ = os.Remove(tmp);return err}
 	if err=f.Close();err!=nil{_ = os.Remove(tmp);return err}
 	if err=os.Rename(tmp,path);err!=nil{_ = os.Remove(tmp);return err}
-	return nil
+	return fsyncDir(path)
 }
 
 func verifyAuditEntries(entries []AuditEntry) error {
@@ -305,51 +305,7 @@ func auditBytes(entries []AuditEntry)([]byte,error){
 }
 
 func (s *Server) RestoreFromFile(path string,key []byte) error {
-	payload,header,err:=readBackupFile(path,key)
-	if err!=nil{return err}
-
-	s.backupMu.Lock();defer s.backupMu.Unlock()
-	s.mutationMu.Lock();defer s.mutationMu.Unlock()
-
-	current,err:=s.store.snapshotState();if err!=nil{return err}
-	currentAudit,err:=s.audit.List(0);if err!=nil{return err}
-	keepCurrentAudit:=len(currentAudit)>0
-	if keepCurrentAudit&&!auditContainsAnchor(currentAudit,header.AuditSequence,header.AuditHash){
-		return errors.New("restore refused: current audit does not extend backup anchor")
-	}
-
-	restored,err:=cloneState(payload.State);if err!=nil{return err}
-	mergeAntiRollback(&restored,current,header.CreatedAt)
-	restored.ActiveAlerts=cloneAlerts(payload.Alerts.ActiveAlerts)
-	stateData,err:=stateBytes(restored);if err!=nil{return err}
-	if err:=writeAtomic(s.store.path,stateData,0600);err!=nil{return err}
-
-	s.store.mu.Lock()
-	s.store.st=restored
-	s.store.mu.Unlock()
-
-	if !keepCurrentAudit{
-		raw,err:=auditBytes(payload.Audit);if err!=nil{return err}
-		if err:=writeAtomic(s.audit.path,raw,0600);err!=nil{return err}
-		reopened,err:=OpenAuditLog(s.audit.path);if err!=nil{return err}
-		s.audit=reopened
-	}
-
-	s.alertMu.Lock()
-	s.activeAlerts=cloneAlerts(payload.Alerts.ActiveAlerts)
-	if payload.Alerts.TelemetryStaleAfterNanos>0{s.alertConfig.TelemetryStaleAfter=time.Duration(payload.Alerts.TelemetryStaleAfterNanos)}
-	if payload.Alerts.HandshakeErrorRateMilliPerMin>0{s.alertConfig.HandshakeErrorRateMilliPerMin=payload.Alerts.HandshakeErrorRateMilliPerMin}
-	if payload.Alerts.IntervalNanos>0{s.alertConfig.Interval=time.Duration(payload.Alerts.IntervalNanos)}
-	s.alertMu.Unlock()
-
-	if err:=s.audit.Verify();err!=nil{return fmt.Errorf("restored audit verification failed: %w",err)}
-	_,err=s.audit.Append(AuditEntry{
-		Timestamp:s.now().UTC(),Actor:"system",RemoteIP:"local",
-		Action:"backup.restore",Target:filepath.Base(path),Outcome:"success",
-		Details:map[string]any{"backup_created_at":header.CreatedAt.Format(time.RFC3339),"schema_version":header.SchemaVersion,"audit_hash":header.AuditHash},
-	})
-	if err!=nil{return err}
-	return s.audit.Verify()
+	return s.restoreTransactional(path,key)
 }
 
 func prunePrefix(dir,prefix string,keep int) error {
