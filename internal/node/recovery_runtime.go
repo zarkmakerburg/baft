@@ -383,8 +383,30 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 				return true,fmt.Errorf("%w: %v",session.ErrCommitUncertain,err)
 			}
 		case session.RecoveryPhaseCommitAck:
+			// Duplicate/legacy final COMMIT_ACK carries no finalization proof.
+			// It is idempotently validated but cannot transition to FINALIZED.
 			if !published{return true,recovery.ErrStateMismatch}
 			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseCommitAck);err!=nil{return true,err}
+			continue
+		case session.RecoveryPhaseFinalize:
+			if !published{return true,recovery.ErrStateMismatch}
+			if err:=p.ValidateRecoveryControl(ctl,session.RecoveryPhaseFinalize);err!=nil{return true,err}
+			if err:=p.MarkFinalizationStarted(ctl);err!=nil{return true,err}
+			if err:=r.recoveryFail("before_listener_finalize_process");err!=nil{
+				_ = p.MarkFinalizationUncertain(ctl)
+				return true,fmt.Errorf("%w: %v",session.ErrFinalizationUncertain,err)
+			}
+			// Listener accepts this exact transaction before proving acceptance
+			// back to the Dialer. Duplicate FINALIZE remains idempotent.
+			if err:=p.CompleteRecoveryFinalization(ctl);err!=nil{return true,err}
+			if err:=r.recoveryFail("after_listener_finalize_before_ack");err!=nil{return true,err}
+			ack:=ctl;ack.Phase=session.RecoveryPhaseFinalizeAck
+			copies:=r.recoveryControlCopiesForTest("listener_finalize_ack_send",&ack)
+			if copies<1{copies=1}
+			for i:=0;i<copies;i++{
+				if err:=session.EncodeRecoveryControl(out,ack);err!=nil{return true,fmt.Errorf("FINALIZE_ACK: %w",err)}
+			}
+			if err:=r.recoveryFail("after_listener_finalize_ack_write");err!=nil{return true,err}
 			if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return true,err}
 			<-hctx.Done()
 			return true,nil
