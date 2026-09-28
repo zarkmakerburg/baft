@@ -22,7 +22,7 @@ var (
 	ErrCarrierUnavailable = errors.New("session carrier unavailable")
 	ErrPostCommitFailure = errors.New("recovery post-commit failure")
 	ErrCommitUncertain = errors.New("recovery commit outcome uncertain")
-	ErrFinalizationUncertain = errors.New("recovery finalization outcome uncertain")
+	ErrFinalizationUncertain = fmt.Errorf("%w: finalization outcome uncertain",ErrCommitUncertain)
 	ErrRecoveryTransition = errors.New("invalid recovery transaction transition")
 )
 
