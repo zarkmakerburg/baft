@@ -18,8 +18,8 @@
 - هیچ ادعای عمومی درباره سرعت تضمینی، تشخیص‌ناپذیری یا دسترسی در همه شرایط اثبات نشده است.
 - listener عمومی IR به‌صورت خودکار کاربر نهایی را authenticate نمی‌کند؛ اگر از loopback خارج شود، امنیت لایه سرویس جداگانه لازم است.
 
-</div>
-
 
 ## محدوده Recovery در Step 5.7
 اتصال ECRL به Runtime در این مرحله فقط برای **تعویض Carrier در همان process و همان Session زنده** است. snapshot بازیابی بین restart پردازه یا reboot ماشین پایدار نمی‌شود و هیچ ادعایی برای process-restart resume وجود ندارد. تغییر BootID سمت peer هنگام recovery به‌صورت fail-closed رد می‌شود. Subscription Engine خارج از scope است و Record Shaping / Morphing / Stealth در Step 5.7 تغییری نکرده‌اند.
+
+</div>
