@@ -25,7 +25,7 @@ canvas{width:100%;height:240px;background:#0b1019;border-radius:12px;margin-top:
 <div class="card">
 <div class="top"><b>Live Monitoring</b><span id="monitorTime" class="muted">—</span></div>
 <div class="kpis" style="margin-top:12px"><div class="kpi">Nodes<b id="kNodes">0</b></div><div class="kpi">UP<b id="kUp">0</b></div><div class="kpi">DOWN<b id="kDown">0</b></div><div class="kpi">UNKNOWN<b id="kUnknown">0</b></div></div>
-<div class="tablewrap"><table><thead><tr><th>Node</th><th>Status</th><th>Latency</th><th>Error rate</th><th>Last Seen</th><th>Sessions</th><th>Routes</th></tr></thead><tbody id="monitorRows"></tbody></table></div>
+<div class="tablewrap"><table><thead><tr><th>Node</th><th>Status</th><th>Noise RTT</th><th>Health latency</th><th>Error rate</th><th>Last Seen</th><th>Sessions</th><th>Routes</th></tr></thead><tbody id="monitorRows"></tbody></table></div>
 </div>
 
 <div class="card"><div class="top"><b>7-Day Traffic & Uptime</b><select id="historyNode" onchange="loadHistory()"></select></div><canvas id="historyCanvas" width="1100" height="240"></canvas><div id="historyLegend" class="muted" style="margin-top:8px">Select a node.</div></div>
