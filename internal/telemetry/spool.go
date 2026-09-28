@@ -59,8 +59,7 @@ func validateSpoolState(st spoolState,expectedNode string) error {
 	prev:=st.AckedSequence
 	for i,r:=range st.Pending{
 		if r.NodeID!=st.NodeID||r.BootID!=st.BootID{return fmt.Errorf("%w: pending identity mismatch at %d",ErrSpoolCorrupt,i)}
-		if r.Sequence<=prev{return fmt.Errorf("%w: pending sequence ordering at %d",ErrSpoolCorrupt,i)}
-		if i>0&&r.Sequence!=st.Pending[i-1].Sequence+1{return fmt.Errorf("%w: pending sequence gap at %d",ErrSpoolCorrupt,i)}
+		if r.Sequence!=prev+1{return fmt.Errorf("%w: pending sequence gap/order at %d",ErrSpoolCorrupt,i)}
 		prev=r.Sequence
 	}
 	if len(st.Pending)>0&&st.NextSequence!=st.Pending[len(st.Pending)-1].Sequence+1{
@@ -134,6 +133,7 @@ func (s *Spool) Enqueue(r Report) error {
 	if len(s.st.Pending)>=s.limit{return ErrSpoolFull}
 	if r.NodeID!=s.st.NodeID||r.BootID!=s.st.BootID{return errors.New("telemetry report identity does not match spool")}
 	if r.Sequence!=s.st.NextSequence{return fmt.Errorf("telemetry sequence %d does not match next %d",r.Sequence,s.st.NextSequence)}
+	oldIngress,oldEgress,oldHandshakes:=s.st.LastIngress,s.st.LastEgress,s.st.LastHandshakes
 	s.st.Pending=append(s.st.Pending,r)
 	s.st.NextSequence++
 	s.st.LastIngress=r.IngressBytes
@@ -142,6 +142,7 @@ func (s *Spool) Enqueue(r Report) error {
 	if err:=s.saveLocked();err!=nil{
 		s.st.Pending=s.st.Pending[:len(s.st.Pending)-1]
 		s.st.NextSequence--
+		s.st.LastIngress,s.st.LastEgress,s.st.LastHandshakes=oldIngress,oldEgress,oldHandshakes
 		return err
 	}
 	return nil
