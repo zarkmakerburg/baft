@@ -138,6 +138,7 @@ type state struct {
 	FinanceLedger   []FinanceLedgerEntry         `json:"finance_ledger,omitempty"`
 	Telemetry       map[string]TelemetryCursor   `json:"telemetry,omitempty"`
 	History         map[string][]HistoryPoint    `json:"history,omitempty"`
+	ActiveAlerts    map[string]Alert             `json:"active_alerts,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion uint64                       `json:"next_rate_version,omitempty"`
 }
@@ -150,7 +151,7 @@ type Store struct {
 
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},NextJob:1,NextRateVersion:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},NextJob:1,NextRateVersion:1}}
 	b,err:=os.ReadFile(path)
 	if err==nil {
 		if err:=json.Unmarshal(b,&s.st);err!=nil{return nil,fmt.Errorf("decode BCC state: %w",err)}
@@ -161,6 +162,7 @@ func OpenStore(path string) (*Store, error) {
 		if s.st.RateHistory==nil{s.st.RateHistory=map[string][]FinancePolicy{}}
 		if s.st.Telemetry==nil{s.st.Telemetry=map[string]TelemetryCursor{}}
 		if s.st.History==nil{s.st.History=map[string][]HistoryPoint{}}
+		if s.st.ActiveAlerts==nil{s.st.ActiveAlerts=map[string]Alert{}}
 		if s.st.NextJob==0{s.st.NextJob=1}
 		if s.st.NextRateVersion==0{s.st.NextRateVersion=1}
 		for id,p:=range s.st.Policies{
@@ -588,4 +590,22 @@ func (s *Store) History(nodeID string,now time.Time) []HistoryPoint {
 		out=append(out,cp)
 	}
 	return out
+}
+
+
+func cloneAlerts(src map[string]Alert) map[string]Alert {
+	out:=make(map[string]Alert,len(src))
+	for k,v:=range src{out[k]=v}
+	return out
+}
+
+func (s *Store) ActiveAlertsSnapshot() map[string]Alert {
+	s.mu.Lock();defer s.mu.Unlock()
+	return cloneAlerts(s.st.ActiveAlerts)
+}
+
+func (s *Store) SetActiveAlerts(alerts map[string]Alert) error {
+	s.mu.Lock();defer s.mu.Unlock()
+	s.st.ActiveAlerts=cloneAlerts(alerts)
+	return s.saveLocked()
 }
