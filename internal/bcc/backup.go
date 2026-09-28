@@ -80,6 +80,7 @@ func normalizeState(st *state){
 	if st.Telemetry==nil{st.Telemetry=map[string]TelemetryCursor{}}
 	if st.History==nil{st.History=map[string][]HistoryPoint{}}
 	if st.ActiveAlerts==nil{st.ActiveAlerts=map[string]Alert{}}
+	if st.RetiredBootIDs==nil{st.RetiredBootIDs=map[string]map[string]bool{}}
 	if st.NextJob==0{st.NextJob=1}
 	if st.NextRateVersion==0{st.NextRateVersion=1}
 	if st.NextTelemetryIngestID==0{
@@ -285,6 +286,10 @@ func mergeAntiRollback(restored *state,current state,createdAt time.Time){
 			if cur.UpdatedAt.After(bak.UpdatedAt){bak.UpdatedAt=cur.UpdatedAt}
 			restored.Nodes[id]=bak
 		}
+	}
+	for nodeID,ids:=range current.RetiredBootIDs{
+		if restored.RetiredBootIDs[nodeID]==nil{restored.RetiredBootIDs[nodeID]=map[string]bool{}}
+		for bootID,v:=range ids{if v{restored.RetiredBootIDs[nodeID][bootID]=true}}
 	}
 	if current.NextRateVersion>restored.NextRateVersion{restored.NextRateVersion=current.NextRateVersion}
 	if current.NextTelemetryIngestID>restored.NextTelemetryIngestID{restored.NextTelemetryIngestID=current.NextTelemetryIngestID}
