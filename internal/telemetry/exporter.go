@@ -58,6 +58,7 @@ type Status struct {
 	SpoolHealth            string    `json:"spool_health"`
 	LastSuccessfulDelivery time.Time `json:"last_successful_delivery,omitempty"`
 	LastDeliveryError      string    `json:"last_delivery_error,omitempty"`
+	LastSpoolError         string    `json:"last_spool_error,omitempty"`
 }
 
 type Exporter struct {
@@ -78,7 +79,8 @@ type Exporter struct {
 	baseEgress uint64
 	baseHandshakes uint64
 	lastSuccess time.Time
-	lastError string
+	lastDeliveryError string
+	lastSpoolError string
 	spoolHealth string
 
 }
@@ -133,27 +135,32 @@ func addCounter(base,raw uint64)(uint64,error){
 	return base+raw,nil
 }
 
-func (e *Exporter) setError(err error){
+func (e *Exporter) setSpoolError(err error){
 	e.statusMu.Lock();defer e.statusMu.Unlock()
-	if err==nil{e.lastError="";e.spoolHealth="ok";return}
-	e.lastError=err.Error()
+	if err==nil{e.lastSpoolError="";e.spoolHealth="ok";return}
+	e.lastSpoolError=err.Error()
 	if errors.Is(err,ErrSpoolFull){e.spoolHealth="degraded"}else{e.spoolHealth="error"}
+}
+
+func (e *Exporter) setDeliveryError(err error){
+	e.statusMu.Lock();defer e.statusMu.Unlock()
+	if err==nil{e.lastDeliveryError="";return}
+	e.lastDeliveryError=err.Error()
 }
 
 func (e *Exporter) markSuccess(){
 	e.statusMu.Lock();defer e.statusMu.Unlock()
 	e.lastSuccess=time.Now().UTC()
-	e.lastError=""
-	e.spoolHealth="ok"
+	e.lastDeliveryError=""
 }
 
 func (e *Exporter) sample(now time.Time) error {
 	e.sampleMu.Lock()
 	defer e.sampleMu.Unlock()
 	s:=e.Source()
-	ingress,err:=addCounter(e.baseIngress,s.IngressBytes);if err!=nil{e.setError(err);return err}
-	egress,err:=addCounter(e.baseEgress,s.EgressBytes);if err!=nil{e.setError(err);return err}
-	handshakes,err:=addCounter(e.baseHandshakes,s.HandshakeErrors);if err!=nil{e.setError(err);return err}
+	ingress,err:=addCounter(e.baseIngress,s.IngressBytes);if err!=nil{e.setSpoolError(err);return err}
+	egress,err:=addCounter(e.baseEgress,s.EgressBytes);if err!=nil{e.setSpoolError(err);return err}
+	handshakes,err:=addCounter(e.baseHandshakes,s.HandshakeErrors);if err!=nil{e.setSpoolError(err);return err}
 	seq:=e.Spool.NextSequence()
 	r:=Report{
 		NodeID:e.NodeID,BootID:e.BootID,Sequence:seq,
@@ -162,8 +169,8 @@ func (e *Exporter) sample(now time.Time) error {
 		NoiseLatencyMS:s.NoiseLatencyMS,Routes:append([]RouteSnapshot(nil),s.Routes...),
 		TimestampUnix:now.Unix(),
 	}
-	if err:=e.Spool.Enqueue(r);err!=nil{e.setError(err);return err}
-	e.setError(nil)
+	if err:=e.Spool.Enqueue(r);err!=nil{e.setSpoolError(err);return err}
+	e.setSpoolError(nil)
 	return nil
 }
 
@@ -180,7 +187,7 @@ func (e *Exporter) Status() Status {
 	e.statusMu.Lock()
 	st:=Status{
 		PendingCount:pending,OldestPendingSequence:oldest,SpoolHealth:e.spoolHealth,
-		LastSuccessfulDelivery:e.lastSuccess,LastDeliveryError:e.lastError,
+		LastSuccessfulDelivery:e.lastSuccess,LastDeliveryError:e.lastDeliveryError,LastSpoolError:e.lastSpoolError,
 	}
 	e.statusMu.Unlock()
 	if next>0{st.LatestSequence=next-1}
@@ -206,8 +213,8 @@ func (e *Exporter) flush(ctx context.Context) error {
 	for {
 		r,ok:=e.Spool.First()
 		if !ok{return nil}
-		if err:=e.sendReport(ctx,r);err!=nil{e.setError(err);return err}
-		if err:=e.Spool.Ack(r.BootID,r.Sequence);err!=nil{e.setError(err);return err}
+		if err:=e.sendReport(ctx,r);err!=nil{e.setDeliveryError(err);return err}
+		if err:=e.Spool.Ack(r.BootID,r.Sequence);err!=nil{e.setSpoolError(err);return err}
 		e.markSuccess()
 	}
 }
