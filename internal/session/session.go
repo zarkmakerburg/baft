@@ -308,13 +308,13 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 				if errors.Is(err,io.EOF){return ctx.Err()}
 				return err
 			}
-			p.onCarrierFailure(err)
+			p.onCarrierFailureForGeneration(err,generation)
 			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);err!=nil{return err}
 			continue
 		}
 		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil {
 			if p.recoveryEnabled && errors.Is(err,ErrCarrierUnavailable) {
-				p.onCarrierFailure(err)
+				p.onCarrierFailureForGeneration(err,generation)
 				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);werr!=nil{return werr}
 				continue
 			}
@@ -1082,10 +1082,10 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			if p.recoveryEnabled && p.trafficObserver != nil {
 				p.trafficObserver(0,uint64(n))
 			}
-			if err := p.senderNow().sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
+			sender,epoch,owner,generation:=p.currentSenderState()
+			if err := sender.sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
 				if p.recoveryEnabled {
-					epoch,owner,generation:=p.currentCarrierIdentity()
-					p.onCarrierFailure(err)
+					p.onCarrierFailureForGeneration(err,generation)
 					if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
 				}
 				return
