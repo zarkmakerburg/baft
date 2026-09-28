@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
 type Server struct {
@@ -146,15 +148,14 @@ func (s *Server) StartHealthLoop(ctx context.Context,interval time.Duration){
 
 func (s *Server) agentTraffic(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
-	var in struct{
-		NodeID string `json:"node_id"`
-		IngressBytes uint64 `json:"ingress_bytes"`
-		EgressBytes uint64 `json:"egress_bytes"`
-	}
-	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
-	f,err:=s.store.AddTraffic(in.NodeID,bearer(r),in.IngressBytes,in.EgressBytes)
+	defer r.Body.Close()
+	body,err:=io.ReadAll(io.LimitReader(r.Body,1<<20))
+	if err!=nil{http.Error(w,err.Error(),400);return}
+	var in telemetry.Report
+	if err:=json.Unmarshal(body,&in);err!=nil{http.Error(w,err.Error(),400);return}
+	f,duplicate,err:=s.store.ApplyTelemetry(bearer(r),r.Header.Get("X-BAFT-Signature"),body,in)
 	if err!=nil{http.Error(w,err.Error(),http.StatusUnauthorized);return}
-	writeJSON(w,http.StatusAccepted,f)
+	writeJSON(w,http.StatusAccepted,map[string]any{"finance":f,"duplicate":duplicate,"sequence":in.Sequence})
 }
 
 func (s *Server) finance(w http.ResponseWriter,r *http.Request){
