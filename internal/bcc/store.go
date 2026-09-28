@@ -488,7 +488,7 @@ func (s *Store) FinanceSnapshot() []NodeFinance {
 func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemetry.Report) (NodeFinance,bool,error) {
 	if report.NodeID==""||report.BootID==""||report.Sequence==0{return NodeFinance{},false,errors.New("invalid telemetry identity")}
 	s.mu.Lock();defer s.mu.Unlock()
-	n,ok:=s.st.Nodes[report.NodeID]
+	_,ok:=s.st.Nodes[report.NodeID]
 	if !ok{return NodeFinance{},false,ErrAgentAuthentication}
 	authHash,authorized:=s.authorizedHashLocked(report.NodeID,token,time.Now().UTC())
 	if !authorized{return NodeFinance{},false,ErrAgentAuthentication}
