@@ -41,6 +41,7 @@ type Server struct {
 	adminToken string
 	audit *AuditLog
 	guard *IPGuard
+	trustedProxies map[string]struct{}
 	probeTimeout time.Duration
 	alertConfig AlertConfig
 	alertMu sync.Mutex
@@ -55,7 +56,7 @@ func NewServer(store *Store,adminToken string) (*Server,error) {
 	audit,err:=OpenAuditLog(store.path+".audit.jsonl")
 	if err!=nil{return nil,fmt.Errorf("open audit log: %w",err)}
 	return &Server{
-		store:store,adminToken:adminToken,audit:audit,guard:newIPGuard(SecurityConfig{}),probeTimeout:1500*time.Millisecond,
+		store:store,adminToken:adminToken,audit:audit,guard:newIPGuard(SecurityConfig{}),trustedProxies:map[string]struct{}{},probeTimeout:1500*time.Millisecond,
 		alertConfig:AlertConfig{TelemetryStaleAfter:3*time.Minute,HandshakeErrorRateMilliPerMin:5000,Interval:15*time.Second},
 		activeAlerts:map[string]Alert{},httpClient:&http.Client{Timeout:5*time.Second},
 		now:func() time.Time{return time.Now().UTC()},
@@ -73,11 +74,11 @@ func (s *Server) admin(w http.ResponseWriter,r *http.Request) bool {
 	got:=bearer(r)
 	ok:=len(got)==len(s.adminToken)&&subtle.ConstantTimeCompare([]byte(got),[]byte(s.adminToken))==1
 	if !ok{
-		s.guard.AuthFailure(clientIP(r),s.now())
+		s.guard.AuthFailure(s.clientIP(r),s.now())
 		http.Error(w,"unauthorized",http.StatusUnauthorized)
 		return false
 	}
-	s.guard.AuthSuccess(clientIP(r))
+	s.guard.AuthSuccess(s.clientIP(r))
 	return true
 }
 
@@ -85,9 +86,20 @@ func (s *Server) ConfigureSecurity(cfg SecurityConfig){
 	s.guard=newIPGuard(cfg)
 }
 
+func (s *Server) ConfigureTrustedProxies(values []string) error {
+	m,err:=parseTrustedProxies(values)
+	if err!=nil{return err}
+	s.trustedProxies=m
+	return nil
+}
+
+func (s *Server) clientIP(r *http.Request) string {
+	return clientIP(r,s.trustedProxies)
+}
+
 func (s *Server) auditAdmin(r *http.Request,action,target,outcome string,details map[string]any) error {
 	_,err:=s.audit.Append(AuditEntry{
-		Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:clientIP(r),
+		Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:s.clientIP(r),
 		Action:action,Target:target,Outcome:outcome,Details:details,
 	})
 	return err
@@ -101,8 +113,8 @@ func (s *Server) auditFailure(w http.ResponseWriter,r *http.Request,action,targe
 }
 
 func (s *Server) agentAuthResult(r *http.Request,err error){
-	if errors.Is(err,ErrAgentAuthentication){s.guard.AuthFailure(clientIP(r),s.now());return}
-	if err==nil{s.guard.AuthSuccess(clientIP(r))}
+	if errors.Is(err,ErrAgentAuthentication){s.guard.AuthFailure(s.clientIP(r),s.now());return}
+	if err==nil{s.guard.AuthSuccess(s.clientIP(r))}
 }
 
 func writeJSON(w http.ResponseWriter,status int,v any){
@@ -137,7 +149,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/audit",s.auditEntries)
 	m.HandleFunc("/api/nodes/revoke",s.revokeNode)
 	m.HandleFunc("/api/nodes/rotate-token",s.rotateNodeToken)
-	return s.guard.middleware(s.now,m)
+	return s.guard.middleware(s.now,s.clientIP,m)
 }
 
 func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
