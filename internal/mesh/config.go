@@ -12,6 +12,7 @@ type LinkSpec struct {
 	DialerNodeID        string
 	ListenerNodeID      string
 	ListenerAddress     string
+	ServerName          string
 	DialerLocalListen   string
 	ListenerTarget      string
 	DialerNoiseKeyFile  string
@@ -28,6 +29,7 @@ type LinkSpec struct {
 
 func BuildLink(s LinkSpec) (config.Config,config.Config,error) {
 	if s.DialerNodeID==""||s.ListenerNodeID==""{return config.Config{},config.Config{},errors.New("mesh node ids are required")}
+	if s.ServerName==""{return config.Config{},config.Config{},errors.New("mesh server name is required")}
 	if s.DialerNoiseKeyFile==""||s.ListenerNoiseKeyFile==""||s.DialerPublicKey==""||s.ListenerPublicKey==""{
 		return config.Config{},config.Config{},errors.New("mesh Noise key material is required")
 	}
@@ -41,7 +43,7 @@ func BuildLink(s LinkSpec) (config.Config,config.Config,error) {
 		SchemaVersion:config.SchemaVersion,
 		Noise:&config.Noise{KeyFile:s.DialerNoiseKeyFile,PeerPublicKey:s.ListenerPublicKey,RecordShaping:recordshape.Config{}},
 		Node:config.Node{ID:s.DialerNodeID,Role:"dialer"},
-		Peer:&config.Peer{Address:s.ListenerAddress,ServerName:"mesh.internal",AllowedIdentity:listenerIdentity},
+		Peer:&config.Peer{Address:s.ListenerAddress,ServerName:s.ServerName,AllowedIdentity:listenerIdentity},
 		TLS:s.TLS,
 		Transport:config.Transport{Primary:"h2",Shards:1,Profile:"mesh-reliability"},
 		Limits:limits,Recovery:config.Recovery{Enabled:false,RetentionSeconds:30},
@@ -53,7 +55,7 @@ func BuildLink(s LinkSpec) (config.Config,config.Config,error) {
 		SchemaVersion:config.SchemaVersion,
 		Noise:&config.Noise{KeyFile:s.ListenerNoiseKeyFile,PeerPublicKey:s.DialerPublicKey,RecordShaping:recordshape.Config{}},
 		Node:config.Node{ID:s.ListenerNodeID,Role:"listener"},
-		Server:&config.Server{Listen:s.ListenerAddress,ServerName:"mesh.internal",AllowedPeerIdentities:[]string{dialerIdentity}},
+		Server:&config.Server{Listen:s.ListenerAddress,ServerName:s.ServerName,AllowedPeerIdentities:[]string{dialerIdentity}},
 		TLS:s.TLS,
 		Transport:config.Transport{Primary:"h2",Shards:1,Profile:"mesh-reliability"},
 		Limits:limits,Recovery:config.Recovery{Enabled:false,RetentionSeconds:30},
