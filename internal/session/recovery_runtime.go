@@ -235,7 +235,7 @@ func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) 
 	if err:=a.engine.Commit(next,candidateID,plan);err!=nil{a.recordFailure("commit");return err}
 
 	p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
-	newSender:=newOutboundSender(&p.writer)
+	newSender:=newOutboundSender(&p.writer,p.recoveryEnabled)
 	p.mu.Lock()
 	p.carrier=c;p.carrierID=candidateID;p.carrierEpoch=next
 	oldSender:=p.sender
