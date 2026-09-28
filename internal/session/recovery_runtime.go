@@ -288,8 +288,10 @@ func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) 
 		if fp.LocalFinAckCanAdvance { fl.finAcked=true }
 		resendFIN:=fl.finSent&&!fl.finAcked
 		final:=fl.txNext
+		ackPeerFIN:=fl.finRecv&&!fl.finAckSent&&fl.rxWritten==fl.finRecvFinal
 		fl.mu.Unlock()
 		if resendFIN { if err:=newSender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{return err} }
+		if ackPeerFIN { if err:=p.ackRemoteFin(fl);err!=nil{return err} }
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
 		if !closed { p.ensurePumpsAfterRecovery(runCtx,fl) }
