@@ -131,6 +131,7 @@ type flow struct {
 	rxRing          *receiveRing
 	finRecvFinal    uint64
 	finAckSent      bool
+	finAckConfirmed bool
 	writeClosed     bool
 	replay          []replayChunk
 	creditWait      chan struct{}
@@ -499,6 +500,16 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 		if err := fl.onFinAck(fr.Offset); err != nil {
 			return err
 		}
+		if err:=p.senderNow().sendControl(protocol.Frame{Type:protocol.TypeFinAckConfirm,StreamID:fl.id,Offset:fr.Offset});err!=nil{return err}
+		p.finishIfComplete(fl)
+		return nil
+	case protocol.TypeFinAckConfirm:
+		fl,err:=p.getOpenFlow(fr.StreamID)
+		if err!=nil{
+			if p.isClosedFlow(fr.StreamID){return nil}
+			return err
+		}
+		if err:=fl.onFinAckConfirm(fr.Offset);err!=nil{return err}
 		p.finishIfComplete(fl)
 		return nil
 	case protocol.TypeReset:
@@ -883,10 +894,6 @@ func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 
 func (p *Peer) ackRemoteFin(fl *flow) error {
 	fl.mu.Lock()
-	if fl.finAckSent {
-		fl.mu.Unlock()
-		return nil
-	}
 	if !fl.finRecv || fl.rxWritten != fl.finRecvFinal {
 		fl.mu.Unlock()
 		return nil
@@ -901,8 +908,10 @@ func (p *Peer) ackRemoteFin(fl *flow) error {
 			if err := cw.CloseWrite(); err != nil {
 				return p.sendReset(fl, protocol.ErrorTargetUnreachable)
 			}
+		}
 	}
-	}
+	// FIN_ACK write success is not peer-acceptance proof. Re-sending the same
+	// final offset is safe until FIN_ACK_CONFIRM proves the peer consumed it.
 	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final}); err != nil {
 		return err
 	}
@@ -915,7 +924,10 @@ func (p *Peer) ackRemoteFin(fl *flow) error {
 
 func (p *Peer) finishIfComplete(fl *flow) {
 	fl.mu.Lock()
-	done := fl.finAckSent && fl.finAcked
+	// A locally written FIN_ACK is not enough to destroy flow state. The flow
+	// can be released only after our FIN was acknowledged and the peer proved
+	// receipt of the FIN_ACK we sent for its FIN.
+	done := fl.finAcked && fl.finAckSent && fl.finAckConfirmed
 	fl.mu.Unlock()
 	if !done {
 		return
@@ -1246,6 +1258,15 @@ func (f *flow) onFinAck(off uint64) error {
 		return errors.New("invalid FIN_ACK")
 	}
 	f.finAcked = true
+	return nil
+}
+
+func (f *flow) onFinAckConfirm(off uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.openOK{return errors.New("FIN_ACK_CONFIRM before OPEN_OK")}
+	if !f.finRecv||!f.finAckSent||off!=f.finRecvFinal{return errors.New("invalid FIN_ACK_CONFIRM")}
+	f.finAckConfirmed=true
 	return nil
 }
 
