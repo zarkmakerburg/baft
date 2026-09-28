@@ -13,10 +13,10 @@ import (
 	"github.com/zarkmakerburg/baft/internal/securityinternal"
 )
 
-func testConfigs(t *testing.T) []config.Config {
+func testConfigsN(t *testing.T, n int) []config.Config {
 	t.Helper()
-	out := make([]config.Config, 0, RequiredNodes)
-	for i := 0; i < RequiredNodes; i++ {
+	out := make([]config.Config, 0, n)
+	for i := 0; i < n; i++ {
 		kp, err := securityinternal.GenerateKeyPair()
 		if err != nil { t.Fatal(err) }
 		pub, err := securityinternal.EncodePublicKey(kp.Public)
@@ -40,6 +40,25 @@ func testConfigs(t *testing.T) []config.Config {
 		})
 	}
 	return out
+}
+
+func testConfigs(t *testing.T) []config.Config { return testConfigsN(t, 6) }
+
+func TestTokenDynamicNodeCounts(t *testing.T) {
+	workerPriv, workerPub, err := GenerateWorkerKeyPair()
+	if err != nil { t.Fatal(err) }
+	signPub, signPriv, err := GenerateSigningKeyPair()
+	if err != nil { t.Fatal(err) }
+	now := time.Unix(1700000000,0)
+	for _, n := range []int{1,3,6,50} {
+		t.Run(fmt.Sprintf("n=%d",n),func(t *testing.T){
+			m,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,testConfigsN(t,n))
+			if err!=nil{t.Fatal(err)}
+			token,err:=Seal(m,workerPub,signPriv);if err!=nil{t.Fatal(err)}
+			got,err:=Open(token,workerPriv,signPub,now.Add(time.Second));if err!=nil{t.Fatal(err)}
+			if len(got.Nodes)!=n{t.Fatalf("nodes=%d",len(got.Nodes))}
+		})
+	}
 }
 
 func TestTokenRoundTripSixNodes(t *testing.T) {
