@@ -78,6 +78,19 @@ type recoveryRuntimePair struct{
 func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	t.Helper()
 	certs:=testPKI(t);dir:=t.TempDir()
+	// reserveAddress closes its probe listener before Runtime binds it. Keep
+	// every pending address distinct inside this multi-listener harness so the
+	// kernel cannot hand the same just-released ephemeral port to two config
+	// fields before either runtime has started.
+	usedAddrs:=map[string]struct{}{}
+	reserveUnique:=func()string{
+		for{
+			a:=reserveAddress(t)
+			if _,exists:=usedAddrs[a];exists{continue}
+			usedAddrs[a]=struct{}{}
+			return a
+		}
+	}
 	write:=func(name string,b []byte)string{p:=filepath.Join(dir,name);if err:=os.WriteFile(p,b,0600);err!=nil{t.Fatal(err)};return p}
 	ca:=write("ca.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:certs.caDER}))
 	cert:=write("server.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:certs.server.Certificate[0]}))
@@ -113,9 +126,9 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	exPub,_:=securityinternal.EncodePublicKey(exKey.Public);irPub,_:=securityinternal.EncodePublicKey(irKey.Public)
 
 	ex,err:=config.LoadFile("../../configs/example-ex.yaml");if err!=nil{t.Fatal(err)}
-	ex.Node.ID="ex-recovery";ex.Server.Listen=reserveAddress(t);ex.Server.ServerName="ex.test"
+	ex.Node.ID="ex-recovery";ex.Server.Listen=reserveUnique();ex.Server.ServerName="ex.test"
 	ex.Server.AllowedPeerIdentities=[]string{"urn:baft:node:ir-recovery"}
-	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen=reserveAddress(t)
+	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen=reserveUnique()
 	ex.Transport.Shards=1;ex.TLS=config.TLS{MinVersion:"1.3",CAFile:ca,CertFile:cert,KeyFile:key}
 	ex.Noise=&config.Noise{KeyFile:exPath,PeerPublicKey:irPub,RecordShaping:recordshape.Config{}}
 	ex.Recovery=config.Recovery{Enabled:true,RetentionSeconds:10,Mode:"same_process"}
@@ -128,13 +141,13 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	proxy:=newCutProxy(t,ex.Server.Listen);pair.proxy=proxy
 	ir,err:=config.LoadFile("../../configs/example-ir.yaml");if err!=nil{t.Fatal(err)}
 	ir.Node.ID="ir-recovery";ir.Peer.Address=proxy.Addr();ir.Peer.ServerName="ex.test";ir.Peer.AllowedIdentity="urn:baft:node:ex-recovery"
-	ir.Management.UnixSocket=filepath.Join(dir,"ir.sock");ir.Management.MetricsListen=reserveAddress(t)
+	ir.Management.UnixSocket=filepath.Join(dir,"ir.sock");ir.Management.MetricsListen=reserveUnique()
 	ir.Transport.Shards=1;ir.TLS=ex.TLS
 	ir.Noise=&config.Noise{KeyFile:irPath,PeerPublicKey:exPub,RecordShaping:recordshape.Config{}}
 	ir.Recovery=ex.Recovery;ir.Routes=nil
 	for i:=0;i<routeCount;i++{
 		id:=routeName(i)
-		ir.Routes=append(ir.Routes,config.Route{ID:"local-"+id,Direction:"outbound",Listen:reserveAddress(t),RemoteRoute:id})
+		ir.Routes=append(ir.Routes,config.Route{ID:"local-"+id,Direction:"outbound",Listen:reserveUnique(),RemoteRoute:id})
 	}
 	if err:=config.Validate(ex);err!=nil{t.Fatalf("EX: %v",err)}
 	if err:=config.Validate(ir);err!=nil{t.Fatalf("IR: %v",err)}
