@@ -47,6 +47,8 @@ type Runtime struct {
 	recoverySeq     atomic.Uint64
 	recoveryFaultMu sync.RWMutex
 	recoveryFault   func(string) error
+	recoveryControlMu sync.RWMutex
+	recoveryControlHook func(string,*session.RecoveryControl) int
 	bootID          string
 }
 
@@ -64,6 +66,41 @@ func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
 	r.recoveryFaultMu.Lock()
 	r.recoveryFault=fn
 	r.recoveryFaultMu.Unlock()
+}
+
+func (r *Runtime) SetRecoveryControlHookForTest(fn func(string,*session.RecoveryControl) int) {
+	r.recoveryControlMu.Lock()
+	r.recoveryControlHook=fn
+	r.recoveryControlMu.Unlock()
+}
+
+func (r *Runtime) recoveryControlCopiesForTest(stage string,ctl *session.RecoveryControl) int {
+	r.recoveryControlMu.RLock()
+	fn:=r.recoveryControlHook
+	r.recoveryControlMu.RUnlock()
+	if fn==nil{return 1}
+	n:=fn(stage,ctl)
+	if n<1{return 1}
+	if n>4{return 4}
+	return n
+}
+
+func (r *Runtime) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	for _,p:=range peers{p.SetRecoveryPostCommitFaultForTest(fn)}
+}
+
+func (r *Runtime) BeginRecoveryForTest(candidate string) error {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	if len(peers)!=1{return fmt.Errorf("expected exactly one recovery peer, got %d",len(peers))}
+	_,err:=peers[0].BeginRecovery(candidate)
+	return err
 }
 
 func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
@@ -464,8 +501,8 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 							if errors.Is(err,session.ErrPostCommitFailure){
 								continue
 							}
-							if errors.Is(err,session.ErrCommitUncertain){
-								sh.peer.EnsureRecoverySignal(err)
+							if errors.Is(err,session.ErrCommitUncertain)||sh.peer.HasCommitUncertainty(){
+								sh.peer.EnsureRecoverySignal(session.ErrCommitUncertain)
 								continue
 							}
 						}
