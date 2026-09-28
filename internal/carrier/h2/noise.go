@@ -18,6 +18,7 @@ import (
 type NoiseOptions struct {
 	Handshake        securityinternal.HandshakeConfig
 	PeerIdentity     string
+	AllowedPeers     map[string][]byte
 	Cover            http.Handler
 	HandshakeTimeout time.Duration
 	MaxPending       int
@@ -36,8 +37,17 @@ func DefaultCover() http.Handler {
 }
 
 func HandlerWithNoise(stream StreamHandler, o NoiseOptions) (http.Handler, error) {
-	if !o.Handshake.Static.Valid() || len(o.Handshake.PeerStatic) != 32 || len(o.Handshake.OneTimePairingPSK) != 0 || o.PeerIdentity == "" {
-		return nil, errors.New("h2: Noise listener requires pinned peer and identity")
+	if !o.Handshake.Static.Valid() || len(o.Handshake.OneTimePairingPSK) != 0 {
+		return nil, errors.New("h2: Noise listener requires a static key and no pairing PSK")
+	}
+	if len(o.AllowedPeers) == 0 {
+		if len(o.Handshake.PeerStatic) != 32 || o.PeerIdentity == "" {
+			return nil, errors.New("h2: Noise listener requires a pinned peer or a multi-peer allowlist")
+		}
+	} else {
+		if len(o.Handshake.PeerStatic) != 0 || o.PeerIdentity != "" {
+			return nil, errors.New("h2: multi-peer Noise listener must not configure legacy pinned peer fields")
+		}
 	}
 	if _, err := recordshape.New(o.Handshake.RecordShaping); err != nil {
 		return nil, err
@@ -54,13 +64,26 @@ func HandlerWithNoise(stream StreamHandler, o NoiseOptions) (http.Handler, error
 	if o.Cover == nil {
 		o.Cover = DefaultCover()
 	}
+
+	identityByKey := map[string]string{}
+	if len(o.AllowedPeers) != 0 {
+		o.Handshake.AllowedPeerStatics = make([][]byte, 0, len(o.AllowedPeers))
+		for identity, pub := range o.AllowedPeers {
+			if identity == "" || len(pub) != 32 {
+				return nil, errors.New("h2: invalid multi-peer Noise allowlist entry")
+			}
+			k := string(pub)
+			if _, exists := identityByKey[k]; exists {
+				return nil, errors.New("h2: duplicate Noise public key in allowlist")
+			}
+			identityByKey[k] = identity
+			o.Handshake.AllowedPeerStatics = append(o.Handshake.AllowedPeerStatics, append([]byte(nil), pub...))
+		}
+	}
+
 	slots := make(chan struct{}, o.MaxPending)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || r.ProtoMajor != 2 || r.Method != http.MethodPost || r.URL.Path != CarrierPath || r.Header.Get("Content-Type") != "application/octet-stream" {
-			o.Cover.ServeHTTP(w, r)
-			return
-		}
-		if o.Revocations != nil && o.Revocations.IsRevoked(o.PeerIdentity, "", "") {
 			o.Cover.ServeHTTP(w, r)
 			return
 		}
@@ -72,20 +95,7 @@ func HandlerWithNoise(stream StreamHandler, o NoiseOptions) (http.Handler, error
 		}
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
-		if o.Revocations != nil {
-			revoked, unregister := o.Revocations.Watch(o.PeerIdentity, "", "")
-			defer unregister()
-			go func() {
-				select {
-				case <-revoked:
-					cancel()
-					_ = r.Body.Close()
-				case <-ctx.Done():
-				}
-			}()
-		}
-		// HTTP/2 supports per-stream read deadlines. No success header or Noise
-		// response is emitted until the incoming IK message authenticates.
+
 		controller := http.NewResponseController(w)
 		if err := controller.SetReadDeadline(time.Now().Add(o.HandshakeTimeout)); err != nil {
 			<-slots
@@ -100,22 +110,44 @@ func HandlerWithNoise(stream StreamHandler, o NoiseOptions) (http.Handler, error
 		cfg := o.Handshake
 		cfg.Context = ctx
 		out := &noiseResponseWriter{w: w}
-		conn, _, err := securityinternal.Responder(r.Body, out, cfg)
+		conn, peerStatic, err := securityinternal.Responder(r.Body, out, cfg)
 		_ = controller.SetReadDeadline(time.Time{})
 		_ = controller.SetWriteDeadline(time.Time{})
 		<-slots
 		if err != nil {
-			// Never append HTML to a response whose Noise message already started.
 			if !out.started {
 				o.Cover.ServeHTTP(w, r)
 			}
 			return
 		}
+
+		peerIdentity := o.PeerIdentity
+		if len(identityByKey) != 0 {
+			peerIdentity = identityByKey[string(peerStatic)]
+			if peerIdentity == "" {
+				return
+			}
+		}
+		if o.Revocations != nil && o.Revocations.IsRevoked(peerIdentity, "", "") {
+			return
+		}
+		if o.Revocations != nil {
+			revoked, unregister := o.Revocations.Watch(peerIdentity, "", "")
+			defer unregister()
+			go func() {
+				select {
+				case <-revoked:
+					cancel()
+					_ = r.Body.Close()
+				case <-ctx.Done():
+				}
+			}()
+		}
 		if ctx.Err() != nil {
 			return
 		}
 		if stream != nil {
-			_ = stream(ctx, conn, conn, PeerInfo{Identity: o.PeerIdentity, RemoteAddr: r.RemoteAddr})
+			_ = stream(ctx, conn, conn, PeerInfo{Identity: peerIdentity, RemoteAddr: r.RemoteAddr})
 		}
 	}), nil
 }
