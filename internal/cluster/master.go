@@ -10,7 +10,7 @@ import (
 	"github.com/zarkmakerburg/baft/internal/node"
 )
 
-const RequiredForeignNodes = 6
+const MinForeignNodes = 1
 
 type runtimeRunner interface {
 	Run(context.Context, config.Config) error
@@ -27,8 +27,8 @@ func NewMaster() *Master {
 }
 
 func ValidateMasterConfigs(cfgs []config.Config) error {
-	if len(cfgs) != RequiredForeignNodes {
-		return fmt.Errorf("master requires exactly %d foreign-node configs, got %d", RequiredForeignNodes, len(cfgs))
+	if len(cfgs) < MinForeignNodes {
+		return fmt.Errorf("master requires at least %d foreign-node config", MinForeignNodes)
 	}
 
 	masterID := cfgs[0].Node.ID
@@ -84,9 +84,9 @@ func ValidateMasterConfigs(cfgs []config.Config) error {
 	return nil
 }
 
-// Run starts six independent dialer runtimes and fails the whole master set if
-// any one runtime exits unexpectedly. The parent context remains authoritative
-// for normal shutdown.
+// Run starts one runtime per validated foreign-node config and fails the whole
+// set if any runtime exits unexpectedly. The slice length is intentionally
+// dynamic: callers may supply any positive number of nodes.
 func (m *Master) Run(ctx context.Context, cfgs []config.Config) error {
 	if err := ValidateMasterConfigs(cfgs); err != nil {
 		return err
