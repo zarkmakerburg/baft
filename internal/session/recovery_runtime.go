@@ -339,7 +339,7 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 	defer p.recoveryGate.Unlock()
 	a:=p.recovery
 	a.mu.Lock()
-	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain {
+	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnFinalizationUncertain {
 		a.mu.Unlock()
 		return RecoveryOffer{},ErrCommitUncertain
 	}
@@ -556,17 +556,31 @@ func (p *Peer) markPostCommitFailure(err error,ctl RecoveryControl)(CommitResult
 	a.postCommitFailures.Add(1)
 	a.recordFailure("post_commit_failure")
 	a.mu.Lock()
-	if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl){
-		a.uncertain=ctl;a.uncertain.Phase=RecoveryPhaseCommit
+	exact:=a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl)
+	if exact {
 		if a.prepared!=nil{a.prepared.finalizing=false}
 		switch a.txnState{
-		case RecoveryTxnCommitted,RecoveryTxnFinalizing,RecoveryTxnCommitSent:
-			_ = a.transitionLocked(RecoveryTxnUncertain)
-		case RecoveryTxnUncertain:
+		case RecoveryTxnFinalized:
+			// Distributed finalization is already proven. A physical carrier
+			// failure cannot roll authority back or make the transaction
+			// uncertain again. Release the transaction freeze so epoch N+2 may
+			// recover the still-live flows from their evidence-based frontiers.
+			a.frozen=false
+			a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false
+			a.prepared=nil;a.uncertain=RecoveryControl{}
+		case RecoveryTxnFinalizationUncertain:
+			a.frozen=true
 		default:
-			a.txnState=RecoveryTxnUncertain
+			a.uncertain=ctl;a.uncertain.Phase=RecoveryPhaseCommit
+			switch a.txnState{
+			case RecoveryTxnCommitted,RecoveryTxnFinalizing,RecoveryTxnCommitSent:
+				_ = a.transitionLocked(RecoveryTxnUncertain)
+			case RecoveryTxnUncertain:
+			default:
+				a.txnState=RecoveryTxnUncertain
+			}
+			a.frozen=true
 		}
-		a.frozen=true
 	}
 	a.mu.Unlock()
 	p.onCarrierFailure(err)
@@ -625,11 +639,18 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	a.mu.Lock()
 	prep:=a.prepared
 	if prep==nil {
+		// A globally finalized transaction can have lost its old prepared
+		// carrier state after a post-finalization carrier failure. There is
+		// nothing left to apply on that dead generation.
 		if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl)&&a.txnState==RecoveryTxnFinalized{a.mu.Unlock();return nil}
 		a.mu.Unlock();return recovery.ErrNotPrepared
 	}
 	if !prep.published||!sameRecoveryTransaction(prep.control,ctl){a.mu.Unlock();return recovery.ErrNotPrepared}
-	if prep.finalized{
+	if a.txnState!=RecoveryTxnFinalized{
+		a.mu.Unlock()
+		return fmt.Errorf("%w: local activation requires distributed FINALIZED proof, state=%s",ErrRecoveryTransition,a.txnState)
+	}
+	if prep.activationComplete{
 		rebound:=prep.rebindPending
 		if rebound{prep.rebindPending=false}
 		runCtx:=prep.runCtx
@@ -646,20 +667,18 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		}
 		return nil
 	}
-	if a.txnState==RecoveryTxnCommitted||a.txnState==RecoveryTxnUncertain{
-		if err:=a.transitionLocked(RecoveryTxnFinalizing);err!=nil{a.mu.Unlock();return err}
-	}
 	prep.finalizing=true
 	a.mu.Unlock()
 
-	if prep.sender.isStopped(){
-		// A re-bound resolution carrier installs a fresh sender. If this sender
-		// is already dead, preserve the transaction for another resolution.
+	if prep.sender==nil||prep.sender.isStopped(){
 		_,e:=p.markPostCommitFailure(ErrCarrierUnavailable,ctl);return e
 	}
 	sender:=prep.sender
 	runCtx:=prep.runCtx
-	p.wg.Add(1);go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(sender,runCtx)
+	if !sender.isStarted(){p.wg.Add(1);go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(sender,runCtx)}
+	// From here the session reader may consume ACK/FIN evidence from the
+	// committed carrier. The recovery-control handler must no longer Decode
+	// application frames from this carrier.
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
@@ -675,35 +694,62 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		if !act.finAckAdvanceApplied&&act.finAckAdvance {
 			fl.mu.Lock();fl.finAcked=true;fl.mu.Unlock();act.finAckAdvanceApplied=true
 		}
-		for act.replayApplied<len(act.replay) {
-			fr:=act.replay[act.replayApplied]
+		if act.finAckConfirmAdvance {
+			fl.mu.Lock()
+			if fl.finAckSent{fl.finAckConfirmed=true}
+			fl.mu.Unlock()
+		}
+
+		// Local write success is not delivery proof. Recompute the replay
+		// frontier from authenticated peer evidence (ACK-derived txAcked).
+		// If a prior generation wrote bytes without an ACK, they are sent again
+		// and the peer's offset dedupe prevents duplicate application delivery.
+		fl.mu.Lock()
+		accepted:=fl.txAcked
+		fl.mu.Unlock()
+		from:=act.replayFrom
+		if accepted>from{from=accepted}
+		frames,_,err:=fl.replayFramesFrom(from)
+		if err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+		for _,fr:=range frames{
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			}
 			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
-			act.replayApplied++
 			a.replayed.Add(uint64(len(fr.Payload)))
 		}
-		if act.resendFIN&&!act.finSentApplied {
-			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:act.finFinal});err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
-			act.finSentApplied=true
+
+		fl.mu.Lock()
+		resendFIN:=fl.finSent&&!fl.finAcked
+		final:=fl.txNext
+		ackPeerFIN:=fl.finRecv&&fl.rxWritten==fl.finRecvFinal&&!fl.finAckConfirmed
+		fl.mu.Unlock()
+		if resendFIN {
+			if a.postCommitFault!=nil {
+				if err:=a.postCommitFault("fin_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			}
+			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 		}
-		if act.ackPeerFIN&&!act.peerFinAckApplied {
+		if ackPeerFIN {
+			if a.postCommitFault!=nil {
+				if err:=a.postCommitFault("fin_ack_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			}
 			if err:=p.ackRemoteFin(fl);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
-			act.peerFinAckApplied=true
 		}
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
 		if !closed&&!act.pumpsRestored{p.ensurePumpsAfterRecovery(prep.runCtx,fl);act.pumpsRestored=true}
 	}
 	a.mu.Lock()
-	prep.finalizing=false;prep.finalized=true;prep.rebindPending=false
-	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
-	if a.txnState==RecoveryTxnFinalizing{_ = a.transitionLocked(RecoveryTxnFinalized)}else{a.txnState=RecoveryTxnFinalized}
+	if a.prepared==prep{
+		prep.finalizing=false;prep.finalized=true;prep.activationComplete=true;prep.rebindPending=false
+		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
+	}
 	a.mu.Unlock()
 	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
 	return nil
 }
+
 func (p *Peer) MarkPostCommitFailure(err error,ctl RecoveryControl) error {
 	if err==nil{err=ErrCarrierUnavailable}
 	_,out:=p.markPostCommitFailure(err,ctl)
@@ -757,7 +803,7 @@ func (p *Peer) AbortRecovery(candidateID string) {
 		a.mu.Unlock()
 		return
 	}
-	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnCommitted||a.txnState==RecoveryTxnFinalizing||a.txnState==RecoveryTxnFinalized{
+	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnCommitted||a.txnState==RecoveryTxnFinalizing||a.txnState==RecoveryTxnFinalizationUncertain||a.txnState==RecoveryTxnFinalized{
 		a.mu.Unlock()
 		return
 	}
