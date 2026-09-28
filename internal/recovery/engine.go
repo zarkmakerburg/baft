@@ -270,8 +270,11 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 			PeerAckAdvanceTo: lf.RxAccepted,
 			LocalReleaseThrough: lf.TxAcked,
 			PeerReleaseThrough: pf.TxAcked,
-			LocalFinAckCanAdvance: pf.FinAckSent && !lf.FinAcked,
-			PeerFinAckCanAdvance: lf.FinAckSent && !pf.FinAcked,
+			// A peer's FIN_ACK write is not proof that we accepted it.
+			// FIN_ACK_CONFIRM is emitted only after FIN_ACK acceptance, so it is
+			// the monotonic evidence required to advance finAcked during recovery.
+			LocalFinAckCanAdvance: pf.FinAckConfirmed && !lf.FinAcked,
+			PeerFinAckCanAdvance: lf.FinAckConfirmed && !pf.FinAcked,
 			LocalFinAckConfirmCanAdvance: pf.FinAcked && lf.FinAckSent && !lf.FinAckConfirmed,
 			PeerFinAckConfirmCanAdvance: lf.FinAcked && pf.FinAckSent && !pf.FinAckConfirmed,
 		})
