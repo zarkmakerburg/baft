@@ -2,6 +2,7 @@ package bcc
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,8 @@ type Alert struct {
 type Server struct {
 	store *Store
 	adminToken string
+	audit *AuditLog
+	guard *IPGuard
 	probeTimeout time.Duration
 	alertConfig AlertConfig
 	alertMu sync.Mutex
@@ -49,8 +52,10 @@ type Server struct {
 func NewServer(store *Store,adminToken string) (*Server,error) {
 	if store==nil{return nil,errors.New("store is required")}
 	if strings.TrimSpace(adminToken)==""{return nil,errors.New("admin token is required")}
+	audit,err:=OpenAuditLog(store.path+".audit.jsonl")
+	if err!=nil{return nil,fmt.Errorf("open audit log: %w",err)}
 	return &Server{
-		store:store,adminToken:adminToken,probeTimeout:1500*time.Millisecond,
+		store:store,adminToken:adminToken,audit:audit,guard:newIPGuard(SecurityConfig{}),probeTimeout:1500*time.Millisecond,
 		alertConfig:AlertConfig{TelemetryStaleAfter:3*time.Minute,HandshakeErrorRateMilliPerMin:5000,Interval:15*time.Second},
 		activeAlerts:map[string]Alert{},httpClient:&http.Client{Timeout:5*time.Second},
 		now:func() time.Time{return time.Now().UTC()},
@@ -65,8 +70,39 @@ func bearer(r *http.Request) string {
 }
 
 func (s *Server) admin(w http.ResponseWriter,r *http.Request) bool {
-	if bearer(r)!=s.adminToken{http.Error(w,"unauthorized",http.StatusUnauthorized);return false}
+	got:=bearer(r)
+	ok:=len(got)==len(s.adminToken)&&subtle.ConstantTimeCompare([]byte(got),[]byte(s.adminToken))==1
+	if !ok{
+		s.guard.AuthFailure(clientIP(r),s.now())
+		http.Error(w,"unauthorized",http.StatusUnauthorized)
+		return false
+	}
+	s.guard.AuthSuccess(clientIP(r))
 	return true
+}
+
+func (s *Server) ConfigureSecurity(cfg SecurityConfig){
+	s.guard=newIPGuard(cfg)
+}
+
+func (s *Server) auditAdmin(r *http.Request,action,target,outcome string,details map[string]any) error {
+	_,err:=s.audit.Append(AuditEntry{
+		Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:clientIP(r),
+		Action:action,Target:target,Outcome:outcome,Details:details,
+	})
+	return err
+}
+
+func (s *Server) auditFailure(w http.ResponseWriter,r *http.Request,action,target string,details map[string]any,err error,status int){
+	if aerr:=s.auditAdmin(r,action,target,"failure",details);aerr!=nil{
+		http.Error(w,"audit log failure",http.StatusInternalServerError);return
+	}
+	http.Error(w,err.Error(),status)
+}
+
+func (s *Server) agentAuthResult(r *http.Request,err error){
+	if errors.Is(err,ErrAgentAuthentication){s.guard.AuthFailure(clientIP(r),s.now());return}
+	if err==nil{s.guard.AuthSuccess(clientIP(r))}
 }
 
 func writeJSON(w http.ResponseWriter,status int,v any){
@@ -98,7 +134,10 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/finance/report",s.financeReport)
 	m.HandleFunc("/api/monitoring",s.monitoring)
 	m.HandleFunc("/api/history",s.history)
-	return m
+	m.HandleFunc("/api/audit",s.auditEntries)
+	m.HandleFunc("/api/nodes/revoke",s.revokeNode)
+	m.HandleFunc("/api/nodes/rotate-token",s.rotateNodeToken)
+	return s.guard.middleware(s.now,m)
 }
 
 func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
@@ -127,8 +166,10 @@ func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 			agentToken,ok=os.LookupEnv(envName)
 			if !ok||agentToken==""{http.Error(w,"agent token environment variable is empty",400);return}
 		}
+		details:=map[string]any{"alias":in.Alias,"address":in.Address,"role":in.Role,"public_key":in.PublicKey,"agent_token_env":envName}
 		n,err:=s.store.UpsertNode(Node{ID:in.ID,Alias:in.Alias,Address:in.Address,Role:in.Role,PublicKey:in.PublicKey},agentToken)
-		if err!=nil{http.Error(w,err.Error(),400);return}
+		if err!=nil{s.auditFailure(w,r,"node.upsert",in.ID,details,err,http.StatusBadRequest);return}
+		if err:=s.auditAdmin(r,"node.upsert",in.ID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
 		writeJSON(w,http.StatusCreated,n)
 	default:http.Error(w,"method not allowed",405)
 	}
@@ -145,8 +186,10 @@ func (s *Server) enroll(w http.ResponseWriter,r *http.Request){
 	if !s.admin(w,r){return}
 	var in struct{WorkerID string `json:"worker_id"`; PublicKey string `json:"public_key"`}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
+	details:=map[string]any{"worker_id":in.WorkerID,"public_key":in.PublicKey}
 	jobs,err:=s.store.CreateEnrollmentJobs(in.WorkerID,in.PublicKey)
-	if err!=nil{http.Error(w,err.Error(),400);return}
+	if err!=nil{s.auditFailure(w,r,"enrollment.create",in.WorkerID,details,err,http.StatusBadRequest);return}
+	if err:=s.auditAdmin(r,"enrollment.create",in.WorkerID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
 	writeJSON(w,http.StatusAccepted,jobs)
 }
 
@@ -155,8 +198,10 @@ func (s *Server) deploy(w http.ResponseWriter,r *http.Request){
 	if !s.admin(w,r){return}
 	var in struct{NodeIDs []string `json:"node_ids"`; Version string `json:"version"`}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
+	details:=map[string]any{"node_ids":append([]string(nil),in.NodeIDs...),"version":in.Version}
 	jobs,err:=s.store.CreateDeployJobs(in.NodeIDs,in.Version)
-	if err!=nil{http.Error(w,err.Error(),400);return}
+	if err!=nil{s.auditFailure(w,r,"deploy.create","cluster",details,err,http.StatusBadRequest);return}
+	if err:=s.auditAdmin(r,"deploy.create","cluster","success",details);err!=nil{http.Error(w,"audit log failure",500);return}
 	writeJSON(w,http.StatusAccepted,jobs)
 }
 
@@ -164,6 +209,7 @@ func (s *Server) agentJobs(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
 	nodeID:=r.URL.Query().Get("node_id")
 	jobs,err:=s.store.PullJobs(nodeID,bearer(r))
+	s.agentAuthResult(r,err)
 	if err!=nil{http.Error(w,err.Error(),http.StatusUnauthorized);return}
 	writeJSON(w,http.StatusOK,jobs)
 }
@@ -172,7 +218,13 @@ func (s *Server) agentAck(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
 	var in struct{NodeID,JobID,Status,Message string}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
-	if err:=s.store.AckJob(in.NodeID,bearer(r),in.JobID,in.Status,in.Message);err!=nil{http.Error(w,err.Error(),400);return}
+	err:=s.store.AckJob(in.NodeID,bearer(r),in.JobID,in.Status,in.Message)
+	s.agentAuthResult(r,err)
+	if err!=nil{
+		status:=http.StatusBadRequest
+		if errors.Is(err,ErrAgentAuthentication){status=http.StatusUnauthorized}
+		http.Error(w,err.Error(),status);return
+	}
 	writeJSON(w,http.StatusOK,map[string]bool{"ok":true})
 }
 
@@ -213,6 +265,7 @@ func (s *Server) agentTraffic(w http.ResponseWriter,r *http.Request){
 	var in telemetry.Report
 	if err:=json.Unmarshal(body,&in);err!=nil{http.Error(w,err.Error(),400);return}
 	f,duplicate,err:=s.store.ApplyTelemetry(bearer(r),r.Header.Get("X-BAFT-Signature"),body,in)
+	s.agentAuthResult(r,err)
 	if err!=nil{http.Error(w,err.Error(),http.StatusUnauthorized);return}
 	writeJSON(w,http.StatusAccepted,map[string]any{"finance":f,"duplicate":duplicate,"sequence":in.Sequence})
 }
@@ -237,7 +290,9 @@ func (s *Server) finance(w http.ResponseWriter,r *http.Request){
 			if err!=nil{http.Error(w,"effective_from must be RFC3339",400);return}
 			effective=parsed.UTC()
 		}
-		if err:=s.store.SetFinancePolicyAt(in.NodeID,in.CostMicrosPerGiB,in.RevenueMicrosPerGiB,in.Currency,effective);err!=nil{http.Error(w,err.Error(),400);return}
+		details:=map[string]any{"cost_micros_per_gib":in.CostMicrosPerGiB,"revenue_micros_per_gib":in.RevenueMicrosPerGiB,"currency":in.Currency,"effective_from":effective.Format(time.RFC3339)}
+		if err:=s.store.SetFinancePolicyAt(in.NodeID,in.CostMicrosPerGiB,in.RevenueMicrosPerGiB,in.Currency,effective);err!=nil{s.auditFailure(w,r,"finance.rate.change",in.NodeID,details,err,http.StatusBadRequest);return}
+		if err:=s.auditAdmin(r,"finance.rate.change",in.NodeID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
 		h:=s.store.RateHistory(in.NodeID)
 		writeJSON(w,http.StatusOK,map[string]any{"ok":true,"rate":h[len(h)-1]})
 	default:http.Error(w,"method not allowed",405)
@@ -377,4 +432,46 @@ func (s *Server) sendWebhook(ctx context.Context,alert Alert) error {
 	defer resp.Body.Close()
 	if resp.StatusCode<200||resp.StatusCode>=300{return fmt.Errorf("alert webhook status %d",resp.StatusCode)}
 	return nil
+}
+
+
+func (s *Server) auditEntries(w http.ResponseWriter,r *http.Request){
+	if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
+	if !s.admin(w,r){return}
+	entries,err:=s.audit.List(200)
+	if err!=nil{http.Error(w,"audit read failed",500);return}
+	writeJSON(w,http.StatusOK,entries)
+}
+
+func (s *Server) revokeNode(w http.ResponseWriter,r *http.Request){
+	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
+	if !s.admin(w,r){return}
+	var in struct{NodeID string `json:"node_id"`; Reason string `json:"reason"`}
+	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
+	details:=map[string]any{"reason":strings.TrimSpace(in.Reason)}
+	n,err:=s.store.RevokeNode(strings.TrimSpace(in.NodeID),in.Reason,s.now())
+	if err!=nil{s.auditFailure(w,r,"node.revoke",in.NodeID,details,err,http.StatusBadRequest);return}
+	if err:=s.auditAdmin(r,"node.revoke",in.NodeID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
+	writeJSON(w,http.StatusOK,n)
+}
+
+func (s *Server) rotateNodeToken(w http.ResponseWriter,r *http.Request){
+	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
+	if !s.admin(w,r){return}
+	var in struct{
+		NodeID string `json:"node_id"`
+		AgentTokenEnv string `json:"agent_token_env"`
+		GraceSeconds int64 `json:"grace_seconds"`
+	}
+	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
+	envName:=strings.TrimSpace(in.AgentTokenEnv)
+	if envName==""||strings.ContainsAny(envName,"=\x00"){http.Error(w,"valid agent_token_env is required",400);return}
+	newToken,ok:=os.LookupEnv(envName)
+	if !ok||strings.TrimSpace(newToken)==""{http.Error(w,"agent token environment variable is empty",400);return}
+	grace:=time.Duration(in.GraceSeconds)*time.Second
+	details:=map[string]any{"agent_token_env":envName,"grace_seconds":in.GraceSeconds}
+	n,err:=s.store.RotateAgentToken(strings.TrimSpace(in.NodeID),newToken,s.now(),grace)
+	if err!=nil{s.auditFailure(w,r,"node.token.rotate",in.NodeID,details,err,http.StatusBadRequest);return}
+	if err:=s.auditAdmin(r,"node.token.rotate",in.NodeID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
+	writeJSON(w,http.StatusOK,n)
 }
