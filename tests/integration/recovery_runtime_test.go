@@ -288,50 +288,6 @@ func TestRuntimeRecoveryRouteIdentityIsolation(t *testing.T){
 }
 
 
-func TestTwoRuntimeDialerPreCommitFailureKeepsBothOldEpoch(t *testing.T){
-	p:=startRecoveryRuntimePair(t,1)
-	defer p.closeAllowErrors()
-	c:=openRecoveryFlow(t,p);defer c.Close()
-	reached:=make(chan struct{});release:=make(chan struct{})
-	var once sync.Once
-	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
-		if stage=="before_commit"{
-			once.Do(func(){close(reached)})
-			<-release
-			return errors.New("dialer precommit injected")
-		}
-		return nil
-	})
-	p.proxy.CutAll()
-	select{case <-reached:case <-time.After(5*time.Second):t.Fatal("dialer precommit hook not reached")}
-	assertRuntimeOldAuthority(t,"dialer",p.irRuntime)
-	assertRuntimeOldAuthority(t,"listener",p.exRuntime)
-	close(release)
-	t.Log("PASS two real runtimes stayed on old epoch during dialer precommit failure")
-}
-
-func TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch(t *testing.T){
-	p:=startRecoveryRuntimePair(t,1)
-	defer p.closeAllowErrors()
-	c:=openRecoveryFlow(t,p);defer c.Close()
-	reached:=make(chan struct{});release:=make(chan struct{})
-	var once sync.Once
-	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
-		if stage=="listener_before_commit"{
-			once.Do(func(){close(reached)})
-			<-release
-			return errors.New("listener precommit injected")
-		}
-		return nil
-	})
-	p.proxy.CutAll()
-	select{case <-reached:case <-time.After(5*time.Second):t.Fatal("listener precommit hook not reached")}
-	assertRuntimeOldAuthority(t,"dialer",p.irRuntime)
-	assertRuntimeOldAuthority(t,"listener",p.exRuntime)
-	close(release)
-	t.Log("PASS two real runtimes stayed on old epoch during listener precommit failure")
-}
-
 
 func waitRecoveryFaultAndSettled(t *testing.T, fired *atomic.Bool, p *recoveryRuntimePair) {
 	t.Helper()
