@@ -303,7 +303,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f); err != nil {
 			if p.recoveryEnabled && errors.Is(err,ErrCarrierUnavailable) {
 				p.onCarrierFailure(err)
-				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID);werr!=nil{return werr}
+				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);werr!=nil{return werr}
 				continue
 			}
 			return err
@@ -1027,7 +1027,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			if closed{return}
 			if finalReady{_ = p.ackRemoteFin(fl);return}
 			if p.recoveryEnabled {
-				epoch,owner:=p.currentCarrierIdentity()
+				epoch,owner,generation:=p.currentCarrierIdentity()
 				p.onCarrierFailure(err)
 				if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
 			}
