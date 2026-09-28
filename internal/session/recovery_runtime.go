@@ -41,6 +41,7 @@ type RecoveryStats struct {
 
 type RecoveryAdapter struct {
 	peer *Peer
+	beforeCommit func() error
 	engine *recovery.Engine
 	mu sync.Mutex
 	frozen bool
@@ -111,8 +112,20 @@ func (p *Peer) currentCarrierIdentity()(uint64,string){
 }
 
 func (p *Peer) onCarrierFailure(err error) {
-	if p.sender!=nil { p.sender.stop(ErrCarrierUnavailable) }
+	if s:=p.senderNow();s!=nil { s.stop(ErrCarrierUnavailable) }
 	select { case p.recoveryNeeded<-err: default: }
+}
+
+func (p *Peer) NeedsRecovery() bool {
+	if !p.recoveryEnabled{return false}
+	s:=p.senderNow()
+	return s==nil||s.isStopped()
+}
+
+func (p *Peer) DrainRecoverySignals() {
+	for {
+		select { case <-p.recoveryNeeded: continue; default: return }
+	}
 }
 
 func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier string) error {
@@ -232,6 +245,9 @@ func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) 
 	a.mu.Unlock()
 	next:=a.engine.CurrentEpoch()+1
 	if err:=p.validateReplayPlan(plan);err!=nil{a.recordFailure("replay_unavailable");return err}
+	if a.beforeCommit!=nil {
+		if err:=a.beforeCommit();err!=nil{a.recordFailure("commit");return err}
+	}
 	if err:=a.engine.Commit(next,candidateID,plan);err!=nil{a.recordFailure("commit");return err}
 
 	p.writer.mu.Lock();p.writer.w=c.Out;p.writer.mu.Unlock()
@@ -266,7 +282,7 @@ func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier) 
 		if resendFIN { if err:=newSender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{return err} }
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
-		if !closed { p.ensurePumpsAfterRecovery(ctx,fl) }
+		if !closed { p.ensurePumpsAfterRecovery(runCtx,fl) }
 	}
 	a.replayed.Add(replayed);a.commits.Add(1)
 	a.mu.Lock();a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.hasPlan=false;a.mu.Unlock()
