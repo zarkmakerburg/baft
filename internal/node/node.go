@@ -506,8 +506,8 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 						err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh)
 						if err!=nil&&ctx.Err()==nil{
 							// A recovery transaction failure is non-fatal to the Runtime.
-							// COMMIT_UNCERTAIN is never treated as an abort: retry the
-							// exact transaction status on a new authenticated carrier.
+							// COMMIT/FINALIZATION uncertainty is never treated as an abort:
+							// resolve the exact transaction on a new authenticated carrier.
 							log.Printf("baft shard %d recovery attempt failed: %v",index,err)
 							if errors.Is(err,session.ErrPostCommitFailure){
 								if sh.peer.HasCommitUncertainty(){
@@ -517,6 +517,18 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 							}
 							if errors.Is(err,session.ErrCommitUncertain)||sh.peer.HasCommitUncertainty(){
 								sh.peer.EnsureRecoverySignal(session.ErrCommitUncertain)
+								continue
+							}
+							// Before authority publication, an asynchronous snapshot may be
+							// rejected while residual frames from the failed carrier are still
+							// draining. Abort has already preserved the old epoch. If the old
+							// physical carrier is actually unavailable, retry with a fresh
+							// candidate/snapshot instead of stranding active flows until their
+							// retention timer expires. If the old carrier is usable, NeedsRecovery
+							// is false and no automatic retry occurs.
+							if sh.peer.NeedsRecovery(){
+								sh.peer.DrainRecoverySignals()
+								sh.peer.EnsureRecoverySignal(session.ErrCarrierUnavailable)
 								continue
 							}
 						}
