@@ -23,6 +23,10 @@ func main(){
 	handshakeErrorRate:=flag.Float64("handshake-error-rate",5.0,"handshake error alert threshold per minute")
 	alertInterval:=flag.Duration("alert-interval",15*time.Second,"alert evaluation interval")
 	auditAnchorInterval:=flag.Duration("audit-anchor-interval",time.Hour,"external audit anchor interval")
+	backupDir:=flag.String("backup-dir","./backups","encrypted BCC backup directory")
+	backupInterval:=flag.Duration("backup-interval",24*time.Hour,"encrypted backup interval")
+	backupDailyRetention:=flag.Int("backup-daily-retention",7,"daily backup retention count")
+	backupWeeklyRetention:=flag.Int("backup-weekly-retention",4,"weekly backup retention count")
 	flag.Parse()
 	if flag.NArg()!=0||*adminTokenFile==""{
 		fmt.Fprintln(os.Stderr,"usage: baft-bcc --admin-token-file <file> [--listen 127.0.0.1:8080] [--state-file bcc-state.json]")
@@ -66,6 +70,11 @@ func main(){
 	go app.StartHealthLoop(ctx,*healthInterval)
 	go app.StartAlertLoop(ctx)
 	go app.StartAuditAnchorLoop(ctx)
+	if strings.TrimSpace(os.Getenv("BAFT_BCC_BACKUP_KEY"))!=""{
+		backupKey,err:=bcc.BackupKeyFromEnv()
+		if err!=nil{fmt.Fprintln(os.Stderr,"backup key:",err);os.Exit(2)}
+		go app.StartBackupLoop(ctx,*backupDir,backupKey,*backupInterval,bcc.BackupRetention{Daily:*backupDailyRetention,Weekly:*backupWeeklyRetention})
+	}
 
 	srv:=&http.Server{Addr:*listen,Handler:app.Handler(),ReadHeaderTimeout:5*time.Second}
 	done:=make(chan error,1)
