@@ -22,14 +22,21 @@ const (
 	JobDeployBAFT  = "deploy_baft"
 )
 
+var ErrAgentAuthentication = ErrAgentAuthentication
+
 type Node struct {
 	ID             string    `json:"id"`
 	Alias          string    `json:"alias"`
 	Address        string    `json:"address"`
 	Role           string    `json:"role"`
 	PublicKey      string    `json:"public_key,omitempty"`
-	AgentTokenHash string    `json:"agent_token_hash,omitempty"`
-	Health         string    `json:"health"`
+	AgentTokenHash           string    `json:"agent_token_hash,omitempty"`
+	PreviousAgentTokenHash   string    `json:"previous_agent_token_hash,omitempty"`
+	PreviousAgentTokenUntil  time.Time `json:"previous_agent_token_until,omitempty"`
+	Revoked                  bool      `json:"revoked,omitempty"`
+	RevokedAt                time.Time `json:"revoked_at,omitempty"`
+	RevokeReason             string    `json:"revoke_reason,omitempty"`
+	Health                   string    `json:"health"`
 	LastChecked    time.Time `json:"last_checked,omitempty"`
 	LatencyMS      int64     `json:"latency_ms"`
 	UpdatedAt      time.Time `json:"updated_at"`
@@ -190,6 +197,13 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	s.mu.Lock();defer s.mu.Unlock()
 	old,exists:=s.st.Nodes[n.ID]
 	if agentToken!="" { n.AgentTokenHash=tokenHash(agentToken) } else if exists { n.AgentTokenHash=old.AgentTokenHash }
+	if exists {
+		n.PreviousAgentTokenHash=old.PreviousAgentTokenHash
+		n.PreviousAgentTokenUntil=old.PreviousAgentTokenUntil
+		n.Revoked=old.Revoked
+		n.RevokedAt=old.RevokedAt
+		n.RevokeReason=old.RevokeReason
+	}
 	if n.Health=="" { if exists { n.Health=old.Health } else { n.Health="unknown" } }
 	if n.LastChecked.IsZero()&&exists{n.LastChecked=old.LastChecked;n.LatencyMS=old.LatencyMS}
 	if n.LastChecked.IsZero()&&!exists{n.LatencyMS=-1}
@@ -198,7 +212,11 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	return publicNode(n),s.saveLocked()
 }
 
-func publicNode(n Node) Node { n.AgentTokenHash=""; return n }
+func publicNode(n Node) Node {
+	n.AgentTokenHash=""
+	n.PreviousAgentTokenHash=""
+	return n
+}
 
 func (s *Store) ListNodes() []Node {
 	s.mu.Lock();defer s.mu.Unlock()
@@ -258,12 +276,53 @@ func (s *Store) CreateDeployJobs(nodeIDs []string,version string) ([]Job,error) 
 
 func (s *Store) authorizedLocked(nodeID,token string) bool {
 	n,ok:=s.st.Nodes[nodeID]
-	return ok&&n.AgentTokenHash!=""&&token!=""&&n.AgentTokenHash==tokenHash(token)
+	if !ok||n.Revoked||token==""{return false}
+	h:=tokenHash(token)
+	if n.AgentTokenHash!=""&&n.AgentTokenHash==h{return true}
+	return n.PreviousAgentTokenHash!=""&&n.PreviousAgentTokenHash==h&&time.Now().UTC().Before(n.PreviousAgentTokenUntil)
+}
+
+func (s *Store) RotateAgentToken(nodeID,newToken string,now time.Time,grace time.Duration)(Node,error){
+	if strings.TrimSpace(newToken)==""{return Node{},errors.New("new agent token is required")}
+	if grace<0||grace>15*time.Minute{return Node{},errors.New("token rotation grace must be between 0 and 15 minutes")}
+	now=now.UTC()
+	s.mu.Lock();defer s.mu.Unlock()
+	n,ok:=s.st.Nodes[nodeID];if !ok{return Node{},errors.New("node not found")}
+	if n.Revoked{return Node{},errors.New("node is revoked")}
+	oldHash:=n.AgentTokenHash
+	n.AgentTokenHash=tokenHash(newToken)
+	if grace>0&&oldHash!=""{
+		n.PreviousAgentTokenHash=oldHash
+		n.PreviousAgentTokenUntil=now.Add(grace)
+	}else{
+		n.PreviousAgentTokenHash=""
+		n.PreviousAgentTokenUntil=time.Time{}
+	}
+	n.UpdatedAt=now
+	s.st.Nodes[nodeID]=n
+	if err:=s.saveLocked();err!=nil{return Node{},err}
+	return publicNode(n),nil
+}
+
+func (s *Store) RevokeNode(nodeID,reason string,now time.Time)(Node,error){
+	now=now.UTC()
+	s.mu.Lock();defer s.mu.Unlock()
+	n,ok:=s.st.Nodes[nodeID];if !ok{return Node{},errors.New("node not found")}
+	n.Revoked=true
+	n.RevokedAt=now
+	n.RevokeReason=strings.TrimSpace(reason)
+	n.PreviousAgentTokenHash=""
+	n.PreviousAgentTokenUntil=time.Time{}
+	n.Health="down"
+	n.UpdatedAt=now
+	s.st.Nodes[nodeID]=n
+	if err:=s.saveLocked();err!=nil{return Node{},err}
+	return publicNode(n),nil
 }
 
 func (s *Store) PullJobs(nodeID,token string) ([]Job,error) {
 	s.mu.Lock();defer s.mu.Unlock()
-	if !s.authorizedLocked(nodeID,token){return nil,errors.New("agent authentication failed")}
+	if !s.authorizedLocked(nodeID,token){return nil,ErrAgentAuthentication}
 	var out []Job
 	for id,j:=range s.st.Jobs{
 		if j.NodeID!=nodeID||j.Status!="queued"{continue}
@@ -277,7 +336,7 @@ func (s *Store) PullJobs(nodeID,token string) ([]Job,error) {
 func (s *Store) AckJob(nodeID,token,jobID,status,message string) error {
 	if status!="succeeded"&&status!="failed"{return errors.New("invalid job status")}
 	s.mu.Lock();defer s.mu.Unlock()
-	if !s.authorizedLocked(nodeID,token){return errors.New("agent authentication failed")}
+	if !s.authorizedLocked(nodeID,token){return ErrAgentAuthentication}
 	j,ok:=s.st.Jobs[jobID];if !ok||j.NodeID!=nodeID{return errors.New("job not found")}
 	if j.Status!="dispatched"&&j.Status!="queued"{return errors.New("job already completed")}
 	j.Status=status;j.Message=message;j.UpdatedAt=time.Now().UTC();s.st.Jobs[jobID]=j
@@ -403,7 +462,7 @@ func (s *Store) appendFinanceLocked(nodeID string,at time.Time,ingressBytes,egre
 
 func (s *Store) AddTraffic(nodeID,token string,ingressBytes,egressBytes uint64) (NodeFinance,error) {
 	s.mu.Lock();defer s.mu.Unlock()
-	if !s.authorizedLocked(nodeID,token){return NodeFinance{},errors.New("agent authentication failed")}
+	if !s.authorizedLocked(nodeID,token){return NodeFinance{},ErrAgentAuthentication}
 	if err:=s.appendFinanceLocked(nodeID,time.Now().UTC(),ingressBytes,egressBytes);err!=nil{return NodeFinance{},err}
 	if err:=s.saveLocked();err!=nil{return NodeFinance{},err}
 	return s.st.Finance[nodeID],nil
@@ -424,7 +483,7 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	if report.NodeID==""||report.BootID==""||report.Sequence==0{return NodeFinance{},false,errors.New("invalid telemetry identity")}
 	s.mu.Lock();defer s.mu.Unlock()
 	n,ok:=s.st.Nodes[report.NodeID]
-	if !ok||n.AgentTokenHash==""||tokenHash(token)!=n.AgentTokenHash{return NodeFinance{},false,errors.New("agent authentication failed")}
+	if !ok||n.AgentTokenHash==""||tokenHash(token)!=n.AgentTokenHash{return NodeFinance{},false,ErrAgentAuthentication}
 	if !telemetry.VerifyHashedToken(n.AgentTokenHash,signature,body){return NodeFinance{},false,errors.New("telemetry signature invalid")}
 
 	prev:=s.st.Telemetry[report.NodeID]
