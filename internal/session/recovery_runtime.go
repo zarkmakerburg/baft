@@ -343,9 +343,13 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 		a.mu.Unlock()
 		return RecoveryOffer{},ErrCommitUncertain
 	}
+	if a.txnState==RecoveryTxnFinalized&&a.prepared!=nil&&!a.prepared.activationComplete {
+		a.mu.Unlock()
+		return RecoveryOffer{},ErrFinalizationUncertain
+	}
 	if a.txnState==RecoveryTxnFinalized||a.txnState==RecoveryTxnAborted {
-		// lastCommit/lastNotCommitted are durable-in-process identity evidence,
-		// but prepared activation state belongs only to the completed transaction.
+		// lastCommit/lastNotCommitted remain in-process identity evidence after
+		// activation is complete; only then may a new epoch start.
 		a.prepared=nil
 		a.uncertain=RecoveryControl{}
 	}
@@ -561,13 +565,11 @@ func (p *Peer) markPostCommitFailure(err error,ctl RecoveryControl)(CommitResult
 		if a.prepared!=nil{a.prepared.finalizing=false}
 		switch a.txnState{
 		case RecoveryTxnFinalized:
-			// Distributed finalization is already proven. A physical carrier
-			// failure cannot roll authority back or make the transaction
-			// uncertain again. Release the transaction freeze so epoch N+2 may
-			// recover the still-live flows from their evidence-based frontiers.
-			a.frozen=false
-			a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false
-			a.prepared=nil;a.uncertain=RecoveryControl{}
+			// Distributed finalization is proven, but local replay/FIN delivery
+			// may still be incomplete. Keep the exact prepared transaction
+			// frozen and retry it on a new authenticated physical carrier.
+			a.frozen=true
+			a.uncertain=ctl;a.uncertain.Phase=RecoveryPhaseFinalize
 		case RecoveryTxnFinalizationUncertain:
 			a.frozen=true
 		default:
