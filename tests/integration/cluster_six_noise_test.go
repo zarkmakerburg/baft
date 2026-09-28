@@ -36,6 +36,7 @@ func waitTCP(t *testing.T, addr string, deadline time.Time) {
 }
 
 func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
+	const regressionNodeCount = 6
 	certs := testPKI(t)
 	dir := t.TempDir()
 	write := func(name string, b []byte) string {
@@ -56,12 +57,12 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	listenerDone := make(chan error, cluster.RequiredForeignNodes)
+	listenerDone := make(chan error, regressionNodeCount)
 	var listeners []*net.TCPListener
-	masterCfgs := make([]config.Config, 0, cluster.RequiredForeignNodes)
-	foreignCfgs := make([]config.Config, 0, cluster.RequiredForeignNodes)
+	masterCfgs := make([]config.Config, 0, regressionNodeCount)
+	foreignCfgs := make([]config.Config, 0, regressionNodeCount)
 
-	for i := 0; i < cluster.RequiredForeignNodes; i++ {
+	for i := 0; i < regressionNodeCount; i++ {
 		target, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -201,7 +202,7 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 	case <-time.After(8 * time.Second):
 		t.Fatal("master shutdown timed out")
 	}
-	for i := 0; i < cluster.RequiredForeignNodes; i++ {
+	for i := 0; i < regressionNodeCount; i++ {
 		select {
 		case err := <-listenerDone:
 			if err != nil {
