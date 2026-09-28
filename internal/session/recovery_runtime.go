@@ -71,6 +71,8 @@ type preparedRecovery struct {
 	sender *outboundSender
 	runCtx context.Context
 	flows []preparedFlowRecovery
+	published bool
+	finalized bool
 }
 
 type RecoveryStats struct {
@@ -483,7 +485,7 @@ func (p *Peer) markPostCommitFailure(err error,ctl RecoveryControl)(CommitResult
 	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},fmt.Errorf("%w: %v",ErrPostCommitFailure,err)
 }
 
-func (p *Peer) CommitPreparedRecovery(ctx context.Context,ctl RecoveryControl)(CommitResult,error){
+func (p *Peer) PublishRecoveryCommit(ctl RecoveryControl)(CommitResult,error){
 	if p.recovery==nil{return CommitResult{},errors.New("recovery is disabled")}
 	a:=p.recovery
 	a.mu.Lock()
@@ -504,40 +506,61 @@ func (p *Peer) CommitPreparedRecovery(ctx context.Context,ctl RecoveryControl)(C
 	}
 	if err:=a.engine.Commit(ctl.NextEpoch,ctl.CandidateID,plan);err!=nil{a.recordFailure("commit");return CommitResult{Committed:false,Epoch:a.engine.CurrentEpoch()},err}
 	a.commits.Add(1)
-	a.mu.Lock();a.lastCommit=ctl;a.lastCommit.Phase=RecoveryPhaseCommit;a.mu.Unlock()
+	a.mu.Lock()
+	a.lastCommit=ctl;a.lastCommit.Phase=RecoveryPhaseCommit
+	if a.prepared!=nil{a.prepared.published=true}
+	a.mu.Unlock()
 
-	// Authority has changed. From this point every error is post-commit and
-	// MUST NOT be treated as a rollback to the previous epoch.
+	// This is the authority boundary. Old epoch is fenced from here onward.
+	// Candidate activation/replay is intentionally deferred until the peer has
+	// acknowledged the same committed transaction identity.
 	p.writer.mu.Lock();p.writer.w=prep.carrier.Out;p.writer.mu.Unlock()
 	p.mu.Lock()
 	p.carrier=prep.carrier;p.carrierID=ctl.CandidateID;p.carrierEpoch=ctl.NextEpoch
 	oldSender:=p.sender;p.sender=prep.sender
 	p.mu.Unlock()
 	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
-	p.wg.Add(1);go func(){defer p.wg.Done();prep.sender.run(prep.runCtx)}()
+	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},nil
+}
 
+func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) error {
+	if p.recovery==nil{return errors.New("recovery is disabled")}
+	a:=p.recovery
+	a.mu.Lock()
+	prep:=a.prepared
+	if prep==nil {
+		if a.lastCommit.SessionID!=""&&sameRecoveryTransaction(a.lastCommit,ctl){a.mu.Unlock();return nil}
+		a.mu.Unlock();return recovery.ErrNotPrepared
+	}
+	if !prep.published||!sameRecoveryTransaction(prep.control,ctl){a.mu.Unlock();return recovery.ErrNotPrepared}
+	if prep.finalized{a.mu.Unlock();return nil}
+	prep.finalized=true
+	a.mu.Unlock()
+
+	p.wg.Add(1);go func(){defer p.wg.Done();prep.sender.run(prep.runCtx)}()
+	// Only now may the session reader consume the committed carrier.
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
-		if err:=a.postCommitFault("after_authority_commit");err!=nil{return p.markPostCommitFailure(err,ctl)}
+		if err:=a.postCommitFault("after_authority_commit");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 	}
 	var replayed uint64
 	for _,act:=range prep.flows{
 		fl:=act.flow
-		if act.ackAdvance>0 { if err:=fl.onAck(act.ackAdvance);err!=nil{return p.markPostCommitFailure(err,ctl)} }
+		if act.ackAdvance>0 { if err:=fl.onAck(act.ackAdvance);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e} }
 		if act.finAckAdvance { fl.mu.Lock();fl.finAcked=true;fl.mu.Unlock() }
 		for _,fr:=range act.replay {
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("replay_write");err!=nil{return p.markPostCommitFailure(err,ctl)}
+				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			}
-			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{return p.markPostCommitFailure(err,ctl)}
+			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 		}
 		replayed+=act.replayed
 		if act.resendFIN {
-			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:act.finFinal});err!=nil{return p.markPostCommitFailure(err,ctl)}
+			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:act.finFinal});err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 		}
 		if act.ackPeerFIN {
-			if err:=p.ackRemoteFin(fl);err!=nil{return p.markPostCommitFailure(err,ctl)}
+			if err:=p.ackRemoteFin(fl);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 		}
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
@@ -548,7 +571,14 @@ func (p *Peer) CommitPreparedRecovery(ctx context.Context,ctl RecoveryControl)(C
 	a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil
 	a.mu.Unlock()
 	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
-	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},nil
+	return nil
+}
+
+func (p *Peer) CommitPreparedRecovery(ctx context.Context,ctl RecoveryControl)(CommitResult,error){
+	res,err:=p.PublishRecoveryCommit(ctl)
+	if err!=nil{return res,err}
+	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{return res,err}
+	return res,nil
 }
 
 func (p *Peer) CommitRecovery(ctx context.Context,candidateID string,c Carrier)(CommitResult,error){
