@@ -274,6 +274,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 }
 
 type dialerShard struct {
+	mu     sync.Mutex
 	peer   *session.Peer
 	client *carrierh2.Client
 	pw     *io.PipeWriter
@@ -281,9 +282,23 @@ type dialerShard struct {
 }
 
 func (s *dialerShard) close() {
-	_ = s.pw.Close()
-	_ = s.body.Close()
-	s.client.CloseIdleConnections()
+	s.mu.Lock()
+	client,pw,body:=s.client,s.pw,s.body
+	s.client=nil;s.pw=nil;s.body=nil
+	s.mu.Unlock()
+	if pw!=nil{_ = pw.Close()}
+	if body!=nil{_ = body.Close()}
+	if client!=nil{client.CloseIdleConnections()}
+}
+
+func (s *dialerShard) replaceCarrier(o *openedRuntimeCarrier) {
+	s.mu.Lock()
+	oldClient,oldPW,oldBody:=s.client,s.pw,s.body
+	s.client=o.client;s.pw=o.pw;s.body=o.body
+	s.mu.Unlock()
+	if oldPW!=nil{_ = oldPW.Close()}
+	if oldBody!=nil{_ = oldBody.Close()}
+	if oldClient!=nil{oldClient.CloseIdleConnections()}
 }
 
 func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
