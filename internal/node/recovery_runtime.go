@@ -409,6 +409,7 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 			if err:=r.recoveryFail("after_listener_finalize_ack_write");err!=nil{return true,err}
 			if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return true,err}
 			<-hctx.Done()
+			p.WaitRecoveryCarrierStopped(ctl)
 			return true,nil
 		default:
 			return true,recovery.ErrStateMismatch
@@ -476,6 +477,7 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 				if err:=r.recoveryFail("after_resolution_finalize_ack_write");err!=nil{return err}
 				if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return err}
 				<-hctx.Done()
+				p.WaitRecoveryCarrierStopped(ctl)
 				return nil
 			default:
 				return recovery.ErrStateMismatch
