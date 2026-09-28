@@ -1038,6 +1038,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			return
 		}
 		for {
+			epoch,owner,generation:=p.currentCarrierIdentity()
 			err := p.grantReceive(fl)
 			if err==nil{break}
 			// FIN completion can race the credit refresh. A Flow that became
@@ -1050,8 +1051,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			if closed{return}
 			if finalReady{_ = p.ackRemoteFin(fl);return}
 			if p.recoveryEnabled {
-				epoch,owner,generation:=p.currentCarrierIdentity()
-				p.onCarrierFailure(err)
+				p.onCarrierFailureForGeneration(err,generation)
 				if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
 			}
 			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
