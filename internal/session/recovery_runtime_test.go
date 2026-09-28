@@ -508,3 +508,27 @@ func TestFinalizeRetryIsIdempotent(t *testing.T){
 	if p.RecoveryStats().ReplayedBytes!=wireBytes{t.Fatalf("replayed wire metric=%d want=%d",p.RecoveryStats().ReplayedBytes,wireBytes)}
 	t.Log("PASS finalize retry conservatively retransmitted unacked prefix while application offsets deduped exact bytes")
 }
+
+
+func TestReplacementWaitRequiresApplicationReadyFrontier(t *testing.T){
+	p,_,_,cancel:=recoveryFixture(t,1);defer cancel()
+	p.mu.Lock()
+	p.carrierEpoch=2
+	p.carrierID="carrier-2"
+	p.carrierGeneration=2
+	p.mu.Unlock()
+
+	waitCtx,waitCancel:=context.WithTimeout(context.Background(),20*time.Millisecond)
+	defer waitCancel()
+	err:=p.waitForReplacement(waitCtx,1,"carrier-1",1)
+	if !errors.Is(err,context.DeadlineExceeded){
+		t.Fatalf("physical carrier attachment released application pump before replay activation: %v",err)
+	}
+
+	p.signalReplacementReady()
+	readyCtx,readyCancel:=context.WithTimeout(context.Background(),time.Second)
+	defer readyCancel()
+	if err:=p.waitForReplacement(readyCtx,1,"carrier-1",1);err!=nil{
+		t.Fatalf("application-ready frontier did not release replacement waiter: %v",err)
+	}
+}
