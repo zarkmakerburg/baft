@@ -53,13 +53,16 @@ type Runtime struct {
 }
 
 type RecoveryAuthoritySnapshot struct {
+	SessionID string
 	Epoch uint64
 	Owner string
+	CarrierGeneration uint64
 	Frozen bool
 	TxnState session.RecoveryTxnState
 	CandidateID string
 	NextEpoch uint64
 	PlanDigest string
+	Flows []session.RecoveryFlowFrontier
 }
 
 func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
@@ -111,7 +114,7 @@ func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
 	out:=make([]RecoveryAuthoritySnapshot,0,len(peers))
 	for _,p:=range peers{
 		tx,ok:=p.RecoveryTransactionIdentity()
-		s:=RecoveryAuthoritySnapshot{Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),Frozen:p.RecoveryFrozen(),TxnState:p.RecoveryTransactionState()}
+		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),Frozen:p.RecoveryFrozen(),TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
 		if ok{s.CandidateID=tx.CandidateID;s.NextEpoch=tx.NextEpoch;s.PlanDigest=tx.PlanDigest}
 		out=append(out,s)
 	}
