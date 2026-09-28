@@ -21,6 +21,8 @@ import (
 var (
 	ErrCarrierUnavailable = errors.New("session carrier unavailable")
 	ErrPostCommitFailure = errors.New("recovery post-commit failure")
+	ErrCommitUncertain = errors.New("recovery commit outcome uncertain")
+	ErrRecoveryTransition = errors.New("invalid recovery transaction transition")
 )
 
 type RecoveryOffer struct {
@@ -33,18 +35,46 @@ type RecoveryOffer struct {
 type RecoveryPhase string
 
 const (
-	RecoveryPhasePrepared    RecoveryPhase = "PREPARED"
-	RecoveryPhaseCommitReady RecoveryPhase = "COMMIT_READY"
-	RecoveryPhaseCommit      RecoveryPhase = "COMMIT"
-	RecoveryPhaseCommitAck   RecoveryPhase = "COMMIT_ACK"
+	RecoveryPhasePrepared       RecoveryPhase = "PREPARED"
+	RecoveryPhaseCommitReady    RecoveryPhase = "COMMIT_READY"
+	RecoveryPhaseCommit         RecoveryPhase = "COMMIT"
+	RecoveryPhaseCommitAck      RecoveryPhase = "COMMIT_ACK"
+	RecoveryPhaseStatusQuery    RecoveryPhase = "COMMIT_STATUS_QUERY"
+	RecoveryPhaseStatusReply    RecoveryPhase = "COMMIT_STATUS_REPLY"
+)
+
+type RecoveryTxnState string
+
+const (
+	RecoveryTxnIdle          RecoveryTxnState = "IDLE"
+	RecoveryTxnPreparing     RecoveryTxnState = "PREPARING"
+	RecoveryTxnPrepared      RecoveryTxnState = "PREPARED"
+	RecoveryTxnCommitReady   RecoveryTxnState = "COMMIT_READY"
+	RecoveryTxnCommitSent    RecoveryTxnState = "COMMIT_SENT"
+	RecoveryTxnUncertain     RecoveryTxnState = "COMMIT_UNCERTAIN"
+	RecoveryTxnCommitted     RecoveryTxnState = "COMMITTED"
+	RecoveryTxnFinalizing    RecoveryTxnState = "FINALIZING"
+	RecoveryTxnFinalized     RecoveryTxnState = "FINALIZED"
+	RecoveryTxnAborted       RecoveryTxnState = "ABORTED"
+)
+
+type RecoveryResolutionStatus string
+
+const (
+	RecoveryResolutionNone         RecoveryResolutionStatus = ""
+	RecoveryResolutionCommitted    RecoveryResolutionStatus = "COMMITTED"
+	RecoveryResolutionNotCommitted RecoveryResolutionStatus = "NOT_COMMITTED"
+	RecoveryResolutionConflict     RecoveryResolutionStatus = "CONFLICT"
+	RecoveryResolutionUnknown      RecoveryResolutionStatus = "UNKNOWN"
 )
 
 type RecoveryControl struct {
-	Phase       RecoveryPhase `json:"phase"`
-	SessionID   string        `json:"session_id"`
-	CandidateID string        `json:"candidate_id"`
-	NextEpoch   uint64        `json:"next_epoch"`
-	PlanDigest  string        `json:"plan_digest"`
+	Phase       RecoveryPhase            `json:"phase"`
+	SessionID   string                   `json:"session_id"`
+	CandidateID string                   `json:"candidate_id"`
+	NextEpoch   uint64                   `json:"next_epoch"`
+	PlanDigest  string                   `json:"plan_digest"`
+	Status      RecoveryResolutionStatus `json:"status,omitempty"`
 }
 
 type CommitResult struct {
@@ -63,6 +93,12 @@ type preparedFlowRecovery struct {
 	resendFIN bool
 	finFinal uint64
 	ackPeerFIN bool
+	ackApplied bool
+	finAckAdvanceApplied bool
+	replayApplied int
+	finSentApplied bool
+	peerFinAckApplied bool
+	pumpsRestored bool
 }
 
 type preparedRecovery struct {
@@ -76,13 +112,17 @@ type preparedRecovery struct {
 }
 
 type RecoveryStats struct {
-	Attempts           uint64
-	Commits            uint64
-	Aborts             uint64
-	PostCommitFailures uint64
-	CurrentEpoch       uint64
-	ReplayedBytes      uint64
-	Failures           map[string]uint64
+	Attempts                    uint64
+	Commits                     uint64
+	Aborts                      uint64
+	PostCommitFailures          uint64
+	CommitUncertain             uint64
+	ResolutionCommitted         uint64
+	ResolutionNotCommitted      uint64
+	ResolutionConflict          uint64
+	CurrentEpoch                uint64
+	ReplayedBytes               uint64
+	Failures                    map[string]uint64
 }
 
 type RecoveryAdapter struct {
@@ -99,16 +139,23 @@ type RecoveryAdapter struct {
 	hasPlan bool
 	prepared *preparedRecovery
 	lastCommit RecoveryControl
+	lastNotCommitted RecoveryControl
+	txnState RecoveryTxnState
+	uncertain RecoveryControl
 	attempts atomic.Uint64
 	commits atomic.Uint64
 	aborts atomic.Uint64
 	postCommitFailures atomic.Uint64
+	commitUncertain atomic.Uint64
+	resolutionCommitted atomic.Uint64
+	resolutionNotCommitted atomic.Uint64
+	resolutionConflict atomic.Uint64
 	replayed atomic.Uint64
 	failures map[string]uint64
 }
 
 func newRecoveryAdapter(p *Peer, eng *recovery.Engine) *RecoveryAdapter {
-	return &RecoveryAdapter{peer:p,engine:eng,failures:map[string]uint64{}}
+	return &RecoveryAdapter{peer:p,engine:eng,txnState:RecoveryTxnIdle,failures:map[string]uint64{}}
 }
 
 func cloneRecoverySnapshot(s recovery.Snapshot) recovery.Snapshot {
@@ -142,6 +189,8 @@ func (a *RecoveryAdapter) Stats() RecoveryStats {
 	a.mu.Unlock()
 	return RecoveryStats{
 		Attempts:a.attempts.Load(),Commits:a.commits.Load(),Aborts:a.aborts.Load(),PostCommitFailures:a.postCommitFailures.Load(),
+		CommitUncertain:a.commitUncertain.Load(),ResolutionCommitted:a.resolutionCommitted.Load(),
+		ResolutionNotCommitted:a.resolutionNotCommitted.Load(),ResolutionConflict:a.resolutionConflict.Load(),
 		CurrentEpoch:a.engine.CurrentEpoch(),ReplayedBytes:a.replayed.Load(),Failures:fail,
 	}
 }
