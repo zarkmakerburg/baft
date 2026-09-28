@@ -68,6 +68,7 @@ type recoveryRuntimePair struct{
 	proxy *cutProxy
 	targetLn net.Listener
 	targetAccepts atomic.Int64
+	targetBaseline int64
 }
 
 func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
@@ -140,6 +141,8 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	waitTCP(t,ex.Server.Listen,time.Now().Add(6*time.Second))
 	go func(){pair.irDone<-node.NewRuntime().Run(ctx,ir)}()
 	waitTCP(t,ir.Routes[0].Listen,time.Now().Add(8*time.Second))
+	time.Sleep(50*time.Millisecond)
+	pair.targetBaseline=pair.targetAccepts.Load()
 	return pair
 }
 
@@ -178,7 +181,7 @@ func TestRuntimeCarrierReplacementPreservesActiveFlow(t *testing.T){
 	got:=transferAcrossCut(t,p,0,payload,256*1024)
 	have:=sha256.Sum256(got)
 	if !bytes.Equal(got,payload)||have!=want{t.Fatalf("payload mismatch got_hash=%x want_hash=%x",have,want)}
-	if n:=p.targetAccepts.Load();n!=1{t.Fatalf("target TCP socket was reopened: accepts=%d",n)}
+	if n:=p.targetAccepts.Load()-p.targetBaseline;n!=1{t.Fatalf("target TCP socket was reopened: test_accepts=%d baseline=%d total=%d",n,p.targetBaseline,p.targetAccepts.Load())}
 	t.Logf("PASS active flow survived carrier replacement bytes=%d hash=%x",len(got),have)
 }
 
@@ -205,7 +208,7 @@ func TestMultiFlowCarrierReplacementNoDuplicateOrLoss(t *testing.T){
 	}
 	close(start);time.Sleep(40*time.Millisecond);p.proxy.CutAll()
 	wg.Wait();close(errCh);for e:=range errCh{if e!=nil{t.Fatal(e)}}
-	if n:=p.targetAccepts.Load();n!=flows{t.Fatalf("target flow identity/socket count=%d want=%d",n,flows)}
+	if n:=p.targetAccepts.Load()-p.targetBaseline;n!=flows{t.Fatalf("target flow identity/socket count=%d want=%d baseline=%d total=%d",n,flows,p.targetBaseline,p.targetAccepts.Load())}
 	t.Log("PASS 8 active TCP flows survived one carrier replacement without byte loss/duplication")
 }
 
@@ -217,6 +220,6 @@ func TestRuntimeRecoveryRouteIdentityIsolation(t *testing.T){
 	for i:=0;i<6;i++{c,err:=net.DialTimeout("tcp",p.ir.Routes[i].Listen,time.Second);if err!=nil{t.Fatal(err)};conns=append(conns,c);_ = c.SetDeadline(time.Now().Add(15*time.Second));if _,err:=c.Write([]byte{byte(i),0x7f});err!=nil{t.Fatal(err)};got:=make([]byte,2);if _,err:=io.ReadFull(c,got);err!=nil{t.Fatal(err)};if !bytes.Equal(got,[]byte{byte(i),0x7f}){t.Fatal("pre-cut route mismatch")}}
 	p.proxy.CutAll();time.Sleep(500*time.Millisecond)
 	for i,c:=range conns{want:=[]byte{0xa5,byte(i)};if _,err:=c.Write(want);err!=nil{t.Fatal(err)};got:=make([]byte,2);if _,err:=io.ReadFull(c,got);err!=nil{t.Fatal(err)};if !bytes.Equal(got,want){t.Fatalf("route %d identity mixed got=%v want=%v",i,got,want)};_ = c.Close()}
-	if n:=p.targetAccepts.Load();n!=6{t.Fatalf("route recovery reopened/mixed target flows accepts=%d",n)}
+	if n:=p.targetAccepts.Load()-p.targetBaseline;n!=6{t.Fatalf("route recovery reopened/mixed target flows test_accepts=%d baseline=%d total=%d",n,p.targetBaseline,p.targetAccepts.Load())}
 	t.Log("PASS six route/session identities remained isolated across replacement")
 }
