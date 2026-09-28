@@ -257,6 +257,23 @@ func (p *Peer) RecoveryCarrierGeneration() uint64 {
 	return p.carrierGeneration
 }
 
+type unavailableCarrierWriter struct{}
+func (unavailableCarrierWriter) Write([]byte)(int,error){return 0,ErrCarrierUnavailable}
+
+func (p *Peer) FenceRecoveryCarrierWriter(generation uint64) {
+	if !p.recoveryEnabled{return}
+	// Match Publish/Rebind lock order (writer -> peer) so an in-flight frame
+	// finishes before handler teardown, while a newer generation is never
+	// fenced by an older HTTP stream.
+	p.writer.mu.Lock()
+	p.mu.Lock()
+	if p.carrierGeneration==generation{
+		p.writer.w=unavailableCarrierWriter{}
+	}
+	p.mu.Unlock()
+	p.writer.mu.Unlock()
+}
+
 func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
 	if p.recovery==nil{return nil}
 	a:=p.recovery
