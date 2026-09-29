@@ -953,7 +953,7 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		// next authenticated physical carrier instead of opening a fresh epoch.
 		if replayAcceptThrough>0 {
 			if err:=p.waitReplayAccepted(ctx,fl,replayAcceptThrough,prep.sender);err!=nil{
-				_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e
+				_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e
 			}
 		}
 
