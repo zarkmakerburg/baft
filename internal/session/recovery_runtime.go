@@ -772,6 +772,23 @@ func (p *Peer) waitForCarrierSwitch(ctx context.Context,oldEpoch uint64,oldCarri
 	}
 }
 
+func (p *Peer) waitForGenerationReady(ctx context.Context,generation uint64) error {
+	if !p.recoveryEnabled{return nil}
+	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
+	for {
+		p.replacementMu.Lock()
+		ready:=p.replacementReadyGeneration
+		wait:=p.replacementWait
+		p.replacementMu.Unlock()
+		if ready>=generation{return nil}
+		select{
+		case <-ctx.Done():return ctx.Err()
+		case <-t.C:return fmt.Errorf("%w: recovery generation %d never became application-ready",ErrCarrierUnavailable,generation)
+		case <-wait:
+		}
+	}
+}
+
 func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier string,oldGeneration uint64) error {
 	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
 	for {
