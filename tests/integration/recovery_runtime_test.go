@@ -11,6 +11,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -268,18 +270,66 @@ func transferAcrossCut(t *testing.T,p *recoveryRuntimePair,route int,payload []b
 	return got
 }
 
-func countLinuxFDs(t *testing.T) int {
+type linuxFDSnapshot struct {
+	Total int
+	Targets map[string]int
+	Categories map[string]int
+}
+
+func classifyLinuxFD(target string) string {
+	switch {
+	case strings.HasPrefix(target,"socket:["):
+		return "socket"
+	case strings.HasPrefix(target,"pipe:["):
+		return "pipe"
+	case strings.Contains(target,"eventpoll"):
+		return "eventpoll"
+	case strings.HasPrefix(target,"anon_inode:"):
+		return "anon_inode"
+	case strings.HasPrefix(target,"/"):
+		return "file"
+	default:
+		return "other"
+	}
+}
+
+func snapshotLinuxFDs(t *testing.T) linuxFDSnapshot {
 	t.Helper()
 	entries,err:=os.ReadDir("/proc/self/fd")
 	if err!=nil{t.Skipf("/proc/self/fd unavailable: %v",err)}
-	return len(entries)
+	s:=linuxFDSnapshot{Targets:map[string]int{},Categories:map[string]int{}}
+	for _,e:=range entries{
+		target,err:=os.Readlink(filepath.Join("/proc/self/fd",e.Name()))
+		if err!=nil{continue} // fd can close between ReadDir and Readlink
+		s.Total++
+		s.Targets[target]++
+		s.Categories[classifyLinuxFD(target)]++
+	}
+	return s
+}
+
+func medianInt(v []int) int {
+	if len(v)==0{return 0}
+	cp:=append([]int(nil),v...)
+	sort.Ints(cp)
+	return cp[len(cp)/2]
+}
+
+func sortedFDTargets(m map[string]int) []string {
+	out:=make([]string,0,len(m))
+	for k,n:=range m{out=append(out,k+" x"+fmt.Sprint(n))}
+	sort.Strings(out)
+	return out
 }
 
 func TestRecoveryRuntimePairDoesNotLeakResources(t *testing.T){
-	baseline:=countLinuxFDs(t)
 	const cycles=50
-	var warmup,fd10,fd30,fd50 int
-	for i:=1;i<=cycles;i++{
+	const warmupCycles=5
+	var baselineSamples []linuxFDSnapshot
+	var measured []linuxFDSnapshot
+	var fd10,fd30,fd50 linuxFDSnapshot
+
+	runCycle:=func(i int){
 		p:=startRecoveryRuntimePair(t,1)
 		c:=openRecoveryFlow(t,p)
 		targetBefore:=p.targetAccepts.Load()
@@ -298,13 +348,70 @@ func TestRecoveryRuntimePairDoesNotLeakResources(t *testing.T){
 		}
 		_ = c.Close()
 		p.close(t)
-		fd:=countLinuxFDs(t)
-		if i==3{warmup=fd}
-		switch i{case 10:fd10=fd;case 30:fd30=fd;case 50:fd50=fd}
-		if i>=3&&fd>warmup+8{t.Fatalf("FD growth after warmup cycle=%d warmup=%d current=%d baseline=%d",i,warmup,fd,baseline)}
 	}
-	if fd50>warmup+4{t.Fatalf("FDs did not return to steady range baseline=%d warmup=%d fd10=%d fd30=%d fd50=%d",baseline,warmup,fd10,fd30,fd50)}
-	t.Logf("PASS recovery runtime resource lifetime fd_baseline=%d fd_warmup=%d fd10=%d fd30=%d fd50=%d owner_counts=proxy:0,target:0",baseline,warmup,fd10,fd30,fd50)
+
+	for i:=1;i<=cycles;i++{
+		runCycle(i)
+		// Sample a closed-state process, not a live Runtime pair. Multiple
+		// post-warmup samples absorb one-time Go/netpoll initialization while
+		// fd identity lets us distinguish persistent BAFT lifecycle leakage.
+		time.Sleep(10*time.Millisecond)
+		s:=snapshotLinuxFDs(t)
+		if i<=warmupCycles{baselineSamples=append(baselineSamples,s)}else{measured=append(measured,s)}
+		switch i{case 10:fd10=s;case 30:fd30=s;case 50:fd50=s}
+	}
+
+	baselineMax:=map[string]int{}
+	categories:=[]string{"socket","pipe","eventpoll","file","anon_inode","other"}
+	baselineCategoryMedian:=map[string]int{}
+	for _,s:=range baselineSamples{
+		for target,n:=range s.Targets{if n>baselineMax[target]{baselineMax[target]=n}}
+	}
+	for _,cat:=range categories{
+		vals:=make([]int,0,len(baselineSamples))
+		for _,s:=range baselineSamples{vals=append(vals,s.Categories[cat])}
+		baselineCategoryMedian[cat]=medianInt(vals)
+	}
+
+	// An identity that is above the stable warmup band in every one of the
+	// final five closed-state samples is persistent evidence, not count noise.
+	lastN:=5
+	if len(measured)<lastN{t.Fatal("insufficient FD samples")}
+	persistent:=map[string]int{}
+	for target:=range measured[len(measured)-lastN].Targets{
+		minExtra:=int(^uint(0)>>1)
+		for _,s:=range measured[len(measured)-lastN:]{
+			extra:=s.Targets[target]-baselineMax[target]
+			if extra<0{extra=0}
+			if extra<minExtra{minExtra=extra}
+		}
+		if minExtra>0{persistent[target]=minExtra}
+	}
+	persistentCritical:=map[string]int{}
+	for target,n:=range persistent{
+		switch classifyLinuxFD(target){
+		case "socket","pipe","eventpoll":
+			persistentCritical[target]=n
+		}
+	}
+
+	firstTotals:=make([]int,0,lastN);lastTotals:=make([]int,0,lastN)
+	for _,s:=range measured[:lastN]{firstTotals=append(firstTotals,s.Total)}
+	for _,s:=range measured[len(measured)-lastN:]{lastTotals=append(lastTotals,s.Total)}
+	firstMedian,lastMedian:=medianInt(firstTotals),medianInt(lastTotals)
+	slope:=float64(lastMedian-firstMedian)/float64(len(measured)-1)
+
+	if len(persistentCritical)>0{
+		t.Fatalf("persistent BAFT-lifecycle FD identities after shutdown: %v baseline=%v fd10=%v fd30=%v fd50=%v",sortedFDTargets(persistentCritical),baselineCategoryMedian,fd10.Categories,fd30.Categories,fd50.Categories)
+	}
+	if slope>0.10 && lastMedian>firstMedian{
+		t.Fatalf("meaningful closed-state FD growth trend slope=%.3f first_median=%d last_median=%d baseline=%v fd10=%v fd30=%v fd50=%v",slope,firstMedian,lastMedian,baselineCategoryMedian,fd10.Categories,fd30.Categories,fd50.Categories)
+	}
+
+	delta:=map[string]int{}
+	for _,cat:=range categories{delta[cat]=fd50.Categories[cat]-baselineCategoryMedian[cat]}
+	t.Logf("PASS recovery FD evidence baseline_identity_set=%v post_shutdown_persistent_identity_set=%v socket_delta=%d pipe_delta=%d eventpoll_delta=%d category_delta=%v trend=%.3f fd10=%v fd30=%v fd50=%v",
+		sortedFDTargets(baselineMax),sortedFDTargets(persistent),delta["socket"],delta["pipe"],delta["eventpoll"],delta,slope,fd10.Categories,fd30.Categories,fd50.Categories)
 }
 
 func TestRuntimeCarrierReplacementPreservesActiveFlow(t *testing.T){
@@ -470,7 +577,7 @@ func waitAuthorityPair(t *testing.T,p *recoveryRuntimePair,epoch uint64,finalize
 		ir:=p.irRuntime.RecoveryAuthoritiesForTest()
 		ex:=p.exRuntime.RecoveryAuthoritiesForTest()
 		if len(ir)==1&&len(ex)==1&&ir[0].Epoch==epoch&&ex[0].Epoch==epoch{
-			if !finalized||(!ir[0].Frozen&&!ex[0].Frozen){
+			if !finalized||(!ir[0].Frozen&&!ex[0].Frozen&&ir[0].ActivationComplete&&ex[0].ActivationComplete){
 				return ir[0],ex[0]
 			}
 		}
