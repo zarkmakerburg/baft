@@ -95,6 +95,7 @@ type preparedFlowRecovery struct {
 	replay []protocol.Frame
 	replayed uint64
 	replayFrom uint64
+	replayHighWatermark uint64
 	ackAdvance uint64
 	creditAdvance uint64
 	creditApplied bool
@@ -211,6 +212,8 @@ func preparedOwnershipSnapshotForTest(prep *preparedRecovery) RecoveryPreparedOw
 type RecoveryFlowFrontier struct {
 	StreamID uint64
 	ReplaySource uint64
+	ReplayHighWatermark uint64
+	ReplayOutstanding bool
 	PeerAccepted uint64
 	TxAcked uint64
 	TxNext uint64
@@ -613,6 +616,7 @@ func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
 	a:=p.recovery
 	a.mu.Lock()
 	sources:=map[uint64]uint64{}
+	highWatermarks:=map[uint64]uint64{}
 	if a.prepared!=nil{
 		for i:=range a.prepared.flows{
 			act:=&a.prepared.flows[i]
@@ -620,6 +624,7 @@ func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
 			id:=act.flow.id
 			act.flow.mu.Unlock()
 			sources[id]=act.replayFrom
+			highWatermarks[id]=act.replayHighWatermark
 		}
 	}
 	a.mu.Unlock()
@@ -634,7 +639,8 @@ func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
 		fl.mu.Lock()
 		src,ok:=sources[id]
 		if !ok{src=fl.txAcked}
-		out=append(out,RecoveryFlowFrontier{StreamID:id,ReplaySource:src,PeerAccepted:fl.txAcked,TxAcked:fl.txAcked,TxNext:fl.txNext,FinSent:fl.finSent,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,FinAckConfirmed:fl.finAckConfirmed})
+		hwm:=highWatermarks[id]
+		out=append(out,RecoveryFlowFrontier{StreamID:id,ReplaySource:src,ReplayHighWatermark:hwm,ReplayOutstanding:hwm>0&&fl.txAcked<hwm,PeerAccepted:fl.txAcked,TxAcked:fl.txAcked,TxNext:fl.txNext,FinSent:fl.finSent,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,FinAckConfirmed:fl.finAckConfirmed})
 		fl.mu.Unlock()
 	}
 	sort.Slice(out,func(i,j int)bool{return out[i].StreamID<out[j].StreamID})
@@ -1088,7 +1094,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 		}
 		frames,n,err:=fl.replayFramesFrom(fp.LocalReplayFrom);if err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
 		if err:=newSender.addFlow(fl.id);err!=nil{a.recordFailure("candidate_setup");return RecoveryControl{},err}
-		prep.flows=append(prep.flows,preparedFlowRecovery{flow:fl,replay:frames,replayed:n,replayFrom:fp.LocalReplayFrom,ackAdvance:fp.LocalAckAdvanceTo,creditAdvance:creditAdvance,finAckAdvance:fp.LocalFinAckCanAdvance,finAckConfirmAdvance:fp.LocalFinAckConfirmCanAdvance,resendFIN:resendFIN,finFinal:final,ackPeerFIN:ackPeerFIN})
+		prep.flows=append(prep.flows,preparedFlowRecovery{flow:fl,replay:frames,replayed:n,replayFrom:fp.LocalReplayFrom,replayHighWatermark:final,ackAdvance:fp.LocalAckAdvanceTo,creditAdvance:creditAdvance,finAckAdvance:fp.LocalFinAckCanAdvance,finAckConfirmAdvance:fp.LocalFinAckConfirmCanAdvance,resendFIN:resendFIN,finFinal:final,ackPeerFIN:ackPeerFIN})
 	}
 	a.mu.Lock()
 	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return RecoveryControl{},recovery.ErrNotPrepared}
@@ -1333,6 +1339,10 @@ func (p *Peer) replayCurrentUnprovenState(ctx context.Context,prep *preparedReco
 		final:=fl.txNext
 		ackPeerFIN:=fl.finRecv&&fl.rxWritten==fl.finRecvFinal&&!fl.finAckConfirmed
 		fl.mu.Unlock()
+		// The exact-transaction delivery obligation is the current ledger suffix.
+		// Local carrier writes never clear this watermark; only cumulative ACK
+		// evidence (txAcked) can prove it satisfied.
+		if final>act.replayHighWatermark{act.replayHighWatermark=final}
 
 		// Exact-transaction rebind can happen after application pumps produced
 		// additional bytes beyond the immutable commit plan. Those bytes are
@@ -1467,7 +1477,9 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		// and the peer's offset dedupe prevents duplicate application delivery.
 		fl.mu.Lock()
 		accepted:=fl.txAcked
+		currentHigh:=fl.txNext
 		fl.mu.Unlock()
+		if currentHigh>act.replayHighWatermark{act.replayHighWatermark=currentHigh}
 		from:=act.replayFrom
 		if accepted>from{from=accepted}
 		frames,_,err:=fl.replayFramesFrom(from)
