@@ -31,6 +31,16 @@ import (
 	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
+type ListenerStartupState struct {
+	GoroutineStarted bool
+	BindAttempted bool
+	Bound bool
+	ServeStarted bool
+	ConfiguredAddress string
+	ActualAddress string
+	StartupError error
+}
+
 type Runtime struct {
 	Revocations *identity.RevocationSet
 	Resources   *resources.Allocator
@@ -55,6 +65,8 @@ type Runtime struct {
 	listenerReadyMu sync.Mutex
 	listenerReadyAddr string
 	listenerReadyErr error
+	listenerStartupMu sync.Mutex
+	listenerStartup ListenerStartupState
 }
 
 type RecoveryAuthoritySnapshot struct {
@@ -281,7 +293,18 @@ func (r *Runtime) signalListenerReady(addr string,err error) {
 	if r.listenerReadyAddr==""&&addr!=""{r.listenerReadyAddr=addr}
 	if r.listenerReadyErr==nil&&err!=nil{r.listenerReadyErr=err}
 	r.listenerReadyMu.Unlock()
+	r.listenerStartupMu.Lock()
+	if addr!="" { r.listenerStartup.ActualAddress=addr }
+	if err!=nil && r.listenerStartup.StartupError==nil { r.listenerStartup.StartupError=err }
+	r.listenerStartupMu.Unlock()
 	r.listenerReadyOnce.Do(func(){close(r.listenerReady)})
+}
+
+func (r *Runtime) setListenerStartup(configured string, mutate func(*ListenerStartupState)) {
+	r.listenerStartupMu.Lock()
+	if r.listenerStartup.ConfiguredAddress=="" { r.listenerStartup.ConfiguredAddress=configured }
+	mutate(&r.listenerStartup)
+	r.listenerStartupMu.Unlock()
 }
 
 func (r *Runtime) ListenerReadyForTest() <-chan struct{} { return r.listenerReady }
@@ -289,6 +312,11 @@ func (r *Runtime) ListenerReadyForTest() <-chan struct{} { return r.listenerRead
 func (r *Runtime) ListenerReadinessForTest() (string,error) {
 	r.listenerReadyMu.Lock();defer r.listenerReadyMu.Unlock()
 	return r.listenerReadyAddr,r.listenerReadyErr
+}
+
+func (r *Runtime) ListenerStartupStateForTest() ListenerStartupState {
+	r.listenerStartupMu.Lock();defer r.listenerStartupMu.Unlock()
+	return r.listenerStartup
 }
 
 func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
@@ -430,6 +458,7 @@ type identityMaterial struct {
 }
 
 func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
+	r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.GoroutineStarted=true})
 	log.Printf("baft listener startup: goroutine created configured=%s",cfg.Server.Listen)
 	mat, err := loadTLSMaterial(cfg.TLS)
 	if err != nil {
@@ -531,18 +560,22 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 	}
 
 	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
+	r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.BindAttempted=true})
 	log.Printf("baft listener startup: bind attempted configured=%s",cfg.Server.Listen)
 	ln, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
+		r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.StartupError=fmt.Errorf("listen %s: %w",cfg.Server.Listen,err)})
 		log.Printf("baft listener startup: bind failed configured=%s err=%v",cfg.Server.Listen,err)
 		return fmt.Errorf("listen %s: %w", cfg.Server.Listen, err)
 	}
 	actual:=ln.Addr().String()
+	r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.Bound=true;s.ActualAddress=actual})
 	log.Printf("baft listener startup: bind success configured=%s actual=%s",cfg.Server.Listen,actual)
 	defer ln.Close()
 
 	done := make(chan error, 1)
 	go func() {
+		r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.ServeStarted=true})
 		log.Printf("baft listener startup: serve started actual=%s",actual)
 		err := srv.ServeTLS(ln, "", "")
 		if errors.Is(err, http.ErrServerClosed) {
