@@ -1305,8 +1305,7 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 	close(replay2Release)
 	close(releaseFault)
 
-	var act session.RecoveryDiagnosticEvent
-	select{case act=<-activated3:case <-time.After(8*time.Second):
+	select{case <-activated3:case <-time.After(8*time.Second):
 		t.Fatalf("generation3 never activated diagnostics=%+v",p.irRuntime.RecoveryDiagnosticsForTest())}
 	barrierA:=oneRecoveryAuthority(t,p.irRuntime)
 	prepA,err:=p.irRuntime.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
