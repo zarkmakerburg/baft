@@ -5,9 +5,9 @@
 > English: [KNOWN-LIMITATIONS.en.md](KNOWN-LIMITATIONS.en.md)
 
 - BAFT هنوز research software است و production-ready اعلام نشده است.
-- Stage C هنوز رسماً بسته نشده؛ slow-receiver، PADL، shared-budget و metrics سبزند، اما workflow مستقل soak باید PASS شود.
+- Stage-C soak فعلی برای multi-Flow/slow-receiver و race sample سبز است؛ با این حال benchmark عمومی، پایلوت واقعی و production readiness هنوز اثبات نشده‌اند.
 - COR-01 پاس‌شده correctness روی runner/local networking است و benchmark اینترنت عمومی نیست.
-- allocator، TWRL، PADL و control scheduling وارد data path شده‌اند؛ shared-budget چند Shard تست شده، اما soak تکرارشونده هنوز گیت باز است.
+- allocator، TWRL، PADL و control scheduling وارد data path شده‌اند؛ shared-budget چند Shard و soak تکرارشونده فعلی تست شده‌اند.
 - تعویض Carrier در همان process، epoch fencing در همان process و bounded replay در Step 5.7 پیاده‌سازی و تست شده‌اند.
 - snapshot پایدار ECRL، resume بعد از process restart و resume بعد از reboot ماشین پیاده‌سازی یا ادعا نشده‌اند.
 - endpoint pool/relay production path کامل نشده است.
@@ -20,6 +20,6 @@
 
 
 ## محدوده Recovery در Step 5.7
-اتصال ECRL به Runtime در این مرحله فقط برای **تعویض Carrier در همان process و همان Session زنده** است. epoch fencing همان process و bounded replay بر اساس Plan اعتبارسنجی‌شده پیاده‌سازی و تست شده‌اند. Commit recovery شامل آماده‌سازی کامل پیش از commit، Plan Digest canonical، barrier دوطرفه readiness/commit، هویت idempotent برای commit و مدیریت جداگانه خطاهای post-commit است. snapshot بازیابی بین restart پردازه یا reboot ماشین پایدار نمی‌شود و هیچ ادعایی برای process-restart resume وجود ندارد. تغییر BootID سمت peer هنگام recovery به‌صورت fail-closed رد می‌شود. Subscription Engine خارج از scope است و Record Shaping / Morphing در Step 5.7 تغییری نکرده‌اند.
+اتصال ECRL به Runtime در این مرحله فقط برای **تعویض Carrier در همان process و همان Session زنده** است. epoch fencing همان process و bounded replay بر اساس Plan اعتبارسنجی‌شده پیاده‌سازی و تست شده‌اند. Commit recovery شامل آماده‌سازی کامل پیش از commit، Plan Digest canonical، barrier دوطرفه readiness/commit، هویت idempotent برای commit و مدیریت جداگانه خطاهای post-commit است. readiness نسل replacement نیز monotonic و generation-explicit است؛ application waiter فقط بعد از finalization، activation و reconciliation کامل همان generation آزاد می‌شود و stale generation حق rollback یا wake جعلی ندارد. snapshot بازیابی بین restart پردازه یا reboot ماشین پایدار نمی‌شود و هیچ ادعایی برای process-restart resume وجود ندارد. تغییر BootID سمت peer هنگام recovery به‌صورت fail-closed رد می‌شود. Subscription Engine خارج از scope است و Record Shaping / Morphing در Step 5.7 تغییری نکرده‌اند.
 
 </div>
