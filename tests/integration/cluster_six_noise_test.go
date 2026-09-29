@@ -72,8 +72,14 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 
 	listenerDone := make(chan error, regressionNodeCount)
 	var listeners []*net.TCPListener
+	var foreignMetrics []net.Listener
+	var masterMetrics []net.Listener
 	masterCfgs := make([]config.Config, 0, regressionNodeCount)
 	foreignCfgs := make([]config.Config, 0, regressionNodeCount)
+	defer func(){
+		for _,ln:=range foreignMetrics{_ = ln.Close()}
+		for _,ln:=range masterMetrics{_ = ln.Close()}
+	}()
 
 	for i := 0; i < regressionNodeCount; i++ {
 		target, err := net.Listen("tcp", "127.0.0.1:0")
@@ -103,13 +109,20 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		exMetricsLn,err:=net.Listen("tcp","127.0.0.1:0")
+		if err!=nil{t.Fatal(err)}
+		irMetricsLn,err:=net.Listen("tcp","127.0.0.1:0")
+		if err!=nil{_ = exMetricsLn.Close();t.Fatal(err)}
+		foreignMetrics=append(foreignMetrics,exMetricsLn)
+		masterMetrics=append(masterMetrics,irMetricsLn)
+
 		exID := fmt.Sprintf("ex-%02d", i+1)
 		ex.Node.ID = exID
 		ex.Server.Listen = reserveUnique()
 		ex.Server.ServerName = "ex.test"
 		ex.Server.AllowedPeerIdentities = []string{"urn:baft:node:ir-01"}
 		ex.Management.UnixSocket = fmt.Sprintf("/tmp/baft-ex-%02d.sock", i+1)
-		ex.Management.MetricsListen = reserveUnique()
+		ex.Management.MetricsListen = exMetricsLn.Addr().String()
 		ex.Transport.Shards = 1
 		ex.Routes[0].Target = target.Addr().String()
 		ex.TLS.CAFile = ca
@@ -121,7 +134,7 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 		ir.Peer.ServerName = "ex.test"
 		ir.Peer.AllowedIdentity = "urn:baft:node:" + exID
 		ir.Management.UnixSocket = fmt.Sprintf("/tmp/baft-ir-%02d.sock", i+1)
-		ir.Management.MetricsListen = reserveUnique()
+		ir.Management.MetricsListen = irMetricsLn.Addr().String()
 		ir.Transport.Shards = 1
 		ir.Routes[0].Listen = reserveUnique()
 		ir.TLS = ex.TLS
@@ -170,6 +183,7 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 	for i := range foreignCfgs {
 		cfg := foreignCfgs[i]
 		rt := node.NewRuntime()
+		rt.SetMetricsListenerForTest(foreignMetrics[i])
 		go func() { listenerDone <- rt.Run(ctx, cfg) }()
 		// Wait on the Runtime's post-bind readiness condition, not repeated
 		// connection attempts against a listener that may not exist yet.
@@ -185,6 +199,15 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 
 	masterDone := make(chan error, 1)
 	master:=cluster.NewMaster()
+	nextMasterRuntime:=0
+	master.SetRuntimeFactoryForTest(func()*node.Runtime{
+		rt:=node.NewRuntime()
+		if nextMasterRuntime<len(masterMetrics){
+			rt.SetMetricsListenerForTest(masterMetrics[nextMasterRuntime])
+			nextMasterRuntime++
+		}
+		return rt
+	})
 	go func() { masterDone <- master.Run(ctx, masterCfgs) }()
 	select{
 	case <-master.ReadyForTest():
