@@ -53,29 +53,35 @@ jobs:
             -run '^TestStaleFinalizeFailureCannotRegressNewIncarnation$' \
             -count=100 -timeout 20m -v
 
-      - name: Class-A exact ambiguous replay 100x
+      - name: Class-A unresolved exact transaction 100x
         run: |
           go test ./tests/integration \
-            -run '^TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely$' \
+            -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction$' \
             -count=100 -timeout 25m -v
 
-      - name: Incarnation and Class-A race 20x
-        run: |
-          go test -race ./tests/integration \
-            -run '^(TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestOldFinalizeInvocationCannotAdoptReboundPreparedCarrier|TestStaleFinalizeTeardownCannotFenceNewIncarnation|TestStaleFinalizeFailureCannotRegressNewIncarnation)$' \
-            -count=20 -timeout 25m -v
-
-      - name: Class-B fresh current-state snapshot 30x
+      - name: Hard Class-A live-data recut exact transaction 100x
         run: |
           go test ./tests/integration \
-            -run '^TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot$' \
-            -count=30 -timeout 20m -v
+            -run '^TestUnprovenReplayWithLiveDataRecutRemainsExact$' \
+            -count=100 -timeout 25m -v
 
-      - name: Class-A unresolved exact rebind replay 30x
+      - name: Class-B stable transaction fresh epoch 100x
+        run: |
+          go test ./tests/integration \
+            -run '^TestStableRecoveryTransactionAllowsFreshLaterEpoch$' \
+            -count=100 -timeout 25m -v
+
+      - name: Ambiguous replay exact contract 200x
         run: |
           go test ./tests/integration \
             -run '^TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely$' \
-            -count=30 -timeout 20m -v
+            -count=200 -timeout 30m -v
+
+      - name: Recovery stability boundary race 20x
+        run: |
+          go test -race ./tests/integration \
+            -run '^(TestUnprovenReplayCarrierFailureStaysExactTransaction|TestUnprovenReplayWithLiveDataRecutRemainsExact|TestStableRecoveryTransactionAllowsFreshLaterEpoch|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely)$' \
+            -count=20 -timeout 30m -v
 
       - name: Exact-rebind boundary lifecycle 20x
         run: |
@@ -112,12 +118,6 @@ jobs:
           go test ./tests/integration \
             -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$' \
             -count=10 -timeout 20m -v
-
-      - name: Exact ambiguous replay transaction contract 50x
-        run: |
-          go test ./tests/integration \
-            -run '^TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely$' \
-            -count=50 -timeout 20m -v
 
       - name: Consecutive independent recovery lifecycle 10x
         run: |
