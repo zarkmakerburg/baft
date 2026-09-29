@@ -42,7 +42,7 @@ func masterConfigs(t *testing.T, n int) []config.Config {
 }
 
 func TestValidateMasterConfigsDynamicSizes(t *testing.T) {
-	for _, n := range []int{1, 3, 6, 50} {
+	for _, n := range []int{1, 2, 3, 6, 8, 16} {
 		t.Run(fmt.Sprintf("n=%d",n),func(t *testing.T){
 			if err:=ValidateMasterConfigs(masterConfigs(t,n));err!=nil{t.Fatal(err)}
 		})
