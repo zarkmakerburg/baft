@@ -101,7 +101,7 @@ func (r *Runtime) openRuntimeCarrier(ctx context.Context,cfg config.Config,tlsCf
 }
 
 func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCfg *tls.Config,index int,sh *dialerShard) error {
-	if sh.peer.HasCommitUncertainty(){
+	if sh.peer.NeedsExactTransactionResolution(){
 		resolved,err:=r.resolveDialerCommitUncertainty(ctx,cfg,tlsCfg,sh)
 		if err!=nil{sh.peer.EnsureRecoverySignal(err);return err}
 		if resolved{return nil}
