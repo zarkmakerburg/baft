@@ -104,6 +104,7 @@ type outboundSender struct {
 	onStop func(SenderStopEvent)
 	onDataWrite func(DataWriteDiagnostic)
 	writeSeq uint64
+	windowHigh map[uint64]uint64
 }
 
 func newOutboundSender(writer *frameWriter, recoverable ...bool) *outboundSender {
@@ -116,6 +117,7 @@ func newOutboundSender(writer *frameWriter, recoverable ...bool) *outboundSender
 		wake:    make(chan struct{}, 1),
 		done:    make(chan struct{}),
 		recoverable:r,
+		windowHigh: map[uint64]uint64{},
 	}
 }
 
@@ -154,6 +156,13 @@ func (s *outboundSender) sendControl(frame protocol.Frame) error {
 	req := &outboundRequest{frame: frame, done: make(chan error, 1), control: true}
 
 	s.mu.Lock()
+	if frame.Type==protocol.TypeWindow {
+		if high,ok:=s.windowHigh[frame.StreamID];ok && frame.Offset<high {
+			s.mu.Unlock()
+			return nil
+		}
+		if frame.Offset>s.windowHigh[frame.StreamID]{s.windowHigh[frame.StreamID]=frame.Offset}
+	}
 	if !s.started && !s.stopped {
 		s.mu.Unlock()
 		return s.writer.send(frame)
