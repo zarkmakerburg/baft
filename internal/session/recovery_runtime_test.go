@@ -585,6 +585,15 @@ func TestStaleReplacementGenerationCannotRegressOrWakeNewerState(t *testing.T){
 	}
 	if sender!=nil&&sender.isStopped(){t.Fatal("stale carrier failure stopped generation-3 sender")}
 	if got:=p.RecoveryCarrierGeneration();got!=3{t.Fatalf("stale event changed current carrier generation=%d",got)}
+
+	before:=p.RecoveryStats()
+	ctl:=RecoveryControl{SessionID:p.SessionID(),CandidateID:"carrier-2",NextEpoch:2,PlanDigest:"stale-generation-2"}
+	res,err:=p.markPostCommitFailureForGeneration(errors.New("late post-commit generation-2 failure"),ctl,2)
+	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("stale post-commit result=%+v err=%v",res,err)}
+	after:=p.RecoveryStats()
+	if after.PostCommitFailures!=before.PostCommitFailures{t.Fatalf("stale failure changed post-commit metrics before=%+v after=%+v",before,after)}
+	if sender!=nil&&sender.isStopped(){t.Fatal("stale post-commit failure stopped generation-3 sender")}
+	if got:=p.RecoveryCarrierGeneration();got!=3{t.Fatalf("stale post-commit failure changed generation=%d",got)}
 }
 
 func TestWakeWithoutReadinessAdvanceDoesNotReleaseReplacement(t *testing.T){
