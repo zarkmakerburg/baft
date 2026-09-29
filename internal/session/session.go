@@ -1206,6 +1206,25 @@ func (f *flow) onWindow(max uint64) error {
 	return nil
 }
 
+func (f *flow) restoreRecoveryPeerCredit(max uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.openOK {
+		return errors.New("recovery credit before OPEN_OK")
+	}
+	// Recovery snapshots are immutable transaction evidence, but the old
+	// authoritative carrier can still deliver a newer WINDOW after that
+	// snapshot and before authority commit. Never regress that newer proven
+	// frontier; only advance when the recovered peer snapshot is higher.
+	if max <= f.peerMax {
+		return nil
+	}
+	f.peerMax = max
+	close(f.creditWait)
+	f.creditWait = make(chan struct{})
+	return nil
+}
+
 func (f *flow) replayPressure() uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
