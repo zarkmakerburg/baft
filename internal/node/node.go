@@ -58,6 +58,7 @@ type RecoveryAuthoritySnapshot struct {
 	Owner string
 	CarrierGeneration uint64
 	Frozen bool
+	ActivationComplete bool
 	TxnState session.RecoveryTxnState
 	CandidateID string
 	NextEpoch uint64
@@ -122,7 +123,7 @@ func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
 	out:=make([]RecoveryAuthoritySnapshot,0,len(peers))
 	for _,p:=range peers{
 		tx,ok:=p.RecoveryTransactionIdentity()
-		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),Frozen:p.RecoveryFrozen(),TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
+		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
 		if ok{s.CandidateID=tx.CandidateID;s.NextEpoch=tx.NextEpoch;s.PlanDigest=tx.PlanDigest}
 		out=append(out,s)
 	}
