@@ -128,6 +128,7 @@ type RecoveryFlowFrontier struct {
 	StreamID uint64
 	ReplaySource uint64
 	PeerAccepted uint64
+	TxAcked uint64
 	TxNext uint64
 	FinSent bool
 	FinAcked bool
@@ -307,11 +308,19 @@ func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
 		fl.mu.Lock()
 		src,ok:=sources[id]
 		if !ok{src=fl.txAcked}
-		out=append(out,RecoveryFlowFrontier{StreamID:id,ReplaySource:src,PeerAccepted:fl.txAcked,TxNext:fl.txNext,FinSent:fl.finSent,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,FinAckConfirmed:fl.finAckConfirmed})
+		out=append(out,RecoveryFlowFrontier{StreamID:id,ReplaySource:src,PeerAccepted:fl.txAcked,TxAcked:fl.txAcked,TxNext:fl.txNext,FinSent:fl.finSent,FinAcked:fl.finAcked,FinAckSent:fl.finAckSent,FinAckConfirmed:fl.finAckConfirmed})
 		fl.mu.Unlock()
 	}
 	sort.Slice(out,func(i,j int)bool{return out[i].StreamID<out[j].StreamID})
 	return out
+}
+
+func (p *Peer) RecoveryActivationComplete() bool {
+	if p.recovery==nil{return false}
+	a:=p.recovery
+	a.mu.Lock();defer a.mu.Unlock()
+	if a.txnState!=RecoveryTxnFinalized{return false}
+	return a.prepared==nil || a.prepared.activationComplete
 }
 
 func (p *Peer) RecoveryStats() RecoveryStats {
