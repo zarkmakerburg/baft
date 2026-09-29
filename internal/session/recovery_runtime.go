@@ -155,6 +155,7 @@ type RecoveryPreparedOwnershipForTest struct {
 
 type RecoveryDiagnosticEvent struct {
 	Sequence uint64
+	StreamID uint64
 	ProducerKind DataProducerKind
 	PhysicalCarrierInstanceID uint64
 	WriteSequence uint64
@@ -250,6 +251,8 @@ type RecoveryAdapter struct {
 	diagSeq uint64
 	readSeqMu sync.Mutex
 	readSeq map[uint64]uint64
+	firstLiveMu sync.Mutex
+	firstLive map[uint64]bool
 	diagnostics []RecoveryDiagnosticEvent
 	diagnosticHook func(RecoveryDiagnosticEvent)
 	frozen bool
@@ -281,7 +284,7 @@ type RecoveryAdapter struct {
 }
 
 func newRecoveryAdapter(p *Peer, eng *recovery.Engine) *RecoveryAdapter {
-	return &RecoveryAdapter{peer:p,engine:eng,txnState:RecoveryTxnIdle,failures:map[string]uint64{},readSeq:map[uint64]uint64{}}
+	return &RecoveryAdapter{peer:p,engine:eng,txnState:RecoveryTxnIdle,failures:map[string]uint64{},readSeq:map[uint64]uint64{},firstLive:map[uint64]bool{}}
 }
 
 func physicalCarrierInstanceID(epoch,incarnation uint64) uint64 {
@@ -376,6 +379,36 @@ func (p *Peer) traceRecoveryDiagnostic(event string,source SenderStopSource,err 
 	p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{Event:event,Source:source,Error:msg,WaitReason:waitReason,
 		SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
 		PreparedIncarnation:incarnation,CarrierGeneration:generation,SenderID:id})
+}
+
+func (p *Peer) traceLiveDataAttempt(fl *flow,s *outboundSender,producer DataProducerKind,offset,end,generation uint64) {
+	if p==nil||p.recovery==nil||fl==nil{return}
+	ctl,ok:=p.RecoveryTransactionIdentity()
+	if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
+	inc:=uint64(0);physical:=uint64(0)
+	p.recovery.mu.Lock()
+	if p.recovery.prepared!=nil{inc=p.recovery.prepared.incarnation;physical=p.recovery.prepared.physicalCarrierInstanceID}
+	p.recovery.mu.Unlock()
+	if physical==0{p.mu.Lock();physical=p.carrierPhysicalInstanceID;p.mu.Unlock()}
+	ev:=RecoveryDiagnosticEvent{
+		Event:"LIVE_DATA_ATTEMPT",ProducerKind:producer,StreamID:fl.id,FrameType:protocol.TypeData,
+		FrameOffset:offset,FrameEnd:end,SenderID:func()uint64{if s==nil{return 0};return s.senderID()}(),
+		PreparedIncarnation:inc,CarrierGeneration:generation,PhysicalCarrierInstanceID:physical,
+		SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
+	}
+	p.enrichRecoveryDiagnostic(&ev)
+	if ev.PeerAccepted<offset && ev.ReplayFrom<offset && (!ev.ActivationComplete || ev.ReplacementReadyGeneration<generation) {
+		ev.Error=fmt.Sprintf("LIVE_DATA_AHEAD_OF_UNRESOLVED_REPLAY: offset=%d peer_accepted=%d replay_from=%d activation_complete=%v replacement_ready=%d generation=%d",offset,ev.PeerAccepted,ev.ReplayFrom,ev.ActivationComplete,ev.ReplacementReadyGeneration,generation)
+	}
+	p.recovery.appendDiagnostic(ev)
+	p.recovery.firstLiveMu.Lock()
+	first:=!p.recovery.firstLive[physical]
+	if first{p.recovery.firstLive[physical]=true}
+	p.recovery.firstLiveMu.Unlock()
+	if first{
+		ev.Event="FIRST_LIVE_DATA"
+		p.recovery.appendDiagnostic(ev)
+	}
 }
 
 func (p *Peer) traceRecoveryFrameDiagnostic(event string,fr protocol.Frame,decodedGeneration,currentGeneration,rxNext uint64,err error) {
@@ -753,13 +786,19 @@ func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier
 
 func (p *Peer) publishReplacementReady(generation uint64) bool {
 	p.replacementMu.Lock()
-	defer p.replacementMu.Unlock()
 	// Readiness is a monotonic application-data frontier. A stale generation
 	// may never move it backwards or emit a wake that looks like progress.
-	if generation<=p.replacementReadyGeneration{return false}
+	if generation<=p.replacementReadyGeneration{p.replacementMu.Unlock();return false}
 	p.replacementReadyGeneration=generation
 	close(p.replacementWait)
 	p.replacementWait=make(chan struct{})
+	p.replacementMu.Unlock()
+	if p.recovery!=nil {
+		ctl,ok:=p.RecoveryTransactionIdentity();if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
+		s,_,_,_:=p.currentSenderState()
+		p.recovery.mu.Lock();inc:=uint64(0);if p.recovery.prepared!=nil{inc=p.recovery.prepared.incarnation};p.recovery.mu.Unlock()
+		p.traceRecoveryDiagnostic("REPLACEMENT_READY_PUBLISHED",SenderStopUnknown,nil,"",s,ctl,inc,generation)
+	}
 	return true
 }
 
@@ -1413,6 +1452,7 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		if !closed&&!act.pumpsRestored{
 			if err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{p.ensurePumpsAfterRecovery(attemptRunCtx,fl);return nil});err!=nil{return 0,err}
 			act.pumpsRestored=true
+			p.traceRecoveryDiagnostic("PUMPS_RESTORED",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
 		}
 	}
 	a.mu.Lock()
