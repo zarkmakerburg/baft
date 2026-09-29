@@ -1578,3 +1578,103 @@ func TestOldFinalizeInvocationCannotAdoptReboundPreparedCarrier(t *testing.T){
 	}
 	t.Logf("mutable-prepared hypothesis FALSIFIED old=%+v rebound=%+v observed=%+v",old,rebound,observed)
 }
+
+
+func TestStaleFinalizeTeardownCannotFenceNewIncarnation(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1)
+	testCtx,cancel:=context.WithCancel(context.Background())
+	defer func(){cancel();p.close(t)}()
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	p.proxy.CutAll()
+	ir2,ex2:=waitAuthorityPair(t,p,2,true)
+	if !ir2.ActivationComplete||!ex2.ActivationComplete{t.Fatalf("epoch2 not stably finalized ir=%+v ex=%+v",ir2,ex2)}
+
+	oldPrep,err:=p.irRuntime.RecoveryPreparedOwnershipForTest()
+	if err!=nil{t.Fatal(err)}
+	oldOwner,ok,err:=p.irRuntime.RecoveryCurrentCarrierOwnerForTest()
+	if err!=nil||!ok{t.Fatalf("old recovery owner unavailable ok=%v err=%v prep=%+v",ok,err,oldPrep)}
+	if oldOwner.PreparedIncarnation==0||oldOwner.CarrierGeneration==0{t.Fatalf("old owner incomplete: %+v",oldOwner)}
+
+	rebound,err:=p.irRuntime.RebindCurrentPreparedRecoveryForTest(testCtx)
+	if err!=nil{t.Fatalf("exact rebind: %v",err)}
+	if rebound.PreparedIncarnation<=oldPrep.PreparedIncarnation{
+		t.Fatalf("prepared incarnation did not advance old=%+v rebound=%+v",oldPrep,rebound)
+	}
+	if rebound.PreparedID==oldPrep.PreparedID{
+		t.Fatalf("rebind reused prepared object old=%+v rebound=%+v",oldPrep,rebound)
+	}
+	if rebound.Transaction.SessionID!=oldPrep.Transaction.SessionID||
+		rebound.Transaction.CandidateID!=oldPrep.Transaction.CandidateID||
+		rebound.Transaction.NextEpoch!=oldPrep.Transaction.NextEpoch||
+		rebound.Transaction.PlanDigest!=oldPrep.Transaction.PlanDigest{
+		t.Fatalf("rebind changed transaction identity old=%+v rebound=%+v",oldPrep,rebound)
+	}
+
+	newOwner,err:=p.irRuntime.FinalizeCurrentPreparedRecoveryForTest(testCtx)
+	if err!=nil{t.Fatalf("finalize rebound incarnation: %v",err)}
+	if newOwner.PreparedIncarnation!=rebound.PreparedIncarnation||newOwner.CarrierGeneration<=oldOwner.CarrierGeneration{
+		t.Fatalf("new owner did not advance physical incarnation old=%+v rebound=%+v new=%+v",oldOwner,rebound,newOwner)
+	}
+	before:=oneRecoveryAuthority(t,p.irRuntime)
+	if before.SenderStopped{t.Fatalf("new incarnation sender already stopped before stale teardown: %+v",before)}
+
+	fenced,err:=p.irRuntime.FenceRecoveryCarrierOwnerForTest(oldOwner)
+	if err!=nil{t.Fatal(err)}
+	if fenced{t.Fatalf("stale incarnation teardown fenced current sender old=%+v new=%+v",oldOwner,newOwner)}
+
+	after:=oneRecoveryAuthority(t,p.irRuntime)
+	if after.CarrierGeneration!=before.CarrierGeneration||after.PreparedIncarnation!=before.PreparedIncarnation||
+		after.Epoch!=before.Epoch||after.CandidateID!=before.CandidateID||after.PlanDigest!=before.PlanDigest{
+		t.Fatalf("stale teardown mutated current authority before=%+v after=%+v",before,after)
+	}
+	if after.SenderStopped{t.Fatalf("stale teardown stopped new incarnation sender: %+v",after)}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during incarnation teardown fencing accepts_delta=%d",n)}
+	t.Logf("PASS stale teardown NO-OP old_inc=%d old_gen=%d new_inc=%d new_gen=%d",oldOwner.PreparedIncarnation,oldOwner.CarrierGeneration,newOwner.PreparedIncarnation,newOwner.CarrierGeneration)
+}
+
+func TestStaleFinalizeFailureCannotRegressNewIncarnation(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1)
+	testCtx,cancel:=context.WithCancel(context.Background())
+	defer func(){cancel();p.close(t)}()
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	p.proxy.CutAll()
+	ir2,ex2:=waitAuthorityPair(t,p,2,true)
+	if !ir2.ActivationComplete||!ex2.ActivationComplete{t.Fatalf("epoch2 not stably finalized ir=%+v ex=%+v",ir2,ex2)}
+
+	oldPrep,err:=p.irRuntime.RecoveryPreparedOwnershipForTest()
+	if err!=nil{t.Fatal(err)}
+	rebound,err:=p.irRuntime.RebindCurrentPreparedRecoveryForTest(testCtx)
+	if err!=nil{t.Fatalf("exact rebind: %v",err)}
+	if rebound.PreparedIncarnation<=oldPrep.PreparedIncarnation||rebound.PreparedID==oldPrep.PreparedID{
+		t.Fatalf("new incarnation not installed old=%+v rebound=%+v",oldPrep,rebound)
+	}
+	newOwner,err:=p.irRuntime.FinalizeCurrentPreparedRecoveryForTest(testCtx)
+	if err!=nil{t.Fatalf("finalize rebound incarnation: %v",err)}
+	before:=oneRecoveryAuthority(t,p.irRuntime)
+	if before.SenderStopped||before.Frozen||before.TxnState!=session.RecoveryTxnFinalized{
+		t.Fatalf("new incarnation not stable before stale failure: %+v",before)
+	}
+
+	err=p.irRuntime.StaleFinalizeFailureForTest(oldPrep,session.ErrCarrierUnavailable)
+	if !errors.Is(err,session.ErrStaleRecoveryIncarnation){
+		t.Fatalf("stale failure returned wrong error: %v old=%+v new=%+v",err,oldPrep,newOwner)
+	}
+	after:=oneRecoveryAuthority(t,p.irRuntime)
+	if after.Epoch!=before.Epoch||after.Owner!=before.Owner||after.CarrierGeneration!=before.CarrierGeneration||
+		after.PreparedIncarnation!=before.PreparedIncarnation||after.CandidateID!=before.CandidateID||
+		after.PlanDigest!=before.PlanDigest||after.TxnState!=before.TxnState||
+		after.ActivationComplete!=before.ActivationComplete||after.Frozen!=before.Frozen{
+		t.Fatalf("stale finalize failure regressed current incarnation before=%+v after=%+v",before,after)
+	}
+	if after.PostCommitFailures!=before.PostCommitFailures{
+		t.Fatalf("stale finalize failure incremented post-commit failures before=%d after=%d",before.PostCommitFailures,after.PostCommitFailures)
+	}
+	if after.RecoverySignalPending{t.Fatalf("stale finalize failure emitted recovery signal for new incarnation: %+v",after)}
+	if after.SenderStopped{t.Fatalf("stale finalize failure stopped new sender: %+v",after)}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during stale failure fencing accepts_delta=%d",n)}
+	t.Logf("PASS stale finalize failure fenced old_inc=%d new_inc=%d generation=%d post_commit_failures=%d",oldPrep.PreparedIncarnation,rebound.PreparedIncarnation,after.CarrierGeneration,after.PostCommitFailures)
+}
