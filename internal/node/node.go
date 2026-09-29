@@ -50,6 +50,11 @@ type Runtime struct {
 	recoveryControlMu sync.RWMutex
 	recoveryControlHook func(string,*session.RecoveryControl) int
 	bootID          string
+	listenerReadyOnce sync.Once
+	listenerReady chan struct{}
+	listenerReadyMu sync.Mutex
+	listenerReadyAddr string
+	listenerReadyErr error
 }
 
 type RecoveryAuthoritySnapshot struct {
@@ -265,9 +270,25 @@ func NewRuntime() *Runtime {
 		peers: map[*session.Peer]struct{}{},
 		routeStats: map[string]telemetry.RouteSnapshot{},
 		sessions: map[string]*session.Peer{},
+		listenerReady: make(chan struct{}),
 	}
 	r.noiseLatencyMS.Store(-1)
 	return r
+}
+
+func (r *Runtime) signalListenerReady(addr string,err error) {
+	r.listenerReadyMu.Lock()
+	if r.listenerReadyAddr==""&&addr!=""{r.listenerReadyAddr=addr}
+	if r.listenerReadyErr==nil&&err!=nil{r.listenerReadyErr=err}
+	r.listenerReadyMu.Unlock()
+	r.listenerReadyOnce.Do(func(){close(r.listenerReady)})
+}
+
+func (r *Runtime) ListenerReadyForTest() <-chan struct{} { return r.listenerReady }
+
+func (r *Runtime) ListenerReadinessForTest() (string,error) {
+	r.listenerReadyMu.Lock();defer r.listenerReadyMu.Unlock()
+	return r.listenerReadyAddr,r.listenerReadyErr
 }
 
 func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
@@ -332,7 +353,9 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 	go func() {
 		switch cfg.Node.Role {
 		case "listener":
-			roleDone <- r.runListener(runCtx, cfg)
+			err:=r.runListener(runCtx,cfg)
+			if err!=nil{r.signalListenerReady("",err)}
+			roleDone<-err
 		case "dialer":
 			roleDone <- r.runDialer(runCtx, cfg)
 		default:
@@ -399,6 +422,7 @@ type identityMaterial struct {
 }
 
 func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
+	log.Printf("baft listener startup: goroutine created configured=%s",cfg.Server.Listen)
 	mat, err := loadTLSMaterial(cfg.TLS)
 	if err != nil {
 		return err
@@ -499,20 +523,27 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 	}
 
 	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
+	log.Printf("baft listener startup: bind attempted configured=%s",cfg.Server.Listen)
 	ln, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
+		log.Printf("baft listener startup: bind failed configured=%s err=%v",cfg.Server.Listen,err)
 		return fmt.Errorf("listen %s: %w", cfg.Server.Listen, err)
 	}
+	actual:=ln.Addr().String()
+	log.Printf("baft listener startup: bind success configured=%s actual=%s",cfg.Server.Listen,actual)
 	defer ln.Close()
 
 	done := make(chan error, 1)
 	go func() {
+		log.Printf("baft listener startup: serve started actual=%s",actual)
 		err := srv.ServeTLS(ln, "", "")
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
+		if err!=nil{log.Printf("baft listener startup: serve stopped actual=%s err=%v context=%v",actual,err,ctx.Err())}
 		done <- err
 	}()
+	r.signalListenerReady(actual,nil)
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
