@@ -1496,3 +1496,85 @@ func TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow(t *testing.T){
 	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened across independent recoveries accepts_delta=%d",n)}
 	t.Log("PASS independent failures advanced 1->2->3->4 while preserving one application/target TCP flow")
 }
+
+
+func TestOldFinalizeInvocationCannotAdoptReboundPreparedCarrier(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1)
+	defer p.close(t)
+	c:=openRecoveryFlow(t,p)
+	defer c.Close()
+
+	capturedCh:=make(chan session.RecoveryPreparedOwnershipForTest,1)
+	beforeUseCh:=make(chan session.RecoveryPreparedOwnershipForTest,1)
+	release:=make(chan struct{})
+	var captureOnce sync.Once
+	p.irRuntime.SetRecoveryFinalizeOwnershipHookForTest(func(stage string,s session.RecoveryPreparedOwnershipForTest){
+		switch stage{
+		case "after_capture":
+			captureOnce.Do(func(){
+				capturedCh<-s
+				<-release
+			})
+		case "before_use":
+			select{case beforeUseCh<-s:default:}
+		}
+	})
+
+	p.proxy.CutAll()
+
+	var old session.RecoveryPreparedOwnershipForTest
+	select{
+	case old=<-capturedCh:
+	case <-time.After(8*time.Second):
+		t.Fatal("old finalizer never reached deterministic prepared-capture barrier")
+	}
+	if old.PreparedID==""||old.SenderID==""||old.Transaction.SessionID==""||old.Transaction.CandidateID==""||old.Transaction.PlanDigest==""{
+		close(release)
+		t.Fatalf("incomplete old-finalizer ownership evidence: %+v",old)
+	}
+
+	rebound,err:=p.irRuntime.RebindCurrentPreparedRecoveryForTest(context.Background())
+	if err!=nil{
+		close(release)
+		t.Fatalf("exact prepared rebind while old finalizer blocked: %v old=%+v",err,old)
+	}
+	if rebound.PreparedID==""||rebound.SenderID==""{
+		close(release)
+		t.Fatalf("incomplete rebound ownership evidence: %+v",rebound)
+	}
+	close(release)
+
+	var observed session.RecoveryPreparedOwnershipForTest
+	select{
+	case observed=<-beforeUseCh:
+	case <-time.After(8*time.Second):
+		t.Fatalf("old finalizer did not reach post-rebind ownership observation old=%+v rebound=%+v",old,rebound)
+	}
+
+	sameTxn:=old.Transaction.SessionID==rebound.Transaction.SessionID&&
+		old.Transaction.CandidateID==rebound.Transaction.CandidateID&&
+		old.Transaction.NextEpoch==rebound.Transaction.NextEpoch&&
+		old.Transaction.PlanDigest==rebound.Transaction.PlanDigest
+	if !sameTxn{
+		t.Fatalf("exact rebind changed transaction identity old=%+v rebound=%+v",old,rebound)
+	}
+
+	adopted:=old.PreparedID==rebound.PreparedID&&
+		old.SenderID!=rebound.SenderID&&
+		old.CarrierOutID!=rebound.CarrierOutID&&
+		observed.PreparedID==rebound.PreparedID&&
+		observed.SenderID==rebound.SenderID&&
+		observed.CarrierOutID==rebound.CarrierOutID
+	if adopted{
+		t.Fatalf("mutable-prepared hypothesis CONFIRMED: old finalizer adopted rebound transport transaction=%s/%s/%d/%s old_prepared=%s old_sender=%s old_carrier=%s rebound_prepared=%s rebound_sender=%s rebound_carrier=%s observed_sender=%s observed_carrier=%s returned_generation=%d",
+			old.Transaction.SessionID,old.Transaction.CandidateID,old.Transaction.NextEpoch,old.Transaction.PlanDigest,
+			old.PreparedID,old.SenderID,old.CarrierOutID,
+			rebound.PreparedID,rebound.SenderID,rebound.CarrierOutID,
+			observed.SenderID,observed.CarrierOutID,observed.ActivatedGeneration)
+	}
+
+	if observed.SenderID!=old.SenderID||observed.CarrierOutID!=old.CarrierOutID{
+		t.Fatalf("old finalizer transport ownership changed without the expected in-place signature old=%+v rebound=%+v observed=%+v",old,rebound,observed)
+	}
+	t.Logf("mutable-prepared hypothesis FALSIFIED old=%+v rebound=%+v observed=%+v",old,rebound,observed)
+}
