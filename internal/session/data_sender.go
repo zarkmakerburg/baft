@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/resources"
@@ -12,6 +13,44 @@ import (
 )
 
 const maxControlBurst = 32
+
+type SenderStopSource string
+
+const (
+	SenderStopUnknown SenderStopSource = "unknown"
+	SenderStopWriterError SenderStopSource = "writer_error"
+	SenderStopContextDone SenderStopSource = "sender_context_done"
+	SenderStopExplicitReplace SenderStopSource = "sender_explicit_replace"
+	SenderStopCarrierReaderDecode SenderStopSource = "carrier_reader_decode_error"
+	SenderStopFrameProcessing SenderStopSource = "frame_processing_carrier_failure"
+	SenderStopRecoveryOwnerFence SenderStopSource = "recovery_owner_fence"
+	SenderStopRecoveryGenerationFailure SenderStopSource = "recovery_generation_failure"
+	SenderStopRuntimeShutdown SenderStopSource = "runtime_shutdown"
+	SenderStopFlowClosed SenderStopSource = "flow_closed"
+)
+
+type SenderStopEvent struct {
+	SenderID uint64
+	Source SenderStopSource
+	Error string
+	SessionID string
+	Epoch uint64
+	CandidateID string
+	PlanDigest string
+	PreparedIncarnation uint64
+	CarrierGeneration uint64
+}
+
+type senderDiagnosticBinding struct {
+	SessionID string
+	Epoch uint64
+	CandidateID string
+	PlanDigest string
+	PreparedIncarnation uint64
+	CarrierGeneration uint64
+}
+
+var outboundSenderSequence atomic.Uint64
 
 type outboundRequest struct {
 	flow    *flow
@@ -22,6 +61,7 @@ type outboundRequest struct {
 
 type outboundSender struct {
 	mu           sync.Mutex
+	id           uint64
 	data         *scheduler.PADL
 	control      *resources.ControlQueue
 	writer       *frameWriter
@@ -32,11 +72,15 @@ type outboundSender struct {
 	stopErr      error
 	controlBurst int
 	recoverable bool
+	diag senderDiagnosticBinding
+	stopEvent SenderStopEvent
+	hasStopEvent bool
 }
 
 func newOutboundSender(writer *frameWriter, recoverable ...bool) *outboundSender {
 	r:=false;if len(recoverable)>0{r=recoverable[0]}
 	return &outboundSender{
+		id: outboundSenderSequence.Add(1),
 		data:    scheduler.NewPADL(scheduler.DefaultPADLMaxSkips),
 		control: resources.NewDefaultControlQueue(),
 		writer:  writer,
@@ -166,7 +210,7 @@ func (s *outboundSender) run(ctx context.Context) {
 
 	for {
 		if err := ctx.Err(); err != nil {
-			s.stop(err)
+			s.stopWithSource(SenderStopContextDone,err)
 			return
 		}
 
@@ -176,7 +220,7 @@ func (s *outboundSender) run(ctx context.Context) {
 		if !ok {
 			select {
 			case <-ctx.Done():
-				s.stop(ctx.Err())
+				s.stopWithSource(SenderStopContextDone,ctx.Err())
 				return
 			case <-s.wake:
 			}
@@ -199,7 +243,7 @@ func (s *outboundSender) run(ctx context.Context) {
 		}
 		req.done <- err
 		if err != nil {
-			s.stop(err)
+			s.stopWithSource(SenderStopWriterError,err)
 			return
 		}
 	}
@@ -250,7 +294,9 @@ func (s *outboundSender) nextLocked() (*outboundRequest, bool) {
 	return nil, false
 }
 
-func (s *outboundSender) stop(err error) {
+func (s *outboundSender) stop(err error) { s.stopWithSource(SenderStopUnknown,err) }
+
+func (s *outboundSender) stopWithSource(source SenderStopSource,err error) {
 	if err == nil {
 		err = errors.New("outbound sender stopped")
 	}
@@ -261,6 +307,13 @@ func (s *outboundSender) stop(err error) {
 	}
 	s.stopped = true
 	s.stopErr = err
+	s.stopEvent=SenderStopEvent{
+		SenderID:s.id,Source:source,Error:err.Error(),
+		SessionID:s.diag.SessionID,Epoch:s.diag.Epoch,CandidateID:s.diag.CandidateID,
+		PlanDigest:s.diag.PlanDigest,PreparedIncarnation:s.diag.PreparedIncarnation,
+		CarrierGeneration:s.diag.CarrierGeneration,
+	}
+	s.hasStopEvent=true
 
 	var pending []*outboundRequest
 	for {
@@ -326,4 +379,31 @@ func (s *outboundSender) isStarted() bool {
 	if s==nil{return false}
 	s.mu.Lock();defer s.mu.Unlock()
 	return s.started&&!s.stopped
+}
+
+
+func (s *outboundSender) senderID() uint64 {
+	if s==nil{return 0}
+	return s.id
+}
+
+func (s *outboundSender) bindRecoveryDiagnostic(b senderDiagnosticBinding) {
+	if s==nil{return}
+	s.mu.Lock()
+	s.diag=b
+	s.mu.Unlock()
+}
+
+func (s *outboundSender) setDiagnosticCarrierGeneration(g uint64) {
+	if s==nil{return}
+	s.mu.Lock()
+	s.diag.CarrierGeneration=g
+	s.mu.Unlock()
+}
+
+func (s *outboundSender) stopEventSnapshot()(SenderStopEvent,bool) {
+	if s==nil{return SenderStopEvent{},false}
+	s.mu.Lock();defer s.mu.Unlock()
+	if !s.hasStopEvent{return SenderStopEvent{},false}
+	return s.stopEvent,true
 }
