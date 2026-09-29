@@ -30,6 +30,15 @@ func NewMaster() *Master {
 	return &Master{newRuntime: func() runtimeRunner { return node.NewRuntime() },ready:make(chan struct{})}
 }
 
+func (m *Master) SetRuntimeFactoryForTest(fn func() *node.Runtime) {
+	if m==nil{return}
+	if fn==nil{
+		m.newRuntime=func() runtimeRunner{return node.NewRuntime()}
+		return
+	}
+	m.newRuntime=func() runtimeRunner{return fn()}
+}
+
 type dialerReadinessRunner interface {
 	DialerReadyForTest() <-chan struct{}
 	DialerReadinessForTest() error
