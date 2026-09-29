@@ -336,6 +336,30 @@ func resolveCommittedForTest(t *testing.T,p *Peer,ctx context.Context,ctl Recove
 	if err:=finalizeRecoveryAcceptedForTest(p,ctx,finalCtl);err!=nil{t.Fatal(err)}
 }
 
+func proveFixtureTransactionStableForTest(t *testing.T,p *Peer) {
+	t.Helper()
+	p.mu.Lock()
+	flows:=make([]*flow,0,len(p.flows))
+	for _,fl:=range p.flows{flows=append(flows,fl)}
+	p.mu.Unlock()
+	for _,fl:=range flows{
+		fl.mu.Lock()
+		finSent,finAcked,txNext:=fl.finSent,fl.finAcked,fl.txNext
+		finRecv,finAckSent,finAckConfirmed,finRecvFinal:=fl.finRecv,fl.finAckSent,fl.finAckConfirmed,fl.finRecvFinal
+		fl.mu.Unlock()
+		if finSent&&!finAcked {
+			if err:=fl.onFinAck(txNext);err!=nil{t.Fatal(err)}
+		}
+		if finRecv&&finAckSent&&!finAckConfirmed {
+			if err:=fl.onFinAckConfirm(finRecvFinal);err!=nil{t.Fatal(err)}
+		}
+	}
+	st:=p.RecoveryStability()
+	if st.ReplayOutstanding||!st.FinStable||!st.FinalizationStable||!st.ApplicationReady||!st.TransactionStable{
+		t.Fatalf("fixture transaction not stable after authenticated delivery proofs: %+v",st)
+	}
+}
+
 func TestPostCommitReplayFailureNeverReauthorizesOldEpoch(t *testing.T){
 	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-postfail");defer cancel()
 	injected:=errors.New("replay writer injected failure")
@@ -370,6 +394,7 @@ func TestPostCommitFailureCanRecoverToNextEpoch(t *testing.T){
 	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("first result=%+v err=%v",res,err)}
 	if _,err:=p.BeginRecovery("candidate-3");!errors.Is(err,ErrCommitUncertain){t.Fatalf("candidate-3 started before resolution: %v",err)}
 	resolveCommittedForTest(t,p,ctx,ctl)
+	proveFixtureTransactionStableForTest(t,p)
 	local3,peer:=peerOfferFor(t,p,"candidate-3")
 	// The exact epoch-2 resolution produced authenticated ACK evidence and may
 	// release the corresponding replay bytes. A fresh epoch-3 peer snapshot
@@ -397,7 +422,8 @@ func TestPostCommitFailureDoesNotLeaveSessionFrozen(t *testing.T){
 	if _,err:=p.BeginRecovery("candidate-next");!errors.Is(err,ErrCommitUncertain){t.Fatalf("fresh recovery bypassed uncertainty: %v",err)}
 	resolveCommittedForTest(t,p,ctx,ctl)
 	if p.RecoveryFrozen(){t.Fatal("session remained frozen after committed resolution/finalize")}
-	next,err:=p.BeginRecovery("candidate-next");if err!=nil{t.Fatalf("new recovery blocked after resolution: %v",err)}
+	proveFixtureTransactionStableForTest(t,p)
+	next,err:=p.BeginRecovery("candidate-next");if err!=nil{t.Fatalf("new recovery blocked after stable resolution: %v",err)}
 	if next.NextEpoch!=3{t.Fatalf("next epoch=%d",next.NextEpoch)}
 	p.AbortRecovery("candidate-next")
 }
