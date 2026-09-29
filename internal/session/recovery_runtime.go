@@ -95,6 +95,8 @@ type preparedFlowRecovery struct {
 	replayed uint64
 	replayFrom uint64
 	ackAdvance uint64
+	creditAdvance uint64
+	creditApplied bool
 	finAckAdvance bool
 	finAckConfirmAdvance bool
 	resendFIN bool
@@ -158,6 +160,7 @@ type RecoveryAdapter struct {
 	pendingCandidate string
 	pendingPlan recovery.Plan
 	pendingSnapshot recovery.Snapshot
+	pendingPeerSnapshot recovery.Snapshot
 	pendingRoutes map[uint64]string
 	hasPlan bool
 	prepared *preparedRecovery
@@ -496,6 +499,7 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 	a.pendingCandidate=candidateID
 	a.pendingPlan=recovery.Plan{}
 	a.pendingSnapshot=cloneRecoverySnapshot(snap)
+	a.pendingPeerSnapshot=recovery.Snapshot{}
 	a.pendingRoutes=cloneRecoveryRoutes(routes)
 	a.hasPlan=false
 	a.mu.Unlock()
@@ -522,7 +526,7 @@ func (p *Peer) ReconcileRecovery(candidateID string,peer RecoveryOffer) error {
 		return err
 	}
 	if err:=p.validateReplayPlan(plan);err!=nil{a.recordFailure("replay_unavailable");return err}
-	a.mu.Lock();a.pendingPlan=plan;a.hasPlan=true;a.mu.Unlock()
+	a.mu.Lock();a.pendingPlan=plan;a.pendingPeerSnapshot=cloneRecoverySnapshot(peer.Snapshot);a.hasPlan=true;a.mu.Unlock()
 	return nil
 }
 
@@ -543,6 +547,7 @@ type recoveryDigestSide struct {
 	AckAdvanceTo uint64 `json:"ack_advance_to"`
 	ReleaseThrough uint64 `json:"release_through"`
 	FinAckCanAdvance bool `json:"fin_ack_can_advance"`
+	CreditAdvanceTo uint64 `json:"credit_advance_to"`
 	FinAckConfirmCanAdvance bool `json:"fin_ack_confirm_can_advance"`
 }
 type recoveryDigestFlow struct {
@@ -565,16 +570,21 @@ func recoverySideLess(a,b recoveryDigestSide) bool {
 	return bytes.Compare(ab,bb)<0
 }
 
-func recoveryPlanDigest(plan recovery.Plan,snap recovery.Snapshot,routes map[uint64]string,candidateID string,next uint64)(string,error){
+func recoveryPlanDigest(plan recovery.Plan,snap,peerSnap recovery.Snapshot,routes map[uint64]string,candidateID string,next uint64)(string,error){
 	if plan.SessionID==""||candidateID==""||next!=plan.Epoch+1{return "",recovery.ErrStateMismatch}
 	nonce:=make(map[uint64]string,len(snap.Flows))
-	for _,f:=range snap.Flows{nonce[f.StreamID]=f.OpenNonce}
+	localCredit:=make(map[uint64]uint64,len(snap.Flows))
+	peerCredit:=make(map[uint64]uint64,len(peerSnap.Flows))
+	for _,f:=range snap.Flows{nonce[f.StreamID]=f.OpenNonce;localCredit[f.StreamID]=f.RxCredit}
+	for _,f:=range peerSnap.Flows{peerCredit[f.StreamID]=f.RxCredit}
 	flows:=make([]recoveryDigestFlow,0,len(plan.Flows))
 	for _,fp:=range plan.Flows{
 		n:=nonce[fp.StreamID];route,ok:=routes[fp.StreamID]
 		if n==""||!ok{return "",recovery.ErrStateMismatch}
-		a:=recoveryDigestSide{ReplayFrom:fp.LocalReplayFrom,AckAdvanceTo:fp.LocalAckAdvanceTo,ReleaseThrough:fp.LocalReleaseThrough,FinAckCanAdvance:fp.LocalFinAckCanAdvance,FinAckConfirmCanAdvance:fp.LocalFinAckConfirmCanAdvance}
-		b:=recoveryDigestSide{ReplayFrom:fp.PeerReplayFrom,AckAdvanceTo:fp.PeerAckAdvanceTo,ReleaseThrough:fp.PeerReleaseThrough,FinAckCanAdvance:fp.PeerFinAckCanAdvance,FinAckConfirmCanAdvance:fp.PeerFinAckConfirmCanAdvance}
+		pc,okPeer:=peerCredit[fp.StreamID];lc,okLocal:=localCredit[fp.StreamID]
+		if !okPeer||!okLocal{return "",recovery.ErrStateMismatch}
+		a:=recoveryDigestSide{ReplayFrom:fp.LocalReplayFrom,AckAdvanceTo:fp.LocalAckAdvanceTo,ReleaseThrough:fp.LocalReleaseThrough,FinAckCanAdvance:fp.LocalFinAckCanAdvance,CreditAdvanceTo:pc,FinAckConfirmCanAdvance:fp.LocalFinAckConfirmCanAdvance}
+		b:=recoveryDigestSide{ReplayFrom:fp.PeerReplayFrom,AckAdvanceTo:fp.PeerAckAdvanceTo,ReleaseThrough:fp.PeerReleaseThrough,FinAckCanAdvance:fp.PeerFinAckCanAdvance,CreditAdvanceTo:lc,FinAckConfirmCanAdvance:fp.PeerFinAckConfirmCanAdvance}
 		if recoverySideLess(b,a){a,b=b,a}
 		flows=append(flows,recoveryDigestFlow{StreamID:fp.StreamID,OpenNonce:n,Route:route,SideA:a,SideB:b})
 	}
@@ -597,6 +607,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return RecoveryControl{},recovery.ErrNotPrepared}
 	plan:=cloneRecoveryPlan(a.pendingPlan)
 	snap:=cloneRecoverySnapshot(a.pendingSnapshot)
+	peerSnap:=cloneRecoverySnapshot(a.pendingPeerSnapshot)
 	routes:=cloneRecoveryRoutes(a.pendingRoutes)
 	if a.prepared!=nil {
 		ctl:=a.prepared.control
@@ -607,7 +618,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 	a.mu.Unlock()
 	if err:=p.validateReplayPlan(plan);err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
 	next:=a.engine.CurrentEpoch()+1
-	digest,err:=recoveryPlanDigest(plan,snap,routes,candidateID,next)
+	digest,err:=recoveryPlanDigest(plan,snap,peerSnap,routes,candidateID,next)
 	if err!=nil{a.recordFailure("state_mismatch");return RecoveryControl{},err}
 	ctl:=RecoveryControl{Phase:RecoveryPhasePrepared,SessionID:plan.SessionID,CandidateID:candidateID,NextEpoch:next,PlanDigest:digest}
 
@@ -617,6 +628,8 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 	runCtx:=p.runCtx
 	flowMap:=make(map[uint64]*flow,len(p.flows));for id,fl:=range p.flows{flowMap[id]=fl}
 	p.mu.Unlock()
+	peerFlow:=make(map[uint64]recovery.FlowSnapshot,len(peerSnap.Flows))
+	for _,sf:=range peerSnap.Flows{peerFlow[sf.StreamID]=sf}
 	if runCtx==nil{runCtx=ctx}
 	prep:=&preparedRecovery{control:ctl,carrier:c,sender:newSender,runCtx:runCtx,flows:make([]preparedFlowRecovery,0,len(plan.Flows))}
 	for _,fp:=range plan.Flows{
@@ -625,6 +638,9 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 		fl.mu.Lock()
 		if !fl.openOK||fl.closed{fl.mu.Unlock();return RecoveryControl{},recovery.ErrStateMismatch}
 		if fp.LocalAckAdvanceTo>fl.txNext{fl.mu.Unlock();return RecoveryControl{},recovery.ErrStateMismatch}
+		pf,ok:=peerFlow[fp.StreamID]
+		if !ok||pf.OpenNonce!=fl.nonce||pf.RxCredit<fl.peerMax||pf.RxCredit<fl.txNext{fl.mu.Unlock();return RecoveryControl{},recovery.ErrStateMismatch}
+		creditAdvance:=pf.RxCredit
 		var release int64
 		if fp.LocalAckAdvanceTo>fl.txAcked{
 			for _,ch:=range fl.replay{if ch.end<=fp.LocalAckAdvanceTo{release+=int64(ch.end-ch.start)}}
@@ -640,7 +656,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 		}
 		frames,n,err:=fl.replayFramesFrom(fp.LocalReplayFrom);if err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
 		if err:=newSender.addFlow(fl.id);err!=nil{a.recordFailure("candidate_setup");return RecoveryControl{},err}
-		prep.flows=append(prep.flows,preparedFlowRecovery{flow:fl,replay:frames,replayed:n,replayFrom:fp.LocalReplayFrom,ackAdvance:fp.LocalAckAdvanceTo,finAckAdvance:fp.LocalFinAckCanAdvance,finAckConfirmAdvance:fp.LocalFinAckConfirmCanAdvance,resendFIN:resendFIN,finFinal:final,ackPeerFIN:ackPeerFIN})
+		prep.flows=append(prep.flows,preparedFlowRecovery{flow:fl,replay:frames,replayed:n,replayFrom:fp.LocalReplayFrom,ackAdvance:fp.LocalAckAdvanceTo,creditAdvance:creditAdvance,finAckAdvance:fp.LocalFinAckCanAdvance,finAckConfirmAdvance:fp.LocalFinAckConfirmCanAdvance,resendFIN:resendFIN,finFinal:final,ackPeerFIN:ackPeerFIN})
 	}
 	a.mu.Lock()
 	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return RecoveryControl{},recovery.ErrNotPrepared}
@@ -926,6 +942,15 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 				if err:=a.postCommitFault("after_fin_ack_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			}
 		}
+		// Restore the peer's authenticated receive-credit frontier only after
+		// this flow's bounded replay/FIN actions have been written in order.
+		// A WINDOW lost with the old carrier must not strand the sender at an
+		// obsolete peerMax, and applying the monotonic snapshot credit is
+		// idempotent across exact-transaction rebinds.
+		if !act.creditApplied {
+			if err:=fl.onWindow(act.creditAdvance);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			act.creditApplied=true
+		}
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
 		if !closed&&!act.pumpsRestored{p.ensurePumpsAfterRecovery(prep.runCtx,fl);act.pumpsRestored=true}
@@ -933,7 +958,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	a.mu.Lock()
 	if a.prepared==prep{
 		prep.finalizing=false;prep.finalized=true;prep.activationComplete=true;prep.rebindPending=false
-		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
+		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingPeerSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
 	}
 	a.mu.Unlock()
 	// Publish application readiness only after replay/ACK/FIN reconciliation
@@ -1022,7 +1047,7 @@ func (p *Peer) AbortRecovery(candidateID string) {
 	a.aborts.Add(1)
 	a.mu.Lock()
 	if a.pendingCandidate==candidateID {
-		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil;a.uncertain=RecoveryControl{}
+		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingPeerSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.prepared=nil;a.uncertain=RecoveryControl{}
 		a.txnState=RecoveryTxnAborted
 	}
 	a.mu.Unlock()
