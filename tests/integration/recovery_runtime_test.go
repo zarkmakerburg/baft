@@ -83,6 +83,10 @@ type recoveryRuntimePair struct{
 	targetLn net.Listener
 	targetAccepts atomic.Int64
 	targetBaseline int64
+	targetMu sync.Mutex
+	targetConns map[net.Conn]struct{}
+	targetWG sync.WaitGroup
+	targetAcceptDone chan struct{}
 	exRuntime *node.Runtime
 	irRuntime *node.Runtime
 }
@@ -110,13 +114,17 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	key:=write("server.key",pem.EncodeToMemory(&pem.Block{Type:"PRIVATE KEY",Bytes:der}))
 
 	targetLn,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)}
-	pair:=&recoveryRuntimePair{targetLn:targetLn}
+	pair:=&recoveryRuntimePair{targetLn:targetLn,targetConns:map[net.Conn]struct{}{},targetAcceptDone:make(chan struct{})}
 	go func(){
+		defer close(pair.targetAcceptDone)
 		for{
 			c,e:=targetLn.Accept();if e!=nil{return}
 			pair.targetAccepts.Add(1)
+			pair.targetMu.Lock();pair.targetConns[c]=struct{}{};pair.targetMu.Unlock()
+			pair.targetWG.Add(1)
 			go func(x net.Conn){
-				defer x.Close()
+				defer pair.targetWG.Done()
+				defer func(){pair.targetMu.Lock();delete(pair.targetConns,x);pair.targetMu.Unlock();_ = x.Close()}()
 				buf:=make([]byte,16*1024)
 				for{
 					n,e:=x.Read(buf)
@@ -178,19 +186,42 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 }
 
 func routeName(i int)string{return "recovery-route-"+string(rune('a'+i))}
+func (p *recoveryRuntimePair) closeTargetConnections(){
+	p.targetMu.Lock()
+	cs:=make([]net.Conn,0,len(p.targetConns))
+	for c:=range p.targetConns{cs=append(cs,c)}
+	p.targetMu.Unlock()
+	for _,c:=range cs{_ = c.Close()}
+}
+
+func (p *recoveryRuntimePair) targetConnectionCount() int {
+	p.targetMu.Lock();defer p.targetMu.Unlock()
+	return len(p.targetConns)
+}
+
 func (p *recoveryRuntimePair) close(t *testing.T){
-	t.Helper();p.cancel();p.proxy.Close();_ = p.targetLn.Close()
+	t.Helper()
+	p.cancel()
+	p.proxy.Close()
+	_ = p.targetLn.Close()
+	p.closeTargetConnections()
 	for name,ch:=range map[string]<-chan error{"ex":p.exDone,"ir":p.irDone}{
 		select{case err:=<-ch:if err!=nil&&!errors.Is(err,context.Canceled){t.Fatalf("%s runtime: %v",name,err)}
 		case <-time.After(5*time.Second):t.Fatalf("%s runtime shutdown timeout",name)}
 	}
+	p.closeTargetConnections()
+	p.targetWG.Wait()
+	select{case <-p.targetAcceptDone:case <-time.After(time.Second):t.Fatal("target accept goroutine did not exit")}
+	if n:=p.targetConnectionCount();n!=0{t.Fatalf("target connections leaked after shutdown: %d",n)}
 }
 
 func (p *recoveryRuntimePair) closeAllowErrors(){
-	p.cancel();p.proxy.Close();_ = p.targetLn.Close()
+	p.cancel();p.proxy.Close();_ = p.targetLn.Close();p.closeTargetConnections()
 	for _,ch:=range []<-chan error{p.exDone,p.irDone}{
 		select{case <-ch:case <-time.After(5*time.Second):}
 	}
+	p.closeTargetConnections();p.targetWG.Wait()
+	select{case <-p.targetAcceptDone:case <-time.After(time.Second):}
 }
 
 func openRecoveryFlow(t *testing.T,p *recoveryRuntimePair) net.Conn {
@@ -235,6 +266,33 @@ func transferAcrossCut(t *testing.T,p *recoveryRuntimePair,route int,payload []b
 	}
 	select{case e:=<-readErr:if e!=nil{t.Fatal(e)};case <-time.After(20*time.Second):t.Fatal("payload read timeout")}
 	return got
+}
+
+func countLinuxFDs(t *testing.T) int {
+	t.Helper()
+	entries,err:=os.ReadDir("/proc/self/fd")
+	if err!=nil{t.Skipf("/proc/self/fd unavailable: %v",err)}
+	return len(entries)
+}
+
+func TestRecoveryRuntimePairDoesNotLeakResources(t *testing.T){
+	baseline:=countLinuxFDs(t)
+	const cycles=50
+	var warmup,fd10,fd30,fd50 int
+	for i:=1;i<=cycles;i++{
+		p:=startRecoveryRuntimePair(t,1)
+		payload:=make([]byte,96*1024+37)
+		for j:=range payload{payload[j]=byte((j*17+i)%251)}
+		got:=transferAcrossCut(t,p,0,payload,24*1024)
+		if !bytes.Equal(got,payload){p.closeAllowErrors();t.Fatalf("cycle %d payload mismatch",i)}
+		p.close(t)
+		fd:=countLinuxFDs(t)
+		if i==3{warmup=fd}
+		switch i{case 10:fd10=fd;case 30:fd30=fd;case 50:fd50=fd}
+		if i>=3&&fd>warmup+8{t.Fatalf("FD growth after warmup cycle=%d warmup=%d current=%d baseline=%d",i,warmup,fd,baseline)}
+	}
+	if fd50>warmup+4{t.Fatalf("FDs did not return to steady range baseline=%d warmup=%d fd10=%d fd30=%d fd50=%d",baseline,warmup,fd10,fd30,fd50)}
+	t.Logf("PASS recovery runtime resource lifetime fd_baseline=%d fd_warmup=%d fd10=%d fd30=%d fd50=%d owner_counts=proxy:0,target:0",baseline,warmup,fd10,fd30,fd50)
 }
 
 func TestRuntimeCarrierReplacementPreservesActiveFlow(t *testing.T){
