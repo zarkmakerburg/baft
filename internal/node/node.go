@@ -159,6 +159,25 @@ func (r *Runtime) RecoveryCurrentCarrierOwnerForTest() (session.RecoveryCarrierO
 	return owner,ok,nil
 }
 
+
+func (r *Runtime) RecoveryPreparedOwnershipForTest() (session.RecoveryPreparedOwnershipForTest,error) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	if len(peers)!=1{return session.RecoveryPreparedOwnershipForTest{},fmt.Errorf("expected exactly one recovery peer, got %d",len(peers))}
+	return peers[0].RecoveryPreparedOwnershipForTest(),nil
+}
+
+func (r *Runtime) StaleFinalizeFailureForTest(old session.RecoveryPreparedOwnershipForTest,err error) error {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	if len(peers)!=1{return fmt.Errorf("expected exactly one recovery peer, got %d",len(peers))}
+	return peers[0].StaleFinalizeFailureForTest(old,err)
+}
+
 func (r *Runtime) FenceRecoveryCarrierOwnerForTest(owner session.RecoveryCarrierOwner) (bool,error) {
 	r.peerMu.Lock()
 	peers:=make([]*session.Peer,0,len(r.peers))
