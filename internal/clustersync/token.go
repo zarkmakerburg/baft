@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,13 +82,12 @@ func ManifestFromConfigs(clusterID string, generation uint64, ttl time.Duration,
 	if len(cfgs) < MinNodes { return Manifest{}, fmt.Errorf("manifest requires at least %d node", MinNodes) }
 
 	nodes := make([]NodeDescriptor, 0, len(cfgs))
-	seen := map[string]struct{}{}
 	for i, cfg := range cfgs {
 		if err := config.Validate(cfg); err != nil { return Manifest{}, fmt.Errorf("config %d: %w", i+1, err) }
 		if cfg.Node.Role != "dialer" || cfg.Peer == nil || cfg.Noise == nil { return Manifest{}, fmt.Errorf("config %d is not a Noise dialer", i+1) }
-		if _, ok := seen[cfg.Peer.Address]; ok { return Manifest{}, fmt.Errorf("duplicate node address %s", cfg.Peer.Address) }
-		seen[cfg.Peer.Address] = struct{}{}
 		d := NodeDescriptor{
+			// Compatibility: existing configs do not carry a separate remote NodeID.
+			// Keep deriving it here, but all downstream semantics use this explicit ID.
 			ID: cfg.Peer.AllowedIdentity,
 			Address: cfg.Peer.Address,
 			ServerName: cfg.Peer.ServerName,
@@ -104,16 +104,16 @@ func ManifestFromConfigs(clusterID string, generation uint64, ttl time.Duration,
 		if len(d.Routes) == 0 { return Manifest{}, fmt.Errorf("config %d has no outbound route", i+1) }
 		nodes = append(nodes, d)
 	}
-	revBytes, err := json.Marshal(nodes)
+	if err := validateNodeDescriptors(nodes); err != nil { return Manifest{}, err }
+	revision, err := semanticRevision(nodes)
 	if err != nil { return Manifest{}, err }
-	sum := sha256.Sum256(revBytes)
 	return Manifest{
 		Version: TokenVersion,
 		ClusterID: clusterID,
 		Generation: generation,
 		IssuedAt: now.Unix(),
 		ExpiresAt: now.Add(ttl).Unix(),
-		Revision: base64.RawURLEncoding.EncodeToString(sum[:]),
+		Revision: revision,
 		Nodes: nodes,
 	}, nil
 }
@@ -197,17 +197,63 @@ func Open(token string, workerPrivate *ecdh.PrivateKey, signingPublic ed25519.Pu
 func validateManifest(m Manifest, now time.Time) error {
 	if m.Version != TokenVersion || m.ClusterID == "" || m.Generation == 0 || len(m.Nodes) < MinNodes { return ErrInvalidToken }
 	if m.ExpiresAt <= m.IssuedAt || now.Unix() > m.ExpiresAt { return ErrExpiredToken }
-	nodesRaw, err := json.Marshal(m.Nodes)
-	if err != nil { return ErrInvalidToken }
-	sum := sha256.Sum256(nodesRaw)
-	if m.Revision != base64.RawURLEncoding.EncodeToString(sum[:]) { return ErrInvalidToken }
-	seen := map[string]struct{}{}
-	for _, n := range m.Nodes {
-		if n.Address == "" || n.NoisePublicKey == "" || n.AllowedIdentity == "" || len(n.Routes) == 0 { return ErrInvalidToken }
-		if _, ok := seen[n.Address]; ok { return ErrInvalidToken }
-		seen[n.Address] = struct{}{}
+	if err := validateNodeDescriptors(m.Nodes); err != nil { return ErrInvalidToken }
+	revision, err := semanticRevision(m.Nodes)
+	if err != nil || m.Revision != revision { return ErrInvalidToken }
+	return nil
+}
+
+func validateNodeDescriptors(nodes []NodeDescriptor) error {
+	if len(nodes) < MinNodes { return fmt.Errorf("manifest requires at least %d node", MinNodes) }
+	seenNodeID := make(map[string]struct{}, len(nodes))
+	seenAddress := make(map[string]struct{}, len(nodes))
+	seenIdentity := make(map[string]struct{}, len(nodes))
+	for i, n := range nodes {
+		if strings.TrimSpace(n.ID) == "" { return fmt.Errorf("node %d has empty NodeID", i+1) }
+		if n.Address == "" || n.ServerName == "" || n.NoisePublicKey == "" || n.AllowedIdentity == "" || len(n.Routes) == 0 {
+			return fmt.Errorf("node %q is incomplete", n.ID)
+		}
+		if _, ok := seenNodeID[n.ID]; ok { return fmt.Errorf("duplicate NodeID %q", n.ID) }
+		seenNodeID[n.ID] = struct{}{}
+		if _, ok := seenAddress[n.Address]; ok { return fmt.Errorf("duplicate node address %q", n.Address) }
+		seenAddress[n.Address] = struct{}{}
+		if _, ok := seenIdentity[n.AllowedIdentity]; ok { return fmt.Errorf("duplicate AllowedIdentity %q", n.AllowedIdentity) }
+		seenIdentity[n.AllowedIdentity] = struct{}{}
+		seenRouteID := make(map[string]struct{}, len(n.Routes))
+		for j, r := range n.Routes {
+			if strings.TrimSpace(r.ID) == "" { return fmt.Errorf("node %q route %d has empty RouteID", n.ID, j+1) }
+			if r.RemoteRoute == "" { return fmt.Errorf("node %q route %q has empty remote route", n.ID, r.ID) }
+			if _, ok := seenRouteID[r.ID]; ok { return fmt.Errorf("node %q has duplicate RouteID %q", n.ID, r.ID) }
+			seenRouteID[r.ID] = struct{}{}
+		}
 	}
 	return nil
+}
+
+func canonicalNodes(nodes []NodeDescriptor) []NodeDescriptor {
+	out := make([]NodeDescriptor, len(nodes))
+	for i := range nodes {
+		out[i] = nodes[i]
+		out[i].Routes = append([]RouteDescriptor(nil), nodes[i].Routes...)
+		sort.Slice(out[i].Routes, func(a, b int) bool {
+			if out[i].Routes[a].ID != out[i].Routes[b].ID { return out[i].Routes[a].ID < out[i].Routes[b].ID }
+			if out[i].Routes[a].RemoteRoute != out[i].Routes[b].RemoteRoute { return out[i].Routes[a].RemoteRoute < out[i].Routes[b].RemoteRoute }
+			return out[i].Routes[a].MasterListen < out[i].Routes[b].MasterListen
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ID != out[j].ID { return out[i].ID < out[j].ID }
+		return out[i].Address < out[j].Address
+	})
+	return out
+}
+
+func semanticRevision(nodes []NodeDescriptor) (string, error) {
+	canonical := canonicalNodes(nodes)
+	raw, err := json.Marshal(canonical)
+	if err != nil { return "", err }
+	sum := sha256.Sum256(raw)
+	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }
 
 func deriveKey(shared, ephemeralPublic, recipientPublic []byte) []byte {

@@ -1,10 +1,13 @@
 package clustersync
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
+	"sort"
 
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/recordshape"
@@ -34,34 +37,45 @@ func (t WorkerTemplate) validate() error {
 
 // BuildWorkerConfigs converts a verified dynamic Snapshot into one dialer
 // config per remote node. Record shaping is intentionally disabled here.
+// Resource identity is derived from stable NodeID/RouteID, never slice position.
 func BuildWorkerConfigs(s Snapshot, t WorkerTemplate) ([]config.Config, error) {
 	if err := t.validate(); err != nil { return nil, err }
+	if err := validateSnapshotIdentity(s); err != nil { return nil, err }
 	if len(s.Routes) < MinNodes { return nil, fmt.Errorf("worker requires at least %d mirrored node", MinNodes) }
 
-	out := make([]config.Config, 0, len(s.Routes))
-	nextRoutePort := t.RouteBasePort
-	seenAddr := map[string]struct{}{}
-	for i, r := range s.Routes {
-		if r.Address == "" || r.ServerName == "" || r.AllowedIdentity == "" || r.NoisePublicKey == "" || len(r.RemoteRoutes) == 0 {
-			return nil, fmt.Errorf("route %d is incomplete", i+1)
-		}
-		if _, ok := seenAddr[r.Address]; ok { return nil, fmt.Errorf("duplicate peer address %s", r.Address) }
-		seenAddr[r.Address] = struct{}{}
+	nodes:=append([]MirrorRoute(nil),s.Routes...)
+	sort.Slice(nodes,func(i,j int)bool{return nodes[i].NodeID<nodes[j].NodeID})
+	usedPorts:=map[int]string{}
+	usedSockets:=map[string]string{}
+	usedRouteIDs:=map[string]string{}
+	out := make([]config.Config, 0, len(nodes))
+	for _, r := range nodes {
+		owner:="node:"+r.NodeID
+		metricsPort,err:=identityPort(t.MetricsBasePort,"metrics",r.NodeID)
+		if err!=nil{return nil,err}
+		if err:=reservePort(usedPorts,metricsPort,owner+"/metrics");err!=nil{return nil,err}
+		socketName:="worker-"+stableShortID("socket",r.NodeID)+".sock"
+		if prev,ok:=usedSockets[socketName];ok{return nil,fmt.Errorf("unix socket identity collision: %s and %s",prev,owner)}
+		usedSockets[socketName]=owner
 
-		routes := make([]config.Route, 0, len(r.RemoteRoutes))
-		for j, remote := range r.RemoteRoutes {
-			if remote == "" { return nil, fmt.Errorf("route %d/%d remote route is empty", i+1, j+1) }
-			if nextRoutePort > 65535 { return nil, errors.New("route listener port range exhausted") }
+		routeDescriptors:=append([]MirrorRouteDescriptor(nil),r.Routes...)
+		sort.Slice(routeDescriptors,func(i,j int)bool{return routeDescriptors[i].ID<routeDescriptors[j].ID})
+		routes := make([]config.Route, 0, len(routeDescriptors))
+		for _, remote := range routeDescriptors {
+			identity:=r.NodeID+"\x00"+remote.ID
+			localID:="mirror-"+stableShortID("route",identity)
+			if prev,ok:=usedRouteIDs[localID];ok{return nil,fmt.Errorf("local route identity collision: %s and %s",prev,identity)}
+			usedRouteIDs[localID]=identity
+			listenerPort,err:=identityPort(t.RouteBasePort,"listener",identity)
+			if err!=nil{return nil,err}
+			if err:=reservePort(usedPorts,listenerPort,owner+"/route:"+remote.ID);err!=nil{return nil,err}
 			routes = append(routes, config.Route{
-				ID: fmt.Sprintf("mirror-%04d-%02d", i+1, j+1),
-				Listen: net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", nextRoutePort)),
-				RemoteRoute: remote,
+				ID: localID,
+				Listen: net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", listenerPort)),
+				RemoteRoute: remote.RemoteRoute,
 				Direction: "outbound",
 			})
-			nextRoutePort++
 		}
-		metricsPort := t.MetricsBasePort + i
-		if metricsPort > 65535 { return nil, errors.New("metrics port range exhausted") }
 
 		cfg := config.Config{
 			SchemaVersion: config.SchemaVersion,
@@ -74,35 +88,53 @@ func BuildWorkerConfigs(s Snapshot, t WorkerTemplate) ([]config.Config, error) {
 			Recovery:config.Recovery{Enabled:false,RetentionSeconds:30},
 			Routes:routes,
 			Management:config.Management{
-				UnixSocket:filepath.Join(t.StateDir,fmt.Sprintf("worker-%04d.sock",i+1)),
+				UnixSocket:filepath.Join(t.StateDir,socketName),
 				MetricsListen:net.JoinHostPort("127.0.0.1",fmt.Sprintf("%d",metricsPort)),
 			},
 			Logging:config.Logging{Level:"info",Payload:false},
 		}
-		if err := config.Validate(cfg); err != nil { return nil, fmt.Errorf("worker config %d: %w",i+1,err) }
+		if err := config.Validate(cfg); err != nil { return nil, fmt.Errorf("worker config for NodeID %q: %w",r.NodeID,err) }
 		out=append(out,cfg)
 	}
 	return out,nil
 }
 
-func ChangedRouteIndexes(a,b Snapshot) []int {
-	max:=len(a.Routes); if len(b.Routes)>max { max=len(b.Routes) }
-	out:=make([]int,0)
-	for i:=0;i<max;i++ {
-		if i>=len(a.Routes)||i>=len(b.Routes) { out=append(out,i); continue }
-		x,y:=a.Routes[i],b.Routes[i]
-		if x.NodeID!=y.NodeID||x.Address!=y.Address||x.ServerName!=y.ServerName||
-			x.AllowedIdentity!=y.AllowedIdentity||x.NoisePublicKey!=y.NoisePublicKey||
-			x.TransportProfile!=y.TransportProfile||x.Shards!=y.Shards||
-			!sameStrings(x.RemoteRoutes,y.RemoteRoutes) {
-			out=append(out,i)
+func validateSnapshotIdentity(s Snapshot) error {
+	seenNodeID:=map[string]struct{}{}
+	seenAddress:=map[string]struct{}{}
+	seenIdentity:=map[string]struct{}{}
+	for _,r:=range s.Routes{
+		if r.NodeID==""||r.Address==""||r.ServerName==""||r.AllowedIdentity==""||r.NoisePublicKey==""||len(r.Routes)==0{
+			return fmt.Errorf("snapshot node %q is incomplete",r.NodeID)
+		}
+		if _,ok:=seenNodeID[r.NodeID];ok{return fmt.Errorf("duplicate snapshot NodeID %q",r.NodeID)};seenNodeID[r.NodeID]=struct{}{}
+		if _,ok:=seenAddress[r.Address];ok{return fmt.Errorf("duplicate peer address %s",r.Address)};seenAddress[r.Address]=struct{}{}
+		if _,ok:=seenIdentity[r.AllowedIdentity];ok{return fmt.Errorf("duplicate AllowedIdentity %q",r.AllowedIdentity)};seenIdentity[r.AllowedIdentity]=struct{}{}
+		seenRoute:=map[string]struct{}{}
+		for _,rr:=range r.Routes{
+			if rr.ID==""||rr.RemoteRoute==""{return fmt.Errorf("snapshot node %q has incomplete route",r.NodeID)}
+			if _,ok:=seenRoute[rr.ID];ok{return fmt.Errorf("snapshot node %q has duplicate RouteID %q",r.NodeID,rr.ID)};seenRoute[rr.ID]=struct{}{}
 		}
 	}
-	return out
+	return nil
 }
 
-func sameStrings(a,b []string) bool {
-	if len(a)!=len(b){return false}
-	for i:=range a { if a[i]!=b[i]{return false} }
-	return true
+func stableShortID(namespace, identity string) string {
+	sum:=sha256.Sum256([]byte(namespace+"\x00"+identity))
+	return fmt.Sprintf("%x",sum[:6])
+}
+
+func identityPort(base int, namespace, identity string) (int,error) {
+	if base<1024||base>65000{return 0,fmt.Errorf("%s base port out of range",namespace)}
+	span:=65536-base
+	if span<=0{return 0,fmt.Errorf("%s port range exhausted",namespace)}
+	sum:=sha256.Sum256([]byte(namespace+"\x00"+identity))
+	offset:=binary.BigEndian.Uint64(sum[:8])%uint64(span)
+	return base+int(offset),nil
+}
+
+func reservePort(used map[int]string, port int, owner string) error {
+	if prev,ok:=used[port];ok{return fmt.Errorf("identity-derived port collision on %d: %s and %s",port,prev,owner)}
+	used[port]=owner
+	return nil
 }
