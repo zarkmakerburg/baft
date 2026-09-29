@@ -1320,7 +1320,13 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			}
 			// Rebind has no new recovery semantics to apply, but application
 			// waiters are released only after the replacement sender and pumps
-			// are installed for this exact physical generation.
+			// are installed for this exact physical generation.  Any recovery
+			// signal already queued at this point belongs to the fenced physical
+			// generation that forced this exact-transaction rebind.  Clear it
+			// only after proving the rebound sender is still alive; a failure
+			// racing after this check queues a new signal and is preserved.
+			if prep.sender.isStopped(){return 0,ErrCarrierUnavailable}
+			p.DrainRecoverySignals()
 			p.publishReplacementReady(activatedGeneration)
 		}
 		return activatedGeneration,nil
@@ -1463,6 +1469,10 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 	// Publish application readiness only after replay/ACK/FIN reconciliation
 	// and pump restoration are complete. Physical carrier activation alone is
 	// not sufficient evidence that blocked application flows may resume.
+	// Signals queued before this successful activation are stale generation
+	// notifications.  Do not carry them into a FINALIZED healthy generation.
+	if attemptSender.isStopped(){return 0,ErrCarrierUnavailable}
+	p.DrainRecoverySignals()
 	p.publishReplacementReady(activatedGeneration)
 	return activatedGeneration,nil
 }
