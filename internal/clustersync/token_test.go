@@ -50,13 +50,23 @@ func TestTokenDynamicNodeCounts(t *testing.T) {
 	signPub, signPriv, err := GenerateSigningKeyPair()
 	if err != nil { t.Fatal(err) }
 	now := time.Unix(1700000000,0)
-	for _, n := range []int{1,3,6,50} {
+	for _, n := range []int{1,3,8,16} {
 		t.Run(fmt.Sprintf("n=%d",n),func(t *testing.T){
-			m,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,testConfigsN(t,n))
+			cfgs:=testConfigsN(t,n)
+			m,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,cfgs)
 			if err!=nil{t.Fatal(err)}
 			token,err:=Seal(m,workerPub,signPriv);if err!=nil{t.Fatal(err)}
 			got,err:=Open(token,workerPriv,signPub,now.Add(time.Second));if err!=nil{t.Fatal(err)}
 			if len(got.Nodes)!=n{t.Fatalf("nodes=%d",len(got.Nodes))}
+			for i,node:=range got.Nodes{
+				want:=cfgs[i]
+				if node.Address!=want.Peer.Address{t.Fatalf("node %d address got=%s want=%s",i,node.Address,want.Peer.Address)}
+				if node.AllowedIdentity!=want.Peer.AllowedIdentity||node.ID!=want.Peer.AllowedIdentity{t.Fatalf("node %d identity mismatch got=%+v",i,node)}
+				if node.NoisePublicKey!=want.Noise.PeerPublicKey{t.Fatalf("node %d noise key mismatch",i)}
+				if node.ServerName!=want.Peer.ServerName{t.Fatalf("node %d server name mismatch",i)}
+				if node.TransportProfile!=want.Transport.Profile||node.Shards!=want.Transport.Shards{t.Fatalf("node %d transport mismatch",i)}
+				if len(node.Routes)!=1||node.Routes[0].ID!=want.Routes[0].ID||node.Routes[0].RemoteRoute!=want.Routes[0].RemoteRoute||node.Routes[0].MasterListen!=want.Routes[0].Listen{t.Fatalf("node %d route corruption got=%+v want=%+v",i,node.Routes,want.Routes)}
+			}
 		})
 	}
 }
