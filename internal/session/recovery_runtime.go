@@ -927,12 +927,15 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		if accepted>from{from=accepted}
 		frames,_,err:=fl.replayFramesFrom(from)
 		if err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
+		var replayAcceptThrough uint64
 		for _,fr:=range frames{
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			}
 			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			a.replayed.Add(uint64(len(fr.Payload)))
+			end:=fr.Offset+uint64(len(fr.Payload))
+			if end>replayAcceptThrough{replayAcceptThrough=end}
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			}
@@ -940,6 +943,16 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 			// advance txAcked. Replay frames remain ordered on the carrier, but
 			// any later rebind recomputes the conservative suffix from the
 			// ACK-derived txAcked frontier, so unproven writes are retried safely.
+		}
+		// Do not declare this exact transaction locally activation-complete from
+		// write success alone. A cumulative ACK on the live recovery carrier is
+		// the delivery proof for the replay suffix. If that proof is lost, keep
+		// the exact transaction frozen and rebind/replay it conservatively on the
+		// next authenticated physical carrier instead of opening a fresh epoch.
+		if replayAcceptThrough>0 {
+			if err:=p.waitReplayAccepted(ctx,fl,replayAcceptThrough,prep.sender);err!=nil{
+				_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e
+			}
 		}
 
 		fl.mu.Lock()
