@@ -609,3 +609,31 @@ func TestWakeWithoutReadinessAdvanceDoesNotReleaseReplacement(t *testing.T){
 		t.Fatalf("explicit generation readiness did not release waiter: %v",err)
 	}
 }
+
+
+func TestRecoveryRestoresAuthenticatedPeerCreditFrontier(t *testing.T){
+	p,_,ctx,cancel:=recoveryFixture(t,1);defer cancel()
+	fl,_:=p.getOpenFlow(1)
+	fl.mu.Lock()
+	fl.peerMax=fl.txNext // sender is exactly credit-exhausted on the failed carrier
+	oldWait:=fl.creditWait
+	before:=fl.peerMax
+	fl.mu.Unlock()
+
+	_,peer:=peerOfferFor(t,p,"carrier-credit-2")
+	if peer.Snapshot.Flows[0].RxCredit<=before{t.Fatalf("fixture peer credit=%d before=%d",peer.Snapshot.Flows[0].RxCredit,before)}
+	if err:=p.ReconcileRecovery("carrier-credit-2",peer);err!=nil{t.Fatal(err)}
+	var out bytes.Buffer
+	if _,err:=p.CommitRecovery(ctx,"carrier-credit-2",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+
+	fl.mu.Lock();after:=fl.peerMax;fl.mu.Unlock()
+	if after!=peer.Snapshot.Flows[0].RxCredit{
+		t.Fatalf("authenticated peer credit was not restored: before=%d after=%d want=%d",before,after,peer.Snapshot.Flows[0].RxCredit)
+	}
+	select{
+	case <-oldWait:
+	default:
+		t.Fatal("credit-exhausted sender waiter was not released by recovered peer credit")
+	}
+	t.Logf("PASS recovery restored peer credit frontier %d->%d",before,after)
+}
