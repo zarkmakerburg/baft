@@ -59,9 +59,23 @@ func (p *Peer) RecoveryTransactionIdentity()(RecoveryControl,bool){
 
 func (p *Peer) HasCommitUncertainty() bool {
 	if p.recovery==nil{return false}
-	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
-	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnFinalizationUncertain{return true}
-	return a.txnState==RecoveryTxnFinalized&&a.prepared!=nil&&!a.prepared.activationComplete
+	a:=p.recovery
+	a.mu.Lock()
+	state:=a.txnState
+	hasExact:=a.lastCommit.SessionID!=""&&a.engine.CurrentEpoch()==a.lastCommit.NextEpoch&&a.engine.Owner()==a.lastCommit.CandidateID
+	activationIncomplete:=state==RecoveryTxnFinalized&&a.prepared!=nil&&!a.prepared.activationComplete
+	a.mu.Unlock()
+	if state==RecoveryTxnCommitSent||state==RecoveryTxnUncertain||state==RecoveryTxnFinalizationUncertain||activationIncomplete{return true}
+	if state==RecoveryTxnFinalized&&hasExact {
+		// CandidateID identifies the committed transaction/authority, not a
+		// particular physical connection. If that authority's current carrier
+		// dies, resolve/rebind the exact transaction before considering a fresh
+		// epoch. This also lets a peer with lingering finalization uncertainty
+		// converge instead of being hit by incompatible RESUME_STATE attempts.
+		s:=p.senderNow()
+		return s==nil||s.isStopped()
+	}
+	return false
 }
 
 func (p *Peer) MarkRecoveryPrepared(ctl RecoveryControl) error {
@@ -207,7 +221,7 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 func (p *Peer) CommitStatusQuery() (RecoveryControl,error) {
 	if p.recovery==nil{return RecoveryControl{},errors.New("recovery is disabled")}
 	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
-	if a.txnState==RecoveryTxnFinalized&&a.prepared!=nil&&!a.prepared.activationComplete{
+	if a.txnState==RecoveryTxnFinalized&&a.lastCommit.SessionID!=""{
 		q:=a.lastCommit;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
 		return q,nil
 	}
