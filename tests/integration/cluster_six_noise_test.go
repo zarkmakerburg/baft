@@ -158,10 +158,16 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 		cfg := foreignCfgs[i]
 		rt := node.NewRuntime()
 		go func() { listenerDone <- rt.Run(ctx, cfg) }()
-		// Confirm each listener before starting the next. This preserves the
-		// six-node regression while avoiding CI scheduling spikes from six
-		// simultaneous TLS/Noise listener startups.
-		waitTCP(t, cfg.Server.Listen, time.Now().Add(12*time.Second))
+		// Wait on the Runtime's post-bind readiness condition, not repeated
+		// connection attempts against a listener that may not exist yet.
+		select {
+		case <-rt.ListenerReadyForTest():
+			actual,startErr:=rt.ListenerReadinessForTest()
+			if startErr!=nil{t.Fatalf("listener %s startup failed: %v",cfg.Server.Listen,startErr)}
+			if actual!=cfg.Server.Listen{t.Fatalf("listener bound unexpected address got=%s want=%s",actual,cfg.Server.Listen)}
+		case <-time.After(12*time.Second):
+			t.Fatalf("listener %s readiness condition not reached",cfg.Server.Listen)
+		}
 	}
 
 	masterDone := make(chan error, 1)
