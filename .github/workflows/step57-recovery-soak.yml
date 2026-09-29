@@ -35,7 +35,7 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      - name: Prepared incarnation ownership falsification 100x
+      - name: Prepared incarnation ownership 100x
         run: |
           go test ./tests/integration \
             -run '^TestOldFinalizeInvocationCannotAdoptReboundPreparedCarrier
