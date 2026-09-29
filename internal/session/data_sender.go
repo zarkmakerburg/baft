@@ -29,6 +29,28 @@ const (
 	SenderStopFlowClosed SenderStopSource = "flow_closed"
 )
 
+type DataProducerKind string
+
+const (
+	ProducerOther DataProducerKind = "OTHER"
+	ProducerReplay DataProducerKind = "REPLAY"
+	ProducerLivePump DataProducerKind = "LIVE_APPLICATION_PUMP"
+	ProducerRecoveredPump DataProducerKind = "RECOVERED_PUMP"
+)
+
+type DataWriteDiagnostic struct {
+	Event string
+	ProducerKind DataProducerKind
+	StreamID uint64
+	Offset uint64
+	End uint64
+	SenderID uint64
+	PreparedIncarnation uint64
+	CarrierGeneration uint64
+	PhysicalCarrierInstanceID uint64
+	WriteSequence uint64
+}
+
 type SenderStopEvent struct {
 	SenderID uint64
 	Source SenderStopSource
@@ -48,6 +70,7 @@ type senderDiagnosticBinding struct {
 	PlanDigest string
 	PreparedIncarnation uint64
 	CarrierGeneration uint64
+	PhysicalCarrierInstanceID uint64
 }
 
 var outboundSenderSequence atomic.Uint64
@@ -57,6 +80,8 @@ type outboundRequest struct {
 	frame   protocol.Frame
 	done    chan error
 	control bool
+	producer DataProducerKind
+	writeSequence uint64
 }
 
 type outboundSender struct {
@@ -76,6 +101,8 @@ type outboundSender struct {
 	stopEvent SenderStopEvent
 	hasStopEvent bool
 	onStop func(SenderStopEvent)
+	onDataWrite func(DataWriteDiagnostic)
+	writeSeq uint64
 }
 
 func newOutboundSender(writer *frameWriter, recoverable ...bool) *outboundSender {
@@ -157,9 +184,14 @@ func (s *outboundSender) sendControl(frame protocol.Frame) error {
 }
 
 func (s *outboundSender) sendData(ctx context.Context, fl *flow, frame protocol.Frame) error {
+	return s.sendDataWithProducer(ctx,fl,frame,ProducerLivePump)
+}
+
+func (s *outboundSender) sendDataWithProducer(ctx context.Context, fl *flow, frame protocol.Frame, producer DataProducerKind) error {
 	if fl == nil || frame.Type != protocol.TypeData || frame.StreamID != fl.id || len(frame.Payload) == 0 {
 		return errors.New("invalid scheduled DATA frame")
 	}
+	if producer=="" { producer=ProducerOther }
 	fl.mu.Lock()
 	closed := fl.closed
 	fl.mu.Unlock()
@@ -167,7 +199,7 @@ func (s *outboundSender) sendData(ctx context.Context, fl *flow, frame protocol.
 		return errors.New("flow closed")
 	}
 
-	req := &outboundRequest{flow: fl, frame: frame, done: make(chan error, 1)}
+	req := &outboundRequest{flow: fl, frame: frame, done: make(chan error, 1), producer:producer}
 	s.mu.Lock()
 	if s.stopped {
 		err := s.stopErrorLocked()
@@ -175,8 +207,17 @@ func (s *outboundSender) sendData(ctx context.Context, fl *flow, frame protocol.
 		return err
 	}
 	if !s.started {
+		s.writeSeq++
+		req.writeSequence=s.writeSeq
+		begin,observer:=s.dataWriteDiagnosticLocked(req,"DATA_WRITE_BEGIN"),s.onDataWrite
 		s.mu.Unlock()
-		return s.writer.send(frame)
+		if observer!=nil{observer(begin)}
+		err:=s.writer.send(frame)
+		if err==nil&&observer!=nil{
+			s.mu.Lock();done:=s.dataWriteDiagnosticLocked(req,"DATA_WRITE_SUCCESS");s.mu.Unlock()
+			observer(done)
+		}
+		return err
 	}
 	pressure := fl.replayPressure()
 	_ = s.data.UpdatePressure(fl.id, pressure)
@@ -238,9 +279,24 @@ func (s *outboundSender) run(ctx context.Context) {
 			}
 		}
 
+		var observer func(DataWriteDiagnostic)
+		var begin DataWriteDiagnostic
+		if req.frame.Type==protocol.TypeData {
+			s.mu.Lock()
+			s.writeSeq++
+			req.writeSequence=s.writeSeq
+			begin=s.dataWriteDiagnosticLocked(req,"DATA_WRITE_BEGIN")
+			observer=s.onDataWrite
+			s.mu.Unlock()
+			if observer!=nil{observer(begin)}
+		}
 		err := s.writer.send(req.frame)
 		if err != nil && s.recoverable {
 			err = fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)
+		}
+		if err==nil && req.frame.Type==protocol.TypeData && observer!=nil {
+			s.mu.Lock();done:=s.dataWriteDiagnosticLocked(req,"DATA_WRITE_SUCCESS");s.mu.Unlock()
+			observer(done)
 		}
 		req.done <- err
 		if err != nil {
@@ -418,4 +474,20 @@ func (s *outboundSender) setStopObserver(fn func(SenderStopEvent)) {
 	s.mu.Lock()
 	s.onStop=fn
 	s.mu.Unlock()
+}
+
+
+func (s *outboundSender) dataWriteDiagnosticLocked(req *outboundRequest,event string) DataWriteDiagnostic {
+	if req==nil{return DataWriteDiagnostic{Event:event,SenderID:s.id}}
+	return DataWriteDiagnostic{
+		Event:event,ProducerKind:req.producer,StreamID:req.frame.StreamID,Offset:req.frame.Offset,
+		End:req.frame.Offset+uint64(len(req.frame.Payload)),SenderID:s.id,
+		PreparedIncarnation:s.diag.PreparedIncarnation,CarrierGeneration:s.diag.CarrierGeneration,
+		PhysicalCarrierInstanceID:s.diag.PhysicalCarrierInstanceID,WriteSequence:req.writeSequence,
+	}
+}
+
+func (s *outboundSender) setDataWriteObserver(fn func(DataWriteDiagnostic)) {
+	if s==nil{return}
+	s.mu.Lock();s.onDataWrite=fn;s.mu.Unlock()
 }
