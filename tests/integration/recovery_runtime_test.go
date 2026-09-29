@@ -169,7 +169,7 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	ex,err:=config.LoadFile("../../configs/example-ex.yaml");if err!=nil{t.Fatal(err)}
 	ex.Node.ID="ex-recovery";ex.Server.Listen=reserveUnique();ex.Server.ServerName="ex.test"
 	ex.Server.AllowedPeerIdentities=[]string{"urn:baft:node:ir-recovery"}
-	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen=reserveUnique()
+	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen="127.0.0.1:0"
 	ex.Transport.Shards=1;ex.TLS=config.TLS{MinVersion:"1.3",CAFile:ca,CertFile:cert,KeyFile:key}
 	ex.Noise=&config.Noise{KeyFile:exPath,PeerPublicKey:irPub,RecordShaping:recordshape.Config{}}
 	ex.Recovery=config.Recovery{Enabled:true,RetentionSeconds:10,Mode:"same_process"}
@@ -182,7 +182,7 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	proxy:=newCutProxy(t,ex.Server.Listen);pair.proxy=proxy
 	ir,err:=config.LoadFile("../../configs/example-ir.yaml");if err!=nil{t.Fatal(err)}
 	ir.Node.ID="ir-recovery";ir.Peer.Address=proxy.Addr();ir.Peer.ServerName="ex.test";ir.Peer.AllowedIdentity="urn:baft:node:ex-recovery"
-	ir.Management.UnixSocket=filepath.Join(dir,"ir.sock");ir.Management.MetricsListen=reserveUnique()
+	ir.Management.UnixSocket=filepath.Join(dir,"ir.sock");ir.Management.MetricsListen="127.0.0.1:0"
 	ir.Transport.Shards=1;ir.TLS=ex.TLS
 	ir.Noise=&config.Noise{KeyFile:irPath,PeerPublicKey:exPub,RecordShaping:recordshape.Config{}}
 	ir.Recovery=ex.Recovery;ir.Routes=nil
@@ -204,7 +204,7 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 		if startErr!=nil{t.Fatalf("EX listener startup failed: %v",startErr)}
 		if actual!=ex.Server.Listen{t.Fatalf("EX listener bound unexpected address got=%s want=%s",actual,ex.Server.Listen)}
 	case <-time.After(6*time.Second):
-		t.Fatalf("EX listener readiness condition not reached configured=%s",ex.Server.Listen)
+		t.Fatalf("EX listener readiness condition not reached configured=%s startup=%+v",ex.Server.Listen,pair.exRuntime.ListenerStartupStateForTest())
 	}
 	go func(){pair.irDone<-pair.irRuntime.Run(ctx,ir)}()
 	waitTCP(t,ir.Routes[0].Listen,time.Now().Add(8*time.Second))
