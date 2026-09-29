@@ -525,10 +525,87 @@ func TestReplacementWaitRequiresApplicationReadyFrontier(t *testing.T){
 		t.Fatalf("physical carrier attachment released application pump before replay activation: %v",err)
 	}
 
-	p.signalReplacementReady()
+	if !p.publishReplacementReady(2){t.Fatal("generation 2 readiness was not published")}
 	readyCtx,readyCancel:=context.WithTimeout(context.Background(),time.Second)
 	defer readyCancel()
 	if err:=p.waitForReplacement(readyCtx,1,"carrier-1",1);err!=nil{
 		t.Fatalf("application-ready frontier did not release replacement waiter: %v",err)
+	}
+}
+
+
+func TestInitialFinalizePublishesActivatedGeneration(t *testing.T){
+	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-generation-2")
+	defer cancel()
+	p.replacementMu.Lock();beforeReady:=p.replacementReadyGeneration;p.replacementMu.Unlock()
+	if beforeGen:=p.RecoveryCarrierGeneration();beforeGen!=1||beforeReady!=1{
+		t.Fatalf("unexpected initial generations carrier=%d ready=%d",beforeGen,beforeReady)
+	}
+	if _,err:=p.PublishRecoveryCommit(ctl);err!=nil{t.Fatal(err)}
+	finalCtl:=proveFinalizationForTest(t,p,ctl)
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{t.Fatal(err)}
+	p.replacementMu.Lock();afterReady:=p.replacementReadyGeneration;p.replacementMu.Unlock()
+	afterGen:=p.RecoveryCarrierGeneration()
+	if afterGen!=2||afterReady!=2{
+		t.Fatalf("initial finalized recovery did not publish exact ready generation carrier=%d ready=%d",afterGen,afterReady)
+	}
+	waitCtx,waitCancel:=context.WithTimeout(context.Background(),time.Second);defer waitCancel()
+	if err:=p.waitForReplacement(waitCtx,1,"carrier-1",1);err!=nil{
+		t.Fatalf("generation-1 waiter remained blocked after finalized generation-2 recovery: %v",err)
+	}
+	t.Logf("PASS initial finalize generation carrier 1->%d ready 1->%d",afterGen,afterReady)
+}
+
+func TestReplacementReadyGenerationMonotonicAcrossRebind(t *testing.T){
+	p,ctx,cancel,_,ctl:=prepareCommitFixture(t,"candidate-generation-rebind")
+	defer cancel()
+	if _,err:=p.PublishRecoveryCommit(ctl);err!=nil{t.Fatal(err)}
+	finalCtl:=proveFinalizationForTest(t,p,ctl)
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{t.Fatal(err)}
+
+	var rebound bytes.Buffer
+	if err:=p.RebindCommittedCarrier(ctx,ctl,Carrier{In:bytes.NewReader(nil),Out:&rebound});err!=nil{t.Fatal(err)}
+	if err:=p.FinalizeRecoveryCommit(ctx,finalCtl);err!=nil{t.Fatal(err)}
+	p.replacementMu.Lock();ready:=p.replacementReadyGeneration;p.replacementMu.Unlock()
+	gen:=p.RecoveryCarrierGeneration()
+	if gen!=3||ready!=3{t.Fatalf("rebind readiness mismatch carrier=%d ready=%d",gen,ready)}
+	t.Logf("PASS ready generation monotonic 1->2->%d",ready)
+}
+
+func TestStaleReplacementGenerationCannotRegressOrWakeNewerState(t *testing.T){
+	p,_,_,cancel:=recoveryFixture(t,1);defer cancel()
+	p.mu.Lock();p.carrierGeneration=3;p.carrierEpoch=3;p.carrierID="carrier-3";sender:=p.sender;p.mu.Unlock()
+	p.replacementMu.Lock();p.replacementReadyGeneration=3;p.replacementMu.Unlock()
+
+	if p.publishReplacementReady(2){t.Fatal("stale generation published readiness")}
+	p.replacementMu.Lock();ready:=p.replacementReadyGeneration;p.replacementMu.Unlock()
+	if ready!=3{t.Fatalf("stale readiness regressed generation to %d",ready)}
+	if p.onCarrierFailureForGeneration(errors.New("late generation-2 failure"),2){
+		t.Fatal("stale carrier failure was accepted")
+	}
+	if sender!=nil&&sender.isStopped(){t.Fatal("stale carrier failure stopped generation-3 sender")}
+	if got:=p.RecoveryCarrierGeneration();got!=3{t.Fatalf("stale event changed current carrier generation=%d",got)}
+}
+
+func TestWakeWithoutReadinessAdvanceDoesNotReleaseReplacement(t *testing.T){
+	p,_,_,cancel:=recoveryFixture(t,1);defer cancel()
+	p.mu.Lock();p.carrierGeneration=2;p.carrierEpoch=2;p.carrierID="carrier-2";p.mu.Unlock()
+	p.replacementMu.Lock()
+	if p.replacementReadyGeneration!=1{p.replacementMu.Unlock();t.Fatalf("unexpected initial ready generation=%d",p.replacementReadyGeneration)}
+	close(p.replacementWait)
+	p.replacementWait=make(chan struct{})
+	p.replacementMu.Unlock()
+
+	waitCtx,waitCancel:=context.WithTimeout(context.Background(),20*time.Millisecond)
+	err:=p.waitForReplacement(waitCtx,1,"carrier-1",1)
+	waitCancel()
+	if !errors.Is(err,context.DeadlineExceeded){
+		t.Fatalf("wake without readiness advancement incorrectly released waiter: %v",err)
+	}
+
+	if !p.publishReplacementReady(2){t.Fatal("generation 2 readiness not published")}
+	readyCtx,readyCancel:=context.WithTimeout(context.Background(),time.Second);defer readyCancel()
+	if err:=p.waitForReplacement(readyCtx,1,"carrier-1",1);err!=nil{
+		t.Fatalf("explicit generation readiness did not release waiter: %v",err)
 	}
 }
