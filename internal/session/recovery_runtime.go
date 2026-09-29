@@ -1364,12 +1364,12 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		if !act.ackApplied&&act.ackAdvance>0 {
 			err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{return fl.onAck(act.ackAdvance)})
 			if err!=nil{if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
-			act.ackApplied=true
+			a.mu.Lock(); if a.prepared==prep { act.ackApplied=true }; a.mu.Unlock()
 		}
 		if !act.finAckAdvanceApplied&&act.finAckAdvance {
 			err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{fl.mu.Lock();fl.finAcked=true;fl.mu.Unlock();return nil})
 			if err!=nil{return 0,err}
-			act.finAckAdvanceApplied=true
+			a.mu.Lock(); if a.prepared==prep { act.finAckAdvanceApplied=true }; a.mu.Unlock()
 		}
 		if act.finAckConfirmAdvance {
 			err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{fl.mu.Lock();if fl.finAckSent{fl.finAckConfirmed=true};fl.mu.Unlock();return nil})
@@ -1450,13 +1450,13 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		// idempotent across exact-transaction rebinds.
 		if !act.creditApplied {
 			if err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{return fl.restoreRecoveryPeerCredit(act.creditAdvance)});err!=nil{if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
-			act.creditApplied=true
+			a.mu.Lock(); if a.prepared==prep { act.creditApplied=true }; a.mu.Unlock()
 		}
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
 		if !closed&&!act.pumpsRestored{
 			if err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{p.ensurePumpsAfterRecovery(attemptRunCtx,fl);return nil});err!=nil{return 0,err}
-			act.pumpsRestored=true
+			a.mu.Lock(); if a.prepared==prep { act.pumpsRestored=true }; a.mu.Unlock()
 			p.traceRecoveryDiagnostic("PUMPS_RESTORED",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
 		}
 	}
