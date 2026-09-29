@@ -43,4 +43,14 @@
 
 یعنی Carrier، Path و حتی در آینده Node بتوانند تغییر کنند، در حالی که Session منطقی تا حد امکان صحیح، قابل‌اندازه‌گیری و قابل‌اثبات باقی بماند.
 
+
+
+## موضوعات توسعه‌یافته جدید
+
+- `لایه-اینترنت/` — BAFT به‌عنوان Session Continuity Layer روی IP، نه جایگزین IP.
+- `هوش-مصنوعی-شبکه/` — AI برای پیش‌بینی، Digital Twin، Intent و بهینه‌سازی محدود و قابل Audit.
+- `خودروهای-برقی/` — Mobility Continuity، Charging Backend، Fleet و Cloud Connectivity.
+- `بافت-توزیع‌شده/` — Multi-region و Regional Control Plane زیر یک Trust Authority.
+- `بافت-غیرمتمرکز/` — Federation میان Trust Domainهای مستقل، بدون فرض Permissionless Mesh.
+
 </div>
