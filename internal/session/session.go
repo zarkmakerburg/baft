@@ -921,6 +921,7 @@ func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
 }
 
 func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
+	exactObligation:=p.recoveryEnabled&&p.NeedsExactTransactionResolution()
 	fl.mu.Lock()
 	if finalOffset != fl.rxNext {
 		accepted:=fl.rxNext
@@ -941,6 +942,7 @@ func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 	fl.finRecvFinal = finalOffset
 	ready := fl.rxWritten == finalOffset
 	fl.mu.Unlock()
+	if exactObligation{p.markExactTerminalObligation(fl,false,true,finalOffset)}
 
 	if ready {
 		return p.ackRemoteFin(fl)
@@ -1117,11 +1119,13 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(capacity-n))
 		}
 		if n > 0 {
+			exactObligation:=p.recoveryEnabled&&p.NeedsExactTransactionResolution()
 			off, payload, err := fl.commitSend(buf[:n])
 			if err != nil {
 				_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(n))
 				return
 			}
+			if exactObligation{p.extendExactReplayHighWatermark(fl,off+uint64(len(payload)))}
 			// In recovery mode account application bytes exactly once when they
 			// enter the session ledger. Carrier replay must never bill them again.
 			if p.recoveryEnabled && p.trafficObserver != nil {
@@ -1161,10 +1165,12 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
+				exactObligation:=p.recoveryEnabled&&p.NeedsExactTransactionResolution()
 				fl.mu.Lock()
 				final := fl.txNext
 				fl.finSent = true
 				fl.mu.Unlock()
+				if exactObligation{p.markExactTerminalObligation(fl,true,false,final)}
 				_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
 			}
 			return
