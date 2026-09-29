@@ -1302,6 +1302,46 @@ func (p *Peer) reannounceRecoveryFrontiers(prep *preparedRecovery,ctl RecoveryCo
 	return nil
 }
 
+func (p *Peer) replayCurrentUnprovenState(ctx context.Context,prep *preparedRecovery,ctl RecoveryControl,token RecoveryAttemptToken,generation uint64) error {
+	if prep==nil||prep.sender==nil{return recovery.ErrNotPrepared}
+	for i:=range prep.flows{
+		act:=&prep.flows[i]
+		fl:=act.flow
+		if fl==nil{continue}
+		fl.mu.Lock()
+		if fl.closed{fl.mu.Unlock();continue}
+		accepted:=fl.txAcked
+		finSent:=fl.finSent
+		finAcked:=fl.finAcked
+		final:=fl.txNext
+		ackPeerFIN:=fl.finRecv&&fl.rxWritten==fl.finRecvFinal&&!fl.finAckConfirmed
+		fl.mu.Unlock()
+
+		// Exact-transaction rebind can happen after application pumps produced
+		// additional bytes beyond the immutable commit plan. Those bytes are
+		// still bounded by the existing replay allocator. Rebuild the suffix
+		// from the only proven delivery frontier (txAcked) before any pump is
+		// released on the new physical carrier.
+		frames,_,err:=fl.replayFramesFrom(accepted)
+		if err!=nil{return err}
+		for _,fr:=range frames{
+			p.traceRecoveryDiagnostic("REBIND_REPLAY_WRITE_BEGIN",SenderStopUnknown,fmt.Errorf("offset=%d end=%d",fr.Offset,fr.Offset+uint64(len(fr.Payload))),"",prep.sender,ctl,token.PreparedIncarnation,generation)
+			if err:=prep.sender.sendDataWithProducer(ctx,fl,fr,ProducerReplay);err!=nil{return err}
+			if !p.recoveryAttemptCurrent(token){return ErrStaleRecoveryIncarnation}
+			p.recovery.replayed.Add(uint64(len(fr.Payload)))
+			p.traceRecoveryDiagnostic("REBIND_REPLAY_WRITE_SUCCESS",SenderStopUnknown,fmt.Errorf("offset=%d end=%d",fr.Offset,fr.Offset+uint64(len(fr.Payload))),"",prep.sender,ctl,token.PreparedIncarnation,generation)
+		}
+		if finSent&&!finAcked{
+			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{return err}
+			if !p.recoveryAttemptCurrent(token){return ErrStaleRecoveryIncarnation}
+		}
+		if ackPeerFIN{
+			if err:=p.withCurrentRecoveryAttempt(token,func()error{return p.ackRemoteFin(fl)});err!=nil{return err}
+		}
+	}
+	return p.reannounceRecoveryFrontiers(prep,ctl,token,generation)
+}
+
 func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl RecoveryControl) (uint64,error) {
 	if p.recovery==nil{return 0,errors.New("recovery is disabled")}
 	a:=p.recovery
@@ -1341,25 +1381,21 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			activatedGeneration,err=p.activatePreparedCarrierOwned(prep,ctl,attemptToken);if err!=nil{return 0,err}
 			a.mu.Lock();if a.prepared==prep{prep.activatedGeneration=activatedGeneration};a.mu.Unlock()
 			p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
-			if err:=p.reannounceRecoveryFrontiers(prep,ctl,attemptToken,activatedGeneration);err!=nil{
+			if err:=p.replayCurrentUnprovenState(ctx,prep,ctl,attemptToken,activatedGeneration);err!=nil{
 				if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err}
 				_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e
 			}
+			// Application pumps must remain blocked until the exact transaction's
+			// current replay/FIN/frontier state has been re-established on this
+			// physical generation. Publishing readiness is the release barrier.
+			if prep.sender.isStopped(){return 0,ErrCarrierUnavailable}
+			p.DrainRecoverySignals()
+			p.publishReplacementReady(activatedGeneration)
 			for i:=range flows{
 				fl:=flows[i].flow
 				fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
 				if !closed{p.ensurePumpsAfterRecovery(runCtx,fl)}
 			}
-			// Rebind has no new recovery semantics to apply, but application
-			// waiters are released only after the replacement sender and pumps
-			// are installed for this exact physical generation.  Any recovery
-			// signal already queued at this point belongs to the fenced physical
-			// generation that forced this exact-transaction rebind.  Clear it
-			// only after proving the rebound sender is still alive; a failure
-			// racing after this check queues a new signal and is preserved.
-			if prep.sender.isStopped(){return 0,ErrCarrierUnavailable}
-			p.DrainRecoverySignals()
-			p.publishReplacementReady(activatedGeneration)
 		}
 		return activatedGeneration,nil
 	}
@@ -1485,12 +1521,6 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			a.mu.Lock(); if a.prepared==prep { act.creditApplied=true }; a.mu.Unlock()
 		}
 		p.finishIfComplete(fl)
-		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
-		if !closed&&!act.pumpsRestored{
-			if err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{p.ensurePumpsAfterRecovery(attemptRunCtx,fl);return nil});err!=nil{return 0,err}
-			a.mu.Lock(); if a.prepared==prep { act.pumpsRestored=true }; a.mu.Unlock()
-			p.traceRecoveryDiagnostic("PUMPS_RESTORED",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
-		}
 	}
 	a.mu.Lock()
 	if a.prepared==prep{
@@ -1506,6 +1536,19 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 	if attemptSender.isStopped(){return 0,ErrCarrierUnavailable}
 	p.DrainRecoverySignals()
 	p.publishReplacementReady(activatedGeneration)
+	// Only after the application-ready barrier may a stopped pump be restarted
+	// or an old blocked pump be allowed to continue on this generation.
+	for i:=range prep.flows{
+		act:=&prep.flows[i]
+		fl:=act.flow
+		if fl==nil{continue}
+		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
+		if !closed&&!act.pumpsRestored{
+			if err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{p.ensurePumpsAfterRecovery(attemptRunCtx,fl);return nil});err!=nil{return 0,err}
+			a.mu.Lock();if a.prepared==prep{act.pumpsRestored=true};a.mu.Unlock()
+			p.traceRecoveryDiagnostic("PUMPS_RESTORED",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
+		}
+	}
 	return activatedGeneration,nil
 }
 
