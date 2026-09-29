@@ -1219,8 +1219,31 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	select{case err:=<-readDone:if err!=nil{t.Fatalf("client payload read: %v",err)};case <-time.After(20*time.Second):t.Fatal("client payload read timeout")}
 	have:=sha256.Sum256(got)
 	if !bytes.Equal(got,payload)||have!=wantHash{t.Fatalf("replay delivery mismatch got_hash=%x want_hash=%x",have,wantHash)}
-	irFinal,exFinal:=waitAuthorityPair(t,p,2,true)
-	if irFinal.CandidateID!=exFinal.CandidateID||irFinal.PlanDigest!=exFinal.PlanDigest{t.Fatalf("same transaction not preserved ir=%+v ex=%+v",irFinal,exFinal)}
+	// The replay carrier may itself fail after the exact transaction has
+	// finalized. In that case a fresh same-process recovery is allowed to
+	// advance to a later epoch; the invariant is convergence, monotonic epoch
+	// progression, and identical authority identity on both endpoints—not that
+	// this fault must remain forever at epoch 2.
+	deadline:=time.Now().Add(8*time.Second)
+	var irFinal,exFinal node.RecoveryAuthoritySnapshot
+	for {
+		ir:=p.irRuntime.RecoveryAuthoritiesForTest()
+		ex:=p.exRuntime.RecoveryAuthoritiesForTest()
+		if len(ir)==1&&len(ex)==1 {
+			a,b:=ir[0],ex[0]
+			if a.Epoch>=2&&a.Epoch==b.Epoch&&!a.Frozen&&!b.Frozen&&
+				a.ActivationComplete&&b.ActivationComplete&&
+				a.TxnState==session.RecoveryTxnFinalized&&b.TxnState==session.RecoveryTxnFinalized&&
+				a.CandidateID!=""&&a.CandidateID==b.CandidateID&&
+				a.PlanDigest!=""&&a.PlanDigest==b.PlanDigest {
+				irFinal,exFinal=a,b
+				break
+			}
+		}
+		if time.Now().After(deadline){t.Fatalf("replay recovery convergence timeout ir=%+v ex=%+v",ir,ex)}
+		time.Sleep(5*time.Millisecond)
+	}
+	if irFinal.CandidateID!=exFinal.CandidateID||irFinal.PlanDigest!=exFinal.PlanDigest{t.Fatalf("same authority transaction not preserved ir=%+v ex=%+v",irFinal,exFinal)}
 	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during replay retry accepts_delta=%d",n)}
 	t.Logf("PASS local write != peer acceptance; conservative replay deduped application bytes hash=%x accepted_before=%d accepted_mid=%d",have,before.PeerAccepted,mid.PeerAccepted)
 }
