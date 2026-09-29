@@ -898,6 +898,10 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 	if p.recovery==nil{return RecoveryOffer{},errors.New("recovery is disabled")}
 	p.recoveryGate.Lock()
 	defer p.recoveryGate.Unlock()
+	// A fresh epoch must never bypass an exact-transaction obligation.  This
+	// includes FINALIZED application-ready sessions whose replay high-watermark
+	// or terminal FIN proof is still outstanding.
+	if p.NeedsExactTransactionResolution(){return RecoveryOffer{},ErrCommitUncertain}
 	a:=p.recovery
 	a.mu.Lock()
 	if a.txnState==RecoveryTxnCommitSent||a.txnState==RecoveryTxnUncertain||a.txnState==RecoveryTxnFinalizationUncertain {
