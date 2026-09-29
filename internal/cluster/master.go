@@ -20,10 +20,36 @@ type runtimeFactory func() runtimeRunner
 
 type Master struct {
 	newRuntime runtimeFactory
+	readyOnce sync.Once
+	ready chan struct{}
+	readyMu sync.Mutex
+	readyErr error
 }
 
 func NewMaster() *Master {
-	return &Master{newRuntime: func() runtimeRunner { return node.NewRuntime() }}
+	return &Master{newRuntime: func() runtimeRunner { return node.NewRuntime() },ready:make(chan struct{})}
+}
+
+type dialerReadinessRunner interface {
+	DialerReadyForTest() <-chan struct{}
+	DialerReadinessForTest() error
+}
+
+func (m *Master) signalReady(err error) {
+	m.readyMu.Lock()
+	if m.readyErr==nil&&err!=nil{m.readyErr=err}
+	m.readyMu.Unlock()
+	m.readyOnce.Do(func(){close(m.ready)})
+}
+
+func (m *Master) ReadyForTest() <-chan struct{} {
+	if m.ready==nil{m.ready=make(chan struct{})}
+	return m.ready
+}
+
+func (m *Master) ReadinessForTest() error {
+	m.readyMu.Lock();defer m.readyMu.Unlock()
+	return m.readyErr
 }
 
 func ValidateMasterConfigs(cfgs []config.Config) error {
@@ -100,9 +126,11 @@ func (m *Master) Run(ctx context.Context, cfgs []config.Config) error {
 
 	errCh := make(chan error, len(cfgs))
 	var wg sync.WaitGroup
+	readyRunners:=make([]dialerReadinessRunner,0,len(cfgs))
 	for i := range cfgs {
 		cfg := cfgs[i]
 		runner := m.newRuntime()
+		if rr,ok:=runner.(dialerReadinessRunner);ok{readyRunners=append(readyRunners,rr)}
 		if runner == nil {
 			cancel()
 			wg.Wait()
@@ -124,6 +152,23 @@ func (m *Master) Run(ctx context.Context, cfgs []config.Config) error {
 			}
 		}(i, runner)
 	}
+
+	// A Master is startup-ready only after every concrete Runtime has bound all
+	// of its outbound route listeners. Runtime startup failures are surfaced
+	// directly instead of being hidden behind connection-refused polling.
+	for _,rr:=range readyRunners{
+		select{
+		case <-rr.DialerReadyForTest():
+			if err:=rr.DialerReadinessForTest();err!=nil{
+				m.signalReady(err);cancel();wg.Wait();return err
+			}
+		case err:=<-errCh:
+			m.signalReady(err);cancel();wg.Wait();return err
+		case <-ctx.Done():
+			m.signalReady(ctx.Err());cancel();wg.Wait();return nil
+		}
+	}
+	m.signalReady(nil)
 
 	select {
 	case <-ctx.Done():
