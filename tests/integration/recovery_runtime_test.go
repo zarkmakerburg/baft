@@ -166,10 +166,12 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	if err:=securityinternal.SaveKeyPair(irPath,irKey);err!=nil{t.Fatal(err)}
 	exPub,_:=securityinternal.EncodePublicKey(exKey.Public);irPub,_:=securityinternal.EncodePublicKey(irKey.Public)
 
-	ex,err:=config.LoadFile("../../configs/example-ex.yaml");if err!=nil{t.Fatal(err)}
+	exMetricsLn,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)}
+	irMetricsLn,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{_ = exMetricsLn.Close();t.Fatal(err)}
+	ex,err:=config.LoadFile("../../configs/example-ex.yaml");if err!=nil{_ = exMetricsLn.Close();_ = irMetricsLn.Close();t.Fatal(err)}
 	ex.Node.ID="ex-recovery";ex.Server.Listen=reserveUnique();ex.Server.ServerName="ex.test"
 	ex.Server.AllowedPeerIdentities=[]string{"urn:baft:node:ir-recovery"}
-	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen="127.0.0.1:0"
+	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen=exMetricsLn.Addr().String()
 	ex.Transport.Shards=1;ex.TLS=config.TLS{MinVersion:"1.3",CAFile:ca,CertFile:cert,KeyFile:key}
 	ex.Noise=&config.Noise{KeyFile:exPath,PeerPublicKey:irPub,RecordShaping:recordshape.Config{}}
 	ex.Recovery=config.Recovery{Enabled:true,RetentionSeconds:10,Mode:"same_process"}
@@ -182,7 +184,7 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	proxy:=newCutProxy(t,ex.Server.Listen);pair.proxy=proxy
 	ir,err:=config.LoadFile("../../configs/example-ir.yaml");if err!=nil{t.Fatal(err)}
 	ir.Node.ID="ir-recovery";ir.Peer.Address=proxy.Addr();ir.Peer.ServerName="ex.test";ir.Peer.AllowedIdentity="urn:baft:node:ex-recovery"
-	ir.Management.UnixSocket=filepath.Join(dir,"ir.sock");ir.Management.MetricsListen="127.0.0.1:0"
+	ir.Management.UnixSocket=filepath.Join(dir,"ir.sock");ir.Management.MetricsListen=irMetricsLn.Addr().String()
 	ir.Transport.Shards=1;ir.TLS=ex.TLS
 	ir.Noise=&config.Noise{KeyFile:irPath,PeerPublicKey:exPub,RecordShaping:recordshape.Config{}}
 	ir.Recovery=ex.Recovery;ir.Routes=nil
@@ -197,6 +199,8 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	pair.ctx=ctx;pair.cancel=cancel;pair.ex=ex;pair.ir=ir;pair.exDone=make(chan error,1);pair.irDone=make(chan error,1)
 	pair.exRuntime=node.NewRuntime()
 	pair.irRuntime=node.NewRuntime()
+	pair.exRuntime.SetMetricsListenerForTest(exMetricsLn)
+	pair.irRuntime.SetMetricsListenerForTest(irMetricsLn)
 	go func(){pair.exDone<-pair.exRuntime.Run(ctx,ex)}()
 	select{
 	case <-pair.exRuntime.ListenerReadyForTest():
