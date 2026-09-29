@@ -58,29 +58,86 @@ func (p *Peer) RecoveryTransactionIdentity()(RecoveryControl,bool){
 	return RecoveryControl{},false
 }
 
+func (p *Peer) RecoveryStability() RecoveryStabilitySnapshot {
+	if p.recovery==nil{return RecoveryStabilitySnapshot{}}
+	a:=p.recovery
+	a.mu.Lock()
+	state:=a.txnState
+	prep:=a.prepared
+	var flows []preparedFlowRecovery
+	activationComplete:=false
+	activatedGeneration:=uint64(0)
+	if prep!=nil{
+		flows=append([]preparedFlowRecovery(nil),prep.flows...)
+		activationComplete=prep.activationComplete
+		activatedGeneration=prep.activatedGeneration
+	}
+	a.mu.Unlock()
+
+	out:=RecoveryStabilitySnapshot{FinStable:true,FinalizationStable:state==RecoveryTxnFinalized}
+	var selectedHigh uint64
+	for i:=range flows{
+		act:=&flows[i]
+		if act.flow==nil{continue}
+		act.flow.mu.Lock()
+		acked:=act.flow.txAcked
+		finSent:=act.flow.finSent
+		finAcked:=act.flow.finAcked
+		finRecv:=act.flow.finRecv
+		finAckSent:=act.flow.finAckSent
+		finAckConfirmed:=act.flow.finAckConfirmed
+		act.flow.mu.Unlock()
+		hwm:=act.replayHighWatermark
+		if hwm>selectedHigh{selectedHigh=hwm;out.ReplayHighWatermark=hwm;out.ReplayPeerAccepted=acked}
+		if hwm>0&&acked<hwm{out.ReplayOutstanding=true}
+		if finSent&&!finAcked{out.FinStable=false}
+		if finRecv&&(!finAckSent||!finAckConfirmed){out.FinStable=false}
+	}
+	p.replacementMu.Lock()
+	readyGeneration:=p.replacementReadyGeneration
+	p.replacementMu.Unlock()
+	if prep==nil{
+		out.ApplicationReady=out.FinalizationStable
+	}else{
+		out.ApplicationReady=activationComplete&&activatedGeneration>0&&readyGeneration>=activatedGeneration
+	}
+	out.TransactionStable=out.FinalizationStable&&!out.ReplayOutstanding&&out.FinStable
+	return out
+}
+
 func (p *Peer) NeedsExactTransactionResolution() bool {
 	if p.recovery==nil{return false}
 	a:=p.recovery
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	switch a.txnState {
-	case RecoveryTxnCommitSent, RecoveryTxnUncertain, RecoveryTxnFinalizationUncertain:
+	state:=a.txnState
+	prepPresent:=a.prepared!=nil
+	a.mu.Unlock()
+	switch state {
+	case RecoveryTxnCommitSent,RecoveryTxnUncertain,RecoveryTxnCommitted,RecoveryTxnFinalizing,RecoveryTxnFinalizationUncertain:
 		return true
 	case RecoveryTxnFinalized:
-		// FINALIZED is only an exact-rebind obligation while local activation
-		// of that exact transaction is still incomplete. Once activation is
-		// complete, the transaction is historical evidence only; a later
-		// carrier failure must start a fresh recovery from current flow state.
-		return a.prepared!=nil && !a.prepared.activationComplete
+		if !prepPresent{return false}
+		st:=p.RecoveryStability()
+		// Carrier Active != Application Ready, and Application Ready !=
+		// Transaction Stable.  Any unproven replay/terminal obligation keeps
+		// the exact Session/Epoch/Candidate/Plan transaction pinned.
+		return !st.TransactionStable||!st.ApplicationReady
 	default:
 		return false
 	}
 }
 
 func (p *Peer) NeedsFreshRecovery() bool {
-	if !p.recoveryEnabled || p.NeedsExactTransactionResolution(){return false}
+	if !p.recoveryEnabled||p.NeedsExactTransactionResolution(){return false}
 	s:=p.senderNow()
-	return s==nil||s.isStopped()
+	if s!=nil&&!s.isStopped(){return false}
+	a:=p.recovery
+	a.mu.Lock();state:=a.txnState;a.mu.Unlock()
+	if state==RecoveryTxnFinalized{
+		st:=p.RecoveryStability()
+		return st.TransactionStable&&st.ApplicationReady
+	}
+	return true
 }
 
 // HasCommitUncertainty is retained for callers/tests that still use the older
@@ -211,7 +268,7 @@ func (p *Peer) CompleteRecoveryFinalization(ctl RecoveryControl) error {
 
 func clonePreparedFlowForIncarnation(in preparedFlowRecovery) preparedFlowRecovery {
 	out:=preparedFlowRecovery{
-		flow:in.flow,replayed:in.replayed,replayFrom:in.replayFrom,ackAdvance:in.ackAdvance,
+		flow:in.flow,replayed:in.replayed,replayFrom:in.replayFrom,replayHighWatermark:in.replayHighWatermark,ackAdvance:in.ackAdvance,
 		creditAdvance:in.creditAdvance,finAckAdvance:in.finAckAdvance,
 		finAckConfirmAdvance:in.finAckConfirmAdvance,resendFIN:in.resendFIN,
 		finFinal:in.finFinal,ackPeerFIN:in.ackPeerFIN,
@@ -266,16 +323,28 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 
 func (p *Peer) CommitStatusQuery() (RecoveryControl,error) {
 	if p.recovery==nil{return RecoveryControl{},errors.New("recovery is disabled")}
-	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
-	switch a.txnState {
+	a:=p.recovery
+	a.mu.Lock()
+	state:=a.txnState
+	uncertain:=a.uncertain
+	last:=a.lastCommit
+	prepPresent:=a.prepared!=nil
+	a.mu.Unlock()
+	switch state {
 	case RecoveryTxnUncertain,RecoveryTxnCommitSent,RecoveryTxnFinalizationUncertain:
-		if a.uncertain.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
-		q:=a.uncertain;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
+		if uncertain.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
+		q:=uncertain;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
+		return q,nil
+	case RecoveryTxnCommitted,RecoveryTxnFinalizing:
+		if last.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
+		q:=last;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
 		return q,nil
 	case RecoveryTxnFinalized:
-		if a.prepared==nil||a.prepared.activationComplete{return RecoveryControl{},ErrCommitUncertain}
-		if a.lastCommit.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
-		q:=a.lastCommit;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
+		if !prepPresent{return RecoveryControl{},ErrCommitUncertain}
+		st:=p.RecoveryStability()
+		if st.TransactionStable&&st.ApplicationReady{return RecoveryControl{},ErrCommitUncertain}
+		if last.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
+		q:=last;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
 		return q,nil
 	default:
 		return RecoveryControl{},ErrCommitUncertain
@@ -465,7 +534,7 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 		fl.mu.Lock();open:=fl.openOK&&!fl.closed;fl.mu.Unlock()
 		if open{
 			if err:=newSender.addFlow(fl.id);err!=nil{return err}
-			preparedFlows=append(preparedFlows,preparedFlowRecovery{flow:fl,pumpsRestored:true})
+			preparedFlows=append(preparedFlows,preparedFlowRecovery{flow:fl,replayFrom:fl.txAcked,replayHighWatermark:fl.txNext,pumpsRestored:true})
 		}
 	}
 	prep=&preparedRecovery{
