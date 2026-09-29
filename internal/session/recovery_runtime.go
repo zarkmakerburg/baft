@@ -1402,17 +1402,16 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			// any later rebind recomputes the conservative suffix from the
 			// ACK-derived txAcked frontier, so unproven writes are retried safely.
 		}
-		// Do not declare this exact transaction locally activation-complete from
-		// write success alone. A cumulative ACK on the live recovery carrier is
-		// the delivery proof for the replay suffix. If that proof is lost, keep
-		// the exact transaction frozen and rebind/replay it conservatively on the
-		// next authenticated physical carrier instead of opening a fresh epoch.
-		if replayAcceptThrough>0 {
-			if err:=p.waitReplayAccepted(ctx,fl,replayAcceptThrough,attemptSender);err!=nil{
-				if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
-				_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e
-			}
-		}
+		// Carrier write success is only an attempt, never peer-delivery proof.
+		// Do not synchronously wait for a cumulative ACK here: the normal session
+		// reader is the authority that advances txAcked, and blocking finalization
+		// on that proof can prevent the reader handoff itself.  txAcked therefore
+		// remains the only durable in-process acceptance frontier.  If this
+		// physical carrier fails before ACK evidence arrives, exact-transaction
+		// rebind (or the next recovery snapshot after distributed finalization)
+		// conservatively regenerates the suffix from txAcked; receiver offsets
+		// suppress any wire-level duplicate before application delivery.
+		_ = replayAcceptThrough
 
 		fl.mu.Lock()
 		resendFIN:=fl.finSent&&!fl.finAcked
