@@ -322,6 +322,47 @@ func (p *Peer) RecoveryCarrierGeneration() uint64 {
 type unavailableCarrierWriter struct{}
 func (unavailableCarrierWriter) Write([]byte)(int,error){return 0,ErrCarrierUnavailable}
 
+func (p *Peer) RecoveryCarrierOwnerForGeneration(ctl RecoveryControl,generation uint64)(RecoveryCarrierOwner,bool) {
+	if p.recovery==nil||generation==0{return RecoveryCarrierOwner{},false}
+	a:=p.recovery
+	a.mu.Lock();defer a.mu.Unlock()
+	prep:=a.prepared
+	if prep==nil||prep.incarnation==0||prep.activatedGeneration!=generation||!sameRecoveryTransaction(prep.control,ctl){
+		return RecoveryCarrierOwner{},false
+	}
+	return RecoveryCarrierOwner{Transaction:prep.control,PreparedIncarnation:prep.incarnation,CarrierGeneration:generation},true
+}
+
+func (p *Peer) FenceRecoveryCarrierOwner(owner RecoveryCarrierOwner) bool {
+	if !p.recoveryEnabled||p.recovery==nil||owner.PreparedIncarnation==0||owner.CarrierGeneration==0{return false}
+	a:=p.recovery
+	a.ownershipMu.RLock();defer a.ownershipMu.RUnlock()
+	a.mu.Lock()
+	prep:=a.prepared
+	currentPrep:=prep!=nil&&prep.incarnation==owner.PreparedIncarnation&&sameRecoveryTransaction(prep.control,owner.Transaction)&&prep.activatedGeneration==owner.CarrierGeneration
+	a.mu.Unlock()
+	if !currentPrep{return false}
+	p.mu.Lock()
+	if p.carrierGeneration!=owner.CarrierGeneration||p.carrierEpoch!=owner.Transaction.NextEpoch||p.carrierID!=owner.Transaction.CandidateID{
+		p.mu.Unlock();return false
+	}
+	s:=p.sender
+	p.mu.Unlock()
+	if s!=nil{s.stop(ErrCarrierUnavailable)}
+	return true
+}
+
+func (p *Peer) RecoveryCurrentCarrierOwnerForTest()(RecoveryCarrierOwner,bool) {
+	if p.recovery==nil{return RecoveryCarrierOwner{},false}
+	a:=p.recovery
+	a.mu.Lock()
+	prep:=a.prepared
+	if prep==nil||prep.incarnation==0||prep.activatedGeneration==0{a.mu.Unlock();return RecoveryCarrierOwner{},false}
+	owner:=RecoveryCarrierOwner{Transaction:prep.control,PreparedIncarnation:prep.incarnation,CarrierGeneration:prep.activatedGeneration}
+	a.mu.Unlock()
+	return owner,true
+}
+
 func (p *Peer) FenceRecoveryCarrierWriter(generation uint64) {
 	if !p.recoveryEnabled{return}
 	// Recovered carriers use generation-local frameWriters owned by their
