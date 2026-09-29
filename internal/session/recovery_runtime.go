@@ -695,6 +695,22 @@ func (p *Peer) ValidateRecoveryControl(ctl RecoveryControl,phase RecoveryPhase) 
 }
 
 func (p *Peer) markPostCommitFailure(err error,ctl RecoveryControl)(CommitResult,error){
+	_,_,_,generation:=p.currentCarrier()
+	return p.markPostCommitFailureForGeneration(err,ctl,generation)
+}
+
+func (p *Peer) markPostCommitFailureForGeneration(err error,ctl RecoveryControl,generation uint64)(CommitResult,error){
+	if generation!=0 {
+		p.mu.Lock()
+		currentGeneration:=p.carrierGeneration
+		p.mu.Unlock()
+		if currentGeneration!=generation {
+			// A failure reported by an already-fenced physical generation must
+			// never regress transaction state or stop the newer exact rebind.
+			return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},
+				fmt.Errorf("%w: stale carrier generation %d (current %d): %v",ErrPostCommitFailure,generation,currentGeneration,err)
+		}
+	}
 	a:=p.recovery
 	a.postCommitFailures.Add(1)
 	a.recordFailure("post_commit_failure")
@@ -724,7 +740,11 @@ func (p *Peer) markPostCommitFailure(err error,ctl RecoveryControl)(CommitResult
 		}
 	}
 	a.mu.Unlock()
-	p.onCarrierFailure(err)
+	if generation!=0 {
+		p.onCarrierFailureForGeneration(err,generation)
+	} else {
+		p.onCarrierFailure(err)
+	}
 	return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},fmt.Errorf("%w: %v",ErrPostCommitFailure,err)
 }
 
@@ -873,18 +893,18 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	// candidate become the live data-plane carrier. Recovery control has
 	// finished consuming frames, so session reader/pumps can safely take over.
 	activatedGeneration,err:=p.activatePreparedCarrier(prep,ctl)
-	if err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+	if err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 	a.mu.Lock();if a.prepared==prep{prep.activatedGeneration=activatedGeneration};a.mu.Unlock()
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
-		if err:=a.postCommitFault("after_authority_commit");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+		if err:=a.postCommitFault("after_authority_commit");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 	}
 	for i:=range prep.flows{
 		act:=&prep.flows[i]
 		fl:=act.flow
 		if !act.ackApplied&&act.ackAdvance>0 {
-			if err:=fl.onAck(act.ackAdvance);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			if err:=fl.onAck(act.ackAdvance);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			act.ackApplied=true
 		}
 		if !act.finAckAdvanceApplied&&act.finAckAdvance {
@@ -906,15 +926,15 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		from:=act.replayFrom
 		if accepted>from{from=accepted}
 		frames,_,err:=fl.replayFramesFrom(from)
-		if err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+		if err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 		for _,fr:=range frames{
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			}
-			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			a.replayed.Add(uint64(len(fr.Payload)))
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			}
 			// A successful carrier write is not delivery evidence and does not
 			// advance txAcked. Replay frames remain ordered on the carrier, but
@@ -929,20 +949,20 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		fl.mu.Unlock()
 		if resendFIN {
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("fin_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+				if err:=a.postCommitFault("fin_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			}
-			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("after_fin_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+				if err:=a.postCommitFault("after_fin_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			}
 		}
 		if ackPeerFIN {
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("fin_ack_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+				if err:=a.postCommitFault("fin_ack_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			}
-			if err:=p.ackRemoteFin(fl);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			if err:=p.ackRemoteFin(fl);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("after_fin_ack_write");err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+				if err:=a.postCommitFault("after_fin_ack_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			}
 		}
 		// Restore the peer's authenticated receive-credit frontier only after
@@ -951,7 +971,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		// obsolete peerMax, and applying the monotonic snapshot credit is
 		// idempotent across exact-transaction rebinds.
 		if !act.creditApplied {
-			if err:=fl.restoreRecoveryPeerCredit(act.creditAdvance);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			if err:=fl.restoreRecoveryPeerCredit(act.creditAdvance);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return e}
 			act.creditApplied=true
 		}
 		p.finishIfComplete(fl)
