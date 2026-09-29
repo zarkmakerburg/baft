@@ -37,14 +37,19 @@ type dialerReadinessRunner interface {
 
 func (m *Master) signalReady(err error) {
 	m.readyMu.Lock()
+	if m.ready==nil{m.ready=make(chan struct{})}
 	if m.readyErr==nil&&err!=nil{m.readyErr=err}
+	ready:=m.ready
 	m.readyMu.Unlock()
-	m.readyOnce.Do(func(){close(m.ready)})
+	m.readyOnce.Do(func(){close(ready)})
 }
 
 func (m *Master) ReadyForTest() <-chan struct{} {
+	m.readyMu.Lock()
 	if m.ready==nil{m.ready=make(chan struct{})}
-	return m.ready
+	ready:=m.ready
+	m.readyMu.Unlock()
+	return ready
 }
 
 func (m *Master) ReadinessForTest() error {
