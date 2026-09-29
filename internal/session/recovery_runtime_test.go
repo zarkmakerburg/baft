@@ -34,6 +34,9 @@ func recoveryFixture(t *testing.T,n int)(*Peer,*bytes.Buffer,context.Context,con
 		fl.finSent=true
 		p.flows[id]=fl
 	}
+	// Unit fixtures do not run a real peer reader. Model the cumulative ACK
+	// proof that the real Runtime obtains from authenticated peer acceptance.
+	p.recovery.peerAcceptanceTestHook=func(fl *flow,end uint64){ _ = fl.onAck(end) }
 	ctx,cancel:=context.WithCancel(context.Background())
 	return p,&old,ctx,cancel
 }
@@ -477,11 +480,15 @@ func TestFinalizeRetryIsIdempotent(t *testing.T){
 		if stage=="replay_write"{calls++;if calls==2{return errors.New("fail after replay prefix")}}
 		return nil
 	}
+	// This test intentionally withholds peer acceptance for the first written
+	// replay prefix so the exact transaction must conservatively retransmit it.
+	p.recovery.peerAcceptanceTestHook=nil
 	res,err:=p.CommitPreparedRecovery(ctx,ctl)
 	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("result=%+v err=%v",res,err)}
 	reply:=statusReplyFor(ctl,RecoveryResolutionCommitted)
 	if err:=p.NoteCommittedResolution(reply);err!=nil{t.Fatal(err)}
 	p.recovery.postCommitFault=nil
+	p.recovery.peerAcceptanceTestHook=func(fl *flow,end uint64){ _ = fl.onAck(end) }
 	var second bytes.Buffer
 	if err:=p.RebindCommittedCarrier(ctx,ctl,Carrier{In:bytes.NewReader(nil),Out:&second});err!=nil{t.Fatal(err)}
 	if err:=p.FinalizeRecoveryCommit(ctx,ctl);err!=nil{t.Fatal(err)}
