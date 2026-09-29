@@ -60,6 +60,9 @@ type RecoveryAuthoritySnapshot struct {
 	PreparedIncarnation uint64
 	PreparedID string
 	SenderID string
+	SenderStopped bool
+	PostCommitFailures uint64
+	RecoverySignalPending bool
 	Frozen bool
 	ActivationComplete bool
 	TxnState session.RecoveryTxnState
@@ -202,7 +205,8 @@ func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
 	for _,p:=range peers{
 		tx,ok:=p.RecoveryTransactionIdentity()
 		prep:=p.RecoveryPreparedOwnershipForTest()
-		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),PreparedIncarnation:prep.PreparedIncarnation,PreparedID:prep.PreparedID,SenderID:prep.SenderID,Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
+		stats:=p.RecoveryStats()
+		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),PreparedIncarnation:prep.PreparedIncarnation,PreparedID:prep.PreparedID,SenderID:prep.SenderID,SenderStopped:prep.SenderStopped,PostCommitFailures:stats.PostCommitFailures,RecoverySignalPending:p.RecoverySignalPendingForTest(),Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
 		if ok{s.CandidateID=tx.CandidateID;s.NextEpoch=tx.NextEpoch;s.PlanDigest=tx.PlanDigest}
 		out=append(out,s)
 	}
