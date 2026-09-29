@@ -1,7 +1,6 @@
 package node
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -109,6 +108,11 @@ func (r *Runtime) SetRecoveryFinalizeOwnershipHookForTest(fn func(string,session
 	for _,p:=range peers{p.SetRecoveryFinalizeOwnershipHookForTest(fn)}
 }
 
+type recoveryTestCarrierReader struct{ctx context.Context}
+func (r *recoveryTestCarrierReader) Read([]byte)(int,error){<-r.ctx.Done();return 0,r.ctx.Err()}
+type recoveryTestCarrierWriter struct{}
+func (*recoveryTestCarrierWriter) Write(p []byte)(int,error){return len(p),nil}
+
 func (r *Runtime) RebindCurrentPreparedRecoveryForTest(ctx context.Context) (session.RecoveryPreparedOwnershipForTest,error) {
 	r.peerMu.Lock()
 	peers:=make([]*session.Peer,0,len(r.peers))
@@ -118,8 +122,9 @@ func (r *Runtime) RebindCurrentPreparedRecoveryForTest(ctx context.Context) (ses
 	p:=peers[0]
 	ctl,ok:=p.RecoveryTransactionIdentity()
 	if !ok{return session.RecoveryPreparedOwnershipForTest{},errors.New("recovery transaction unavailable")}
-	var out bytes.Buffer
-	if err:=p.RebindPreparedRecovery(ctx,ctl,session.Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{return session.RecoveryPreparedOwnershipForTest{},err}
+	in:=&recoveryTestCarrierReader{ctx:ctx}
+	out:=&recoveryTestCarrierWriter{}
+	if err:=p.RebindPreparedRecovery(ctx,ctl,session.Carrier{In:in,Out:out});err!=nil{return session.RecoveryPreparedOwnershipForTest{},err}
 	return p.RecoveryPreparedOwnershipForTest(),nil
 }
 
