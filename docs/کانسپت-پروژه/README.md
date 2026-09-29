@@ -53,4 +53,7 @@
 - `بافت-توزیع‌شده/` — Multi-region و Regional Control Plane زیر یک Trust Authority.
 - `بافت-غیرمتمرکز/` — Federation میان Trust Domainهای مستقل، بدون فرض Permissionless Mesh.
 
+
+- `اینترنت-مقاوم-و-مش/` — Mesh، Island Mode، DTN، local-first services و Rejoin پس از قطع گسترده.
+
 </div>
