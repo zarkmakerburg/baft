@@ -647,6 +647,33 @@ func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
 	return out
 }
 
+func (p *Peer) extendExactReplayHighWatermark(fl *flow,end uint64) {
+	if p.recovery==nil||fl==nil||end==0{return}
+	a:=p.recovery
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.prepared==nil{return}
+	for i:=range a.prepared.flows{
+		act:=&a.prepared.flows[i]
+		if act.flow==fl&&end>act.replayHighWatermark{act.replayHighWatermark=end;return}
+	}
+}
+
+func (p *Peer) markExactTerminalObligation(fl *flow,sendFIN,ackPeerFIN bool,final uint64) {
+	if p.recovery==nil||fl==nil{return}
+	a:=p.recovery
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.prepared==nil{return}
+	for i:=range a.prepared.flows{
+		act:=&a.prepared.flows[i]
+		if act.flow!=fl{continue}
+		if sendFIN{act.resendFIN=true;act.finFinal=final}
+		if ackPeerFIN{act.ackPeerFIN=true}
+		return
+	}
+}
+
 func (p *Peer) RecoveryActivationComplete() bool {
 	if p.recovery==nil{return false}
 	a:=p.recovery
@@ -1363,10 +1390,13 @@ func (p *Peer) replayCurrentUnprovenState(ctx context.Context,prep *preparedReco
 			p.traceRecoveryDiagnostic("REBIND_REPLAY_WRITE_SUCCESS",SenderStopUnknown,fmt.Errorf("offset=%d end=%d",fr.Offset,fr.Offset+uint64(len(fr.Payload))),"",prep.sender,ctl,token.PreparedIncarnation,generation)
 		}
 		if finSent&&!finAcked{
+			act.resendFIN=true
+			act.finFinal=final
 			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{return err}
 			if !p.recoveryAttemptCurrent(token){return ErrStaleRecoveryIncarnation}
 		}
 		if ackPeerFIN{
+			act.ackPeerFIN=true
 			if err:=p.withCurrentRecoveryAttempt(token,func()error{return p.ackRemoteFin(fl)});err!=nil{return err}
 		}
 	}
