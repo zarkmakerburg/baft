@@ -1,5 +1,7 @@
 package integration_test
 
+// Identity-stable topology gate: N=6 remains a historical regression fixture; semantic identity is keyed by stable NodeID/RouteID.
+
 import (
 	"bytes"
 	"context"
