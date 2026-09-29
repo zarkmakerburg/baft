@@ -155,10 +155,6 @@ type RecoveryAdapter struct {
 	peer *Peer
 	beforeCommit func() error
 	postCommitFault func(string) error
-	// peerAcceptanceTestHook is nil in Runtime. Deterministic in-package unit
-	// fixtures may use it to model the peer ACK that a real carrier would
-	// deliver after accepting replay bytes.
-	peerAcceptanceTestHook func(*flow,uint64)
 	engine *recovery.Engine
 	mu sync.Mutex
 	frozen bool
@@ -944,9 +940,6 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			if end>replayAcceptThrough{replayAcceptThrough=end}
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
-			}
-			if a.peerAcceptanceTestHook!=nil {
-				a.peerAcceptanceTestHook(fl,end)
 			}
 			// A successful carrier write is not delivery evidence and does not
 			// advance txAcked. Replay frames remain ordered on the carrier, but
