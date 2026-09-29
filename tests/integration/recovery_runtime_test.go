@@ -198,7 +198,14 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	pair.exRuntime=node.NewRuntime()
 	pair.irRuntime=node.NewRuntime()
 	go func(){pair.exDone<-pair.exRuntime.Run(ctx,ex)}()
-	waitTCP(t,ex.Server.Listen,time.Now().Add(6*time.Second))
+	select{
+	case <-pair.exRuntime.ListenerReadyForTest():
+		actual,startErr:=pair.exRuntime.ListenerReadinessForTest()
+		if startErr!=nil{t.Fatalf("EX listener startup failed: %v",startErr)}
+		if actual!=ex.Server.Listen{t.Fatalf("EX listener bound unexpected address got=%s want=%s",actual,ex.Server.Listen)}
+	case <-time.After(6*time.Second):
+		t.Fatalf("EX listener readiness condition not reached configured=%s",ex.Server.Listen)
+	}
 	go func(){pair.irDone<-pair.irRuntime.Run(ctx,ir)}()
 	waitTCP(t,ir.Routes[0].Listen,time.Now().Add(8*time.Second))
 	time.Sleep(50*time.Millisecond)
