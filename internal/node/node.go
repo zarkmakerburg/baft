@@ -69,6 +69,10 @@ type Runtime struct {
 	listenerStartup ListenerStartupState
 	metricsTestMu sync.Mutex
 	metricsListenerForTest net.Listener
+	dialerReadyOnce sync.Once
+	dialerReady chan struct{}
+	dialerReadyMu sync.Mutex
+	dialerReadyErr error
 }
 
 type RecoveryAuthoritySnapshot struct {
@@ -285,6 +289,7 @@ func NewRuntime() *Runtime {
 		routeStats: map[string]telemetry.RouteSnapshot{},
 		sessions: map[string]*session.Peer{},
 		listenerReady: make(chan struct{}),
+		dialerReady: make(chan struct{}),
 	}
 	r.noiseLatencyMS.Store(-1)
 	return r
@@ -314,6 +319,20 @@ func (r *Runtime) ListenerReadyForTest() <-chan struct{} { return r.listenerRead
 func (r *Runtime) ListenerReadinessForTest() (string,error) {
 	r.listenerReadyMu.Lock();defer r.listenerReadyMu.Unlock()
 	return r.listenerReadyAddr,r.listenerReadyErr
+}
+
+func (r *Runtime) signalDialerReady(err error) {
+	r.dialerReadyMu.Lock()
+	if r.dialerReadyErr==nil&&err!=nil{r.dialerReadyErr=err}
+	r.dialerReadyMu.Unlock()
+	r.dialerReadyOnce.Do(func(){close(r.dialerReady)})
+}
+
+func (r *Runtime) DialerReadyForTest() <-chan struct{} { return r.dialerReady }
+
+func (r *Runtime) DialerReadinessForTest() error {
+	r.dialerReadyMu.Lock();defer r.dialerReadyMu.Unlock()
+	return r.dialerReadyErr
 }
 
 func (r *Runtime) ListenerStartupStateForTest() ListenerStartupState {
@@ -347,6 +366,11 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
 	if cfg.Node.Role=="listener" {
 		defer func(){
 			if retErr!=nil { r.signalListenerReady("",retErr) }
+		}()
+	}
+	if cfg.Node.Role=="dialer" {
+		defer func(){
+			if retErr!=nil { r.signalDialerReady(retErr) }
 		}()
 	}
 	if err := config.Validate(cfg); err != nil {
@@ -818,6 +842,10 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 	if len(listeners) == 0 {
 		return errors.New("dialer requires at least one outbound route")
 	}
+	// Route listener readiness is a lifecycle event. Tests and cluster startup
+	// may wait for this exact post-bind point instead of probing TCP until it
+	// happens to accept.
+	r.signalDialerReady(nil)
 
 	select {
 	case <-ctx.Done():
