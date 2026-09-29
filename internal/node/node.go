@@ -67,6 +67,8 @@ type Runtime struct {
 	listenerReadyErr error
 	listenerStartupMu sync.Mutex
 	listenerStartup ListenerStartupState
+	metricsTestMu sync.Mutex
+	metricsListenerForTest net.Listener
 }
 
 type RecoveryAuthoritySnapshot struct {
@@ -317,6 +319,25 @@ func (r *Runtime) ListenerReadinessForTest() (string,error) {
 func (r *Runtime) ListenerStartupStateForTest() ListenerStartupState {
 	r.listenerStartupMu.Lock();defer r.listenerStartupMu.Unlock()
 	return r.listenerStartup
+}
+
+func (r *Runtime) SetMetricsListenerForTest(ln net.Listener) {
+	r.metricsTestMu.Lock()
+	r.metricsListenerForTest=ln
+	r.metricsTestMu.Unlock()
+}
+
+func (r *Runtime) takeMetricsListenerForTest(addr string) (net.Listener,error) {
+	r.metricsTestMu.Lock()
+	ln:=r.metricsListenerForTest
+	r.metricsListenerForTest=nil
+	r.metricsTestMu.Unlock()
+	if ln==nil{return nil,nil}
+	if ln.Addr().String()!=addr{
+		_ = ln.Close()
+		return nil,fmt.Errorf("test metrics listener address mismatch got=%s want=%s",ln.Addr().String(),addr)
+	}
+	return ln,nil
 }
 
 func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
