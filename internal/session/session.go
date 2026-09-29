@@ -494,10 +494,27 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 			}
 			return err
 		}
+		fl.mu.Lock()
+		beforeAck:=fl.txAcked
+		fl.mu.Unlock()
 		if err := fl.onAck(fr.Offset); err != nil {
 			return err
 		}
 		p.senderNow().updatePressure(fl.id, fl.replayPressure())
+		if p.recoveryEnabled && fr.Offset>beforeAck {
+			ctl:=RecoveryControl{}
+			inc:=uint64(0)
+			if p.recovery!=nil {
+				p.recovery.mu.Lock()
+				if p.recovery.prepared!=nil {
+					ctl=p.recovery.prepared.control
+					inc=p.recovery.prepared.incarnation
+				}
+				p.recovery.mu.Unlock()
+			}
+			_,_,gen:=p.currentCarrierIdentity()
+			p.traceRecoveryDiagnostic("REPLAY_ACK_ACCEPTED",SenderStopUnknown,fmt.Errorf("stream=%d accepted=%d previous=%d",fl.id,fr.Offset,beforeAck),"",p.senderNow(),ctl,inc,gen)
+		}
 		return nil
 	case protocol.TypeData:
 		fl, err := p.getOpenFlow(fr.StreamID)
