@@ -309,6 +309,14 @@ func (p *Peer) RecoveryPreparedOwnershipForTest() RecoveryPreparedOwnershipForTe
 	return preparedOwnershipSnapshotForTest(a.prepared)
 }
 
+
+func (p *Peer) StaleFinalizeFailureForTest(old RecoveryPreparedOwnershipForTest,err error) error {
+	if err==nil{err=ErrCarrierUnavailable}
+	token:=RecoveryAttemptToken{Transaction:old.Transaction,PreparedIncarnation:old.PreparedIncarnation}
+	_,out:=p.markPostCommitFailureForAttempt(token,err,old.Transaction,old.ActivatedGeneration)
+	return out
+}
+
 func (p *Peer) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
 	if p.recovery==nil{return}
 	p.recovery.mu.Lock()
