@@ -879,6 +879,8 @@ func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
 	ack, duplicate, err := fl.acceptData(fr.Offset, fr.Payload)
 	if err != nil {
 		if p.recoveryEnabled && errors.Is(err,ErrRecoverableDataGap) {
+			_,_,currentGeneration:=p.currentCarrierIdentity()
+			p.traceRecoveryFrameDiagnostic("DATA_GAP",fr,currentGeneration,currentGeneration,before,fmt.Errorf("%w: offset=%d rx_next=%d",err,fr.Offset,before))
 			// A later replay frame can still be buffered on a physical carrier
 			// whose earlier frame was written but never accepted. Local write
 			// order is not peer-delivery proof. Preserve the Flow and force an
