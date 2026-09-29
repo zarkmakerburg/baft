@@ -208,24 +208,56 @@ func (p *Peer) CompleteRecoveryFinalization(ctl RecoveryControl) error {
 	return nil
 }
 
+func clonePreparedFlowForIncarnation(in preparedFlowRecovery) preparedFlowRecovery {
+	out:=preparedFlowRecovery{
+		flow:in.flow,replayed:in.replayed,replayFrom:in.replayFrom,ackAdvance:in.ackAdvance,
+		creditAdvance:in.creditAdvance,finAckAdvance:in.finAckAdvance,
+		finAckConfirmAdvance:in.finAckConfirmAdvance,resendFIN:in.resendFIN,
+		finFinal:in.finFinal,ackPeerFIN:in.ackPeerFIN,
+	}
+	out.replay=make([]protocol.Frame,len(in.replay))
+	for i,fr:=range in.replay{
+		out.replay[i]=fr
+		out.replay[i].Payload=append([]byte(nil),fr.Payload...)
+	}
+	return out
+}
+
+func clonePreparedForRebind(old *preparedRecovery,c Carrier,sender *outboundSender,runCtx context.Context) *preparedRecovery {
+	if old==nil{return nil}
+	flows:=make([]preparedFlowRecovery,len(old.flows))
+	for i:=range old.flows{flows[i]=clonePreparedFlowForIncarnation(old.flows[i])}
+	inc:=old.incarnation+1
+	if inc==0{inc=1}
+	return &preparedRecovery{
+		control:old.control,incarnation:inc,carrier:c,sender:sender,runCtx:runCtx,flows:flows,
+		published:old.published,finalized:old.finalized,activationComplete:old.activationComplete,
+		rebindPending:true,
+	}
+}
+
 func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c Carrier) error {
 	if p.recovery==nil{return errors.New("recovery is disabled")}
 	if c.In==nil||c.Out==nil{return errors.New("resolution carrier input/output required")}
 	a:=p.recovery
+	a.ownershipMu.Lock()
+	defer a.ownershipMu.Unlock()
 	a.mu.Lock()
-	prep:=a.prepared
-	if prep==nil||!sameRecoveryTransaction(prep.control,ctl){a.mu.Unlock();return recovery.ErrNotPrepared}
+	oldPrep:=a.prepared
+	if oldPrep==nil||!sameRecoveryTransaction(oldPrep.control,ctl){a.mu.Unlock();return recovery.ErrNotPrepared}
 	newSender:=newOutboundSender(&frameWriter{w:c.Out},p.recoveryEnabled)
-	for _,act:=range prep.flows{
+	for _,act:=range oldPrep.flows{
 		if err:=newSender.addFlow(act.flow.id);err!=nil{a.mu.Unlock();return err}
 	}
-	old:=prep.sender
-	prep.carrier=c
-	prep.sender=newSender
-	prep.rebindPending=true
-	if p.runCtx!=nil{prep.runCtx=p.runCtx}else{prep.runCtx=ctx}
+	runCtx:=ctx
+	p.mu.Lock()
+	if p.runCtx!=nil{runCtx=p.runCtx}
+	p.mu.Unlock()
+	newPrep:=clonePreparedForRebind(oldPrep,c,newSender,runCtx)
+	oldSender:=oldPrep.sender
+	a.prepared=newPrep
 	a.mu.Unlock()
-	if old!=nil{old.stop(ErrCarrierUnavailable)}
+	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
 	return nil
 }
 
@@ -434,7 +466,7 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 		}
 	}
 	prep=&preparedRecovery{
-		control:ctl,carrier:c,sender:newSender,runCtx:runCtx,flows:preparedFlows,
+		control:ctl,incarnation:1,carrier:c,sender:newSender,runCtx:runCtx,flows:preparedFlows,
 		published:true,finalized:true,activationComplete:true,rebindPending:true,
 	}
 	a.mu.Lock()
