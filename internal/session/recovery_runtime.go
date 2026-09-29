@@ -114,6 +114,7 @@ type preparedFlowRecovery struct {
 type preparedRecovery struct {
 	control RecoveryControl
 	incarnation uint64
+	physicalCarrierInstanceID uint64
 	carrier Carrier
 	sender *outboundSender
 	runCtx context.Context
@@ -148,11 +149,16 @@ type RecoveryPreparedOwnershipForTest struct {
 	CarrierInID string
 	CarrierOutID string
 	ActivatedGeneration uint64
+	PhysicalCarrierInstanceID uint64
 	RebindPending bool
 }
 
 type RecoveryDiagnosticEvent struct {
 	Sequence uint64
+	ProducerKind DataProducerKind
+	PhysicalCarrierInstanceID uint64
+	WriteSequence uint64
+	ReadSequence uint64
 	Event string
 	Source SenderStopSource
 	Error string
@@ -170,6 +176,16 @@ type RecoveryDiagnosticEvent struct {
 	DecodedGeneration uint64
 	CurrentGeneration uint64
 	FlowRxNext uint64
+	TxnState RecoveryTxnState
+	ActivationComplete bool
+	Frozen bool
+	RebindPending bool
+	ReplacementReadyGeneration uint64
+	TxNext uint64
+	TxAcked uint64
+	ReplayFrom uint64
+	PeerAccepted uint64
+	RxWritten uint64
 }
 
 func preparedOwnershipSnapshotForTest(prep *preparedRecovery) RecoveryPreparedOwnershipForTest {
@@ -186,6 +202,7 @@ func preparedOwnershipSnapshotForTest(prep *preparedRecovery) RecoveryPreparedOw
 		CarrierInID:fmt.Sprintf("%p",prep.carrier.In),
 		CarrierOutID:fmt.Sprintf("%p",prep.carrier.Out),
 		ActivatedGeneration:prep.activatedGeneration,
+		PhysicalCarrierInstanceID:prep.physicalCarrierInstanceID,
 		RebindPending:prep.rebindPending,
 	}
 }
@@ -231,6 +248,8 @@ type RecoveryAdapter struct {
 	ownershipMu sync.RWMutex
 	diagMu sync.Mutex
 	diagSeq uint64
+	readSeqMu sync.Mutex
+	readSeq map[uint64]uint64
 	diagnostics []RecoveryDiagnosticEvent
 	diagnosticHook func(RecoveryDiagnosticEvent)
 	frozen bool
@@ -262,11 +281,58 @@ type RecoveryAdapter struct {
 }
 
 func newRecoveryAdapter(p *Peer, eng *recovery.Engine) *RecoveryAdapter {
-	return &RecoveryAdapter{peer:p,engine:eng,txnState:RecoveryTxnIdle,failures:map[string]uint64{}}
+	return &RecoveryAdapter{peer:p,engine:eng,txnState:RecoveryTxnIdle,failures:map[string]uint64{},readSeq:map[uint64]uint64{}}
+}
+
+func physicalCarrierInstanceID(epoch,incarnation uint64) uint64 {
+	if epoch==0{epoch=1}
+	if incarnation==0{incarnation=1}
+	return (epoch<<32)|incarnation
+}
+
+func (a *RecoveryAdapter) nextReadSequence(physical uint64) uint64 {
+	if a==nil||physical==0{return 0}
+	a.readSeqMu.Lock();defer a.readSeqMu.Unlock()
+	a.readSeq[physical]++
+	return a.readSeq[physical]
+}
+
+func (p *Peer) enrichRecoveryDiagnostic(ev *RecoveryDiagnosticEvent) {
+	if p==nil||p.recovery==nil||ev==nil{return}
+	a:=p.recovery
+	if a.mu.TryLock() {
+		ev.TxnState=a.txnState
+		ev.Frozen=a.frozen
+		if a.prepared!=nil {
+			ev.ActivationComplete=a.prepared.activationComplete
+			ev.RebindPending=a.prepared.rebindPending
+			if ev.PreparedIncarnation==0{ev.PreparedIncarnation=a.prepared.incarnation}
+			if ev.PhysicalCarrierInstanceID==0{ev.PhysicalCarrierInstanceID=a.prepared.physicalCarrierInstanceID}
+			if ev.StreamID!=0 {
+				for _,act:=range a.prepared.flows{
+					if act.flow!=nil&&act.flow.id==ev.StreamID{ev.ReplayFrom=act.replayFrom;break}
+				}
+			}
+		}
+		a.mu.Unlock()
+	}
+	p.replacementMu.Lock();ev.ReplacementReadyGeneration=p.replacementReadyGeneration;p.replacementMu.Unlock()
+	p.mu.Lock()
+	if ev.CarrierGeneration==0{ev.CarrierGeneration=p.carrierGeneration}
+	if ev.PhysicalCarrierInstanceID==0{ev.PhysicalCarrierInstanceID=p.carrierPhysicalInstanceID}
+	fl:=p.flows[ev.StreamID]
+	p.mu.Unlock()
+	if fl!=nil {
+		fl.mu.Lock()
+		ev.TxNext=fl.txNext;ev.TxAcked=fl.txAcked;ev.PeerAccepted=fl.txAcked
+		ev.FlowRxNext=fl.rxNext;ev.RxWritten=fl.rxWritten
+		fl.mu.Unlock()
+	}
 }
 
 func (a *RecoveryAdapter) appendDiagnostic(ev RecoveryDiagnosticEvent) {
 	if a==nil{return}
+	if a.peer!=nil{a.peer.enrichRecoveryDiagnostic(&ev)}
 	a.diagMu.Lock()
 	a.diagSeq++
 	ev.Sequence=a.diagSeq
@@ -281,17 +347,26 @@ func (a *RecoveryAdapter) recordSenderStop(ev SenderStopEvent) {
 	a.appendDiagnostic(RecoveryDiagnosticEvent{
 		Event:"SENDER_STOPPED",Source:ev.Source,Error:ev.Error,SessionID:ev.SessionID,Epoch:ev.Epoch,
 		CandidateID:ev.CandidateID,PlanDigest:ev.PlanDigest,PreparedIncarnation:ev.PreparedIncarnation,
-		CarrierGeneration:ev.CarrierGeneration,SenderID:ev.SenderID,
+		CarrierGeneration:ev.CarrierGeneration,SenderID:ev.SenderID,PhysicalCarrierInstanceID:ev.PhysicalCarrierInstanceID,
 	})
 }
 
 func (p *Peer) bindRecoverySenderDiagnostic(s *outboundSender,ctl RecoveryControl,incarnation,generation uint64) {
 	if p==nil||p.recovery==nil||s==nil{return}
+	physical:=physicalCarrierInstanceID(ctl.NextEpoch,incarnation)
 	s.bindRecoveryDiagnostic(senderDiagnosticBinding{
 		SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
-		PreparedIncarnation:incarnation,CarrierGeneration:generation,
+		PreparedIncarnation:incarnation,CarrierGeneration:generation,PhysicalCarrierInstanceID:physical,
 	})
 	s.setStopObserver(p.recovery.recordSenderStop)
+	s.setDataWriteObserver(func(dw DataWriteDiagnostic){
+		p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{
+			Event:dw.Event,ProducerKind:dw.ProducerKind,StreamID:dw.StreamID,FrameType:protocol.TypeData,
+			FrameOffset:dw.Offset,FrameEnd:dw.End,SenderID:dw.SenderID,PreparedIncarnation:dw.PreparedIncarnation,
+			CarrierGeneration:dw.CarrierGeneration,PhysicalCarrierInstanceID:dw.PhysicalCarrierInstanceID,WriteSequence:dw.WriteSequence,
+			SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
+		})
+	})
 }
 
 func (p *Peer) traceRecoveryDiagnostic(event string,source SenderStopSource,err error,waitReason string,s *outboundSender,ctl RecoveryControl,incarnation,generation uint64) {
@@ -308,13 +383,17 @@ func (p *Peer) traceRecoveryFrameDiagnostic(event string,fr protocol.Frame,decod
 	ctl,ok:=p.RecoveryTransactionIdentity()
 	if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
 	p.recovery.mu.Lock()
-	inc:=uint64(0)
-	if p.recovery.prepared!=nil{inc=p.recovery.prepared.incarnation}
+	inc:=uint64(0);physical:=uint64(0)
+	if p.recovery.prepared!=nil{inc=p.recovery.prepared.incarnation;physical=p.recovery.prepared.physicalCarrierInstanceID}
 	p.recovery.mu.Unlock()
+	if physical==0 { p.mu.Lock();physical=p.carrierPhysicalInstanceID;p.mu.Unlock() }
+	readSeq:=uint64(0)
+	if fr.Type==protocol.TypeData{readSeq=p.recovery.nextReadSequence(physical)}
 	msg:="";if err!=nil{msg=err.Error()}
 	p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{
 		Event:event,Error:msg,SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
-		PreparedIncarnation:inc,CarrierGeneration:currentGeneration,FrameType:fr.Type,FrameOffset:fr.Offset,
+		PreparedIncarnation:inc,CarrierGeneration:currentGeneration,PhysicalCarrierInstanceID:physical,ReadSequence:readSeq,
+		FrameType:fr.Type,StreamID:fr.StreamID,FrameOffset:fr.Offset,
 		FrameEnd:fr.Offset+uint64(len(fr.Payload)),DecodedGeneration:decodedGeneration,CurrentGeneration:currentGeneration,FlowRxNext:rxNext,
 	})
 }
@@ -926,7 +1005,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 	peerFlow:=make(map[uint64]recovery.FlowSnapshot,len(peerSnap.Flows))
 	for _,sf:=range peerSnap.Flows{peerFlow[sf.StreamID]=sf}
 	if runCtx==nil{runCtx=ctx}
-	prep:=&preparedRecovery{control:ctl,incarnation:1,carrier:c,sender:newSender,runCtx:runCtx,flows:make([]preparedFlowRecovery,0,len(plan.Flows))}
+	prep:=&preparedRecovery{control:ctl,incarnation:1,physicalCarrierInstanceID:physicalCarrierInstanceID(ctl.NextEpoch,1),carrier:c,sender:newSender,runCtx:runCtx,flows:make([]preparedFlowRecovery,0,len(plan.Flows))}
 	p.bindRecoverySenderDiagnostic(newSender,ctl,1,0)
 	p.traceRecoveryDiagnostic("PREPARED_CREATED",SenderStopUnknown,nil,"",newSender,ctl,1,0)
 	for _,fp:=range plan.Flows{
@@ -1140,6 +1219,7 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	p.carrierEpoch=ctl.NextEpoch
 	p.carrierGeneration++
 	activatedGeneration:=p.carrierGeneration
+	p.carrierPhysicalInstanceID=prep.physicalCarrierInstanceID
 	p.sender=prep.sender
 	prep.sender.setDiagnosticCarrierGeneration(activatedGeneration)
 	runCtx:=prep.runCtx
@@ -1268,7 +1348,7 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
 			p.traceRecoveryDiagnostic("REPLAY_WRITE_BEGIN",SenderStopUnknown,fmt.Errorf("offset=%d end=%d",fr.Offset,fr.Offset+uint64(len(fr.Payload))),"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
-			if err:=attemptSender.sendData(ctx,fl,fr);err!=nil{if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
+			if err:=attemptSender.sendDataWithProducer(ctx,fl,fr,ProducerReplay);err!=nil{if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
 			a.replayed.Add(uint64(len(fr.Payload)))
 			p.traceRecoveryDiagnostic("REPLAY_WRITE_SUCCESS",SenderStopUnknown,fmt.Errorf("offset=%d end=%d",fr.Offset,fr.Offset+uint64(len(fr.Payload))),"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
