@@ -69,6 +69,8 @@ type Runtime struct {
 	listenerStartup ListenerStartupState
 	metricsTestMu sync.Mutex
 	metricsListenerForTest net.Listener
+	listenerProviderMu sync.Mutex
+	listenerProviderForTest ListenerProvider
 	dialerReadyOnce sync.Once
 	dialerReady chan struct{}
 	dialerReadyMu sync.Mutex
@@ -606,8 +608,9 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 
 	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
 	r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.BindAttempted=true})
-	log.Printf("baft listener startup: bind attempted configured=%s",cfg.Server.Listen)
-	ln, err := net.Listen("tcp", cfg.Server.Listen)
+	log.Printf("baft listener startup: acquire configured=%s",cfg.Server.Listen)
+	ln, err := r.takeEndpointListenerForTest(EndpointServer, cfg.Node.ID, cfg.Server.Listen)
+	if err==nil && ln==nil { ln,err=net.Listen("tcp",cfg.Server.Listen) }
 	if err != nil {
 		r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.StartupError=fmt.Errorf("listen %s: %w",cfg.Server.Listen,err)})
 		log.Printf("baft listener startup: bind failed configured=%s err=%v",cfg.Server.Listen,err)
@@ -812,7 +815,8 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 		if cr.Direction != "outbound" {
 			continue
 		}
-		ln, err := net.Listen("tcp", cr.Listen)
+		ln, err := r.takeEndpointListenerForTest(EndpointRoute, cr.ID, cr.Listen)
+		if err==nil && ln==nil { ln,err=net.Listen("tcp",cr.Listen) }
 		if err != nil {
 			return fmt.Errorf("route %s listen: %w", cr.ID, err)
 		}
