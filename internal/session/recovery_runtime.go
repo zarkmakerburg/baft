@@ -1048,7 +1048,10 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 	a.mu.Unlock()
 
 	if finalizeHook!=nil{finalizeHook("before_use",preparedOwnershipSnapshotForTest(prep))}
-	if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
+	if !p.recoveryAttemptCurrent(attemptToken){
+		if finalizeHook!=nil{finalizeHook("stale_detected",preparedOwnershipSnapshotForTest(prep))}
+		return 0,ErrStaleRecoveryIncarnation
+	}
 	if attemptSender==nil||attemptSender.isStopped(){
 		_,e:=p.markPostCommitFailureForAttempt(attemptToken,ErrCarrierUnavailable,ctl,0);return 0,e
 	}
@@ -1059,6 +1062,11 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 	if err!=nil{return 0,err}
 	a.mu.Lock();if a.prepared==prep{prep.activatedGeneration=activatedGeneration};a.mu.Unlock()
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
+	if finalizeHook!=nil{finalizeHook("after_activation",preparedOwnershipSnapshotForTest(prep))}
+	if !p.recoveryAttemptCurrent(attemptToken){
+		if finalizeHook!=nil{finalizeHook("stale_detected",preparedOwnershipSnapshotForTest(prep))}
+		return 0,ErrStaleRecoveryIncarnation
+	}
 
 	if a.postCommitFault!=nil {
 		if err:=a.postCommitFault("after_authority_commit");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
