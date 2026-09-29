@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -1214,6 +1215,158 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	t.Logf("PASS local write != peer acceptance; conservative replay deduped application bytes hash=%x accepted_before=%d accepted_mid=%d",have,before.PeerAccepted,mid.PeerAccepted)
 }
 
+
+
+func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	var mode atomic.Int32
+	mode.Store(1)
+	oldBlocked:=make(chan struct{});oldRelease:=make(chan struct{})
+	replay2Blocked:=make(chan struct{});replay2Release:=make(chan struct{})
+	replay3Blocked:=make(chan struct{});replay3Release:=make(chan struct{})
+	var oldOnce,replay2Once,replay3Once sync.Once
+	p.exRuntime.SetRecoveryFrameHookForTest(func(stage string,fr protocol.Frame)bool{
+		if stage!="before_data_accept"{return false}
+		switch mode.Load(){
+		case 1:
+			oldOnce.Do(func(){close(oldBlocked)})
+			<-oldRelease
+			return true
+		case 2:
+			replay2Once.Do(func(){close(replay2Blocked)})
+			<-replay2Release
+			return true
+		case 3:
+			replay3Once.Do(func(){close(replay3Blocked)})
+			<-replay3Release
+			return true
+		default:
+			return false
+		}
+	})
+
+	activated3:=make(chan session.RecoveryDiagnosticEvent,1)
+	releaseActivation:=make(chan struct{})
+	beforeReplay3:=make(chan session.RecoveryDiagnosticEvent,1)
+	releaseBeforeReplay:=make(chan struct{})
+	replayWrite3:=make(chan session.RecoveryDiagnosticEvent,1)
+	ack3:=make(chan session.RecoveryDiagnosticEvent,1)
+	p.irRuntime.SetRecoveryDiagnosticHookForTest(func(ev session.RecoveryDiagnosticEvent){
+		if ev.PreparedIncarnation<2{return}
+		switch ev.Event{
+		case "CARRIER_ACTIVATED":
+			select{case activated3<-ev:default:}
+			<-releaseActivation
+		case "REPLAY_WRITE_BEGIN":
+			select{case beforeReplay3<-ev:default:}
+			<-releaseBeforeReplay
+		case "REPLAY_WRITE_SUCCESS":
+			select{case replayWrite3<-ev:default:}
+		case "REPLAY_ACK_ACCEPTED":
+			select{case ack3<-ev:default:}
+		}
+	})
+
+	payload:=make([]byte,3*protocol.MaxPayloadSize+777)
+	for i:=range payload{payload[i]=byte((i*29+7)%251)}
+	wantHash:=sha256.Sum256(payload)
+	got:=make([]byte,len(payload))
+	readDone:=make(chan error,1);go func(){_,err:=io.ReadFull(c,got);readDone<-err}()
+	writeDone:=make(chan error,1);go func(){_,err:=c.Write(payload);writeDone<-err}()
+
+	select{case <-oldBlocked:case <-time.After(8*time.Second):t.Fatal("old carrier DATA never reached pre-accept barrier")}
+	before:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return f.TxNext>=f.PeerAccepted+protocol.MaxPayloadSize})
+
+	var faultOnce sync.Once
+	replay2Written:=make(chan struct{})
+	releaseFault:=make(chan struct{})
+	p.irRuntime.SetRecoveryPostCommitFaultForTest(func(stage string)error{
+		if stage!="after_replay_write"{return nil}
+		fired:=false
+		faultOnce.Do(func(){fired=true;close(replay2Written)})
+		if fired{<-releaseFault;return errors.New("cut after replay write success before peer acceptance")}
+		return nil
+	})
+
+	mode.Store(2)
+	firstCut:=p.proxy.CutAll()
+	close(oldRelease)
+	select{case <-replay2Blocked:case <-time.After(8*time.Second):t.Fatal("generation2 replay never reached pre-accept barrier")}
+	select{case <-replay2Written:case <-time.After(8*time.Second):t.Fatal("generation2 sender never reported replay write success")}
+	midAuth:=oneRecoveryAuthority(t,p.irRuntime)
+	midPrep,err:=p.irRuntime.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
+	if midPrep.PreparedIncarnation==0||midPrep.SenderID==""{t.Fatalf("generation2 ownership unavailable: %+v",midPrep)}
+
+	secondCut:=p.proxy.CutAll()
+	mode.Store(3)
+	close(replay2Release)
+	close(releaseFault)
+
+	var act session.RecoveryDiagnosticEvent
+	select{case act=<-activated3:case <-time.After(8*time.Second):
+		t.Fatalf("generation3 never activated diagnostics=%+v",p.irRuntime.RecoveryDiagnosticsForTest())}
+	barrierA:=oneRecoveryAuthority(t,p.irRuntime)
+	prepA,err:=p.irRuntime.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
+	if prepA.SenderStopped||prepA.SenderID==midPrep.SenderID||prepA.PreparedIncarnation<=midPrep.PreparedIncarnation{
+		close(releaseActivation)
+		t.Fatalf("Barrier A sender/incarnation invalid mid=%+v current=%+v trace=%+v",midPrep,prepA,p.irRuntime.RecoveryDiagnosticsForTest())
+	}
+	if barrierA.Epoch!=2||barrierA.CandidateID!=midAuth.CandidateID||barrierA.PlanDigest!=midAuth.PlanDigest{
+		close(releaseActivation)
+		t.Fatalf("Barrier A transaction changed mid=%+v current=%+v",midAuth,barrierA)
+	}
+	accepted:=p.proxy.AcceptedConnectionIDs()
+	gen3ProxyID:=uint64(0);if len(accepted)>0{gen3ProxyID=accepted[len(accepted)-1]}
+	for _,id:=range secondCut{if id==gen3ProxyID{close(releaseActivation);t.Fatalf("generation3 proxy connection %d was in intentional CutAll cohort=%v first_cut=%v accepted=%v",gen3ProxyID,secondCut,firstCut,accepted)}}
+	t.Logf("Barrier A generation3 active sender=%s inc=%d gen=%d proxy_connection=%d cut_cohort=%v",prepA.SenderID,prepA.PreparedIncarnation,barrierA.CarrierGeneration,gen3ProxyID,secondCut)
+	close(releaseActivation)
+
+	var begin session.RecoveryDiagnosticEvent
+	select{case begin=<-beforeReplay3:case <-time.After(8*time.Second):
+		t.Fatalf("generation3 never reached pre-replay barrier trace=%+v",p.irRuntime.RecoveryDiagnosticsForTest())}
+	prepB,err:=p.irRuntime.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
+	if prepB.SenderStopped||prepB.SenderID!=fmt.Sprint(begin.SenderID)||prepB.PreparedIncarnation!=begin.PreparedIncarnation{
+		close(releaseBeforeReplay)
+		t.Fatalf("Barrier B sender not current begin=%+v prep=%+v trace=%+v",begin,prepB,p.irRuntime.RecoveryDiagnosticsForTest())
+	}
+	t.Logf("Barrier B sender alive sender=%s inc=%d gen=%d",prepB.SenderID,prepB.PreparedIncarnation,begin.CarrierGeneration)
+	close(releaseBeforeReplay)
+
+	select{case <-replay3Blocked:case <-time.After(8*time.Second):t.Fatalf("generation3 receiver did not block before acceptance trace=%+v",p.irRuntime.RecoveryDiagnosticsForTest())}
+	var written session.RecoveryDiagnosticEvent
+	select{case written=<-replayWrite3:case <-time.After(8*time.Second):t.Fatalf("generation3 replay write not observed trace=%+v",p.irRuntime.RecoveryDiagnosticsForTest())}
+	for i:=0;i<64;i++{runtime.Gosched()}
+	prepC,err:=p.irRuntime.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
+	authC:=oneRecoveryAuthority(t,p.irRuntime)
+	if prepC.SenderStopped||prepC.SenderID!=fmt.Sprint(written.SenderID){
+		t.Fatalf("Barrier C current sender stopped before peer ACK written=%+v prep=%+v trace=%+v",written,prepC,p.irRuntime.RecoveryDiagnosticsForTest())
+	}
+	if authC.Epoch!=2||authC.CandidateID!=midAuth.CandidateID||authC.PlanDigest!=midAuth.PlanDigest{
+		t.Fatalf("Barrier C transaction escaped mid=%+v current=%+v trace=%+v",midAuth,authC,p.irRuntime.RecoveryDiagnosticsForTest())
+	}
+	t.Logf("Barrier C replay written without acceptance sender=%s inc=%d gen=%d still_alive=true",prepC.SenderID,prepC.PreparedIncarnation,authC.CarrierGeneration)
+
+	close(replay3Release)
+	select{case <-ack3:case <-time.After(8*time.Second):t.Fatalf("generation3 peer acceptance proof not observed trace=%+v",p.irRuntime.RecoveryDiagnosticsForTest())}
+	select{case err:=<-writeDone:if err!=nil{t.Fatalf("client payload write: %v",err)};case <-time.After(12*time.Second):t.Fatal("client write timeout")}
+	select{case err:=<-readDone:if err!=nil{t.Fatalf("client payload read: %v",err)};case <-time.After(20*time.Second):t.Fatal("client payload read timeout")}
+	have:=sha256.Sum256(got)
+	if !bytes.Equal(got,payload)||have!=wantHash{t.Fatalf("payload mismatch got=%x want=%x trace=%+v",have,wantHash,p.irRuntime.RecoveryDiagnosticsForTest())}
+	finalIR,finalEX:=waitAuthorityPair(t,p,2,true)
+	finalPrep,err:=p.irRuntime.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
+	if finalIR.CandidateID!=midAuth.CandidateID||finalIR.PlanDigest!=midAuth.PlanDigest||finalIR.Epoch!=2||
+		finalPrep.PreparedIncarnation<=midPrep.PreparedIncarnation||finalPrep.SenderStopped||finalIR.Frozen||!finalIR.ActivationComplete{
+		t.Fatalf("final exact-rebind state invalid mid=%+v ir=%+v ex=%+v prep=%+v trace=%+v",midAuth,finalIR,finalEX,finalPrep,p.irRuntime.RecoveryDiagnosticsForTest())
+	}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened accepts_delta=%d",n)}
+	if final:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return f.PeerAccepted>=before.PeerAccepted});final.PeerAccepted<before.PeerAccepted{
+		t.Fatalf("peer acceptance frontier regressed before=%+v final=%+v",before,final)
+	}
+	t.Logf("PASS exact rebind current incarnation survived until replay acceptance sender=%s inc=%d generation=%d proxy_connection=%d hash=%x",finalPrep.SenderID,finalPrep.PreparedIncarnation,finalIR.CarrierGeneration,gen3ProxyID,have)
+}
 
 func closeWriteRecoveryConn(t *testing.T,c net.Conn){
 	t.Helper()
