@@ -282,7 +282,14 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 		r.Resources = a
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var backgroundWG sync.WaitGroup
+	// Runtime must not return while telemetry/probe writers can still mutate
+	// persistent state. This makes shutdown a deterministic lifecycle boundary
+	// for the durable spool and its atomic temp files.
+	defer func(){
+		cancel()
+		backgroundWG.Wait()
+	}()
 
 	if cfg.Telemetry.Enabled {
 		tokenEnv := cfg.Telemetry.AgentTokenEnv
@@ -297,12 +304,14 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
 		if queueLimit<=0{queueLimit=telemetry.DefaultQueueLimit}
 		exp, err := telemetry.NewPersistent(cfg.Node.ID, cfg.Telemetry.BCCURL, token, spoolPath, interval, queueLimit, r.telemetrySnapshot)
 		if err != nil { return fmt.Errorf("telemetry spool: %w",err) }
-		go exp.Run(runCtx)
+		backgroundWG.Add(1)
+		go func(){defer backgroundWG.Done();exp.Run(runCtx)}()
 		probeInterval := 10 * time.Second
 		if cfg.Telemetry.RouteProbeIntervalSeconds > 0 {
 			probeInterval = time.Duration(cfg.Telemetry.RouteProbeIntervalSeconds) * time.Second
 		}
-		go r.routeHealthLoop(runCtx, cfg, probeInterval, exp)
+		backgroundWG.Add(1)
+		go func(){defer backgroundWG.Done();r.routeHealthLoop(runCtx, cfg, probeInterval, exp)}()
 	}
 
 	metricsDone, stopMetrics, err := r.startMetrics(runCtx, cfg.Management.MetricsListen)
@@ -876,7 +885,10 @@ func (r *Runtime) routeHealthLoop(ctx context.Context,cfg config.Config,interval
 			r.routeStats[cr.ID]=next
 			r.routeMu.Unlock()
 		}
-		if changed && exp!=nil { go exp.SendOnce(ctx) }
+		// Keep route-change telemetry inside the Runtime lifecycle. A detached
+		// SendOnce could outlive Run() and recreate spool temp files while the
+		// caller is already tearing down its state directory.
+		if changed && exp!=nil { _ = exp.SendOnce(ctx) }
 	}
 	probeAll()
 	t:=time.NewTicker(interval);defer t.Stop()
