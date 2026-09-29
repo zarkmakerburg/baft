@@ -75,6 +75,7 @@ type outboundSender struct {
 	diag senderDiagnosticBinding
 	stopEvent SenderStopEvent
 	hasStopEvent bool
+	onStop func(SenderStopEvent)
 }
 
 func newOutboundSender(writer *frameWriter, recoverable ...bool) *outboundSender {
@@ -335,8 +336,11 @@ func (s *outboundSender) stopWithSource(source SenderStopSource,err error) {
 		}
 	}
 	close(s.done)
+	ev:=s.stopEvent
+	observer:=s.onStop
 	s.mu.Unlock()
 
+	if observer!=nil{observer(ev)}
 	for _, req := range pending {
 		select {
 		case req.done <- err:
@@ -406,4 +410,12 @@ func (s *outboundSender) stopEventSnapshot()(SenderStopEvent,bool) {
 	s.mu.Lock();defer s.mu.Unlock()
 	if !s.hasStopEvent{return SenderStopEvent{},false}
 	return s.stopEvent,true
+}
+
+
+func (s *outboundSender) setStopObserver(fn func(SenderStopEvent)) {
+	if s==nil{return}
+	s.mu.Lock()
+	s.onStop=fn
+	s.mu.Unlock()
 }
