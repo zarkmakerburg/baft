@@ -111,6 +111,25 @@ func (r *Runtime) SetRecoveryFinalizeOwnershipHookForTest(fn func(string,session
 	for _,p:=range peers{p.SetRecoveryFinalizeOwnershipHookForTest(fn)}
 }
 
+func (r *Runtime) SetRecoveryDiagnosticHookForTest(fn func(session.RecoveryDiagnosticEvent)) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	for _,p:=range peers{p.SetRecoveryDiagnosticHookForTest(fn)}
+}
+
+func (r *Runtime) RecoveryDiagnosticsForTest() []session.RecoveryDiagnosticEvent {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	var out []session.RecoveryDiagnosticEvent
+	for _,p:=range peers{out=append(out,p.RecoveryDiagnosticsForTest()...)}
+	sort.Slice(out,func(i,j int)bool{return out[i].Sequence<out[j].Sequence})
+	return out
+}
+
 type recoveryTestCarrierReader struct{ctx context.Context}
 func (r *recoveryTestCarrierReader) Read([]byte)(int,error){<-r.ctx.Done();return 0,r.ctx.Err()}
 type recoveryTestCarrierWriter struct{}
