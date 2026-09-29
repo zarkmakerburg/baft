@@ -142,6 +142,7 @@ type RecoveryPreparedOwnershipForTest struct {
 	PreparedID string
 	PreparedIncarnation uint64
 	SenderID string
+	SenderStopped bool
 	CarrierInID string
 	CarrierOutID string
 	ActivatedGeneration uint64
@@ -155,6 +156,7 @@ func preparedOwnershipSnapshotForTest(prep *preparedRecovery) RecoveryPreparedOw
 		PreparedID:fmt.Sprintf("%p",prep),
 		PreparedIncarnation:prep.incarnation,
 		SenderID:fmt.Sprintf("%p",prep.sender),
+		SenderStopped:func()bool{if prep.sender==nil{return true};return prep.sender.isStopped()}(),
 		CarrierInID:fmt.Sprintf("%p",prep.carrier.In),
 		CarrierOutID:fmt.Sprintf("%p",prep.carrier.Out),
 		ActivatedGeneration:prep.activatedGeneration,
