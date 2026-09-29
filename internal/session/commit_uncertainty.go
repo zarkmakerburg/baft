@@ -57,25 +57,36 @@ func (p *Peer) RecoveryTransactionIdentity()(RecoveryControl,bool){
 	return RecoveryControl{},false
 }
 
-func (p *Peer) HasCommitUncertainty() bool {
+func (p *Peer) NeedsExactTransactionResolution() bool {
 	if p.recovery==nil{return false}
 	a:=p.recovery
 	a.mu.Lock()
-	state:=a.txnState
-	hasExact:=a.lastCommit.SessionID!=""&&a.engine.CurrentEpoch()==a.lastCommit.NextEpoch&&a.engine.Owner()==a.lastCommit.CandidateID
-	activationIncomplete:=state==RecoveryTxnFinalized&&a.prepared!=nil&&!a.prepared.activationComplete
-	a.mu.Unlock()
-	if state==RecoveryTxnCommitSent||state==RecoveryTxnUncertain||state==RecoveryTxnFinalizationUncertain||activationIncomplete{return true}
-	if state==RecoveryTxnFinalized&&hasExact {
-		// CandidateID identifies the committed transaction/authority, not a
-		// particular physical connection. If that authority's current carrier
-		// dies, resolve/rebind the exact transaction before considering a fresh
-		// epoch. This also lets a peer with lingering finalization uncertainty
-		// converge instead of being hit by incompatible RESUME_STATE attempts.
-		s:=p.senderNow()
-		return s==nil||s.isStopped()
+	defer a.mu.Unlock()
+	switch a.txnState {
+	case RecoveryTxnCommitSent, RecoveryTxnUncertain, RecoveryTxnFinalizationUncertain:
+		return true
+	case RecoveryTxnFinalized:
+		// FINALIZED is only an exact-rebind obligation while local activation
+		// of that exact transaction is still incomplete. Once activation is
+		// complete, the transaction is historical evidence only; a later
+		// carrier failure must start a fresh recovery from current flow state.
+		return a.prepared!=nil && !a.prepared.activationComplete
+	default:
+		return false
 	}
-	return false
+}
+
+func (p *Peer) NeedsFreshRecovery() bool {
+	if !p.recoveryEnabled || p.NeedsExactTransactionResolution(){return false}
+	s:=p.senderNow()
+	return s==nil||s.isStopped()
+}
+
+// HasCommitUncertainty is retained for callers/tests that still use the older
+// name. Its semantics are now deliberately narrow: unresolved exact
+// transaction obligation only, never a stable FINALIZED historical commit.
+func (p *Peer) HasCommitUncertainty() bool {
+	return p.NeedsExactTransactionResolution()
 }
 
 func (p *Peer) MarkRecoveryPrepared(ctl RecoveryControl) error {
@@ -221,14 +232,19 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 func (p *Peer) CommitStatusQuery() (RecoveryControl,error) {
 	if p.recovery==nil{return RecoveryControl{},errors.New("recovery is disabled")}
 	a:=p.recovery;a.mu.Lock();defer a.mu.Unlock()
-	if a.txnState==RecoveryTxnFinalized&&a.lastCommit.SessionID!=""{
+	switch a.txnState {
+	case RecoveryTxnUncertain,RecoveryTxnCommitSent,RecoveryTxnFinalizationUncertain:
+		if a.uncertain.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
+		q:=a.uncertain;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
+		return q,nil
+	case RecoveryTxnFinalized:
+		if a.prepared==nil||a.prepared.activationComplete{return RecoveryControl{},ErrCommitUncertain}
+		if a.lastCommit.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
 		q:=a.lastCommit;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
 		return q,nil
+	default:
+		return RecoveryControl{},ErrCommitUncertain
 	}
-	if a.txnState!=RecoveryTxnUncertain&&a.txnState!=RecoveryTxnCommitSent&&a.txnState!=RecoveryTxnFinalizationUncertain{return RecoveryControl{},ErrCommitUncertain}
-	if a.uncertain.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
-	q:=a.uncertain;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
-	return q,nil
 }
 
 func (p *Peer) EvaluateCommitStatus(query RecoveryControl)(RecoveryControl,error){
