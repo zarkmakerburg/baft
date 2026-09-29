@@ -426,9 +426,9 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 				if err:=session.EncodeRecoveryControl(out,ack);err!=nil{return true,fmt.Errorf("FINALIZE_ACK: %w",err)}
 			}
 			if err:=r.recoveryFail("after_listener_finalize_ack_write");err!=nil{return true,err}
-			if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return true,err}
-			generation,ok:=p.RecoveryTransactionCarrierGeneration(ctl)
-			if !ok{return true,errors.New("recovery transaction carrier generation unavailable")}
+			generation,err:=p.FinalizeRecoveryCommitWithGeneration(hctx,ctl)
+			if err!=nil{return true,err}
+			if generation==0{return true,errors.New("recovery transaction carrier generation unavailable")}
 			<-hctx.Done()
 			p.FenceRecoveryCarrierWriter(generation)
 			return true,nil
@@ -496,9 +496,9 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 				if copies<1{copies=1}
 				for i:=0;i<copies;i++{if err:=session.EncodeRecoveryControl(out,ack);err!=nil{return err}}
 				if err:=r.recoveryFail("after_resolution_finalize_ack_write");err!=nil{return err}
-				if err:=p.FinalizeRecoveryCommit(hctx,ctl);err!=nil{return err}
-				generation,ok:=p.RecoveryTransactionCarrierGeneration(ctl)
-				if !ok{return errors.New("recovery resolution carrier generation unavailable")}
+				generation,err:=p.FinalizeRecoveryCommitWithGeneration(hctx,ctl)
+				if err!=nil{return err}
+				if generation==0{return errors.New("recovery resolution carrier generation unavailable")}
 				<-hctx.Done()
 				p.FenceRecoveryCarrierWriter(generation)
 				return nil
