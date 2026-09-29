@@ -37,9 +37,122 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+      - name: Runtime pair FD/resource lifetime 50 cycles
+        run: |
+          go test ./tests/integration -run '^TestRecoveryRuntimePairDoesNotLeakResources
+      - name: Eight-flow replacement 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$'             -count=10 -timeout 15m -v
+
+      - name: Six-route recovery isolation 5x
+        run: |
+          go test ./tests/integration             -run '^TestRuntimeRecoveryRouteIdentityIsolation$'             -count=5 -timeout 15m -v
+
+      - name: Distributed uncertainty finalization replay FIN matrix 10x
+        run: |
+          go test ./tests/integration             -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$'             -count=10 -timeout 20m -v
+
+      - name: Consecutive replacement generation lifecycle 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow$'             -count=10 -timeout 15m -v
+
+      - name: Recovery race sample
+        run: |
+          go test -race ./tests/integration             -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$'             -count=2 -timeout 20m -v
+ -count=1 -timeout 15m -v
+
+      - name: Exact ambiguous replay transaction contract 50x
+        run: |
+          go test ./tests/integration -run '^TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely
+      - name: Eight-flow replacement 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$'             -count=10 -timeout 15m -v
+
+      - name: Six-route recovery isolation 5x
+        run: |
+          go test ./tests/integration             -run '^TestRuntimeRecoveryRouteIdentityIsolation$'             -count=5 -timeout 15m -v
+
+      - name: Distributed uncertainty finalization replay FIN matrix 10x
+        run: |
+          go test ./tests/integration             -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$'             -count=10 -timeout 20m -v
+
+      - name: Consecutive replacement generation lifecycle 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow$'             -count=10 -timeout 15m -v
+
+      - name: Recovery race sample
+        run: |
+          go test -race ./tests/integration             -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$'             -count=2 -timeout 20m -v
+ -count=50 -timeout 20m -v
+
+      - name: Startup classification SixNode and NoiseMorphing 20x
+        run: |
+          go test ./tests/integration -run '^TestSixNodeNoiseMasterHandshakeRoundTrip
+      - name: Eight-flow replacement 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$'             -count=10 -timeout 15m -v
+
+      - name: Six-route recovery isolation 5x
+        run: |
+          go test ./tests/integration             -run '^TestRuntimeRecoveryRouteIdentityIsolation$'             -count=5 -timeout 15m -v
+
+      - name: Distributed uncertainty finalization replay FIN matrix 10x
+        run: |
+          go test ./tests/integration             -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$'             -count=10 -timeout 20m -v
+
+      - name: Consecutive replacement generation lifecycle 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow$'             -count=10 -timeout 15m -v
+
+      - name: Recovery race sample
+        run: |
+          go test -race ./tests/integration             -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$'             -count=2 -timeout 20m -v
+ -count=20 -timeout 15m -v
+          go test ./tests/integration -run '^TestNoiseMorphingRuntime
+      - name: Eight-flow replacement 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$'             -count=10 -timeout 15m -v
+
+      - name: Six-route recovery isolation 5x
+        run: |
+          go test ./tests/integration             -run '^TestRuntimeRecoveryRouteIdentityIsolation$'             -count=5 -timeout 15m -v
+
+      - name: Distributed uncertainty finalization replay FIN matrix 10x
+        run: |
+          go test ./tests/integration             -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$'             -count=10 -timeout 20m -v
+
+      - name: Consecutive replacement generation lifecycle 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow$'             -count=10 -timeout 15m -v
+
+      - name: Recovery race sample
+        run: |
+          go test -race ./tests/integration             -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$'             -count=2 -timeout 20m -v
+ -count=20 -timeout 15m -v
+
       - name: Baseline active-flow replacement 20x
         run: |
-          go test ./tests/integration             -run '^TestRuntimeCarrierReplacementPreservesActiveFlow$'             -count=20 -timeout 15m -v
+          go test ./tests/integration             -run '^TestRuntimeCarrierReplacementPreservesActiveFlow
+      - name: Eight-flow replacement 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$'             -count=10 -timeout 15m -v
+
+      - name: Six-route recovery isolation 5x
+        run: |
+          go test ./tests/integration             -run '^TestRuntimeRecoveryRouteIdentityIsolation$'             -count=5 -timeout 15m -v
+
+      - name: Distributed uncertainty finalization replay FIN matrix 10x
+        run: |
+          go test ./tests/integration             -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$'             -count=10 -timeout 20m -v
+
+      - name: Consecutive replacement generation lifecycle 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow$'             -count=10 -timeout 15m -v
+
+      - name: Recovery race sample
+        run: |
+          go test -race ./tests/integration             -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$'             -count=2 -timeout 20m -v
+             -count=20 -timeout 15m -v
 
       - name: Eight-flow replacement 10x
         run: |
