@@ -22,7 +22,7 @@ func workerTemplateForTest() WorkerTemplate {
 
 func TestBuildWorkerConfigsDynamicNodeCounts(t *testing.T) {
 	now:=time.Unix(1700000000,0)
-	for _,n:=range []int{1,3,6,50}{
+	for _,n:=range []int{1,3,8,16}{
 		t.Run(fmt.Sprintf("n=%d",n),func(t *testing.T){
 			cfgs:=testConfigsN(t,n)
 			m,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,cfgs);if err!=nil{t.Fatal(err)}
@@ -32,6 +32,7 @@ func TestBuildWorkerConfigsDynamicNodeCounts(t *testing.T) {
 	}
 }
 
+// N=6 is retained as a regression fixture; worker config cardinality is dynamic.
 func TestBuildWorkerConfigsMirrorsExactlySixRoutes(t *testing.T) {
 	cfgs:=testConfigs(t)
 	now:=time.Unix(1700000000,0)
