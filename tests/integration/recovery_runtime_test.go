@@ -1316,8 +1316,11 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 
 	payload:=make([]byte,3*protocol.MaxPayloadSize+777)
 	for i:=range payload{payload[i]=byte((i*29+7)%251)}
-	wantHash:=sha256.Sum256(payload)
-	got:=make([]byte,len(payload))
+	liveSuffix:=make([]byte,protocol.MaxPayloadSize+313)
+	for i:=range liveSuffix{liveSuffix[i]=byte((i*37+19)%251)}
+	expected:=append(append([]byte(nil),payload...),liveSuffix...)
+	wantHash:=sha256.Sum256(expected)
+	got:=make([]byte,len(expected))
 	readDone:=make(chan error,1);go func(){_,err:=io.ReadFull(c,got);readDone<-err}()
 	writeDone:=make(chan error,1);go func(){_,err:=c.Write(payload);writeDone<-err}()
 
@@ -1343,6 +1346,45 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 	midAuth:=oneRecoveryAuthority(t,p.irRuntime)
 	midPrep,err:=p.irRuntime.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
 	if midPrep.PreparedIncarnation==0||midPrep.SenderID==""{t.Fatalf("generation2 ownership unavailable: %+v",midPrep)}
+	midFlow:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return f.ReplayHighWatermark>0})
+	if midFlow.TxAcked>midFlow.ReplayHighWatermark||midFlow.ReplayHighWatermark>midFlow.TxNext{
+		t.Fatalf("invalid Class-A frontier before live DATA: %+v",midFlow)
+	}
+	if !midAuth.ReplayOutstanding||midAuth.TransactionStable{
+		t.Fatalf("Class-A became stable before peer proof: %+v flow=%+v",midAuth,midFlow)
+	}
+	candidate,digest:=midAuth.CandidateID,midAuth.PlanDigest
+	oldHWM,oldNext:=midFlow.ReplayHighWatermark,midFlow.TxNext
+
+	// The original application write must have committed before the new live
+	// suffix so stream order is deterministic and the extension is attributable
+	// to DATA produced while replay proof is unresolved.
+	select{case err:=<-writeDone:if err!=nil{t.Fatalf("initial client payload write: %v",err)};case <-time.After(12*time.Second):t.Fatal("initial client write timeout")}
+	liveWriteDone:=make(chan error,1)
+	go func(){
+		for off:=0;off<len(liveSuffix);{
+			n,err:=c.Write(liveSuffix[off:])
+			if err!=nil{liveWriteDone<-err;return}
+			if n<=0{liveWriteDone<-io.ErrShortWrite;return}
+			off+=n
+		}
+		liveWriteDone<-nil
+	}()
+	liveFlow:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{
+		return f.TxNext>oldNext && f.ReplayHighWatermark>=f.TxNext
+	})
+	liveAuth:=oneRecoveryAuthority(t,p.irRuntime)
+	if liveFlow.TxAcked>liveFlow.ReplayHighWatermark||liveFlow.ReplayHighWatermark>liveFlow.TxNext{
+		t.Fatalf("invalid Class-A frontier after live DATA: %+v",liveFlow)
+	}
+	if liveFlow.ReplayHighWatermark<=oldHWM||liveFlow.ReplayHighWatermark<liveFlow.TxNext{
+		t.Fatalf("live DATA did not extend ReplayHighWatermark old_hwm=%d old_next=%d current=%+v",oldHWM,oldNext,liveFlow)
+	}
+	if liveAuth.Epoch!=2||liveAuth.CandidateID!=candidate||liveAuth.PlanDigest!=digest||!liveAuth.ReplayOutstanding||liveAuth.TransactionStable{
+		t.Fatalf("live DATA escaped exact Class-A transaction before recut mid=%+v live=%+v flow=%+v",midAuth,liveAuth,liveFlow)
+	}
+	t.Logf("PASS live DATA extended exact obligation epoch=%d candidate=%s digest=%s txAcked=%d txNext=%d old_hwm=%d new_hwm=%d outstanding=%v stable=%v",
+		liveAuth.Epoch,candidate,digest,liveFlow.TxAcked,liveFlow.TxNext,oldHWM,liveFlow.ReplayHighWatermark,liveAuth.ReplayOutstanding,liveAuth.TransactionStable)
 
 	secondCut:=p.proxy.CutAll()
 	mode.Store(3)
@@ -1397,10 +1439,10 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 
 	close(replay3Release)
 	select{case <-ack3:case <-time.After(8*time.Second):t.Fatalf("generation3 peer acceptance proof not observed trace=%+v",p.irRuntime.RecoveryDiagnosticsForTest())}
-	select{case err:=<-writeDone:if err!=nil{t.Fatalf("client payload write: %v",err)};case <-time.After(12*time.Second):t.Fatal("client write timeout")}
+	select{case err:=<-liveWriteDone:if err!=nil{t.Fatalf("live suffix write: %v",err)};case <-time.After(12*time.Second):t.Fatal("live suffix write timeout")}
 	select{case err:=<-readDone:if err!=nil{t.Fatalf("client payload read: %v",err)};case <-time.After(20*time.Second):t.Fatal("client payload read timeout")}
 	have:=sha256.Sum256(got)
-	if !bytes.Equal(got,payload)||have!=wantHash{t.Fatalf("payload mismatch got=%x want=%x trace=%+v",have,wantHash,p.irRuntime.RecoveryDiagnosticsForTest())}
+	if !bytes.Equal(got,expected)||have!=wantHash{t.Fatalf("payload mismatch got=%x want=%x trace=%+v",have,wantHash,p.irRuntime.RecoveryDiagnosticsForTest())}
 	finalIR,finalEX:=waitAuthorityPair(t,p,2,true)
 	finalPrep,err:=p.irRuntime.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
 	if finalIR.CandidateID!=midAuth.CandidateID||finalIR.PlanDigest!=midAuth.PlanDigest||finalIR.Epoch!=2||
@@ -1632,9 +1674,12 @@ func TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot(t *testing.T){
 	ir2,ex2:=waitAuthorityPair(t,p,2,true)
 	if !ir2.ActivationComplete||!ex2.ActivationComplete||ir2.Frozen||ex2.Frozen||
 		!ir2.ApplicationReady||!ex2.ApplicationReady||!ir2.TransactionStable||!ex2.TransactionStable||
-		ir2.ReplayOutstanding||ex2.ReplayOutstanding{
+		ir2.ReplayOutstanding||ex2.ReplayOutstanding||!ir2.FinStable||!ex2.FinStable||
+		!ir2.FinalizationStable||!ex2.FinalizationStable{
 		t.Fatalf("first recovery not Class-B stable ir=%+v ex=%+v",ir2,ex2)
 	}
+	t.Logf("Class-B stable before independent failure epoch=%d replay_outstanding=%v fin_stable=%v finalization_stable=%v application_ready=%v transaction_stable=%v",
+		ir2.Epoch,ir2.ReplayOutstanding,ir2.FinStable,ir2.FinalizationStable,ir2.ApplicationReady,ir2.TransactionStable)
 	c2,d2:=ir2.CandidateID,ir2.PlanDigest
 
 	var drop atomic.Bool
