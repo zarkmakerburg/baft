@@ -308,6 +308,19 @@ func (p *Peer) SetRecoveryDiagnosticHookForTest(fn func(RecoveryDiagnosticEvent)
 	a:=p.recovery;a.diagMu.Lock();a.diagnosticHook=fn;a.diagMu.Unlock()
 }
 
+func (p *Peer) RecordRecoveryDiagnosticForTest(event string,source SenderStopSource,err error,generation uint64) {
+	if p==nil||p.recovery==nil{return}
+	ctl,ok:=p.RecoveryTransactionIdentity()
+	if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
+	p.recovery.mu.Lock()
+	inc:=uint64(0)
+	if p.recovery.prepared!=nil{inc=p.recovery.prepared.incarnation}
+	p.recovery.mu.Unlock()
+	s,_,_,currentGen:=p.currentSenderState()
+	if generation==0{generation=currentGen}
+	p.traceRecoveryDiagnostic(event,source,err,"",s,ctl,inc,generation)
+}
+
 func cloneRecoverySnapshot(s recovery.Snapshot) recovery.Snapshot {
 	out:=s
 	out.Flows=append([]recovery.FlowSnapshot(nil),s.Flows...)
