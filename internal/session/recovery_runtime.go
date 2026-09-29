@@ -948,7 +948,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		// obsolete peerMax, and applying the monotonic snapshot credit is
 		// idempotent across exact-transaction rebinds.
 		if !act.creditApplied {
-			if err:=fl.onWindow(act.creditAdvance);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+			if err:=fl.restoreRecoveryPeerCredit(act.creditAdvance);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 			act.creditApplied=true
 		}
 		p.finishIfComplete(fl)
