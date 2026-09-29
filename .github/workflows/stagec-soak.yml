@@ -11,6 +11,9 @@ on:
       - 'tests/integration/**'
       - '.github/workflows/stagec-soak.yml'
       - '.github/workflows/ci.yml'
+      - 'STATUS.md'
+      - 'TEST-RESULTS.md'
+      - 'KNOWN-LIMITATIONS.md'
   workflow_dispatch:
 
 concurrency:
