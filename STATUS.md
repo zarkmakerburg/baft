@@ -3,7 +3,7 @@
 # وضعیت پروژه
 
 > نسخه انگلیسی: [STATUS.en.md](STATUS.en.md)  
-> تاریخ این گزارش: 2026-09-28
+> تاریخ این گزارش: 2026-09-29
 
 ## مخزن
 
@@ -15,7 +15,7 @@
 
 - **Stage A:** کامل برای scope تعریف‌شده.
 - **Stage B:** کامل برای secure vertical slice تعریف‌شده.
-- **Stage C:** از نظر پیاده‌سازی اصلی نزدیک به بسته‌شدن است؛ فقط soak مستقل باید PASS شود.
+- **Stage C:** گیت فعلی multi-Flow/slow-receiver soak سبز است؛ این به معنی benchmark عمومی یا production-ready بودن نیست.
 - **Stage D:** بخش same-process ECRL تا Step 5.7 وارد Runtime شده و تست شده است، اما Stage D کامل یا production-ready اعلام نشده است؛ process-restart/machine-reboot resume و snapshot پایدار ECRL همچنان پیاده نشده‌اند.
 
 ## Stage A
@@ -107,9 +107,16 @@ COR-01 روی همین commit در run `36340860568` نیز **PASS** شد.
 
 Conservation Telemetry و metrics روی loopback نیز پیاده شده‌اند. metrics به‌صورت aggregate رابطه‌های A-D، C-D، replay outstanding و invariant violations را بدون peer/route/target/stream label حساس منتشر می‌کنند. CI run `36341810504` برای این مسیر **PASS** است.
 
-### تنها گیت باز Stage C
+### Stage-C soak — وضعیت فعلی
 
-workflow مستقل `stagec-soak` اضافه شده است. این workflow multi-Flow و slow-receiver واقعی را ۲۵ بار تکرار و ۵ دور زیر race detector اجرا می‌کند. تا PASS شدن این gate، Stage C کامل اعلام نمی‌شود.
+workflow مستقل `stagec-soak`، multi-Flow و slow-receiver واقعی را ۲۵ بار تکرار و ۵ دور زیر race detector اجرا می‌کند.
+
+شواهد:
+- failure تاریخی: run `36342169299` — **FAIL** با `TestConcurrentMultiFlowTransfer: unexpected EOF`.
+- pass تاریخی پس از اصلاحات: run `36342627897` — **PASS**.
+- شواهد code-head پیش از commit مستندات: run `36519987991` روی `6fcf41631dc963af6f9c124f245a3ce7a47bc2fe` — **PASS** شامل repeated soak و race sample.
+
+در نتیجه گیت فعلی Stage C سبز است، اما این نتیجه benchmark عمومی، پایلوت واقعی یا ادعای production-ready بودن نیست.
 
 ## Stage D و بعد
 
@@ -238,6 +245,14 @@ Padding احتمالی نرمال/لاپلاس، jitter قابل تنظیم و �
 روی `release-v1-goldapp`، گیت‌های regression مربوط به Steps 5.1 تا 5.6 برای telemetry امضاشده و idempotent، monitoring مسیرها، گزارش مالی، سخت‌سازی BCC، backup/audit anchoring و persistent telemetry reliability در CI پاس شده‌اند.
 
 در Step 5.7، ECRL به Session واقعی Runtime برای **تعویض Carrier فقط در همان process** متصل شده است. محدوده تست‌شده شامل حفظ Flow فعال، epoch fencing در همان process، bounded replay، رد fail-closed تغییر BootID سمت peer، competing candidates، بازیابی FIN/FIN_ACK، multi-flow، جداسازی هویت شش route و پیوستگی telemetry/finance است. Commit safety نیز validation/materialization قبل از commit، Plan Digest canonical، barrier دوطرفه prepared/commit، نتیجه صریح committed/uncommitted، هویت commit idempotent و accounting جداگانه خطاهای post-commit را دارد.
+
+P0 baseline-recovery regression مربوط به generation readiness نیز اصلاح و با lifecycle صریح تثبیت شده است: readiness فقط بعد از distributed finalization، activation، replay/ACK/FIN reconciliation و آماده‌شدن data-plane برای همان generation منتشر می‌شود؛ stale generation نمی‌تواند ready frontier را عقب ببرد یا sender نسل جدید را متوقف کند.
+
+شواهد code-head پیش از commit مستندات:
+- Full CI push run `36519987982` روی `6fcf41631dc963af6f9c124f245a3ce7a47bc2fe`: **PASS**.
+- Full CI PR run `36519992111`: **PASS**.
+- Recovery-specific soak run `36519987974`: **PASS**؛ شامل 20× active-flow، 10× 8-flow، 5× six-route، 10× P0 uncertainty/finalization/replay/FIN matrix، 10× consecutive replacement و race sample.
+- Stage-C soak run `36519987991`: **PASS**.
 
 این وضعیت به معنی production-ready بودن BAFT نیست. process-restart resume، machine-reboot resume و snapshot پایدار ECRL پیاده‌سازی یا ادعا نشده‌اند. Subscription Engine نیز بخشی از Step 5.7 نیست.
 
