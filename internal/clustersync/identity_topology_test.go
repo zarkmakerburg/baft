@@ -121,7 +121,10 @@ func TestTokenIdentityRoundTripAndValidation(t *testing.T){
 		if got.Nodes[i].ID!=m.Nodes[i].ID||got.Nodes[i].Address!=m.Nodes[i].Address||got.Nodes[i].AllowedIdentity!=m.Nodes[i].AllowedIdentity||got.Nodes[i].NoisePublicKey!=m.Nodes[i].NoisePublicKey{t.Fatalf("node %d roundtrip mismatch",i)}
 		if len(got.Nodes[i].Routes)!=1||got.Nodes[i].Routes[0].ID!=m.Nodes[i].Routes[0].ID{t.Fatalf("node %d RouteID lost",i)}
 	}
+	snap:=snapshotFromManifest(got)
+	for _,node:=range snap.Routes{if len(node.Routes)!=1||node.Routes[0].ID==""{t.Fatalf("snapshot lost RouteID for %s",node.NodeID)}}
 	cases:=[]struct{name string;mut func(*Manifest)}{
+		{"empty-node-id",func(x *Manifest){x.Nodes[1].ID=""}},
 		{"duplicate-node-id",func(x *Manifest){x.Nodes[1].ID=x.Nodes[0].ID}},
 		{"duplicate-address",func(x *Manifest){x.Nodes[1].Address=x.Nodes[0].Address}},
 		{"duplicate-allowed-identity",func(x *Manifest){x.Nodes[1].AllowedIdentity=x.Nodes[0].AllowedIdentity}},
@@ -160,4 +163,54 @@ func TestNoAccidentalResourceCollision(t *testing.T){
 		sockets:=map[string]struct{}{};ports:=map[string]struct{}{};routeIDs:=map[string]struct{}{}
 		for _,c:=range out{if _,ok:=sockets[c.Management.UnixSocket];ok{t.Fatal("socket collision")};sockets[c.Management.UnixSocket]=struct{}{};if _,ok:=ports[c.Management.MetricsListen];ok{t.Fatal("metrics collision")};ports[c.Management.MetricsListen]=struct{}{};for _,r:=range c.Routes{if _,ok:=routeIDs[r.ID];ok{t.Fatal("route ID collision")};routeIDs[r.ID]=struct{}{};if _,ok:=ports[r.Listen];ok{t.Fatal("listener collision")};ports[r.Listen]=struct{}{}}}
 	})}
+}
+
+
+func TestRoutePermutationIsSemanticNoOp(t *testing.T){
+	now:=time.Unix(1700000000,0)
+	m,err:=ManifestFromConfigs("goldapp-baft",7,15*time.Minute,now,testConfigsN(t,4));if err!=nil{t.Fatal(err)}
+	for i:=range m.Nodes{
+		r2:=m.Nodes[i].Routes[0]
+		r2.ID=r2.ID+"-secondary"
+		r2.RemoteRoute=r2.RemoteRoute+"-secondary"
+		r2.MasterListen=fmt.Sprintf("127.0.0.1:%d",18000+i)
+		m.Nodes[i].Routes=append(m.Nodes[i].Routes,r2)
+	}
+	refreshRevisionForIdentityTest(t,&m)
+	baseRevision:=m.Revision
+	baseSnapshot:=snapshotFromManifest(m)
+	baseCfg,err:=BuildWorkerConfigs(baseSnapshot,workerTemplateForTest());if err!=nil{t.Fatal(err)}
+	for i:=0;i<100;i++{
+		p:=permuteNodesForIdentityTest(m,rand.New(rand.NewSource(int64(9000+i))).Perm(len(m.Nodes)))
+		for j:=range p.Nodes{if (i+j)%2==0{sort.Slice(p.Nodes[j].Routes,func(a,b int)bool{return p.Nodes[j].Routes[a].ID>p.Nodes[j].Routes[b].ID})}}
+		refreshRevisionForIdentityTest(t,&p)
+		if p.Revision!=baseRevision{t.Fatalf("iteration %d route/node permutation changed revision",i)}
+		s:=snapshotFromManifest(p);d:=DiffTopology(baseSnapshot,s)
+		if len(d.AddedNodeIDs)!=0||len(d.RemovedNodeIDs)!=0||len(d.ChangedNodeIDs)!=0{t.Fatalf("iteration %d semantic diff=%+v",i,d)}
+		cfg,err:=BuildWorkerConfigs(s,workerTemplateForTest());if err!=nil{t.Fatal(err)}
+		if !reflect.DeepEqual(baseCfg,cfg){t.Fatalf("iteration %d resource mapping changed",i)}
+	}
+}
+
+func TestEngineSameGenerationPermutationNoOp(t *testing.T){
+	workerPriv,workerPub,err:=GenerateWorkerKeyPair();if err!=nil{t.Fatal(err)}
+	signPub,signPriv,err:=GenerateSigningKeyPair();if err!=nil{t.Fatal(err)}
+	now:=time.Unix(1700000000,0)
+	m,err:=ManifestFromConfigs("goldapp-baft",11,15*time.Minute,now,testConfigsN(t,8));if err!=nil{t.Fatal(err)}
+	engine,err:=NewEngine(workerPriv,signPub,"goldapp-baft");if err!=nil{t.Fatal(err)}
+	tok,err:=Seal(m,workerPub,signPriv);if err!=nil{t.Fatal(err)}
+	first,changed,err:=engine.Apply(tok,now.Add(time.Second));if err!=nil||!changed{t.Fatalf("first apply changed=%v err=%v",changed,err)}
+	p:=permuteNodesForIdentityTest(m,[]int{3,7,0,4,1,6,2,5})
+	refreshRevisionForIdentityTest(t,&p)
+	if p.Revision!=m.Revision{t.Fatal("permutation revision mismatch")}
+	tok2,err:=Seal(p,workerPub,signPriv);if err!=nil{t.Fatal(err)}
+	second,changed,err:=engine.Apply(tok2,now.Add(2*time.Second));if err!=nil{t.Fatal(err)}
+	if changed{t.Fatal("same-generation semantic permutation treated as change")}
+	if !reflect.DeepEqual(first,second){t.Fatal("same-generation permutation changed current snapshot")}
+}
+
+func TestResourceCollisionFailsClosed(t *testing.T){
+	used:=map[int]string{}
+	if err:=reservePort(used,42424,"node:A");err!=nil{t.Fatal(err)}
+	if err:=reservePort(used,42424,"node:B");err==nil{t.Fatal("duplicate identity-derived port was not rejected")}
 }
