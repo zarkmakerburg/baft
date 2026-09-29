@@ -12,8 +12,12 @@ import (
 )
 
 func (r *Runtime) startMetrics(ctx context.Context, addr string) (<-chan error, func(), error) {
-	ln,err:=r.takeMetricsListenerForTest(addr)
+	ln,err:=r.takeEndpointListenerForTest(EndpointMetrics,"metrics",addr)
 	if err!=nil{return nil,nil,err}
+	if ln==nil {
+		ln,err=r.takeMetricsListenerForTest(addr)
+		if err!=nil{return nil,nil,err}
+	}
 	if ln==nil{
 		ln,err=net.Listen("tcp",addr)
 		if err!=nil{return nil,nil,fmt.Errorf("metrics listen %s: %w",addr,err)}
