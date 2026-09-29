@@ -1492,14 +1492,6 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			p.traceRecoveryDiagnostic("PUMPS_RESTORED",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
 		}
 	}
-	// Re-announce the latest monotonic acceptance/credit frontiers on this
-	// physical carrier. This closes the case where ACK/WINDOW were written on
-	// the previous carrier but died before peer processing: local write success
-	// must never become delivery proof.
-	if err:=p.reannounceRecoveryFrontiers(prep,ctl,attemptToken,activatedGeneration);err!=nil{
-		if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err}
-		_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e
-	}
 	a.mu.Lock()
 	if a.prepared==prep{
 		prep.finalizing=false;prep.finalized=true;prep.activationComplete=true;prep.rebindPending=false
