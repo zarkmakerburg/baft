@@ -312,7 +312,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 				if errors.Is(err,io.EOF){return ctx.Err()}
 				return err
 			}
-			p.onCarrierFailureForGeneration(err,generation)
+			p.onCarrierFailureForGeneration(err,generation,SenderStopCarrierReaderDecode)
 			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);err!=nil{return err}
 			continue
 		}
@@ -324,7 +324,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 				continue
 			}
 			if p.recoveryEnabled && errors.Is(err,ErrCarrierUnavailable) {
-				p.onCarrierFailureForGeneration(err,generation)
+				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
 				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);werr!=nil{return werr}
 				continue
 			}
@@ -1076,7 +1076,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			if closed{return}
 			if finalReady{_ = p.ackRemoteFin(fl);return}
 			if p.recoveryEnabled {
-				p.onCarrierFailureForGeneration(err,generation)
+				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
 				if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
 			}
 			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
@@ -1110,7 +1110,7 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			sender,epoch,owner,generation:=p.currentSenderState()
 			if err := sender.sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
 				if p.recoveryEnabled {
-					p.onCarrierFailureForGeneration(err,generation)
+					p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
 					if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
 				}
 				return
