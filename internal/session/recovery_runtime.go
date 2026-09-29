@@ -709,6 +709,20 @@ func (p *Peer) handleFrameFrom(ctx context.Context,epoch uint64,carrierID string
 		case protocol.TypeFinAckConfirm:stage="before_fin_ack_confirm_accept"
 		}
 		if stage!=""&&p.dropRecoveryFrameForTest(stage,fr){return nil}
+		if stage!=""{
+			_,_,currentGeneration:=p.currentCarrierIdentity()
+			rxNext:=uint64(0)
+			if fr.StreamID!=0{
+				p.mu.Lock();fl:=p.flows[fr.StreamID];p.mu.Unlock()
+				if fl!=nil{fl.mu.Lock();rxNext=fl.rxNext;fl.mu.Unlock()}
+			}
+			decodedGeneration:=currentGeneration
+			if len(generation)>0{decodedGeneration=generation[0]}
+			p.traceRecoveryFrameDiagnostic("FRAME_BEFORE_MUTATION",fr,decodedGeneration,currentGeneration,rxNext,nil)
+			if decodedGeneration!=currentGeneration{
+				p.traceRecoveryFrameDiagnostic("MUTATION_GENERATION_MISMATCH",fr,decodedGeneration,currentGeneration,rxNext,recovery.ErrStaleEpoch)
+			}
+		}
 	}
 	return p.handleFrame(ctx,fr)
 }
