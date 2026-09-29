@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -95,6 +96,28 @@ func (r *Runtime) SetRecoveryFrameHookForTest(fn func(string,protocol.Frame) boo
 	for p:=range r.peers{peers=append(peers,p)}
 	r.peerMu.Unlock()
 	for _,p:=range peers{p.SetRecoveryFrameHookForTest(fn)}
+}
+
+func (r *Runtime) SetRecoveryFinalizeOwnershipHookForTest(fn func(string,session.RecoveryPreparedOwnershipForTest)) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	for _,p:=range peers{p.SetRecoveryFinalizeOwnershipHookForTest(fn)}
+}
+
+func (r *Runtime) RebindCurrentPreparedRecoveryForTest(ctx context.Context) (session.RecoveryPreparedOwnershipForTest,error) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	if len(peers)!=1{return session.RecoveryPreparedOwnershipForTest{},fmt.Errorf("expected exactly one recovery peer, got %d",len(peers))}
+	p:=peers[0]
+	ctl,ok:=p.RecoveryTransactionIdentity()
+	if !ok{return session.RecoveryPreparedOwnershipForTest{},errors.New("recovery transaction unavailable")}
+	var out bytes.Buffer
+	if err:=p.RebindPreparedRecovery(ctx,ctl,session.Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{return session.RecoveryPreparedOwnershipForTest{},err}
+	return p.RecoveryPreparedOwnershipForTest(),nil
 }
 
 func (r *Runtime) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
