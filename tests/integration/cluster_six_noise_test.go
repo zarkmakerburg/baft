@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,8 +36,79 @@ func waitTCP(t *testing.T, addr string, deadline time.Time) {
 	}
 }
 
-func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
-	const regressionNodeCount = 6
+type ownedListenerProvider struct {
+	mu        sync.Mutex
+	listeners map[string]net.Listener
+}
+
+func newOwnedListenerProvider() *ownedListenerProvider {
+	return &ownedListenerProvider{listeners: map[string]net.Listener{}}
+}
+
+func listenerKey(kind node.EndpointKind, name string) string {
+	return string(kind) + "|" + name
+}
+
+func (p *ownedListenerProvider) add(t *testing.T, kind node.EndpointKind, name string, ln net.Listener) {
+	t.Helper()
+	if ln == nil {
+		t.Fatal("cannot add nil listener")
+	}
+	k := listenerKey(kind, name)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.listeners[k]; exists {
+		t.Fatalf("duplicate fixture listener key %s", k)
+	}
+	p.listeners[k] = ln
+}
+
+func (p *ownedListenerProvider) Listener(kind node.EndpointKind, name, configured string) (net.Listener, error) {
+	k := listenerKey(kind, name)
+	p.mu.Lock()
+	ln := p.listeners[k]
+	if ln != nil {
+		delete(p.listeners, k)
+	}
+	p.mu.Unlock()
+	if ln == nil {
+		return nil, fmt.Errorf("fixture listener not found kind=%s name=%s", kind, name)
+	}
+	if got := ln.Addr().String(); got != configured {
+		_ = ln.Close()
+		return nil, fmt.Errorf("fixture listener address mismatch kind=%s name=%s got=%s want=%s", kind, name, got, configured)
+	}
+	return ln, nil
+}
+
+func (p *ownedListenerProvider) closeRemaining() {
+	p.mu.Lock()
+	listeners := make([]net.Listener, 0, len(p.listeners))
+	for _, ln := range p.listeners {
+		listeners = append(listeners, ln)
+	}
+	p.listeners = map[string]net.Listener{}
+	p.mu.Unlock()
+	for _, ln := range listeners {
+		_ = ln.Close()
+	}
+}
+
+func bindFixtureTCP(t *testing.T) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ln
+}
+
+func runNNodeNoiseMasterHandshakeRoundTrip(t *testing.T, n int) {
+	t.Helper()
+	if n < 1 {
+		t.Fatalf("N must be >= 1, got %d", n)
+	}
+
 	certs := testPKI(t)
 	dir := t.TempDir()
 	write := func(name string, b []byte) string {
@@ -54,39 +126,31 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 	}
 	tlsKey := write("server.key", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	// Keep every released ephemeral address distinct inside this fixture. This
-	// removes self-collision between server, metrics and local-route endpoints;
-	// readiness itself is still event-driven below.
-	usedAddrs:=map[string]struct{}{}
-	reserveUnique:=func()string{
-		for{
-			a:=reserveAddress(t)
-			if _,exists:=usedAddrs[a];exists{continue}
-			usedAddrs[a]=struct{}{}
-			return a
-		}
-	}
+	listenerDone := make(chan error, n)
+	targets := make([]net.Listener, 0, n)
+	foreignCfgs := make([]config.Config, 0, n)
+	masterCfgs := make([]config.Config, 0, n)
+	foreignProviders := make([]*ownedListenerProvider, 0, n)
+	masterProviders := make([]*ownedListenerProvider, 0, n)
 
-	listenerDone := make(chan error, regressionNodeCount)
-	var listeners []*net.TCPListener
-	var foreignMetrics []net.Listener
-	var masterMetrics []net.Listener
-	masterCfgs := make([]config.Config, 0, regressionNodeCount)
-	foreignCfgs := make([]config.Config, 0, regressionNodeCount)
-	defer func(){
-		for _,ln:=range foreignMetrics{_ = ln.Close()}
-		for _,ln:=range masterMetrics{_ = ln.Close()}
+	defer func() {
+		for _, p := range foreignProviders {
+			p.closeRemaining()
+		}
+		for _, p := range masterProviders {
+			p.closeRemaining()
+		}
+		for _, ln := range targets {
+			_ = ln.Close()
+		}
 	}()
 
-	for i := 0; i < regressionNodeCount; i++ {
-		target, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		listeners = append(listeners, target.(*net.TCPListener))
+	for i := 0; i < n; i++ {
+		target := bindFixtureTCP(t)
+		targets = append(targets, target)
 		go func(ln net.Listener) {
 			for {
 				c, err := ln.Accept()
@@ -109,19 +173,25 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		exMetricsLn,err:=net.Listen("tcp","127.0.0.1:0")
-		if err!=nil{t.Fatal(err)}
-		irMetricsLn,err:=net.Listen("tcp","127.0.0.1:0")
-		if err!=nil{_ = exMetricsLn.Close();t.Fatal(err)}
-		foreignMetrics=append(foreignMetrics,exMetricsLn)
-		masterMetrics=append(masterMetrics,irMetricsLn)
-
 		exID := fmt.Sprintf("ex-%02d", i+1)
+		exProvider := newOwnedListenerProvider()
+		irProvider := newOwnedListenerProvider()
+
+		exServerLn := bindFixtureTCP(t)
+		exMetricsLn := bindFixtureTCP(t)
+		irMetricsLn := bindFixtureTCP(t)
+		routeLn := bindFixtureTCP(t)
+
+		exProvider.add(t, node.EndpointServer, exID, exServerLn)
+		exProvider.add(t, node.EndpointMetrics, "metrics", exMetricsLn)
+		irProvider.add(t, node.EndpointMetrics, "metrics", irMetricsLn)
+		irProvider.add(t, node.EndpointRoute, ir.Routes[0].ID, routeLn)
+
 		ex.Node.ID = exID
-		ex.Server.Listen = reserveUnique()
+		ex.Server.Listen = exServerLn.Addr().String()
 		ex.Server.ServerName = "ex.test"
 		ex.Server.AllowedPeerIdentities = []string{"urn:baft:node:ir-01"}
-		ex.Management.UnixSocket = fmt.Sprintf("/tmp/baft-ex-%02d.sock", i+1)
+		ex.Management.UnixSocket = filepath.Join(dir, fmt.Sprintf("baft-ex-%02d.sock", i+1))
 		ex.Management.MetricsListen = exMetricsLn.Addr().String()
 		ex.Transport.Shards = 1
 		ex.Routes[0].Target = target.Addr().String()
@@ -133,10 +203,10 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 		ir.Peer.Address = ex.Server.Listen
 		ir.Peer.ServerName = "ex.test"
 		ir.Peer.AllowedIdentity = "urn:baft:node:" + exID
-		ir.Management.UnixSocket = fmt.Sprintf("/tmp/baft-ir-%02d.sock", i+1)
+		ir.Management.UnixSocket = filepath.Join(dir, fmt.Sprintf("baft-ir-%02d.sock", i+1))
 		ir.Management.MetricsListen = irMetricsLn.Addr().String()
 		ir.Transport.Shards = 1
-		ir.Routes[0].Listen = reserveUnique()
+		ir.Routes[0].Listen = routeLn.Addr().String()
 		ir.TLS = ex.TLS
 
 		ik, err := securityinternal.GenerateKeyPair()
@@ -164,65 +234,71 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Keep shaping disabled in this cluster handshake test. The existing
-		// recordshape statistical suite remains the separate regression gate.
+		// This fixture verifies Noise/session/cluster wiring. Record shaping is
+		// intentionally disabled; its independent regression suite is unchanged.
 		shape := recordshape.Config{}
 		ex.Noise = &config.Noise{KeyFile: rpath, PeerPublicKey: ipub, RecordShaping: shape}
 		ir.Noise = &config.Noise{KeyFile: ipath, PeerPublicKey: rpub, RecordShaping: shape}
 
 		foreignCfgs = append(foreignCfgs, ex)
 		masterCfgs = append(masterCfgs, ir)
+		foreignProviders = append(foreignProviders, exProvider)
+		masterProviders = append(masterProviders, irProvider)
 	}
-
-	defer func() {
-		for _, ln := range listeners {
-			_ = ln.Close()
-		}
-	}()
 
 	for i := range foreignCfgs {
 		cfg := foreignCfgs[i]
 		rt := node.NewRuntime()
-		rt.SetMetricsListenerForTest(foreignMetrics[i])
+		rt.SetListenerProviderForTest(foreignProviders[i])
 		go func() { listenerDone <- rt.Run(ctx, cfg) }()
-		// Wait on the Runtime's post-bind readiness condition, not repeated
-		// connection attempts against a listener that may not exist yet.
 		select {
 		case <-rt.ListenerReadyForTest():
-			actual,startErr:=rt.ListenerReadinessForTest()
-			if startErr!=nil{t.Fatalf("listener %s startup failed: %v",cfg.Server.Listen,startErr)}
-			if actual!=cfg.Server.Listen{t.Fatalf("listener bound unexpected address got=%s want=%s",actual,cfg.Server.Listen)}
-		case <-time.After(12*time.Second):
-			t.Fatalf("listener %s readiness condition not reached",cfg.Server.Listen)
+			actual, startErr := rt.ListenerReadinessForTest()
+			if startErr != nil {
+				t.Fatalf("N=%d listener %s startup failed: %v", n, cfg.Server.Listen, startErr)
+			}
+			if actual != cfg.Server.Listen {
+				t.Fatalf("N=%d listener bound unexpected address got=%s want=%s", n, actual, cfg.Server.Listen)
+			}
+		case <-time.After(12 * time.Second):
+			t.Fatalf("N=%d listener %s readiness condition not reached", n, cfg.Server.Listen)
 		}
 	}
 
 	masterDone := make(chan error, 1)
-	master:=cluster.NewMaster()
-	nextMasterRuntime:=0
-	master.SetRuntimeFactoryForTest(func()*node.Runtime{
-		rt:=node.NewRuntime()
-		if nextMasterRuntime<len(masterMetrics){
-			rt.SetMetricsListenerForTest(masterMetrics[nextMasterRuntime])
-			nextMasterRuntime++
+	master := cluster.NewMaster()
+	nextMasterRuntime := 0
+	master.SetRuntimeFactoryForTest(func() *node.Runtime {
+		rt := node.NewRuntime()
+		if nextMasterRuntime >= len(masterProviders) {
+			t.Fatalf("runtime factory requested %d runtimes for N=%d", nextMasterRuntime+1, n)
 		}
+		rt.SetListenerProviderForTest(masterProviders[nextMasterRuntime])
+		nextMasterRuntime++
 		return rt
 	})
 	go func() { masterDone <- master.Run(ctx, masterCfgs) }()
-	select{
+	select {
 	case <-master.ReadyForTest():
-		if err:=master.ReadinessForTest();err!=nil{t.Fatalf("master startup failed before route readiness: %v",err)}
-	case err:=<-masterDone:
-		if err==nil{t.Fatal("master stopped before route readiness")}
-		t.Fatalf("master startup failed: %v",err)
-	case <-time.After(8*time.Second):
-		t.Fatal("master route readiness condition not reached")
+		if err := master.ReadinessForTest(); err != nil {
+			t.Fatalf("N=%d master startup failed before route readiness: %v", n, err)
+		}
+	case err := <-masterDone:
+		if err == nil {
+			t.Fatalf("N=%d master stopped before route readiness", n)
+		}
+		t.Fatalf("N=%d master startup failed: %v", n, err)
+	case <-time.After(12 * time.Second):
+		t.Fatalf("N=%d master route readiness condition not reached", n)
+	}
+	if nextMasterRuntime != n {
+		t.Fatalf("runtime factory count mismatch got=%d want=%d", nextMasterRuntime, n)
 	}
 
 	for i, cfg := range masterCfgs {
 		conn, err := net.DialTimeout("tcp", cfg.Routes[0].Listen, time.Second)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("N=%d route=%d dial: %v", n, i+1, err)
 		}
 		payload := bytes.Repeat([]byte(fmt.Sprintf("route-%02d-noise-ok|", i+1)), 128)
 		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -231,37 +307,50 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 		}
 		if _, err := conn.Write(payload); err != nil {
 			_ = conn.Close()
-			t.Fatal(err)
+			t.Fatalf("N=%d route=%d write: %v", n, i+1, err)
 		}
 		got := make([]byte, len(payload))
 		if _, err := io.ReadFull(conn, got); err != nil {
 			_ = conn.Close()
-			t.Fatal(err)
+			t.Fatalf("N=%d route=%d read: %v", n, i+1, err)
 		}
 		_ = conn.Close()
 		if !bytes.Equal(got, payload) {
-			t.Fatalf("route %d roundtrip mismatch", i+1)
+			t.Fatalf("N=%d route=%d roundtrip mismatch", n, i+1)
 		}
-		t.Logf("PASS route=%02d peer=%s noise_ik=ok roundtrip_bytes=%d", i+1, cfg.Peer.Address, len(payload))
+		t.Logf("PASS N=%d route=%02d peer=%s noise_ik=ok roundtrip_bytes=%d", n, i+1, cfg.Peer.Address, len(payload))
 	}
 
 	cancel()
 	select {
 	case err := <-masterDone:
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("N=%d master shutdown: %v", n, err)
 		}
 	case <-time.After(8 * time.Second):
-		t.Fatal("master shutdown timed out")
+		t.Fatalf("N=%d master shutdown timed out", n)
 	}
-	for i := 0; i < regressionNodeCount; i++ {
+	for i := 0; i < n; i++ {
 		select {
 		case err := <-listenerDone:
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("N=%d foreign listener shutdown: %v", n, err)
 			}
 		case <-time.After(8 * time.Second):
-			t.Fatal("foreign listener shutdown timed out")
+			t.Fatalf("N=%d foreign listener shutdown timed out", n)
 		}
+	}
+}
+
+func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
+	runNNodeNoiseMasterHandshakeRoundTrip(t, 6)
+}
+
+func TestNNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
+	for _, n := range []int{1, 2, 6, 12} {
+		n := n
+		t.Run(fmt.Sprintf("N=%d", n), func(t *testing.T) {
+			runNNodeNoiseMasterHandshakeRoundTrip(t, n)
+		})
 	}
 }
