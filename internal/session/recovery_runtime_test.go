@@ -370,7 +370,15 @@ func TestPostCommitFailureCanRecoverToNextEpoch(t *testing.T){
 	if !res.Committed||!errors.Is(err,ErrPostCommitFailure){t.Fatalf("first result=%+v err=%v",res,err)}
 	if _,err:=p.BeginRecovery("candidate-3");!errors.Is(err,ErrCommitUncertain){t.Fatalf("candidate-3 started before resolution: %v",err)}
 	resolveCommittedForTest(t,p,ctx,ctl)
-	_,peer:=peerOfferFor(t,p,"candidate-3")
+	local3,peer:=peerOfferFor(t,p,"candidate-3")
+	// The exact epoch-2 resolution produced authenticated ACK evidence and may
+	// release the corresponding replay bytes. A fresh epoch-3 peer snapshot
+	// must carry that proven receive frontier; claiming RxAccepted=0 here would
+	// correctly require replay bytes that no longer exist.
+	for i:=range peer.Snapshot.Flows {
+		peer.Snapshot.Flows[i].RxAccepted=local3.Snapshot.Flows[i].TxAcked
+		peer.Snapshot.Flows[i].RxDelivered=local3.Snapshot.Flows[i].TxAcked
+	}
 	if err:=p.ReconcileRecovery("candidate-3",peer);err!=nil{t.Fatal(err)}
 	var out bytes.Buffer
 	res,err=commitRecoveryAcceptedForTest(p,ctx,"candidate-3",Carrier{In:bytes.NewReader(nil),Out:&out})
