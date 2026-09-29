@@ -24,6 +24,7 @@ var (
 	ErrCommitUncertain = errors.New("recovery commit outcome uncertain")
 	ErrFinalizationUncertain = fmt.Errorf("%w: finalization outcome uncertain",ErrCommitUncertain)
 	ErrRecoveryTransition = errors.New("invalid recovery transaction transition")
+	ErrStaleRecoveryIncarnation = errors.New("stale recovery prepared incarnation")
 )
 
 type RecoveryOffer struct {
@@ -112,6 +113,7 @@ type preparedFlowRecovery struct {
 
 type preparedRecovery struct {
 	control RecoveryControl
+	incarnation uint64
 	carrier Carrier
 	sender *outboundSender
 	runCtx context.Context
@@ -122,6 +124,17 @@ type preparedRecovery struct {
 	activationComplete bool
 	rebindPending bool
 	activatedGeneration uint64
+}
+
+type RecoveryAttemptToken struct {
+	Transaction RecoveryControl
+	PreparedIncarnation uint64
+}
+
+type RecoveryCarrierOwner struct {
+	Transaction RecoveryControl
+	PreparedIncarnation uint64
+	CarrierGeneration uint64
 }
 
 type RecoveryPreparedOwnershipForTest struct {
@@ -140,7 +153,7 @@ func preparedOwnershipSnapshotForTest(prep *preparedRecovery) RecoveryPreparedOw
 	return RecoveryPreparedOwnershipForTest{
 		Transaction:prep.control,
 		PreparedID:fmt.Sprintf("%p",prep),
-		PreparedIncarnation:0,
+		PreparedIncarnation:prep.incarnation,
 		SenderID:fmt.Sprintf("%p",prep.sender),
 		CarrierInID:fmt.Sprintf("%p",prep.carrier.In),
 		CarrierOutID:fmt.Sprintf("%p",prep.carrier.Out),
@@ -187,6 +200,7 @@ type RecoveryAdapter struct {
 	finalizeOwnershipTestHook func(string,RecoveryPreparedOwnershipForTest)
 	engine *recovery.Engine
 	mu sync.Mutex
+	ownershipMu sync.RWMutex
 	frozen bool
 	pendingCandidate string
 	pendingPlan recovery.Plan
@@ -361,6 +375,53 @@ func (p *Peer) RecoveryActivationComplete() bool {
 	a.mu.Lock();defer a.mu.Unlock()
 	if a.txnState!=RecoveryTxnFinalized{return false}
 	return a.prepared==nil || a.prepared.activationComplete
+}
+
+func recoveryAttemptTokenForPrepared(prep *preparedRecovery) RecoveryAttemptToken {
+	if prep==nil{return RecoveryAttemptToken{}}
+	return RecoveryAttemptToken{Transaction:prep.control,PreparedIncarnation:prep.incarnation}
+}
+
+func (p *Peer) recoveryAttemptCurrent(token RecoveryAttemptToken) bool {
+	if p.recovery==nil||token.PreparedIncarnation==0{return false}
+	a:=p.recovery
+	a.mu.Lock();defer a.mu.Unlock()
+	return a.prepared!=nil&&a.prepared.incarnation==token.PreparedIncarnation&&sameRecoveryTransaction(a.prepared.control,token.Transaction)
+}
+
+func (p *Peer) withCurrentRecoveryAttempt(token RecoveryAttemptToken,fn func() error) error {
+	if p.recovery==nil{return errors.New("recovery is disabled")}
+	a:=p.recovery
+	a.ownershipMu.RLock();defer a.ownershipMu.RUnlock()
+	a.mu.Lock()
+	current:=a.prepared!=nil&&a.prepared.incarnation==token.PreparedIncarnation&&sameRecoveryTransaction(a.prepared.control,token.Transaction)
+	a.mu.Unlock()
+	if !current{return ErrStaleRecoveryIncarnation}
+	return fn()
+}
+
+func (p *Peer) markPostCommitFailureForAttempt(token RecoveryAttemptToken,err error,ctl RecoveryControl,generation uint64)(CommitResult,error){
+	if p.recovery==nil{return CommitResult{},errors.New("recovery is disabled")}
+	a:=p.recovery
+	a.ownershipMu.RLock();defer a.ownershipMu.RUnlock()
+	a.mu.Lock()
+	current:=a.prepared!=nil&&a.prepared.incarnation==token.PreparedIncarnation&&sameRecoveryTransaction(a.prepared.control,token.Transaction)
+	a.mu.Unlock()
+	if !current {
+		return CommitResult{Committed:true,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest},ErrStaleRecoveryIncarnation
+	}
+	return p.markPostCommitFailureForGeneration(err,ctl,generation)
+}
+
+func (p *Peer) activatePreparedCarrierOwned(prep *preparedRecovery,ctl RecoveryControl,token RecoveryAttemptToken)(uint64,error){
+	if p.recovery==nil{return 0,errors.New("recovery is disabled")}
+	a:=p.recovery
+	a.ownershipMu.RLock();defer a.ownershipMu.RUnlock()
+	a.mu.Lock()
+	current:=a.prepared==prep&&prep.incarnation==token.PreparedIncarnation&&sameRecoveryTransaction(prep.control,token.Transaction)
+	a.mu.Unlock()
+	if !current{return 0,ErrStaleRecoveryIncarnation}
+	return p.activatePreparedCarrier(prep,ctl)
 }
 
 func (p *Peer) RecoveryStats() RecoveryStats {
@@ -679,7 +740,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 	peerFlow:=make(map[uint64]recovery.FlowSnapshot,len(peerSnap.Flows))
 	for _,sf:=range peerSnap.Flows{peerFlow[sf.StreamID]=sf}
 	if runCtx==nil{runCtx=ctx}
-	prep:=&preparedRecovery{control:ctl,carrier:c,sender:newSender,runCtx:runCtx,flows:make([]preparedFlowRecovery,0,len(plan.Flows))}
+	prep:=&preparedRecovery{control:ctl,incarnation:1,carrier:c,sender:newSender,runCtx:runCtx,flows:make([]preparedFlowRecovery,0,len(plan.Flows))}
 	for _,fp:=range plan.Flows{
 		fl:=flowMap[fp.StreamID]
 		if fl==nil{return RecoveryControl{},recovery.ErrStateMismatch}
@@ -910,12 +971,13 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 	}
 	finalizeHook:=a.finalizeOwnershipTestHook
 	capturedOwnership:=preparedOwnershipSnapshotForTest(prep)
+	attemptToken:=recoveryAttemptTokenForPrepared(prep)
+	attemptSender:=prep.sender
+	attemptRunCtx:=prep.runCtx
 	if finalizeHook!=nil {
 		a.mu.Unlock()
 		finalizeHook("after_capture",capturedOwnership)
 		a.mu.Lock()
-		// Intentionally continue with the originally captured prep pointer. The
-		// falsification test observes whether an exact rebind mutates that object.
 	}
 	if prep.activationComplete{
 		rebound:=prep.rebindPending
@@ -926,7 +988,7 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		a.mu.Unlock()
 		if rebound{
 			var err error
-			activatedGeneration,err=p.activatePreparedCarrier(prep,ctl);if err!=nil{return 0,err}
+			activatedGeneration,err=p.activatePreparedCarrierOwned(prep,ctl,attemptToken);if err!=nil{return 0,err}
 			a.mu.Lock();if a.prepared==prep{prep.activatedGeneration=activatedGeneration};a.mu.Unlock()
 			p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 			for i:=range flows{
@@ -945,34 +1007,37 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 	a.mu.Unlock()
 
 	if finalizeHook!=nil{finalizeHook("before_use",preparedOwnershipSnapshotForTest(prep))}
-	if prep.sender==nil||prep.sender.isStopped(){
-		_,e:=p.markPostCommitFailure(ErrCarrierUnavailable,ctl);return 0,e
+	if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
+	if attemptSender==nil||attemptSender.isStopped(){
+		_,e:=p.markPostCommitFailureForAttempt(attemptToken,ErrCarrierUnavailable,ctl,0);return 0,e
 	}
 	// Distributed FINALIZED proof is now present. Only at this point may the
 	// candidate become the live data-plane carrier. Recovery control has
 	// finished consuming frames, so session reader/pumps can safely take over.
-	activatedGeneration,err:=p.activatePreparedCarrier(prep,ctl)
-	if err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+	activatedGeneration,err:=p.activatePreparedCarrierOwned(prep,ctl,attemptToken)
+	if err!=nil{return 0,err}
 	a.mu.Lock();if a.prepared==prep{prep.activatedGeneration=activatedGeneration};a.mu.Unlock()
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
-		if err:=a.postCommitFault("after_authority_commit");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+		if err:=a.postCommitFault("after_authority_commit");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 	}
 	for i:=range prep.flows{
 		act:=&prep.flows[i]
 		fl:=act.flow
 		if !act.ackApplied&&act.ackAdvance>0 {
-			if err:=fl.onAck(act.ackAdvance);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+			err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{return fl.onAck(act.ackAdvance)})
+			if err!=nil{if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			act.ackApplied=true
 		}
 		if !act.finAckAdvanceApplied&&act.finAckAdvance {
-			fl.mu.Lock();fl.finAcked=true;fl.mu.Unlock();act.finAckAdvanceApplied=true
+			err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{fl.mu.Lock();fl.finAcked=true;fl.mu.Unlock();return nil})
+			if err!=nil{return 0,err}
+			act.finAckAdvanceApplied=true
 		}
 		if act.finAckConfirmAdvance {
-			fl.mu.Lock()
-			if fl.finAckSent{fl.finAckConfirmed=true}
-			fl.mu.Unlock()
+			err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{fl.mu.Lock();if fl.finAckSent{fl.finAckConfirmed=true};fl.mu.Unlock();return nil})
+			if err!=nil{return 0,err}
 		}
 
 		// Local write success is not delivery proof. Recompute the replay
@@ -985,18 +1050,19 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		from:=act.replayFrom
 		if accepted>from{from=accepted}
 		frames,_,err:=fl.replayFramesFrom(from)
-		if err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+		if err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 		var replayAcceptThrough uint64
 		for _,fr:=range frames{
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
-			if err:=prep.sender.sendData(ctx,fl,fr);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+			if err:=attemptSender.sendData(ctx,fl,fr);err!=nil{if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
+			if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
 			a.replayed.Add(uint64(len(fr.Payload)))
 			end:=fr.Offset+uint64(len(fr.Payload))
 			if end>replayAcceptThrough{replayAcceptThrough=end}
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+				if err:=a.postCommitFault("after_replay_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
 			if a.peerAcceptanceTestHook!=nil { a.peerAcceptanceTestHook(fl,end) }
 			// A successful carrier write is not delivery evidence and does not
@@ -1010,8 +1076,9 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		// the exact transaction frozen and rebind/replay it conservatively on the
 		// next authenticated physical carrier instead of opening a fresh epoch.
 		if replayAcceptThrough>0 {
-			if err:=p.waitReplayAccepted(ctx,fl,replayAcceptThrough,prep.sender);err!=nil{
-				_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e
+			if err:=p.waitReplayAccepted(ctx,fl,replayAcceptThrough,attemptSender);err!=nil{
+				if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
+				_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e
 			}
 		}
 
@@ -1022,20 +1089,21 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		fl.mu.Unlock()
 		if resendFIN {
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("fin_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+				if err:=a.postCommitFault("fin_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
-			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+			if err:=attemptSender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
+			if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("after_fin_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+				if err:=a.postCommitFault("after_fin_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
 		}
 		if ackPeerFIN {
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("fin_ack_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+				if err:=a.postCommitFault("fin_ack_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
-			if err:=p.ackRemoteFin(fl);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+			if err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{return p.ackRemoteFin(fl)});err!=nil{if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			if a.postCommitFault!=nil {
-				if err:=a.postCommitFault("after_fin_ack_write");err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+				if err:=a.postCommitFault("after_fin_ack_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
 		}
 		// Restore the peer's authenticated receive-credit frontier only after
@@ -1044,12 +1112,15 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		// obsolete peerMax, and applying the monotonic snapshot credit is
 		// idempotent across exact-transaction rebinds.
 		if !act.creditApplied {
-			if err:=fl.restoreRecoveryPeerCredit(act.creditAdvance);err!=nil{_,e:=p.markPostCommitFailureForGeneration(err,ctl,activatedGeneration);return 0,e}
+			if err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{return fl.restoreRecoveryPeerCredit(act.creditAdvance)});err!=nil{if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			act.creditApplied=true
 		}
 		p.finishIfComplete(fl)
 		fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
-		if !closed&&!act.pumpsRestored{p.ensurePumpsAfterRecovery(prep.runCtx,fl);act.pumpsRestored=true}
+		if !closed&&!act.pumpsRestored{
+			if err:=p.withCurrentRecoveryAttempt(attemptToken,func()error{p.ensurePumpsAfterRecovery(attemptRunCtx,fl);return nil});err!=nil{return 0,err}
+			act.pumpsRestored=true
+		}
 	}
 	a.mu.Lock()
 	if a.prepared==prep{
