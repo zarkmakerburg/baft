@@ -29,6 +29,7 @@ type cutProxy struct {
 	target string
 	mu sync.Mutex
 	conns map[net.Conn]struct{}
+	wg sync.WaitGroup
 }
 
 func newCutProxy(t *testing.T,target string)*cutProxy{
@@ -39,7 +40,11 @@ func newCutProxy(t *testing.T,target string)*cutProxy{
 	return p
 }
 func (p *cutProxy) Addr()string{return p.ln.Addr().String()}
-func (p *cutProxy) Close(){_ = p.ln.Close();p.CutAll()}
+func (p *cutProxy) Close(){
+	_ = p.ln.Close()
+	p.CutAll()
+	p.wg.Wait()
+}
 func (p *cutProxy) track(c net.Conn,add bool){p.mu.Lock();if add{p.conns[c]=struct{}{}}else{delete(p.conns,c)};p.mu.Unlock()}
 func (p *cutProxy) CutAll(){
 	p.mu.Lock();cs:=make([]net.Conn,0,len(p.conns));for c:=range p.conns{cs=append(cs,c)};p.mu.Unlock()
@@ -50,12 +55,19 @@ func (p *cutProxy) serve(){
 		a,err:=p.ln.Accept();if err!=nil{return}
 		b,err:=net.Dial("tcp",p.target);if err!=nil{_ = a.Close();continue}
 		p.track(a,true);p.track(b,true)
+		p.wg.Add(1)
 		go func(x,y net.Conn){
-			defer func(){p.track(x,false);p.track(y,false);_ = x.Close();_ = y.Close()}()
+			defer p.wg.Done()
 			done:=make(chan struct{},2)
 			go func(){_,_=io.Copy(x,y);done<-struct{}{}}()
 			go func(){_,_=io.Copy(y,x);done<-struct{}{}}()
 			<-done
+			// Closing both halves releases the peer copy as well. Wait for its
+			// completion before declaring this proxy pair drained so repeated
+			// fault-matrix tests cannot accumulate detached descriptors.
+			_ = x.Close();_ = y.Close()
+			<-done
+			p.track(x,false);p.track(y,false)
 		}(a,b)
 	}
 }
