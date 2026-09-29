@@ -510,12 +510,12 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 							// resolve the exact transaction on a new authenticated carrier.
 							log.Printf("baft shard %d recovery attempt failed: %v",index,err)
 							if errors.Is(err,session.ErrPostCommitFailure){
-								if sh.peer.HasCommitUncertainty(){
+								if sh.peer.NeedsExactTransactionResolution(){
 									sh.peer.EnsureRecoverySignal(session.ErrCommitUncertain)
 								}
 								continue
 							}
-							if errors.Is(err,session.ErrCommitUncertain)||sh.peer.HasCommitUncertainty(){
+							if errors.Is(err,session.ErrCommitUncertain)||sh.peer.NeedsExactTransactionResolution(){
 								sh.peer.EnsureRecoverySignal(session.ErrCommitUncertain)
 								continue
 							}
