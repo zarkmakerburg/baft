@@ -117,6 +117,11 @@ type replayChunk struct {
 	data  []byte
 }
 
+type deferredLiveFrame struct {
+	frame protocol.Frame
+	producer DataProducerKind
+}
+
 type flow struct {
 	id              uint64
 	resourceID      uint64
@@ -151,6 +156,9 @@ type flow struct {
 	targetPumpRunning bool
 	localPumpDone chan struct{}
 	targetPumpDone chan struct{}
+	deferredLive []deferredLiveFrame
+	deferredLiveRunning bool
+	deferredLiveWake chan struct{}
 }
 
 type frameWriter struct {
@@ -1107,6 +1115,71 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 	}
 }
 
+func (p *Peer) queueExactLiveFrame(ctx context.Context,fl *flow,fr protocol.Frame,producer DataProducerKind) {
+	if fl==nil{return}
+	fl.mu.Lock()
+	if fl.closed{fl.mu.Unlock();return}
+	if fl.deferredLiveWake==nil{fl.deferredLiveWake=make(chan struct{},1)}
+	fl.deferredLive=append(fl.deferredLive,deferredLiveFrame{frame:fr,producer:producer})
+	start:=!fl.deferredLiveRunning
+	if start{fl.deferredLiveRunning=true}
+	wake:=fl.deferredLiveWake
+	fl.mu.Unlock()
+	if start{
+		p.wg.Add(1)
+		go func(){defer p.wg.Done();p.runExactLiveDelivery(ctx,fl)}()
+	}
+	select{case wake<-struct{}{}:default:}
+}
+
+func (p *Peer) runExactLiveDelivery(ctx context.Context,fl *flow) {
+	defer func(){fl.mu.Lock();fl.deferredLiveRunning=false;fl.mu.Unlock()}()
+	for{
+		fl.mu.Lock()
+		if fl.closed{fl.mu.Unlock();return}
+		if len(fl.deferredLive)==0{
+			wake:=fl.deferredLiveWake
+			fl.mu.Unlock()
+			select{case <-ctx.Done():return;case <-wake:continue}
+		}
+		item:=fl.deferredLive[0]
+		fl.mu.Unlock()
+
+		for{
+			sender,epoch,owner,generation:=p.currentSenderState()
+			if sender==nil{return}
+			// Exact-transaction live DATA may be committed while the recovery
+			// carrier is active but not application-ready. Never send on epoch 1
+			// or through a generation that has not crossed the readiness barrier.
+			if epoch<=1{
+				if err:=p.waitForCarrierSwitch(ctx,epoch,owner,generation);err!=nil{return}
+				continue
+			}
+			if err:=p.waitForGenerationReady(ctx,generation);err!=nil{return}
+			currentSender,currentEpoch,currentOwner,currentGeneration:=p.currentSenderState()
+			if currentGeneration!=generation||currentEpoch!=epoch||currentOwner!=owner||currentSender!=sender{continue}
+			if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,item.producer,item.frame.Offset,item.frame.Offset+uint64(len(item.frame.Payload)),generation)}
+			err:=sender.sendDataWithProducer(ctx,fl,item.frame,item.producer)
+			if err!=nil&&p.recoveryEnabled{
+				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
+				if werr:=p.waitForCarrierSwitch(ctx,epoch,owner,generation);werr==nil{continue}
+				return
+			}
+			if err!=nil{return}
+			break
+		}
+
+		fl.mu.Lock()
+		if len(fl.deferredLive)>0&&fl.deferredLive[0].frame.Offset==item.frame.Offset&&
+			fl.deferredLive[0].frame.Offset+uint64(len(fl.deferredLive[0].frame.Payload))==item.frame.Offset+uint64(len(item.frame.Payload)){
+			copy(fl.deferredLive,fl.deferredLive[1:])
+			fl.deferredLive[len(fl.deferredLive)-1]=deferredLiveFrame{}
+			fl.deferredLive=fl.deferredLive[:len(fl.deferredLive)-1]
+		}
+		fl.mu.Unlock()
+	}
+}
+
 func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 	buf := make([]byte, dataChunk)
 	for {
@@ -1131,34 +1204,41 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			if p.recoveryEnabled && p.trafficObserver != nil {
 				p.trafficObserver(0,uint64(n))
 			}
-			var sendErr error
-			for {
-				sender,epoch,owner,generation:=p.currentSenderState()
+			if exactObligation {
+				_,epoch,_,_:=p.currentSenderState()
 				producer:=ProducerLivePump
-				if p.recoveryEnabled&&epoch>1{producer=ProducerRecoveredPump}
-				// Carrier authority can change before replay/application readiness.
-				// A surviving pump from the prior physical generation must never
-				// bypass the recovery release barrier merely because its previous
-				// write happened to return nil. Wait for this exact generation to
-				// be application-ready, then re-read ownership before sending.
-				if p.recoveryEnabled&&epoch>1 {
-					if err:=p.waitForGenerationReady(ctx,generation);err!=nil{return}
-					currentSender,currentEpoch,currentOwner,currentGeneration:=p.currentSenderState()
-					if currentGeneration!=generation||currentEpoch!=epoch||currentOwner!=owner||currentSender!=sender{
-						continue
+				if epoch>1{producer=ProducerRecoveredPump}
+				p.queueExactLiveFrame(ctx,fl,protocol.Frame{Type:protocol.TypeData,StreamID:fl.id,Offset:off,Payload:payload},producer)
+			}else{
+				var sendErr error
+				for {
+					sender,epoch,owner,generation:=p.currentSenderState()
+					producer:=ProducerLivePump
+					if p.recoveryEnabled&&epoch>1{producer=ProducerRecoveredPump}
+					// Carrier authority can change before replay/application readiness.
+					// A surviving pump from the prior physical generation must never
+					// bypass the recovery release barrier merely because its previous
+					// write happened to return nil. Wait for this exact generation to
+					// be application-ready, then re-read ownership before sending.
+					if p.recoveryEnabled&&epoch>1 {
+						if err:=p.waitForGenerationReady(ctx,generation);err!=nil{return}
+						currentSender,currentEpoch,currentOwner,currentGeneration:=p.currentSenderState()
+						if currentGeneration!=generation||currentEpoch!=epoch||currentOwner!=owner||currentSender!=sender{
+							continue
+						}
 					}
-				}
-				if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,producer,off,off+uint64(len(payload)),generation)}
-				sendErr=sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer)
-				if sendErr!=nil&&p.recoveryEnabled {
-					p.onCarrierFailureForGeneration(sendErr,generation,SenderStopFrameProcessing)
-					if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{
-						continue
+					if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,producer,off,off+uint64(len(payload)),generation)}
+					sendErr=sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer)
+					if sendErr!=nil&&p.recoveryEnabled {
+						p.onCarrierFailureForGeneration(sendErr,generation,SenderStopFrameProcessing)
+						if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{
+							continue
+						}
 					}
+					break
 				}
-				break
+				if sendErr!=nil{return}
 			}
-			if sendErr!=nil{return}
 			if !p.recoveryEnabled && p.trafficObserver != nil {
 				p.trafficObserver(0,uint64(n))
 			}
@@ -1170,8 +1250,11 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				final := fl.txNext
 				fl.finSent = true
 				fl.mu.Unlock()
-				if exactObligation{p.markExactTerminalObligation(fl,true,false,final)}
-				_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
+				if exactObligation{
+					p.markExactTerminalObligation(fl,true,false,final)
+				}else{
+					_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
+				}
 			}
 			return
 		}
@@ -1383,11 +1466,13 @@ func (f *flow) close() {
 	}
 	f.closed = true
 	close(f.creditWait)
+	deferredWake:=f.deferredLiveWake
 	conn := f.conn
 	allocator := f.allocator
 	resourceID := f.resourceID
 	ring := f.rxRing
 	f.mu.Unlock()
+	if deferredWake!=nil{select{case deferredWake<-struct{}{}:default:}}
 	if ring != nil {
 		ring.Close()
 	}
