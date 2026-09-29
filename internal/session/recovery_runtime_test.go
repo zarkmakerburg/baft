@@ -650,12 +650,17 @@ func TestRecoveryPeerCreditNeverRegressesPastNewerOldCarrierWindow(t *testing.T)
 	peer.Snapshot.Flows[0].RxCredit=64
 	if err:=p.ReconcileRecovery("carrier-credit-monotonic",peer);err!=nil{t.Fatal(err)}
 
+	var out bytes.Buffer
+	ctl,err:=p.PrepareRecoveryCommit(ctx,"carrier-credit-monotonic",Carrier{In:bytes.NewReader(nil),Out:&out})
+	if err!=nil{t.Fatal(err)}
+
 	// Simulate a later authenticated WINDOW arriving on the still-authoritative
-	// old carrier after the immutable recovery snapshot was reconciled.
+	// old carrier after the immutable transaction snapshot has already been
+	// materialized into prepared recovery actions.
 	if err:=fl.onWindow(96);err!=nil{t.Fatal(err)}
 
-	var out bytes.Buffer
-	if _,err:=p.CommitRecovery(ctx,"carrier-credit-monotonic",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+	ctl.Phase=RecoveryPhaseCommit
+	if _,err:=p.CommitPreparedRecovery(ctx,ctl);err!=nil{t.Fatal(err)}
 	fl.mu.Lock();got:=fl.peerMax;fl.mu.Unlock()
 	if got!=96{t.Fatalf("recovery regressed newer peer credit: got=%d want=96",got)}
 	t.Logf("PASS immutable recovery credit=64 did not regress newer authoritative WINDOW=96")
