@@ -401,8 +401,13 @@ func TestPostCommitFailureCanRecoverToNextEpoch(t *testing.T){
 	// must carry that proven receive frontier; claiming RxAccepted=0 here would
 	// correctly require replay bytes that no longer exist.
 	for i:=range peer.Snapshot.Flows {
-		peer.Snapshot.Flows[i].RxAccepted=local3.Snapshot.Flows[i].TxAcked
-		peer.Snapshot.Flows[i].RxDelivered=local3.Snapshot.Flows[i].TxAcked
+		lf:=local3.Snapshot.Flows[i]
+		peer.Snapshot.Flows[i].RxAccepted=lf.TxAcked
+		peer.Snapshot.Flows[i].RxDelivered=lf.TxAcked
+		// Carry the terminal proof into the synthetic peer snapshot as well:
+		// local FIN_ACKed implies the peer received FIN and sent FIN_ACK.
+		peer.Snapshot.Flows[i].FinRecv=lf.FinSent
+		peer.Snapshot.Flows[i].FinAckSent=lf.FinAcked
 	}
 	if err:=p.ReconcileRecovery("candidate-3",peer);err!=nil{t.Fatal(err)}
 	var out bytes.Buffer
