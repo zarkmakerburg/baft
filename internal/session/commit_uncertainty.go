@@ -9,6 +9,16 @@ import (
 	"github.com/zarkmakerburg/baft/internal/recovery"
 )
 
+type RecoveryStabilitySnapshot struct {
+	ReplayHighWatermark uint64
+	ReplayPeerAccepted uint64
+	ReplayOutstanding bool
+	FinStable bool
+	FinalizationStable bool
+	ApplicationReady bool
+	TransactionStable bool
+}
+
 func validTxnTransition(from,to RecoveryTxnState) bool {
 	if from==to{return true}
 	switch from {
