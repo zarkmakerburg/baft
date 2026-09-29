@@ -429,8 +429,10 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 			generation,err:=p.FinalizeRecoveryCommitWithGeneration(hctx,ctl)
 			if err!=nil{return true,err}
 			if generation==0{return true,errors.New("recovery transaction carrier generation unavailable")}
+			owner,ok:=p.RecoveryCarrierOwnerForGeneration(ctl,generation)
+			if !ok{return true,session.ErrStaleRecoveryIncarnation}
 			<-hctx.Done()
-			p.FenceRecoveryCarrierWriter(generation)
+			p.FenceRecoveryCarrierOwner(owner)
 			return true,nil
 		default:
 			return true,recovery.ErrStateMismatch
@@ -499,8 +501,10 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 				generation,err:=p.FinalizeRecoveryCommitWithGeneration(hctx,ctl)
 				if err!=nil{return err}
 				if generation==0{return errors.New("recovery resolution carrier generation unavailable")}
+				owner,ok:=p.RecoveryCarrierOwnerForGeneration(ctl,generation)
+				if !ok{return session.ErrStaleRecoveryIncarnation}
 				<-hctx.Done()
-				p.FenceRecoveryCarrierWriter(generation)
+				p.FenceRecoveryCarrierOwner(owner)
 				return nil
 			default:
 				return recovery.ErrStateMismatch
