@@ -65,6 +65,13 @@ type RecoveryAuthoritySnapshot struct {
 	RecoverySignalPending bool
 	Frozen bool
 	ActivationComplete bool
+	ApplicationReady bool
+	TransactionStable bool
+	ReplayHighWatermark uint64
+	ReplayPeerAccepted uint64
+	ReplayOutstanding bool
+	FinStable bool
+	FinalizationStable bool
 	TxnState session.RecoveryTxnState
 	CandidateID string
 	NextEpoch uint64
@@ -244,7 +251,8 @@ func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
 		tx,ok:=p.RecoveryTransactionIdentity()
 		prep:=p.RecoveryPreparedOwnershipForTest()
 		stats:=p.RecoveryStats()
-		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),PreparedIncarnation:prep.PreparedIncarnation,PreparedID:prep.PreparedID,SenderID:prep.SenderID,SenderStopped:prep.SenderStopped,PostCommitFailures:stats.PostCommitFailures,RecoverySignalPending:p.RecoverySignalPendingForTest(),Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
+		st:=p.RecoveryStability()
+		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),PreparedIncarnation:prep.PreparedIncarnation,PreparedID:prep.PreparedID,SenderID:prep.SenderID,SenderStopped:prep.SenderStopped,PostCommitFailures:stats.PostCommitFailures,RecoverySignalPending:p.RecoverySignalPendingForTest(),Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),ApplicationReady:st.ApplicationReady,TransactionStable:st.TransactionStable,ReplayHighWatermark:st.ReplayHighWatermark,ReplayPeerAccepted:st.ReplayPeerAccepted,ReplayOutstanding:st.ReplayOutstanding,FinStable:st.FinStable,FinalizationStable:st.FinalizationStable,TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
 		if ok{s.CandidateID=tx.CandidateID;s.NextEpoch=tx.NextEpoch;s.PlanDigest=tx.PlanDigest}
 		out=append(out,s)
 	}
