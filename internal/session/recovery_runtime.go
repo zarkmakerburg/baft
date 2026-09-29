@@ -388,13 +388,16 @@ func (p *Peer) waitForReplacement(ctx context.Context,oldEpoch uint64,oldCarrier
 	}
 }
 
-func (p *Peer) signalReplacementReady() {
-	_,_,generation:=p.currentCarrierIdentity()
+func (p *Peer) publishReplacementReady(generation uint64) bool {
 	p.replacementMu.Lock()
-	if generation>p.replacementReadyGeneration{p.replacementReadyGeneration=generation}
+	defer p.replacementMu.Unlock()
+	// Readiness is a monotonic application-data frontier. A stale generation
+	// may never move it backwards or emit a wake that looks like progress.
+	if generation<=p.replacementReadyGeneration{return false}
+	p.replacementReadyGeneration=generation
 	close(p.replacementWait)
 	p.replacementWait=make(chan struct{})
-	p.replacementMu.Unlock()
+	return true
 }
 
 func (p *Peer) HandleCarrierFrame(ctx context.Context,epoch uint64,carrierID string,fr protocol.Frame) error {
@@ -779,8 +782,8 @@ func (p *Peer) waitReplayAccepted(ctx context.Context,fl *flow,want uint64,sende
 	}
 }
 
-func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryControl) error {
-	if prep==nil||prep.sender==nil||prep.carrier.In==nil||prep.carrier.Out==nil{return recovery.ErrNotPrepared}
+func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryControl) (uint64,error) {
+	if prep==nil||prep.sender==nil||prep.carrier.In==nil||prep.carrier.Out==nil{return 0,recovery.ErrNotPrepared}
 	// The recovered sender owns its own frameWriter. Do not wait on p.writer:
 	// an in-flight write on the dead generation may still hold that mutex and
 	// must not block FINALIZED data-plane activation for every active flow.
@@ -790,17 +793,18 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	p.carrierID=ctl.CandidateID
 	p.carrierEpoch=ctl.NextEpoch
 	p.carrierGeneration++
+	activatedGeneration:=p.carrierGeneration
 	p.sender=prep.sender
 	runCtx:=prep.runCtx
 	if runCtx==nil{runCtx=p.runCtx}
 	p.mu.Unlock()
-	if runCtx==nil{return errors.New("session run context unavailable")}
+	if runCtx==nil{return 0,errors.New("session run context unavailable")}
 	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stop(ErrCarrierUnavailable)}
 	if !prep.sender.isStarted(){
 		p.wg.Add(1)
 		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
 	}
-	return nil
+	return activatedGeneration,nil
 }
 
 func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) error {
@@ -827,14 +831,17 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		flows:=append([]preparedFlowRecovery(nil),prep.flows...)
 		a.mu.Unlock()
 		if rebound{
-			if err:=p.activatePreparedCarrier(prep,ctl);err!=nil{return err}
+			activatedGeneration,err:=p.activatePreparedCarrier(prep,ctl);if err!=nil{return err}
 			p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
-			p.signalReplacementReady()
 			for i:=range flows{
 				fl:=flows[i].flow
 				fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
 				if !closed{p.ensurePumpsAfterRecovery(runCtx,fl)}
 			}
+			// Rebind has no new recovery semantics to apply, but application
+			// waiters are released only after the replacement sender and pumps
+			// are installed for this exact physical generation.
+			p.publishReplacementReady(activatedGeneration)
 		}
 		return nil
 	}
@@ -847,7 +854,8 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	// Distributed FINALIZED proof is now present. Only at this point may the
 	// candidate become the live data-plane carrier. Recovery control has
 	// finished consuming frames, so session reader/pumps can safely take over.
-	if err:=p.activatePreparedCarrier(prep,ctl);err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+	activatedGeneration,err:=p.activatePreparedCarrier(prep,ctl)
+	if err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
@@ -928,7 +936,10 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
 	}
 	a.mu.Unlock()
-	p.replacementMu.Lock();close(p.replacementWait);p.replacementWait=make(chan struct{});p.replacementMu.Unlock()
+	// Publish application readiness only after replay/ACK/FIN reconciliation
+	// and pump restoration are complete. Physical carrier activation alone is
+	// not sufficient evidence that blocked application flows may resume.
+	p.publishReplacementReady(activatedGeneration)
 	return nil
 }
 
