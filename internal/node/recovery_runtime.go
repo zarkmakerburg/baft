@@ -331,6 +331,7 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 	p:=r.sessionByID(remote.Snapshot.SessionID)
 	if p==nil{return true,errors.New("recovery session not found")}
 	if p.PeerIdentity()!=peer.Identity{return true,errors.New("recovery peer identity mismatch")}
+	p.RecordRecoveryDiagnosticForTest("HANDLER_CREATED",session.SenderStopUnknown,nil,0)
 
 	local,err:=p.BeginRecovery(remote.CandidateID)
 	if err!=nil{return true,err}
@@ -429,10 +430,17 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 			generation,err:=p.FinalizeRecoveryCommitWithGeneration(hctx,ctl)
 			if err!=nil{return true,err}
 			if generation==0{return true,errors.New("recovery transaction carrier generation unavailable")}
+			p.RecordRecoveryDiagnosticForTest("HANDLER_FINALIZE_COMPLETED",session.SenderStopUnknown,nil,generation)
 			owner,ok:=p.RecoveryCarrierOwnerForGeneration(ctl,generation)
 			if !ok{return true,session.ErrStaleRecoveryIncarnation}
 			<-hctx.Done()
-			p.FenceRecoveryCarrierOwner(owner)
+			p.RecordRecoveryDiagnosticForTest("HANDLER_CTX_DONE",session.SenderStopContextDone,hctx.Err(),generation)
+			p.RecordRecoveryDiagnosticForTest("OWNER_FENCE_ATTEMPT",session.SenderStopRecoveryOwnerFence,hctx.Err(),generation)
+			if p.FenceRecoveryCarrierOwner(owner){
+				p.RecordRecoveryDiagnosticForTest("OWNER_FENCE_RESULT_APPLIED",session.SenderStopRecoveryOwnerFence,hctx.Err(),generation)
+			}else{
+				p.RecordRecoveryDiagnosticForTest("OWNER_FENCE_RESULT_REJECTED",session.SenderStopRecoveryOwnerFence,hctx.Err(),generation)
+			}
 			return true,nil
 		default:
 			return true,recovery.ErrStateMismatch
@@ -444,6 +452,7 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 	p:=r.sessionByID(query.SessionID)
 	if p==nil{return errors.New("recovery status session not found")}
 	if p.PeerIdentity()!=peer.Identity{return errors.New("recovery status peer identity mismatch")}
+	p.RecordRecoveryDiagnosticForTest("HANDLER_CREATED",session.SenderStopUnknown,nil,0)
 	reply,err:=p.EvaluateCommitStatus(query);if err!=nil{return err}
 
 	commitCtl:=query
@@ -501,10 +510,17 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 				generation,err:=p.FinalizeRecoveryCommitWithGeneration(hctx,ctl)
 				if err!=nil{return err}
 				if generation==0{return errors.New("recovery resolution carrier generation unavailable")}
+				p.RecordRecoveryDiagnosticForTest("HANDLER_FINALIZE_COMPLETED",session.SenderStopUnknown,nil,generation)
 				owner,ok:=p.RecoveryCarrierOwnerForGeneration(ctl,generation)
 				if !ok{return session.ErrStaleRecoveryIncarnation}
 				<-hctx.Done()
-				p.FenceRecoveryCarrierOwner(owner)
+				p.RecordRecoveryDiagnosticForTest("HANDLER_CTX_DONE",session.SenderStopContextDone,hctx.Err(),generation)
+				p.RecordRecoveryDiagnosticForTest("OWNER_FENCE_ATTEMPT",session.SenderStopRecoveryOwnerFence,hctx.Err(),generation)
+				if p.FenceRecoveryCarrierOwner(owner){
+					p.RecordRecoveryDiagnosticForTest("OWNER_FENCE_RESULT_APPLIED",session.SenderStopRecoveryOwnerFence,hctx.Err(),generation)
+				}else{
+					p.RecordRecoveryDiagnosticForTest("OWNER_FENCE_RESULT_REJECTED",session.SenderStopRecoveryOwnerFence,hctx.Err(),generation)
+				}
 				return nil
 			default:
 				return recovery.ErrStateMismatch
