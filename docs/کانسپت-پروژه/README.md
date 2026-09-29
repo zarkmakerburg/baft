@@ -56,4 +56,7 @@
 
 - `اینترنت-مقاوم-و-مش/` — Mesh، Island Mode، DTN، local-first services و Rejoin پس از قطع گسترده.
 
+
+- `امنیت-فوق-مقاوم/` — Zero Trust، Data Capsule، attestation، breach containment، privacy و post-compromise recovery.
+
 </div>
