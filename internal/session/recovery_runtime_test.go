@@ -637,3 +637,26 @@ func TestRecoveryRestoresAuthenticatedPeerCreditFrontier(t *testing.T){
 	}
 	t.Logf("PASS recovery restored peer credit frontier %d->%d",before,after)
 }
+
+
+func TestRecoveryPeerCreditNeverRegressesPastNewerOldCarrierWindow(t *testing.T){
+	p,_,ctx,cancel:=recoveryFixture(t,1);defer cancel()
+	fl,_:=p.getOpenFlow(1)
+	fl.mu.Lock()
+	fl.peerMax=32
+	fl.mu.Unlock()
+
+	_,peer:=peerOfferFor(t,p,"carrier-credit-monotonic")
+	peer.Snapshot.Flows[0].RxCredit=64
+	if err:=p.ReconcileRecovery("carrier-credit-monotonic",peer);err!=nil{t.Fatal(err)}
+
+	// Simulate a later authenticated WINDOW arriving on the still-authoritative
+	// old carrier after the immutable recovery snapshot was reconciled.
+	if err:=fl.onWindow(96);err!=nil{t.Fatal(err)}
+
+	var out bytes.Buffer
+	if _,err:=p.CommitRecovery(ctx,"carrier-credit-monotonic",Carrier{In:bytes.NewReader(nil),Out:&out});err!=nil{t.Fatal(err)}
+	fl.mu.Lock();got:=fl.peerMax;fl.mu.Unlock()
+	if got!=96{t.Fatalf("recovery regressed newer peer credit: got=%d want=96",got)}
+	t.Logf("PASS immutable recovery credit=64 did not regress newer authoritative WINDOW=96")
+}
