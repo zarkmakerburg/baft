@@ -1131,6 +1131,16 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
 	c:=openRecoveryFlow(t,p);defer c.Close()
 	targetBefore:=p.targetAccepts.Load()
+	logDiag:=func(side string)func(session.RecoveryDiagnosticEvent){
+		return func(ev session.RecoveryDiagnosticEvent){
+			switch ev.Event{
+			case "SENDER_STOPPED","RECOVERY_GENERATION_FAILURE","WAIT_REPLAY_FAILED","DATA_GAP","MUTATION_GENERATION_MISMATCH","FRAME_BEFORE_MUTATION","REPLAY_WRITE_BEGIN","REPLAY_WRITE_SUCCESS","REBIND_CREATED","CARRIER_ACTIVATED":
+				t.Logf("%s recovery_diag=%+v",side,ev)
+			}
+		}
+	}
+	p.irRuntime.SetRecoveryDiagnosticHookForTest(logDiag("IR"))
+	p.exRuntime.SetRecoveryDiagnosticHookForTest(logDiag("EX"))
 
 	var mode atomic.Int32
 	mode.Store(1)
@@ -1242,7 +1252,7 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 		case 3:
 			replay3Once.Do(func(){close(replay3Blocked)})
 			<-replay3Release
-			return true
+			return false
 		default:
 			return false
 		}
