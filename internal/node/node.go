@@ -503,37 +503,40 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 					select{
 					case <-ctx.Done():return
 					case <-sh.peer.RecoveryNeeded():
-						if !sh.peer.NeedsRecovery(){continue}
-						err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh)
-						if err!=nil&&ctx.Err()==nil{
-							// A recovery transaction failure is non-fatal to the Runtime.
-							// COMMIT/FINALIZATION uncertainty is never treated as an abort:
-							// resolve the exact transaction on a new authenticated carrier.
-							log.Printf("baft shard %d recovery attempt failed: %v",index,err)
-							if errors.Is(err,session.ErrPostCommitFailure){
-								if sh.peer.NeedsExactTransactionResolution(){
-									sh.peer.EnsureRecoverySignal(session.ErrCommitUncertain)
-								}
-								continue
-							}
-							if errors.Is(err,session.ErrCommitUncertain)||sh.peer.NeedsExactTransactionResolution(){
-								sh.peer.EnsureRecoverySignal(session.ErrCommitUncertain)
-								continue
-							}
-							// A snapshot/reconcile mismatch before authority publish can be
-							// transient while the failed generation's last authenticated
-							// ACK/WINDOW frames are settling. AbortRecovery has completed
-							// before recoverDialerShard returns, so retry only this typed
-							// pre-commit class and only while the old carrier remains dead.
-							// Deliberate candidate/readiness/before-commit faults do not
-							// enter this path and therefore cannot livelock.
-							if errors.Is(err,errRecoverySnapshotTransient)&&sh.peer.NeedsRecovery(){
+						// A signal starts recovery work, but unresolved exact-transaction
+						// obligations are level-triggered from state, not edge-triggered
+						// by the channel. This prevents a coalesced/stale wake from
+						// stranding FINALIZED-but-activation-incomplete replay.
+						for sh.peer.NeedsRecovery()&&ctx.Err()==nil {
+							err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh)
+							if err==nil {
 								sh.peer.DrainRecoverySignals()
-								sh.peer.EnsureRecoverySignal(session.ErrCarrierUnavailable)
-								continue
+								break
+							}
+							log.Printf("baft shard %d recovery attempt failed: %v",index,err)
+
+							retry:=false
+							if errors.Is(err,session.ErrPostCommitFailure)||errors.Is(err,session.ErrCommitUncertain)||sh.peer.NeedsExactTransactionResolution(){
+								retry=sh.peer.NeedsRecovery()
+							} else if errors.Is(err,errRecoverySnapshotTransient)&&sh.peer.NeedsRecovery(){
+								retry=true
+							}
+							if !retry {
+								sh.peer.DrainRecoverySignals()
+								break
+							}
+							// Drain any coalesced wake; state is the source of truth for
+							// the immediate retry. A short bounded backoff avoids a hot
+							// loop if the authenticated peer is temporarily unavailable.
+							sh.peer.DrainRecoverySignals()
+							timer:=time.NewTimer(10*time.Millisecond)
+							select{
+							case <-ctx.Done():
+								if !timer.Stop(){<-timer.C}
+								return
+							case <-timer.C:
 							}
 						}
-						sh.peer.DrainRecoverySignals()
 					}
 				}
 			}(i,sh)
