@@ -1127,17 +1127,34 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			if p.recoveryEnabled && p.trafficObserver != nil {
 				p.trafficObserver(0,uint64(n))
 			}
-			sender,epoch,owner,generation:=p.currentSenderState()
-			producer:=ProducerLivePump
-			if p.recoveryEnabled&&epoch>1{producer=ProducerRecoveredPump}
-			if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,producer,off,off+uint64(len(payload)),generation)}
-			if err := sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer); err != nil {
-				if p.recoveryEnabled {
-					p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
-					if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
+			var sendErr error
+			for {
+				sender,epoch,owner,generation:=p.currentSenderState()
+				producer:=ProducerLivePump
+				if p.recoveryEnabled&&epoch>1{producer=ProducerRecoveredPump}
+				// Carrier authority can change before replay/application readiness.
+				// A surviving pump from the prior physical generation must never
+				// bypass the recovery release barrier merely because its previous
+				// write happened to return nil. Wait for this exact generation to
+				// be application-ready, then re-read ownership before sending.
+				if p.recoveryEnabled&&epoch>1 {
+					if err:=p.waitForGenerationReady(ctx,generation);err!=nil{return}
+					currentSender,currentEpoch,currentOwner,currentGeneration:=p.currentSenderState()
+					if currentGeneration!=generation||currentEpoch!=epoch||currentOwner!=owner||currentSender!=sender{
+						continue
+					}
 				}
-				return
+				if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,producer,off,off+uint64(len(payload)),generation)}
+				sendErr=sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer)
+				if sendErr!=nil&&p.recoveryEnabled {
+					p.onCarrierFailureForGeneration(sendErr,generation,SenderStopFrameProcessing)
+					if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{
+						continue
+					}
+				}
+				break
 			}
+			if sendErr!=nil{return}
 			if !p.recoveryEnabled && p.trafficObserver != nil {
 				p.trafficObserver(0,uint64(n))
 			}
