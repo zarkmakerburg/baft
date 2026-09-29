@@ -91,17 +91,18 @@ func (p *Peer) RecoveryStability() RecoveryStabilitySnapshot {
 		if act.flow==nil{continue}
 		act.flow.mu.Lock()
 		acked:=act.flow.txAcked
-		finSent:=act.flow.finSent
 		finAcked:=act.flow.finAcked
-		finRecv:=act.flow.finRecv
 		finAckSent:=act.flow.finAckSent
 		finAckConfirmed:=act.flow.finAckConfirmed
 		act.flow.mu.Unlock()
 		hwm:=act.replayHighWatermark
 		if hwm>selectedHigh{selectedHigh=hwm;out.ReplayHighWatermark=hwm;out.ReplayPeerAccepted=acked}
 		if hwm>0&&acked<hwm{out.ReplayOutstanding=true}
-		if finSent&&!finAcked{out.FinStable=false}
-		if finRecv&&(!finAckSent||!finAckConfirmed){out.FinStable=false}
+		// Terminal stability is scoped to obligations captured by this recovery
+		// transaction. A later FIN after TransactionStable belongs to current
+		// state and is handled by a fresh recovery snapshot if that carrier fails.
+		if act.resendFIN&&!finAcked{out.FinStable=false}
+		if act.ackPeerFIN&&(!finAckSent||!finAckConfirmed){out.FinStable=false}
 	}
 	p.replacementMu.Lock()
 	readyGeneration:=p.replacementReadyGeneration
