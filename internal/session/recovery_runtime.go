@@ -164,6 +164,12 @@ type RecoveryDiagnosticEvent struct {
 	PreparedIncarnation uint64
 	CarrierGeneration uint64
 	SenderID uint64
+	FrameType protocol.FrameType
+	FrameOffset uint64
+	FrameEnd uint64
+	DecodedGeneration uint64
+	CurrentGeneration uint64
+	FlowRxNext uint64
 }
 
 func preparedOwnershipSnapshotForTest(prep *preparedRecovery) RecoveryPreparedOwnershipForTest {
@@ -295,6 +301,22 @@ func (p *Peer) traceRecoveryDiagnostic(event string,source SenderStopSource,err 
 	p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{Event:event,Source:source,Error:msg,WaitReason:waitReason,
 		SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
 		PreparedIncarnation:incarnation,CarrierGeneration:generation,SenderID:id})
+}
+
+func (p *Peer) traceRecoveryFrameDiagnostic(event string,fr protocol.Frame,decodedGeneration,currentGeneration,rxNext uint64,err error) {
+	if p==nil||p.recovery==nil{return}
+	ctl,ok:=p.RecoveryTransactionIdentity()
+	if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
+	p.recovery.mu.Lock()
+	inc:=uint64(0)
+	if p.recovery.prepared!=nil{inc=p.recovery.prepared.incarnation}
+	p.recovery.mu.Unlock()
+	msg:="";if err!=nil{msg=err.Error()}
+	p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{
+		Event:event,Error:msg,SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
+		PreparedIncarnation:inc,CarrierGeneration:currentGeneration,FrameType:fr.Type,FrameOffset:fr.Offset,
+		FrameEnd:fr.Offset+uint64(len(fr.Payload)),DecodedGeneration:decodedGeneration,CurrentGeneration:currentGeneration,FlowRxNext:rxNext,
+	})
 }
 
 func (p *Peer) RecoveryDiagnosticsForTest() []RecoveryDiagnosticEvent {
@@ -1231,11 +1253,11 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
-			p.traceRecoveryDiagnostic("REPLAY_WRITE_BEGIN",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
+			p.traceRecoveryDiagnostic("REPLAY_WRITE_BEGIN",SenderStopUnknown,fmt.Errorf("offset=%d end=%d",fr.Offset,fr.Offset+uint64(len(fr.Payload))),"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
 			if err:=attemptSender.sendData(ctx,fl,fr);err!=nil{if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
 			a.replayed.Add(uint64(len(fr.Payload)))
-			p.traceRecoveryDiagnostic("REPLAY_WRITE_SUCCESS",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
+			p.traceRecoveryDiagnostic("REPLAY_WRITE_SUCCESS",SenderStopUnknown,fmt.Errorf("offset=%d end=%d",fr.Offset,fr.Offset+uint64(len(fr.Payload))),"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
 			end:=fr.Offset+uint64(len(fr.Payload))
 			if end>replayAcceptThrough{replayAcceptThrough=end}
 			if a.postCommitFault!=nil {
