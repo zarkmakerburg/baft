@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	baftmetrics "github.com/zarkmakerburg/baft/internal/metrics"
@@ -33,11 +34,13 @@ func (r *Runtime) startMetrics(ctx context.Context, addr string) (<-chan error, 
 		if errors.Is(err,http.ErrServerClosed){err=nil}
 		done<-err
 	}()
+	var stopOnce sync.Once
 	stop:=func(){
-		shutdownCtx,cancel:=context.WithTimeout(context.Background(),2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-		_ = ln.Close()
+		stopOnce.Do(func(){
+			shutdownCtx,cancel:=context.WithTimeout(context.Background(),2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdownCtx)
+		})
 	}
 	go func(){<-ctx.Done();stop()}()
 	return done,stop,nil
