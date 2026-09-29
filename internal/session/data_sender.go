@@ -61,6 +61,7 @@ type SenderStopEvent struct {
 	PlanDigest string
 	PreparedIncarnation uint64
 	CarrierGeneration uint64
+	PhysicalCarrierInstanceID uint64
 }
 
 type senderDiagnosticBinding struct {
@@ -368,7 +369,7 @@ func (s *outboundSender) stopWithSource(source SenderStopSource,err error) {
 		SenderID:s.id,Source:source,Error:err.Error(),
 		SessionID:s.diag.SessionID,Epoch:s.diag.Epoch,CandidateID:s.diag.CandidateID,
 		PlanDigest:s.diag.PlanDigest,PreparedIncarnation:s.diag.PreparedIncarnation,
-		CarrierGeneration:s.diag.CarrierGeneration,
+		CarrierGeneration:s.diag.CarrierGeneration,PhysicalCarrierInstanceID:s.diag.PhysicalCarrierInstanceID,
 	}
 	s.hasStopEvent=true
 
