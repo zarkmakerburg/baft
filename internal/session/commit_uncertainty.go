@@ -255,10 +255,12 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 	if p.runCtx!=nil{runCtx=p.runCtx}
 	p.mu.Unlock()
 	newPrep:=clonePreparedForRebind(oldPrep,c,newSender,runCtx)
+	p.bindRecoverySenderDiagnostic(newSender,newPrep.control,newPrep.incarnation,0)
+	p.traceRecoveryDiagnostic("REBIND_CREATED",SenderStopUnknown,nil,"",newSender,newPrep.control,newPrep.incarnation,0)
 	oldSender:=oldPrep.sender
 	a.prepared=newPrep
 	a.mu.Unlock()
-	if oldSender!=nil{oldSender.stop(ErrCarrierUnavailable)}
+	if oldSender!=nil{oldSender.stopWithSource(SenderStopExplicitReplace,ErrCarrierUnavailable)}
 	return nil
 }
 
@@ -470,6 +472,8 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 		control:ctl,incarnation:1,carrier:c,sender:newSender,runCtx:runCtx,flows:preparedFlows,
 		published:true,finalized:true,activationComplete:true,rebindPending:true,
 	}
+	p.bindRecoverySenderDiagnostic(newSender,ctl,1,0)
+	p.traceRecoveryDiagnostic("REBIND_CREATED",SenderStopUnknown,nil,"",newSender,ctl,1,0)
 	a.mu.Lock()
 	if a.prepared==nil{
 		a.prepared=prep
