@@ -630,7 +630,10 @@ func waitAuthorityPair(t *testing.T,p *recoveryRuntimePair,epoch uint64,finalize
 		ir:=p.irRuntime.RecoveryAuthoritiesForTest()
 		ex:=p.exRuntime.RecoveryAuthoritiesForTest()
 		if len(ir)==1&&len(ex)==1&&ir[0].Epoch==epoch&&ex[0].Epoch==epoch{
-			if !finalized||(!ir[0].Frozen&&!ex[0].Frozen&&ir[0].ActivationComplete&&ex[0].ActivationComplete){
+			if !finalized||(!ir[0].Frozen&&!ex[0].Frozen&&
+				ir[0].ActivationComplete&&ex[0].ActivationComplete&&
+				ir[0].ApplicationReady&&ex[0].ApplicationReady&&
+				ir[0].TransactionStable&&ex[0].TransactionStable){
 				return ir[0],ex[0]
 			}
 		}
@@ -1213,6 +1216,14 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	mid:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return true})
 	if mid.PeerAccepted>=mid.TxNext{t.Fatalf("local replay write incorrectly advanced peer-accepted frontier: %+v",mid)}
 	if mid.PeerAccepted>before.PeerAccepted{t.Fatalf("peer-accepted frontier advanced without receiver acceptance before=%+v mid=%+v",before,mid)}
+	classA:=oneRecoveryAuthority(t,p.irRuntime)
+	if classA.Epoch!=2||classA.CandidateID==""||classA.PlanDigest==""{
+		t.Fatalf("Class-A authority unavailable before recut: %+v",classA)
+	}
+	if !classA.ReplayOutstanding||classA.TransactionStable||classA.ReplayHighWatermark<=classA.ReplayPeerAccepted{
+		t.Fatalf("Class-A delivery obligation not visible before recut: %+v",classA)
+	}
+	candidate,digest:=classA.CandidateID,classA.PlanDigest
 
 	// Kill generation 2 while the receiver has decoded but not accepted frame
 	// #1. The exact finalized transaction must rebind and conservatively resend
@@ -1226,33 +1237,22 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	select{case err:=<-readDone:if err!=nil{t.Fatalf("client payload read: %v",err)};case <-time.After(20*time.Second):t.Fatal("client payload read timeout")}
 	have:=sha256.Sum256(got)
 	if !bytes.Equal(got,payload)||have!=wantHash{t.Fatalf("replay delivery mismatch got_hash=%x want_hash=%x",have,wantHash)}
-	// The replay carrier may itself fail after the exact transaction has
-	// finalized. In that case a fresh same-process recovery is allowed to
-	// advance to a later epoch; the invariant is convergence, monotonic epoch
-	// progression, and identical authority identity on both endpoints—not that
-	// this fault must remain forever at epoch 2.
+	// This is explicitly Class-A: loss before peer proof must rebind the exact
+	// epoch-2 transaction. A fresh epoch here is a correctness failure.
+	irFinal,exFinal:=waitExactRebindPair(t,p,2,candidate,digest,classA.CarrierGeneration,0)
 	deadline:=time.Now().Add(8*time.Second)
-	var irFinal,exFinal node.RecoveryAuthoritySnapshot
-	for {
-		ir:=p.irRuntime.RecoveryAuthoritiesForTest()
-		ex:=p.exRuntime.RecoveryAuthoritiesForTest()
-		if len(ir)==1&&len(ex)==1 {
-			a,b:=ir[0],ex[0]
-			if a.Epoch>=2&&a.Epoch==b.Epoch&&!a.Frozen&&!b.Frozen&&
-				a.ActivationComplete&&b.ActivationComplete&&
-				a.TxnState==session.RecoveryTxnFinalized&&b.TxnState==session.RecoveryTxnFinalized&&
-				a.CandidateID!=""&&a.CandidateID==b.CandidateID&&
-				a.PlanDigest!=""&&a.PlanDigest==b.PlanDigest {
-				irFinal,exFinal=a,b
-				break
-			}
-		}
-		if time.Now().After(deadline){t.Fatalf("replay recovery convergence timeout ir=%+v ex=%+v",ir,ex)}
+	for !(irFinal.TransactionStable&&exFinal.TransactionStable&&irFinal.ApplicationReady&&exFinal.ApplicationReady) {
+		if time.Now().After(deadline){t.Fatalf("Class-A did not become stable ir=%+v ex=%+v",irFinal,exFinal)}
 		time.Sleep(5*time.Millisecond)
+		irFinal=oneRecoveryAuthority(t,p.irRuntime)
+		exFinal=oneRecoveryAuthority(t,p.exRuntime)
+		if irFinal.Epoch!=2||exFinal.Epoch!=2||irFinal.CandidateID!=candidate||exFinal.CandidateID!=candidate||irFinal.PlanDigest!=digest||exFinal.PlanDigest!=digest{
+			t.Fatalf("Class-A epoch/identity escaped before replay proof ir=%+v ex=%+v expected candidate=%s digest=%s",irFinal,exFinal,candidate,digest)
+		}
 	}
-	if irFinal.CandidateID!=exFinal.CandidateID||irFinal.PlanDigest!=exFinal.PlanDigest{t.Fatalf("same authority transaction not preserved ir=%+v ex=%+v",irFinal,exFinal)}
+	if irFinal.ReplayOutstanding||exFinal.ReplayOutstanding{t.Fatalf("Class-A replay proof remained outstanding ir=%+v ex=%+v",irFinal,exFinal)}
 	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during replay retry accepts_delta=%d",n)}
-	t.Logf("PASS local write != peer acceptance; conservative replay deduped application bytes hash=%x accepted_before=%d accepted_mid=%d",have,before.PeerAccepted,mid.PeerAccepted)
+	t.Logf("PASS Class-A local write != peer acceptance; exact transaction preserved epoch=2 candidate=%s digest=%s hwm=%d accepted=%d hash=%x",candidate,digest,classA.ReplayHighWatermark,classA.ReplayPeerAccepted,have)
 }
 
 
@@ -1386,7 +1386,10 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 	if authC.Epoch!=2||authC.CandidateID!=midAuth.CandidateID||authC.PlanDigest!=midAuth.PlanDigest{
 		t.Fatalf("Barrier C transaction escaped mid=%+v current=%+v trace=%+v",midAuth,authC,p.irRuntime.RecoveryDiagnosticsForTest())
 	}
-	t.Logf("Barrier C replay written without acceptance sender=%s inc=%d gen=%d still_alive=true",prepC.SenderID,prepC.PreparedIncarnation,authC.CarrierGeneration)
+	if !authC.ReplayOutstanding||authC.TransactionStable||authC.ReplayHighWatermark<=authC.ReplayPeerAccepted{
+		t.Fatalf("Barrier C must remain unresolved Class-A before ACK: %+v",authC)
+	}
+	t.Logf("Barrier C replay written without acceptance sender=%s inc=%d gen=%d hwm=%d accepted=%d stable=%v",prepC.SenderID,prepC.PreparedIncarnation,authC.CarrierGeneration,authC.ReplayHighWatermark,authC.ReplayPeerAccepted,authC.TransactionStable)
 
 	close(replay3Release)
 	select{case <-ack3:case <-time.After(8*time.Second):t.Fatalf("generation3 peer acceptance proof not observed trace=%+v",p.irRuntime.RecoveryDiagnosticsForTest())}
@@ -1623,8 +1626,10 @@ func TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot(t *testing.T){
 
 	p.proxy.CutAll()
 	ir2,ex2:=waitAuthorityPair(t,p,2,true)
-	if !ir2.ActivationComplete||!ex2.ActivationComplete||ir2.Frozen||ex2.Frozen{
-		t.Fatalf("first recovery not stable ir=%+v ex=%+v",ir2,ex2)
+	if !ir2.ActivationComplete||!ex2.ActivationComplete||ir2.Frozen||ex2.Frozen||
+		!ir2.ApplicationReady||!ex2.ApplicationReady||!ir2.TransactionStable||!ex2.TransactionStable||
+		ir2.ReplayOutstanding||ex2.ReplayOutstanding{
+		t.Fatalf("first recovery not Class-B stable ir=%+v ex=%+v",ir2,ex2)
 	}
 	c2,d2:=ir2.CandidateID,ir2.PlanDigest
 
@@ -1889,4 +1894,17 @@ func TestStaleFinalizeFailureCannotRegressNewIncarnation(t *testing.T){
 	if after.SenderStopped{t.Fatalf("stale finalize failure stopped new sender: %+v",after)}
 	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during stale failure fencing accepts_delta=%d",n)}
 	t.Logf("PASS stale finalize failure fenced old_inc=%d new_inc=%d generation=%d post_commit_failures=%d",oldPrep.PreparedIncarnation,rebound.PreparedIncarnation,after.CarrierGeneration,after.PostCommitFailures)
+}
+
+
+func TestUnprovenReplayCarrierFailureStaysExactTransaction(t *testing.T){
+	TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t)
+}
+
+func TestUnprovenReplayWithLiveDataRecutRemainsExact(t *testing.T){
+	TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t)
+}
+
+func TestStableRecoveryTransactionAllowsFreshLaterEpoch(t *testing.T){
+	TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot(t)
 }
