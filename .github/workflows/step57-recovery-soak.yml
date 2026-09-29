@@ -8,7 +8,9 @@ on:
       - 'internal/session/**'
       - 'internal/node/**'
       - 'tests/integration/recovery_runtime_test.go'
+      - 'tests/integration/cluster_six_noise_test.go'
       - '.github/workflows/step57-recovery-soak.yml'
+      - '.github/workflows/stagec-soak.yml'
       - '.github/workflows/ci.yml'
 
 concurrency:
