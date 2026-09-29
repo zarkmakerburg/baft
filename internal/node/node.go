@@ -120,6 +120,43 @@ func (r *Runtime) RebindCurrentPreparedRecoveryForTest(ctx context.Context) (ses
 	return p.RecoveryPreparedOwnershipForTest(),nil
 }
 
+
+func (r *Runtime) FinalizeCurrentPreparedRecoveryForTest(ctx context.Context) (session.RecoveryCarrierOwner,error) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	if len(peers)!=1{return session.RecoveryCarrierOwner{},fmt.Errorf("expected exactly one recovery peer, got %d",len(peers))}
+	p:=peers[0]
+	ctl,ok:=p.RecoveryTransactionIdentity()
+	if !ok{return session.RecoveryCarrierOwner{},errors.New("recovery transaction unavailable")}
+	ctl.Phase=session.RecoveryPhaseFinalize
+	generation,err:=p.FinalizeRecoveryCommitWithGeneration(ctx,ctl)
+	if err!=nil{return session.RecoveryCarrierOwner{},err}
+	owner,ok:=p.RecoveryCarrierOwnerForGeneration(ctl,generation)
+	if !ok{return session.RecoveryCarrierOwner{},session.ErrStaleRecoveryIncarnation}
+	return owner,nil
+}
+
+func (r *Runtime) RecoveryCurrentCarrierOwnerForTest() (session.RecoveryCarrierOwner,bool,error) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	if len(peers)!=1{return session.RecoveryCarrierOwner{},false,fmt.Errorf("expected exactly one recovery peer, got %d",len(peers))}
+	owner,ok:=peers[0].RecoveryCurrentCarrierOwnerForTest()
+	return owner,ok,nil
+}
+
+func (r *Runtime) FenceRecoveryCarrierOwnerForTest(owner session.RecoveryCarrierOwner) (bool,error) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	if len(peers)!=1{return false,fmt.Errorf("expected exactly one recovery peer, got %d",len(peers))}
+	return peers[0].FenceRecoveryCarrierOwner(owner),nil
+}
+
 func (r *Runtime) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
 	r.peerMu.Lock()
 	peers:=make([]*session.Peer,0,len(r.peers))
