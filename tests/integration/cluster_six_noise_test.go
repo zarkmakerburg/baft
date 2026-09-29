@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -342,14 +343,36 @@ func runNNodeNoiseMasterHandshakeRoundTrip(t *testing.T, n int) {
 	}
 }
 
+// N=6 is retained as a historical regression fixture, not an architecture limit.
 func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 	runNNodeNoiseMasterHandshakeRoundTrip(t, 6)
 }
 
 func TestNNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
-	for _, n := range []int{1, 2, 6, 12} {
+	for _, n := range []int{1, 2, 3, 6, 8, 16} {
 		n := n
 		t.Run(fmt.Sprintf("N=%d", n), func(t *testing.T) {
+			runNNodeNoiseMasterHandshakeRoundTrip(t, n)
+		})
+	}
+}
+
+func TestNNodeNoiseMasterHandshakeRandomizedCardinality(t *testing.T) {
+	const seed int64 = 57016
+	rng := rand.New(rand.NewSource(seed))
+	seen := map[int]struct{}{}
+	values := make([]int, 0, 4)
+	for len(values) < cap(values) {
+		n := 1 + rng.Intn(16)
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		values = append(values, n)
+	}
+	for _, n := range values {
+		n := n
+		t.Run(fmt.Sprintf("seed=%d/N=%d", seed, n), func(t *testing.T) {
 			runNNodeNoiseMasterHandshakeRoundTrip(t, n)
 		})
 	}
