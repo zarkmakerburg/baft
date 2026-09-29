@@ -3,7 +3,7 @@
 # نتایج آزمون
 
 > English: [TEST-RESULTS.en.md](TEST-RESULTS.en.md)  
-> تاریخ: 2026-09-27
+> تاریخ: 2026-09-29
 
 ## محیط CI
 
@@ -133,11 +133,12 @@ PADL هنوز performance claim ندارد؛ Stage E باید هزینه انت�
 
 ## Stage-C soak
 - Workflow: `.github/workflows/stagec-soak.yml`
-- Current first run: `36342169299`
-- Status at this report revision: **in progress**
-- Gate: 25 repeated real-path integration cycles + 5 race-detector cycles
+- Failure تاریخی: run `36342169299` — **FAIL**؛ `TestConcurrentMultiFlowTransfer` با `unexpected EOF`.
+- Pass تاریخی بعدی: run `36342627897` — **PASS**.
+- شواهد code-head پیش از commit مستندات: run `36519987991` روی `6fcf41631dc963af6f9c124f245a3ce7a47bc2fe` — **PASS**.
+- Gate فعلی: 25 repeated real-path integration cycles + 5 race-detector cycles.
 
-Stage C remains open until this workflow produces a clean PASS.
+این نتیجه Stage-C gate فعلی را سبز می‌کند؛ performance benchmark عمومی یا production readiness از آن نتیجه‌گیری نمی‌شود.
 
 
 ## R3.1 — شواهد محلی
@@ -145,3 +146,35 @@ Stage C remains open until this workflow produces a clean PASS.
 [گزارش هوشا](reports/HOOSHA-R3.1.md) و لاگ‌های همان پوشه شامل آزمون‌های آماری، Differential، race و هزینه واقعی jitter است. نتایج این مرحله نباید با CI یا پایلوت واقعی ایران اشتباه گرفته شود.
 
 </div>
+
+
+## Step 5.7 P0 — baseline recovery generation readiness
+
+Baseline مأموریت: `c7237c09a673bc4442ad6e2c3a58dc8d222ce551`.
+
+Root cause تأیید شد: در initial finalize، `carrierGeneration` از 1 به 2 می‌رفت اما wake channel بدون advance شدن `replacementReadyGeneration` منتشر می‌شد. در نتیجه waiter نسل 1 بیدار می‌شد ولی شرط `readyGeneration > oldGeneration` برقرار نبود و دوباره تا retention timeout منتظر می‌ماند.
+
+اصلاح:
+- یک frontier واحد و monotonic برای application readiness؛
+- publish readiness با generation صریح؛
+- stale generation بدون wake/progress؛
+- initial finalize و rebind از semantics یکسان؛
+- readiness فقط بعد از replay/ACK/FIN reconciliation و pump restoration منتشر می‌شود.
+
+شواهد code-head پیش از commit مستندات روی `6fcf41631dc963af6f9c124f245a3ce7a47bc2fe`:
+- Full CI push `36519987982`: **PASS**
+- Full CI PR `36519992111`: **PASS**
+- Recovery-specific soak `36519987974`: **PASS**
+  - active-flow carrier replacement: 20× PASS
+  - 8-flow replacement: 10× PASS
+  - six-route identity isolation: 5× PASS
+  - distributed uncertainty/finalization/replay/FIN matrix: 10× PASS
+  - consecutive replacement lifecycle: 10× PASS
+  - recovery race sample: PASS
+- Stage-C soak `36519987991`: **PASS**
+- `go test ./...`: PASS
+- `go test -race ./...`: PASS
+- `go vet ./...`: PASS
+- protocol fuzz smoke: PASS
+
+این evidence فقط same-process recovery را پوشش می‌دهد. process-restart/machine-reboot resume و durable ECRL session snapshots همچنان خارج از scope و unsupported هستند.
