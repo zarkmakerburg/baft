@@ -143,20 +143,40 @@ type RecoveryPreparedOwnershipForTest struct {
 	PreparedIncarnation uint64
 	SenderID string
 	SenderStopped bool
+	SenderStop SenderStopEvent
+	HasSenderStop bool
 	CarrierInID string
 	CarrierOutID string
 	ActivatedGeneration uint64
 	RebindPending bool
 }
 
+type RecoveryDiagnosticEvent struct {
+	Sequence uint64
+	Event string
+	Source SenderStopSource
+	Error string
+	WaitReason string
+	SessionID string
+	Epoch uint64
+	CandidateID string
+	PlanDigest string
+	PreparedIncarnation uint64
+	CarrierGeneration uint64
+	SenderID uint64
+}
+
 func preparedOwnershipSnapshotForTest(prep *preparedRecovery) RecoveryPreparedOwnershipForTest {
 	if prep==nil{return RecoveryPreparedOwnershipForTest{}}
+	stop,hasStop:=SenderStopEvent{},false
+	if prep.sender!=nil{stop,hasStop=prep.sender.stopEventSnapshot()}
 	return RecoveryPreparedOwnershipForTest{
 		Transaction:prep.control,
 		PreparedID:fmt.Sprintf("%p",prep),
 		PreparedIncarnation:prep.incarnation,
-		SenderID:fmt.Sprintf("%p",prep.sender),
+		SenderID:fmt.Sprintf("%d",func()uint64{if prep.sender==nil{return 0};return prep.sender.senderID()}()),
 		SenderStopped:func()bool{if prep.sender==nil{return true};return prep.sender.isStopped()}(),
+		SenderStop:stop,HasSenderStop:hasStop,
 		CarrierInID:fmt.Sprintf("%p",prep.carrier.In),
 		CarrierOutID:fmt.Sprintf("%p",prep.carrier.Out),
 		ActivatedGeneration:prep.activatedGeneration,
@@ -203,6 +223,10 @@ type RecoveryAdapter struct {
 	engine *recovery.Engine
 	mu sync.Mutex
 	ownershipMu sync.RWMutex
+	diagMu sync.Mutex
+	diagSeq uint64
+	diagnostics []RecoveryDiagnosticEvent
+	diagnosticHook func(RecoveryDiagnosticEvent)
 	frozen bool
 	pendingCandidate string
 	pendingPlan recovery.Plan
@@ -233,6 +257,55 @@ type RecoveryAdapter struct {
 
 func newRecoveryAdapter(p *Peer, eng *recovery.Engine) *RecoveryAdapter {
 	return &RecoveryAdapter{peer:p,engine:eng,txnState:RecoveryTxnIdle,failures:map[string]uint64{}}
+}
+
+func (a *RecoveryAdapter) appendDiagnostic(ev RecoveryDiagnosticEvent) {
+	if a==nil{return}
+	a.diagMu.Lock()
+	a.diagSeq++
+	ev.Sequence=a.diagSeq
+	a.diagnostics=append(a.diagnostics,ev)
+	if len(a.diagnostics)>256{a.diagnostics=append([]RecoveryDiagnosticEvent(nil),a.diagnostics[len(a.diagnostics)-256:]...)}
+	hook:=a.diagnosticHook
+	a.diagMu.Unlock()
+	if hook!=nil{hook(ev)}
+}
+
+func (a *RecoveryAdapter) recordSenderStop(ev SenderStopEvent) {
+	a.appendDiagnostic(RecoveryDiagnosticEvent{
+		Event:"SENDER_STOPPED",Source:ev.Source,Error:ev.Error,SessionID:ev.SessionID,Epoch:ev.Epoch,
+		CandidateID:ev.CandidateID,PlanDigest:ev.PlanDigest,PreparedIncarnation:ev.PreparedIncarnation,
+		CarrierGeneration:ev.CarrierGeneration,SenderID:ev.SenderID,
+	})
+}
+
+func (p *Peer) bindRecoverySenderDiagnostic(s *outboundSender,ctl RecoveryControl,incarnation,generation uint64) {
+	if p==nil||p.recovery==nil||s==nil{return}
+	s.bindRecoveryDiagnostic(senderDiagnosticBinding{
+		SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
+		PreparedIncarnation:incarnation,CarrierGeneration:generation,
+	})
+	s.setStopObserver(p.recovery.recordSenderStop)
+}
+
+func (p *Peer) traceRecoveryDiagnostic(event string,source SenderStopSource,err error,waitReason string,s *outboundSender,ctl RecoveryControl,incarnation,generation uint64) {
+	if p==nil||p.recovery==nil{return}
+	msg:="";if err!=nil{msg=err.Error()}
+	id:=uint64(0);if s!=nil{id=s.senderID()}
+	p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{Event:event,Source:source,Error:msg,WaitReason:waitReason,
+		SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
+		PreparedIncarnation:incarnation,CarrierGeneration:generation,SenderID:id})
+}
+
+func (p *Peer) RecoveryDiagnosticsForTest() []RecoveryDiagnosticEvent {
+	if p==nil||p.recovery==nil{return nil}
+	a:=p.recovery;a.diagMu.Lock();defer a.diagMu.Unlock()
+	return append([]RecoveryDiagnosticEvent(nil),a.diagnostics...)
+}
+
+func (p *Peer) SetRecoveryDiagnosticHookForTest(fn func(RecoveryDiagnosticEvent)) {
+	if p==nil||p.recovery==nil{return}
+	a:=p.recovery;a.diagMu.Lock();a.diagnosticHook=fn;a.diagMu.Unlock()
 }
 
 func cloneRecoverySnapshot(s recovery.Snapshot) recovery.Snapshot {
@@ -358,7 +431,8 @@ func (p *Peer) FenceRecoveryCarrierOwner(owner RecoveryCarrierOwner) bool {
 	}
 	s:=p.sender
 	p.mu.Unlock()
-	if s!=nil{s.stop(ErrCarrierUnavailable)}
+	if s!=nil{s.stopWithSource(SenderStopRecoveryOwnerFence,ErrCarrierUnavailable)}
+	p.traceRecoveryDiagnostic("OWNER_FENCE_APPLIED",SenderStopRecoveryOwnerFence,ErrCarrierUnavailable,"",s,owner.Transaction,owner.PreparedIncarnation,owner.CarrierGeneration)
 	return true
 }
 
@@ -384,7 +458,7 @@ func (p *Peer) FenceRecoveryCarrierWriter(generation uint64) {
 	if p.carrierGeneration!=generation{p.mu.Unlock();return}
 	s:=p.sender
 	p.mu.Unlock()
-	if s!=nil{s.stop(ErrCarrierUnavailable)}
+	if s!=nil{s.stopWithSource(SenderStopRecoveryGenerationFailure,ErrCarrierUnavailable)}
 }
 
 func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
@@ -503,15 +577,22 @@ func (p *Peer) onCarrierFailure(err error) {
 // carrier generation that actually failed. A blocked write on an old sender
 // may return only after a newer carrier has committed; that stale error must
 // never stop or invalidate the newer sender.
-func (p *Peer) onCarrierFailureForGeneration(err error,generation uint64) bool {
+func (p *Peer) onCarrierFailureForGeneration(err error,generation uint64,source ...SenderStopSource) bool {
+	src:=SenderStopRecoveryGenerationFailure
+	if len(source)>0&&source[0]!=""{src=source[0]}
 	p.mu.Lock()
 	if p.carrierGeneration!=generation {
 		p.mu.Unlock()
+		p.traceRecoveryDiagnostic("OWNER_FENCE_REJECTED",src,err,"",nil,RecoveryControl{},0,generation)
 		return false
 	}
 	s:=p.sender
 	p.mu.Unlock()
-	if s!=nil{s.stop(ErrCarrierUnavailable)}
+	stopErr:=error(ErrCarrierUnavailable)
+	if err!=nil{stopErr=fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)}
+	if s!=nil{s.stopWithSource(src,stopErr)}
+	ctl,ok:=p.RecoveryTransactionIdentity();if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
+	p.traceRecoveryDiagnostic("RECOVERY_GENERATION_FAILURE",src,err,"",s,ctl,func()uint64{if p.recovery==nil{return 0};p.recovery.mu.Lock();defer p.recovery.mu.Unlock();if p.recovery.prepared==nil{return 0};return p.recovery.prepared.incarnation}(),generation)
 	select { case p.recoveryNeeded<-err: default: }
 	return true
 }
@@ -797,6 +878,8 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 	for _,sf:=range peerSnap.Flows{peerFlow[sf.StreamID]=sf}
 	if runCtx==nil{runCtx=ctx}
 	prep:=&preparedRecovery{control:ctl,incarnation:1,carrier:c,sender:newSender,runCtx:runCtx,flows:make([]preparedFlowRecovery,0,len(plan.Flows))}
+	p.bindRecoverySenderDiagnostic(newSender,ctl,1,0)
+	p.traceRecoveryDiagnostic("PREPARED_CREATED",SenderStopUnknown,nil,"",newSender,ctl,1,0)
 	for _,fp:=range plan.Flows{
 		fl:=flowMap[fp.StreamID]
 		if fl==nil{return RecoveryControl{},recovery.ErrStateMismatch}
@@ -958,26 +1041,39 @@ func (p *Peer) PublishRecoveryCommit(ctl RecoveryControl)(CommitResult,error){
 
 func (p *Peer) waitReplayAccepted(ctx context.Context,fl *flow,want uint64,sender *outboundSender) error {
 	if want==0{return nil}
+	ctl,ok:=p.RecoveryTransactionIdentity();if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
+	inc:=uint64(0);gen:=uint64(0)
+	if p.recovery!=nil{p.recovery.mu.Lock();if p.recovery.prepared!=nil{inc=p.recovery.prepared.incarnation;gen=p.recovery.prepared.activatedGeneration};p.recovery.mu.Unlock()}
+	p.traceRecoveryDiagnostic("WAITING_FOR_REPLAY_ACK",SenderStopUnknown,nil,"",sender,ctl,inc,gen)
 	t:=time.NewTimer(p.recoveryRetention)
 	defer t.Stop()
 	for {
 		fl.mu.Lock()
-		if fl.txAcked>=want { fl.mu.Unlock(); return nil }
-		if fl.closed { fl.mu.Unlock(); return ErrCarrierUnavailable }
+		if fl.txAcked>=want { fl.mu.Unlock();p.traceRecoveryDiagnostic("REPLAY_ACK_ACCEPTED",SenderStopUnknown,nil,"",sender,ctl,inc,gen);return nil }
+		if fl.closed { fl.mu.Unlock();p.traceRecoveryDiagnostic("WAIT_REPLAY_FAILED",SenderStopFlowClosed,ErrCarrierUnavailable,"WAIT_REPLAY_FLOW_CLOSED",sender,ctl,inc,gen);return fmt.Errorf("WAIT_REPLAY_FLOW_CLOSED: %w",ErrCarrierUnavailable) }
 		wait:=fl.ackWait
 		fl.mu.Unlock()
 		if wait==nil {
-			return ErrCarrierUnavailable
+			p.traceRecoveryDiagnostic("WAIT_REPLAY_FAILED",SenderStopUnknown,ErrCarrierUnavailable,"WAIT_REPLAY_ACKWAIT_NIL",sender,ctl,inc,gen)
+			return fmt.Errorf("WAIT_REPLAY_ACKWAIT_NIL: %w",ErrCarrierUnavailable)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			p.traceRecoveryDiagnostic("WAIT_REPLAY_FAILED",SenderStopContextDone,ctx.Err(),"WAIT_REPLAY_CTX_DONE",sender,ctl,inc,gen)
+			return fmt.Errorf("WAIT_REPLAY_CTX_DONE: %w",ctx.Err())
 		case <-sender.done:
-			return ErrCarrierUnavailable
+			ev,has:=sender.stopEventSnapshot()
+			if has{
+				err:=fmt.Errorf("WAIT_REPLAY_SENDER_DONE: %w; sender_id=%d source=%s underlying=%s",ErrCarrierUnavailable,ev.SenderID,ev.Source,ev.Error)
+				p.traceRecoveryDiagnostic("WAIT_REPLAY_FAILED",ev.Source,err,"WAIT_REPLAY_SENDER_DONE",sender,ctl,inc,gen)
+				return err
+			}
+			p.traceRecoveryDiagnostic("WAIT_REPLAY_FAILED",SenderStopUnknown,ErrCarrierUnavailable,"WAIT_REPLAY_SENDER_DONE",sender,ctl,inc,gen)
+			return fmt.Errorf("WAIT_REPLAY_SENDER_DONE: %w",ErrCarrierUnavailable)
 		case <-t.C:
-			// Timeout is not delivery proof. Treat the frame as unaccepted and
-			// force exact-transaction rebind/resolution on a new carrier.
-			return fmt.Errorf("%w: replay acceptance proof timeout",ErrCarrierUnavailable)
+			err:=fmt.Errorf("%w: replay acceptance proof timeout",ErrCarrierUnavailable)
+			p.traceRecoveryDiagnostic("WAIT_REPLAY_FAILED",SenderStopUnknown,err,"WAIT_REPLAY_TIMEOUT",sender,ctl,inc,gen)
+			return fmt.Errorf("WAIT_REPLAY_TIMEOUT: %w",err)
 		case <-wait:
 		}
 	}
@@ -996,11 +1092,13 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	p.carrierGeneration++
 	activatedGeneration:=p.carrierGeneration
 	p.sender=prep.sender
+	prep.sender.setDiagnosticCarrierGeneration(activatedGeneration)
 	runCtx:=prep.runCtx
 	if runCtx==nil{runCtx=p.runCtx}
 	p.mu.Unlock()
 	if runCtx==nil{return 0,errors.New("session run context unavailable")}
-	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stop(ErrCarrierUnavailable)}
+	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stopWithSource(SenderStopExplicitReplace,ErrCarrierUnavailable)}
+	p.traceRecoveryDiagnostic("CARRIER_ACTIVATED",SenderStopUnknown,nil,"",prep.sender,ctl,prep.incarnation,activatedGeneration)
 	if !prep.sender.isStarted(){
 		p.wg.Add(1)
 		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
@@ -1120,9 +1218,11 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			if a.postCommitFault!=nil {
 				if err:=a.postCommitFault("replay_write");err!=nil{_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			}
+			p.traceRecoveryDiagnostic("REPLAY_WRITE_BEGIN",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
 			if err:=attemptSender.sendData(ctx,fl,fr);err!=nil{if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation};_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e}
 			if !p.recoveryAttemptCurrent(attemptToken){return 0,ErrStaleRecoveryIncarnation}
 			a.replayed.Add(uint64(len(fr.Payload)))
+			p.traceRecoveryDiagnostic("REPLAY_WRITE_SUCCESS",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
 			end:=fr.Offset+uint64(len(fr.Payload))
 			if end>replayAcceptThrough{replayAcceptThrough=end}
 			if a.postCommitFault!=nil {
