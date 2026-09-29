@@ -57,6 +57,19 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
+	// Keep every released ephemeral address distinct inside this fixture. This
+	// removes self-collision between server, metrics and local-route endpoints;
+	// readiness itself is still event-driven below.
+	usedAddrs:=map[string]struct{}{}
+	reserveUnique:=func()string{
+		for{
+			a:=reserveAddress(t)
+			if _,exists:=usedAddrs[a];exists{continue}
+			usedAddrs[a]=struct{}{}
+			return a
+		}
+	}
+
 	listenerDone := make(chan error, regressionNodeCount)
 	var listeners []*net.TCPListener
 	masterCfgs := make([]config.Config, 0, regressionNodeCount)
@@ -92,11 +105,11 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 
 		exID := fmt.Sprintf("ex-%02d", i+1)
 		ex.Node.ID = exID
-		ex.Server.Listen = reserveAddress(t)
+		ex.Server.Listen = reserveUnique()
 		ex.Server.ServerName = "ex.test"
 		ex.Server.AllowedPeerIdentities = []string{"urn:baft:node:ir-01"}
 		ex.Management.UnixSocket = fmt.Sprintf("/tmp/baft-ex-%02d.sock", i+1)
-		ex.Management.MetricsListen = reserveAddress(t)
+		ex.Management.MetricsListen = reserveUnique()
 		ex.Transport.Shards = 1
 		ex.Routes[0].Target = target.Addr().String()
 		ex.TLS.CAFile = ca
@@ -108,9 +121,9 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 		ir.Peer.ServerName = "ex.test"
 		ir.Peer.AllowedIdentity = "urn:baft:node:" + exID
 		ir.Management.UnixSocket = fmt.Sprintf("/tmp/baft-ir-%02d.sock", i+1)
-		ir.Management.MetricsListen = reserveAddress(t)
+		ir.Management.MetricsListen = reserveUnique()
 		ir.Transport.Shards = 1
-		ir.Routes[0].Listen = reserveAddress(t)
+		ir.Routes[0].Listen = reserveUnique()
 		ir.TLS = ex.TLS
 
 		ik, err := securityinternal.GenerateKeyPair()
@@ -171,10 +184,19 @@ func TestSixNodeNoiseMasterHandshakeRoundTrip(t *testing.T) {
 	}
 
 	masterDone := make(chan error, 1)
-	go func() { masterDone <- cluster.NewMaster().Run(ctx, masterCfgs) }()
+	master:=cluster.NewMaster()
+	go func() { masterDone <- master.Run(ctx, masterCfgs) }()
+	select{
+	case <-master.ReadyForTest():
+		if err:=master.ReadinessForTest();err!=nil{t.Fatalf("master startup failed before route readiness: %v",err)}
+	case err:=<-masterDone:
+		if err==nil{t.Fatal("master stopped before route readiness")}
+		t.Fatalf("master startup failed: %v",err)
+	case <-time.After(8*time.Second):
+		t.Fatal("master route readiness condition not reached")
+	}
 
 	for i, cfg := range masterCfgs {
-		waitTCP(t, cfg.Routes[0].Listen, time.Now().Add(5*time.Second))
 		conn, err := net.DialTimeout("tcp", cfg.Routes[0].Listen, time.Second)
 		if err != nil {
 			t.Fatal(err)
