@@ -145,8 +145,6 @@ PADL هنوز performance claim ندارد؛ Stage E باید هزینه انت�
 
 [گزارش هوشا](reports/HOOSHA-R3.1.md) و لاگ‌های همان پوشه شامل آزمون‌های آماری، Differential، race و هزینه واقعی jitter است. نتایج این مرحله نباید با CI یا پایلوت واقعی ایران اشتباه گرفته شود.
 
-</div>
-
 
 ## Step 5.7 P0 — baseline recovery generation readiness
 
@@ -178,3 +176,5 @@ Root cause تأیید شد: در initial finalize، `carrierGeneration` از 1 �
 - protocol fuzz smoke: PASS
 
 این evidence فقط same-process recovery را پوشش می‌دهد. process-restart/machine-reboot resume و durable ECRL session snapshots همچنان خارج از scope و unsupported هستند.
+
+</div>
