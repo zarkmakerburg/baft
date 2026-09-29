@@ -103,6 +103,7 @@ type Peer struct {
 	carrierID          string
 	carrierEpoch       uint64
 	carrierGeneration  uint64
+	carrierPhysicalInstanceID uint64
 	peerBootID         string
 	runCtx             context.Context
 	recoveryGate       sync.Mutex
@@ -220,7 +221,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 		epoch: "1", readyCh: make(chan struct{}), trafficObserver: opts.TrafficObserver,
 		latencyObserver: opts.LatencyObserver, pingInterval: opts.PingInterval,
 		recoveryEnabled: opts.RecoveryEnabled, recoveryRetention: opts.RecoveryRetention,
-		recoveryNeeded: make(chan error,1), carrierSwitchWait: make(chan struct{}), replacementWait: make(chan struct{}), replacementReadyGeneration:1, carrierEpoch:1, carrierGeneration:1,
+		recoveryNeeded: make(chan error,1), carrierSwitchWait: make(chan struct{}), replacementWait: make(chan struct{}), replacementReadyGeneration:1, carrierEpoch:1, carrierGeneration:1, carrierPhysicalInstanceID:physicalCarrierInstanceID(1,1),
 	}
 	if role == Dialer {
 		p.nextID = 1
@@ -1110,7 +1111,10 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				p.trafficObserver(0,uint64(n))
 			}
 			sender,epoch,owner,generation:=p.currentSenderState()
-			if err := sender.sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
+			producer:=ProducerLivePump
+			if p.recoveryEnabled&&epoch>1{producer=ProducerRecoveredPump}
+			if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,producer,off,off+uint64(len(payload)),generation)}
+			if err := sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer); err != nil {
 				if p.recoveryEnabled {
 					p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
 					if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
