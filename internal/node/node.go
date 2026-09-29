@@ -291,7 +291,15 @@ func (r *Runtime) ListenerReadinessForTest() (string,error) {
 	return r.listenerReadyAddr,r.listenerReadyErr
 }
 
-func (r *Runtime) Run(ctx context.Context, cfg config.Config) error {
+func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
+	// Listener readiness is a startup lifecycle event, not TCP polling. Any
+	// failure before runListener reaches Serve must wake readiness waiters with
+	// the real startup error instead of leaving them to infer a timeout.
+	if cfg.Node.Role=="listener" {
+		defer func(){
+			if retErr!=nil { r.signalListenerReady("",retErr) }
+		}()
+	}
 	if err := config.Validate(cfg); err != nil {
 		return err
 	}
