@@ -58,6 +58,9 @@ type RecoveryAuthoritySnapshot struct {
 	Epoch uint64
 	Owner string
 	CarrierGeneration uint64
+	PreparedIncarnation uint64
+	PreparedID string
+	SenderID string
 	Frozen bool
 	ActivationComplete bool
 	TxnState session.RecoveryTxnState
@@ -165,6 +168,16 @@ func (r *Runtime) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
 	for _,p:=range peers{p.SetRecoveryPostCommitFaultForTest(fn)}
 }
 
+func (r *Runtime) EnsureRecoverySignalForTest(err error) error {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	if len(peers)!=1{return fmt.Errorf("expected exactly one recovery peer, got %d",len(peers))}
+	peers[0].EnsureRecoverySignal(err)
+	return nil
+}
+
 func (r *Runtime) BeginRecoveryForTest(candidate string) error {
 	r.peerMu.Lock()
 	peers:=make([]*session.Peer,0,len(r.peers))
@@ -183,7 +196,8 @@ func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
 	out:=make([]RecoveryAuthoritySnapshot,0,len(peers))
 	for _,p:=range peers{
 		tx,ok:=p.RecoveryTransactionIdentity()
-		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
+		prep:=p.RecoveryPreparedOwnershipForTest()
+		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),PreparedIncarnation:prep.PreparedIncarnation,PreparedID:prep.PreparedID,SenderID:prep.SenderID,Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
 		if ok{s.CandidateID=tx.CandidateID;s.NextEpoch=tx.NextEpoch;s.PlanDigest=tx.PlanDigest}
 		out=append(out,s)
 	}
