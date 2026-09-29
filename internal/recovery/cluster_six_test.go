@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// N=6 is a historical recovery regression fixture, not an ECRL cardinality limit.
 func TestSixRouteECRLEngineHealth(t *testing.T) {
 	for i := 1; i <= 6; i++ {
 		name := fmt.Sprintf("route-%02d", i)
