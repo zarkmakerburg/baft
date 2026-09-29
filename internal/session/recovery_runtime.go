@@ -124,6 +124,31 @@ type preparedRecovery struct {
 	activatedGeneration uint64
 }
 
+type RecoveryPreparedOwnershipForTest struct {
+	Transaction RecoveryControl
+	PreparedID string
+	PreparedIncarnation uint64
+	SenderID string
+	CarrierInID string
+	CarrierOutID string
+	ActivatedGeneration uint64
+	RebindPending bool
+}
+
+func preparedOwnershipSnapshotForTest(prep *preparedRecovery) RecoveryPreparedOwnershipForTest {
+	if prep==nil{return RecoveryPreparedOwnershipForTest{}}
+	return RecoveryPreparedOwnershipForTest{
+		Transaction:prep.control,
+		PreparedID:fmt.Sprintf("%p",prep),
+		PreparedIncarnation:0,
+		SenderID:fmt.Sprintf("%p",prep.sender),
+		CarrierInID:fmt.Sprintf("%p",prep.carrier.In),
+		CarrierOutID:fmt.Sprintf("%p",prep.carrier.Out),
+		ActivatedGeneration:prep.activatedGeneration,
+		RebindPending:prep.rebindPending,
+	}
+}
+
 type RecoveryFlowFrontier struct {
 	StreamID uint64
 	ReplaySource uint64
@@ -159,6 +184,7 @@ type RecoveryAdapter struct {
 	// peerAcceptanceTestHook is nil in Runtime. In-package deterministic unit
 	// fixtures may use it to model an authenticated peer ACK after replay.
 	peerAcceptanceTestHook func(*flow,uint64)
+	finalizeOwnershipTestHook func(string,RecoveryPreparedOwnershipForTest)
 	engine *recovery.Engine
 	mu sync.Mutex
 	frozen bool
@@ -251,6 +277,20 @@ func (p *Peer) RecoveryEpoch() uint64 {
 func (p *Peer) RecoveryFrozen() bool {
 	if p.recovery==nil{return false}
 	return p.recovery.IsFrozen()
+}
+
+func (p *Peer) SetRecoveryFinalizeOwnershipHookForTest(fn func(string,RecoveryPreparedOwnershipForTest)) {
+	if p.recovery==nil{return}
+	p.recovery.mu.Lock()
+	p.recovery.finalizeOwnershipTestHook=fn
+	p.recovery.mu.Unlock()
+}
+
+func (p *Peer) RecoveryPreparedOwnershipForTest() RecoveryPreparedOwnershipForTest {
+	if p.recovery==nil{return RecoveryPreparedOwnershipForTest{}}
+	a:=p.recovery
+	a.mu.Lock();defer a.mu.Unlock()
+	return preparedOwnershipSnapshotForTest(a.prepared)
 }
 
 func (p *Peer) SetRecoveryPostCommitFaultForTest(fn func(string) error) {
@@ -868,6 +908,15 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		a.mu.Unlock()
 		return 0,fmt.Errorf("%w: local activation requires distributed FINALIZED proof, state=%s",ErrRecoveryTransition,a.txnState)
 	}
+	finalizeHook:=a.finalizeOwnershipTestHook
+	capturedOwnership:=preparedOwnershipSnapshotForTest(prep)
+	if finalizeHook!=nil {
+		a.mu.Unlock()
+		finalizeHook("after_capture",capturedOwnership)
+		a.mu.Lock()
+		// Intentionally continue with the originally captured prep pointer. The
+		// falsification test observes whether an exact rebind mutates that object.
+	}
 	if prep.activationComplete{
 		rebound:=prep.rebindPending
 		if rebound{prep.rebindPending=false}
@@ -895,6 +944,7 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 	prep.finalizing=true
 	a.mu.Unlock()
 
+	if finalizeHook!=nil{finalizeHook("before_use",preparedOwnershipSnapshotForTest(prep))}
 	if prep.sender==nil||prep.sender.isStopped(){
 		_,e:=p.markPostCommitFailure(ErrCarrierUnavailable,ctl);return 0,e
 	}
