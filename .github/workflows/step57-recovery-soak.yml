@@ -1,0 +1,59 @@
+name: step57-recovery-soak
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release-v1-goldapp]
+    paths:
+      - 'internal/session/**'
+      - 'internal/node/**'
+      - 'tests/integration/recovery_runtime_test.go'
+      - '.github/workflows/step57-recovery-soak.yml'
+      - '.github/workflows/ci.yml'
+
+concurrency:
+  group: step57-recovery-soak-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  recovery-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Baseline active-flow replacement 20x
+        run: |
+          go test ./tests/integration             -run '^TestRuntimeCarrierReplacementPreservesActiveFlow$'             -count=20 -timeout 15m -v
+
+      - name: Eight-flow replacement 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$'             -count=10 -timeout 15m -v
+
+      - name: Six-route recovery isolation 5x
+        run: |
+          go test ./tests/integration             -run '^TestRuntimeRecoveryRouteIdentityIsolation$'             -count=5 -timeout 15m -v
+
+      - name: Distributed uncertainty finalization replay FIN matrix 10x
+        run: |
+          go test ./tests/integration             -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$'             -count=10 -timeout 20m -v
+
+      - name: Consecutive replacement generation lifecycle 10x
+        run: |
+          go test ./tests/integration             -run '^TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow$'             -count=10 -timeout 15m -v
+
+      - name: Recovery race sample
+        run: |
+          go test -race ./tests/integration             -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$'             -count=2 -timeout 20m -v
