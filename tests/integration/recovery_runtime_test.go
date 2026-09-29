@@ -1196,38 +1196,171 @@ func TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently(t *testing.T
 }
 
 
+func TestStableFinalizedCarrierFailureStartsFreshEpoch(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	p.proxy.CutAll()
+	ir2,ex2:=waitAuthorityPair(t,p,2,true)
+	if !ir2.ActivationComplete||!ex2.ActivationComplete||ir2.Frozen||ex2.Frozen{
+		t.Fatalf("epoch2 not stably finalized ir=%+v ex=%+v",ir2,ex2)
+	}
+	if ir2.CandidateID==""||ir2.CandidateID!=ex2.CandidateID||ir2.PlanDigest==""||ir2.PlanDigest!=ex2.PlanDigest{
+		t.Fatalf("epoch2 identity mismatch ir=%+v ex=%+v",ir2,ex2)
+	}
+	payload:=make([]byte,96*1024+101)
+	for i:=range payload{payload[i]=byte((i*23+5)%251)}
+	_ = assertEchoHashOnExistingFlow(t,c,payload)
+
+	p.proxy.CutAll()
+	ir3,ex3:=waitAuthorityPair(t,p,3,true)
+	if !ir3.ActivationComplete||!ex3.ActivationComplete||ir3.Frozen||ex3.Frozen{
+		t.Fatalf("epoch3 not stably finalized ir=%+v ex=%+v",ir3,ex3)
+	}
+	if ir3.CandidateID==ir2.CandidateID||ex3.CandidateID==ex2.CandidateID{
+		t.Fatalf("stable finalized carrier failure reused candidate old=%s new_ir=%s new_ex=%s",ir2.CandidateID,ir3.CandidateID,ex3.CandidateID)
+	}
+	if ir3.PlanDigest==ir2.PlanDigest||ex3.PlanDigest==ex2.PlanDigest{
+		t.Fatalf("stable finalized carrier failure reused old plan digest old=%s new_ir=%s new_ex=%s",ir2.PlanDigest,ir3.PlanDigest,ex3.PlanDigest)
+	}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened accepts_delta=%d",n)}
+	t.Logf("PASS stable FINALIZED failure starts fresh recovery epoch=2->3 candidate=%s->%s digest=%s->%s",ir2.CandidateID,ir3.CandidateID,ir2.PlanDigest,ir3.PlanDigest)
+}
+
+func TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	targetBefore:=p.targetAccepts.Load()
+
+	blocked:=make(chan struct{})
+	release:=make(chan struct{})
+	var once sync.Once
+	p.exRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="before_listener_finalize_process" {
+			fired:=false
+			once.Do(func(){fired=true;close(blocked)})
+			if fired {
+				<-release
+				return errors.New("deterministic unresolved finalization rebind")
+			}
+		}
+		return nil
+	})
+
+	p.proxy.CutAll()
+	select{case <-blocked:case <-time.After(8*time.Second):t.Fatal("listener never reached unresolved finalization barrier")}
+	irMid:=oneRecoveryAuthority(t,p.irRuntime)
+	exMid:=oneRecoveryAuthority(t,p.exRuntime)
+	if irMid.Epoch!=2||exMid.Epoch!=2||irMid.CandidateID==""||irMid.CandidateID!=exMid.CandidateID||irMid.PlanDigest==""||irMid.PlanDigest!=exMid.PlanDigest{
+		t.Fatalf("unresolved identity mismatch ir=%+v ex=%+v",irMid,exMid)
+	}
+	candidate,digest:=irMid.CandidateID,irMid.PlanDigest
+	irGen,exGen:=irMid.CarrierGeneration,exMid.CarrierGeneration
+
+	p.proxy.CutAll()
+	close(release)
+	irFinal,exFinal:=waitExactRebindPair(t,p,2,candidate,digest,irGen,exGen)
+	if !irFinal.ActivationComplete||!exFinal.ActivationComplete{
+		t.Fatalf("exact rebind activation incomplete ir=%+v ex=%+v",irFinal,exFinal)
+	}
+	payload:=make([]byte,128*1024+73)
+	for i:=range payload{payload[i]=byte((i*19+11)%251)}
+	hash:=assertEchoHashOnExistingFlow(t,c,payload)
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened accepts_delta=%d",n)}
+	t.Logf("PASS Class-A exact rebind epoch=2 candidate=%s digest=%s generation=%d/%d->%d/%d hash=%x",candidate,digest,irGen,exGen,irFinal.CarrierGeneration,exFinal.CarrierGeneration,hash)
+}
+
+func TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(30*time.Second))
+	targetBefore:=p.targetAccepts.Load()
+
+	p.proxy.CutAll()
+	ir2,ex2:=waitAuthorityPair(t,p,2,true)
+	if !ir2.ActivationComplete||!ex2.ActivationComplete||ir2.Frozen||ex2.Frozen{
+		t.Fatalf("first recovery not stable ir=%+v ex=%+v",ir2,ex2)
+	}
+	c2,d2:=ir2.CandidateID,ir2.PlanDigest
+
+	var drop atomic.Bool
+	drop.Store(true)
+	p.exRuntime.SetRecoveryFrameHookForTest(func(stage string,fr protocol.Frame)bool{
+		return stage=="before_data_accept"&&drop.Load()
+	})
+
+	payload:=make([]byte,3*protocol.MaxPayloadSize+913)
+	for i:=range payload{payload[i]=byte((i*43+17)%251)}
+	want:=sha256.Sum256(payload)
+	got:=make([]byte,len(payload))
+	readDone:=make(chan error,1)
+	go func(){_,err:=io.ReadFull(c,got);readDone<-err}()
+	writeDone:=make(chan error,1)
+	go func(){
+		for off:=0;off<len(payload);{
+			n,err:=c.Write(payload[off:])
+			if err!=nil{writeDone<-err;return}
+			if n<=0{writeDone<-io.ErrShortWrite;return}
+			off+=n
+		}
+		writeDone<-nil
+	}()
+
+	before:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{
+		return f.TxNext>f.TxAcked && f.TxNext-f.TxAcked>=protocol.MaxPayloadSize
+	})
+	if before.TxAcked>=before.TxNext{t.Fatalf("expected current unacked suffix before second cut frontier=%+v",before)}
+	acked,next:=before.TxAcked,before.TxNext
+
+	p.proxy.CutAll()
+	drop.Store(false)
+
+	ir3,ex3:=waitAuthorityPair(t,p,3,true)
+	if ir3.CandidateID==c2||ex3.CandidateID==c2{
+		t.Fatalf("Class-B reused finalized candidate old=%s ir=%s ex=%s",c2,ir3.CandidateID,ex3.CandidateID)
+	}
+	if ir3.PlanDigest==d2||ex3.PlanDigest==d2{
+		t.Fatalf("Class-B reused finalized digest old=%s ir=%s ex=%s",d2,ir3.PlanDigest,ex3.PlanDigest)
+	}
+	after:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return f.TxNext>=next})
+	if after.ReplaySource>acked{
+		t.Fatalf("fresh plan skipped current unacked suffix replay_from=%d tx_acked_before=%d tx_next_before=%d after=%+v",after.ReplaySource,acked,next,after)
+	}
+
+	select{case err:=<-writeDone:if err!=nil{t.Fatalf("application write: %v",err)};case <-time.After(12*time.Second):t.Fatal("application write timeout")}
+	select{case err:=<-readDone:if err!=nil{t.Fatalf("application read: %v",err)};case <-time.After(20*time.Second):t.Fatal("application read timeout")}
+	have:=sha256.Sum256(got)
+	if !bytes.Equal(got,payload)||have!=want{t.Fatalf("fresh recovery payload mismatch got=%x want=%x",have,want)}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened accepts_delta=%d",n)}
+	t.Logf("PASS Class-B current snapshot epoch=2->3 candidate=%s->%s digest=%s->%s tx_acked=%d tx_next=%d replay_from=%d hash=%x",c2,ir3.CandidateID,d2,ir3.PlanDigest,acked,next,after.ReplaySource,have)
+}
+
 func TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow(t *testing.T){
 	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
 	c:=openRecoveryFlow(t,p);defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(25*time.Second))
+	_ = c.SetDeadline(time.Now().Add(30*time.Second))
 	targetBefore:=p.targetAccepts.Load()
 
-	// First physical failure creates the one fresh committed recovery:
-	// epoch 1 -> 2. Subsequent failures of that exact finalized authority must
-	// rebind the same transaction and only advance physical carrier generation.
-	p.proxy.CutAll()
-	ir,ex:=waitAuthorityPair(t,p,2,true)
-	if ir.CandidateID==""||ir.CandidateID!=ex.CandidateID||ir.PlanDigest==""||ir.PlanDigest!=ex.PlanDigest{
-		t.Fatalf("initial recovery identity mismatch ir=%+v ex=%+v",ir,ex)
-	}
-	candidate,digest:=ir.CandidateID,ir.PlanDigest
-	lastIRGen,lastEXGen:=ir.CarrierGeneration,ex.CarrierGeneration
-	payload:=make([]byte,96*1024)
-	for i:=range payload{payload[i]=byte((i*31+9)%251)}
-	h:=assertEchoHashOnExistingFlow(t,c,payload)
-	t.Logf("round=1 epoch=2 candidate=%s digest=%s ir_generation=%d ex_generation=%d hash=%x",candidate,digest,lastIRGen,lastEXGen,h)
-
-	for round:=2;round<=3;round++{
+	var prevCandidate,prevDigest string
+	for epoch:=uint64(2);epoch<=4;epoch++{
 		p.proxy.CutAll()
-		ir,ex=waitExactRebindPair(t,p,2,candidate,digest,lastIRGen,lastEXGen)
-		lastIRGen,lastEXGen=ir.CarrierGeneration,ex.CarrierGeneration
-		payload=make([]byte,96*1024+(round-1)*211)
-		for i:=range payload{payload[i]=byte((i*31+(round-1)*17+9)%251)}
-		h=assertEchoHashOnExistingFlow(t,c,payload)
-		t.Logf("round=%d exact_rebind epoch=2 candidate=%s digest=%s ir_generation=%d ex_generation=%d hash=%x",round,candidate,digest,lastIRGen,lastEXGen,h)
+		ir,ex:=waitAuthorityPair(t,p,epoch,true)
+		if !ir.ActivationComplete||!ex.ActivationComplete||ir.Frozen||ex.Frozen{
+			t.Fatalf("epoch %d not stable ir=%+v ex=%+v",epoch,ir,ex)
+		}
+		if ir.CandidateID==""||ir.CandidateID!=ex.CandidateID||ir.PlanDigest==""||ir.PlanDigest!=ex.PlanDigest{
+			t.Fatalf("epoch %d identity mismatch ir=%+v ex=%+v",epoch,ir,ex)
+		}
+		if prevCandidate!=""&&ir.CandidateID==prevCandidate{t.Fatalf("epoch %d reused prior candidate %s",epoch,prevCandidate)}
+		if prevDigest!=""&&ir.PlanDigest==prevDigest{t.Fatalf("epoch %d reused prior digest %s",epoch,prevDigest)}
+		prevCandidate,prevDigest=ir.CandidateID,ir.PlanDigest
+
+		payload:=make([]byte,96*1024+int(epoch)*211)
+		for i:=range payload{payload[i]=byte((i*31+int(epoch)*17+9)%251)}
+		h:=assertEchoHashOnExistingFlow(t,c,payload)
+		t.Logf("round_epoch=%d fresh_candidate=%s digest=%s ir_generation=%d ex_generation=%d hash=%x",epoch,ir.CandidateID,ir.PlanDigest,ir.CarrierGeneration,ex.CarrierGeneration,h)
 	}
-	if n:=p.targetAccepts.Load()-targetBefore;n!=0{
-		t.Fatalf("target TCP reopened across consecutive replacements accepts_delta=%d",n)
-	}
-	t.Log("PASS one fresh recovery plus two exact-transaction physical rebinds preserved one target TCP socket")
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened across independent recoveries accepts_delta=%d",n)}
+	t.Log("PASS independent failures advanced 1->2->3->4 while preserving one application/target TCP flow")
 }
