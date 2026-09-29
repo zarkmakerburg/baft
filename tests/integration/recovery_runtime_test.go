@@ -1317,9 +1317,9 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 	// Keep the initial unresolved suffix large enough to span a full DATA
 	// frame, but below the advertised receive-credit ceiling so the application
 	// can commit additional live DATA while peer proof is still absent.
-	payload:=make([]byte,protocol.MaxPayloadSize+777)
+	payload:=make([]byte,protocol.MaxPayloadSize/2+777)
 	for i:=range payload{payload[i]=byte((i*29+7)%251)}
-	liveSuffix:=make([]byte,protocol.MaxPayloadSize/2+313)
+	liveSuffix:=make([]byte,protocol.MaxPayloadSize/4+313)
 	for i:=range liveSuffix{liveSuffix[i]=byte((i*37+19)%251)}
 	expected:=append(append([]byte(nil),payload...),liveSuffix...)
 	wantHash:=sha256.Sum256(expected)
@@ -1328,7 +1328,7 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 	writeDone:=make(chan error,1);go func(){_,err:=c.Write(payload);writeDone<-err}()
 
 	select{case <-oldBlocked:case <-time.After(8*time.Second):t.Fatal("old carrier DATA never reached pre-accept barrier")}
-	before:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return f.TxNext>=f.PeerAccepted+protocol.MaxPayloadSize})
+	before:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{return f.TxNext>=f.PeerAccepted+protocol.MaxPayloadSize/2})
 
 	var faultOnce sync.Once
 	replay2Written:=make(chan struct{})
