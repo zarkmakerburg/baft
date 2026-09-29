@@ -10,6 +10,9 @@ on:
       - 'tests/integration/recovery_runtime_test.go'
       - '.github/workflows/step57-recovery-soak.yml'
       - '.github/workflows/ci.yml'
+      - 'STATUS.md'
+      - 'TEST-RESULTS.md'
+      - 'KNOWN-LIMITATIONS.md'
 
 concurrency:
   group: step57-recovery-soak-${{ github.ref }}
