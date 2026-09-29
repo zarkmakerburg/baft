@@ -1274,6 +1274,34 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	return activatedGeneration,nil
 }
 
+func (p *Peer) reannounceRecoveryFrontiers(prep *preparedRecovery,ctl RecoveryControl,token RecoveryAttemptToken,generation uint64) error {
+	if prep==nil||prep.sender==nil{return recovery.ErrNotPrepared}
+	for i:=range prep.flows{
+		act:=&prep.flows[i]
+		fl:=act.flow
+		if fl==nil{continue}
+		fl.mu.Lock()
+		if fl.closed{fl.mu.Unlock();continue}
+		ack:=fl.rxNext
+		window:=fl.rxMax
+		fl.mu.Unlock()
+		// ACK/WINDOW are monotonic and idempotent. A successful write on the
+		// previous physical carrier is not proof the peer processed either
+		// frontier, so every exact-transaction rebind re-announces the current
+		// accepted-data and receive-credit state before application readiness.
+		if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeAck,StreamID:fl.id,Offset:ack});err!=nil{
+			if !p.recoveryAttemptCurrent(token){return ErrStaleRecoveryIncarnation}
+			return err
+		}
+		if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeWindow,StreamID:fl.id,Offset:window});err!=nil{
+			if !p.recoveryAttemptCurrent(token){return ErrStaleRecoveryIncarnation}
+			return err
+		}
+		p.traceRecoveryDiagnostic("FRONTIER_REANNOUNCED",SenderStopUnknown,fmt.Errorf("stream=%d ack=%d window=%d",fl.id,ack,window),"",prep.sender,ctl,token.PreparedIncarnation,generation)
+	}
+	return nil
+}
+
 func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl RecoveryControl) (uint64,error) {
 	if p.recovery==nil{return 0,errors.New("recovery is disabled")}
 	a:=p.recovery
@@ -1313,6 +1341,10 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			activatedGeneration,err=p.activatePreparedCarrierOwned(prep,ctl,attemptToken);if err!=nil{return 0,err}
 			a.mu.Lock();if a.prepared==prep{prep.activatedGeneration=activatedGeneration};a.mu.Unlock()
 			p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
+			if err:=p.reannounceRecoveryFrontiers(prep,ctl,attemptToken,activatedGeneration);err!=nil{
+				if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err}
+				_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e
+			}
 			for i:=range flows{
 				fl:=flows[i].flow
 				fl.mu.Lock();closed:=fl.closed;fl.mu.Unlock()
@@ -1459,6 +1491,14 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 			a.mu.Lock(); if a.prepared==prep { act.pumpsRestored=true }; a.mu.Unlock()
 			p.traceRecoveryDiagnostic("PUMPS_RESTORED",SenderStopUnknown,nil,"",attemptSender,ctl,attemptToken.PreparedIncarnation,activatedGeneration)
 		}
+	}
+	// Re-announce the latest monotonic acceptance/credit frontiers on this
+	// physical carrier. This closes the case where ACK/WINDOW were written on
+	// the previous carrier but died before peer processing: local write success
+	// must never become delivery proof.
+	if err:=p.reannounceRecoveryFrontiers(prep,ctl,attemptToken,activatedGeneration);err!=nil{
+		if errors.Is(err,ErrStaleRecoveryIncarnation){return 0,err}
+		_,e:=p.markPostCommitFailureForAttempt(attemptToken,err,ctl,activatedGeneration);return 0,e
 	}
 	a.mu.Lock()
 	if a.prepared==prep{
