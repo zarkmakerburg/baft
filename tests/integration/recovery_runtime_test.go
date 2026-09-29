@@ -281,10 +281,22 @@ func TestRecoveryRuntimePairDoesNotLeakResources(t *testing.T){
 	var warmup,fd10,fd30,fd50 int
 	for i:=1;i<=cycles;i++{
 		p:=startRecoveryRuntimePair(t,1)
-		payload:=make([]byte,96*1024+37)
+		c:=openRecoveryFlow(t,p)
+		targetBefore:=p.targetAccepts.Load()
+		p.proxy.CutAll()
+		ir,ex:=waitAuthorityPair(t,p,2,true)
+		if ir.CandidateID==""||ir.CandidateID!=ex.CandidateID||ir.PlanDigest==""||ir.PlanDigest!=ex.PlanDigest{
+			_ = c.Close();p.closeAllowErrors()
+			t.Fatalf("cycle %d recovery identity mismatch ir=%+v ex=%+v",i,ir,ex)
+		}
+		payload:=make([]byte,48*1024+37)
 		for j:=range payload{payload[j]=byte((j*17+i)%251)}
-		got:=transferAcrossCut(t,p,0,payload,24*1024)
-		if !bytes.Equal(got,payload){p.closeAllowErrors();t.Fatalf("cycle %d payload mismatch",i)}
+		assertEchoHashOnExistingFlow(t,c,payload)
+		if p.targetAccepts.Load()!=targetBefore{
+			_ = c.Close();p.closeAllowErrors()
+			t.Fatalf("cycle %d target TCP reopened before=%d after=%d",i,targetBefore,p.targetAccepts.Load())
+		}
+		_ = c.Close()
 		p.close(t)
 		fd:=countLinuxFDs(t)
 		if i==3{warmup=fd}
@@ -463,6 +475,26 @@ func waitAuthorityPair(t *testing.T,p *recoveryRuntimePair,epoch uint64,finalize
 			}
 		}
 		if time.Now().After(deadline){t.Fatalf("authority convergence timeout ir=%+v ex=%+v",ir,ex)}
+		time.Sleep(5*time.Millisecond)
+	}
+}
+
+func waitExactRebindPair(t *testing.T,p *recoveryRuntimePair,epoch uint64,candidate,digest string,minIRGen,minEXGen uint64)(node.RecoveryAuthoritySnapshot,node.RecoveryAuthoritySnapshot){
+	t.Helper()
+	deadline:=time.Now().Add(8*time.Second)
+	for{
+		ir:=p.irRuntime.RecoveryAuthoritiesForTest()
+		ex:=p.exRuntime.RecoveryAuthoritiesForTest()
+		if len(ir)==1&&len(ex)==1{
+			a,b:=ir[0],ex[0]
+			if a.Epoch==epoch&&b.Epoch==epoch&&!a.Frozen&&!b.Frozen&&
+				a.CandidateID==candidate&&b.CandidateID==candidate&&
+				a.PlanDigest==digest&&b.PlanDigest==digest&&
+				a.CarrierGeneration>minIRGen&&b.CarrierGeneration>minEXGen{
+				return a,b
+			}
+		}
+		if time.Now().After(deadline){t.Fatalf("exact rebind convergence timeout epoch=%d candidate=%s digest=%s ir=%+v ex=%+v",epoch,candidate,digest,ir,ex)}
 		time.Sleep(5*time.Millisecond)
 	}
 }
@@ -1170,23 +1202,32 @@ func TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow(t *testing.T){
 	_ = c.SetDeadline(time.Now().Add(25*time.Second))
 	targetBefore:=p.targetAccepts.Load()
 
-	var lastIRGen,lastEXGen uint64
-	for round:=0;round<3;round++{
-		p.proxy.CutAll()
-		epoch:=uint64(round+2)
-		ir,ex:=waitAuthorityPair(t,p,epoch,true)
-		if round>0&&(ir.CarrierGeneration<=lastIRGen||ex.CarrierGeneration<=lastEXGen){
-			t.Fatalf("carrier generation did not advance monotonically round=%d ir=%+v ex=%+v",round,ir,ex)
-		}
-		lastIRGen,lastEXGen=ir.CarrierGeneration,ex.CarrierGeneration
+	// First physical failure creates the one fresh committed recovery:
+	// epoch 1 -> 2. Subsequent failures of that exact finalized authority must
+	// rebind the same transaction and only advance physical carrier generation.
+	p.proxy.CutAll()
+	ir,ex:=waitAuthorityPair(t,p,2,true)
+	if ir.CandidateID==""||ir.CandidateID!=ex.CandidateID||ir.PlanDigest==""||ir.PlanDigest!=ex.PlanDigest{
+		t.Fatalf("initial recovery identity mismatch ir=%+v ex=%+v",ir,ex)
+	}
+	candidate,digest:=ir.CandidateID,ir.PlanDigest
+	lastIRGen,lastEXGen:=ir.CarrierGeneration,ex.CarrierGeneration
+	payload:=make([]byte,96*1024)
+	for i:=range payload{payload[i]=byte((i*31+9)%251)}
+	h:=assertEchoHashOnExistingFlow(t,c,payload)
+	t.Logf("round=1 epoch=2 candidate=%s digest=%s ir_generation=%d ex_generation=%d hash=%x",candidate,digest,lastIRGen,lastEXGen,h)
 
-		payload:=make([]byte,96*1024+round*211)
-		for i:=range payload{payload[i]=byte((i*31+round*17+9)%251)}
-		h:=assertEchoHashOnExistingFlow(t,c,payload)
-		t.Logf("round=%d epoch=%d ir_generation=%d ex_generation=%d hash=%x",round+1,epoch,ir.CarrierGeneration,ex.CarrierGeneration,h)
+	for round:=2;round<=3;round++{
+		p.proxy.CutAll()
+		ir,ex=waitExactRebindPair(t,p,2,candidate,digest,lastIRGen,lastEXGen)
+		lastIRGen,lastEXGen=ir.CarrierGeneration,ex.CarrierGeneration
+		payload=make([]byte,96*1024+(round-1)*211)
+		for i:=range payload{payload[i]=byte((i*31+(round-1)*17+9)%251)}
+		h=assertEchoHashOnExistingFlow(t,c,payload)
+		t.Logf("round=%d exact_rebind epoch=2 candidate=%s digest=%s ir_generation=%d ex_generation=%d hash=%x",round,candidate,digest,lastIRGen,lastEXGen,h)
 	}
 	if n:=p.targetAccepts.Load()-targetBefore;n!=0{
 		t.Fatalf("target TCP reopened across consecutive replacements accepts_delta=%d",n)
 	}
-	t.Log("PASS three consecutive same-process carrier replacements preserved one target TCP socket")
+	t.Log("PASS one fresh recovery plus two exact-transaction physical rebinds preserved one target TCP socket")
 }
