@@ -19,6 +19,10 @@ func recoveryFixture(t *testing.T,n int)(*Peer,*bytes.Buffer,context.Context,con
 		NodeID:"local",ExpectedPeerNodeID:"peer",RecoveryEnabled:true,RecoveryRetention:time.Second,CarrierID:"carrier-1",
 	})
 	if err!=nil{t.Fatal(err)}
+	// Local-only session fixtures have no real peer reader to emit ACK frames.
+	// Model authenticated peer acceptance explicitly through the dedicated
+	// test hook; ambiguity tests disable this hook when they need uncertainty.
+	p.recovery.peerAcceptanceTestHook=func(fl *flow,end uint64){ _ = fl.onAck(end) }
 	p.mu.Lock()
 	p.sessionID="11111111111111111111111111111111"
 	p.peerBootID="22222222222222222222222222222222"
