@@ -31,14 +31,17 @@ type cutProxy struct {
 	ln net.Listener
 	target string
 	mu sync.Mutex
-	conns map[net.Conn]struct{}
+	conns map[net.Conn]uint64
 	wg sync.WaitGroup
+	nextID atomic.Uint64
+	accepted []uint64
+	logf func(string,...any)
 }
 
 func newCutProxy(t *testing.T,target string)*cutProxy{
 	t.Helper()
 	ln,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)}
-	p:=&cutProxy{ln:ln,target:target,conns:map[net.Conn]struct{}{}}
+	p:=&cutProxy{ln:ln,target:target,conns:map[net.Conn]uint64{},logf:t.Logf}
 	go p.serve()
 	return p
 }
@@ -48,16 +51,30 @@ func (p *cutProxy) Close(){
 	p.CutAll()
 	p.wg.Wait()
 }
-func (p *cutProxy) track(c net.Conn,add bool){p.mu.Lock();if add{p.conns[c]=struct{}{}}else{delete(p.conns,c)};p.mu.Unlock()}
-func (p *cutProxy) CutAll(){
-	p.mu.Lock();cs:=make([]net.Conn,0,len(p.conns));for c:=range p.conns{cs=append(cs,c)};p.mu.Unlock()
+func (p *cutProxy) track(c net.Conn,id uint64,add bool){p.mu.Lock();if add{p.conns[c]=id}else{delete(p.conns,c)};p.mu.Unlock()}
+func (p *cutProxy) CutAll() []uint64 {
+	p.mu.Lock()
+	cs:=make([]net.Conn,0,len(p.conns));seen:=map[uint64]struct{}{}
+	for c,id:=range p.conns{cs=append(cs,c);seen[id]=struct{}{}}
+	ids:=make([]uint64,0,len(seen));for id:=range seen{ids=append(ids,id)}
+	sort.Slice(ids,func(i,j int)bool{return ids[i]<ids[j]})
+	p.mu.Unlock()
+	if p.logf!=nil{p.logf("proxy CutAll cohort=%v",ids)}
 	for _,c:=range cs{_ = c.Close()}
+	return ids
+}
+func (p *cutProxy) AcceptedConnectionIDs() []uint64 {
+	p.mu.Lock();defer p.mu.Unlock()
+	return append([]uint64(nil),p.accepted...)
 }
 func (p *cutProxy) serve(){
 	for{
 		a,err:=p.ln.Accept();if err!=nil{return}
 		b,err:=net.Dial("tcp",p.target);if err!=nil{_ = a.Close();continue}
-		p.track(a,true);p.track(b,true)
+		id:=p.nextID.Add(1)
+		p.mu.Lock();p.accepted=append(p.accepted,id);p.mu.Unlock()
+		if p.logf!=nil{p.logf("proxy accepted ProxyConnectionID=%d",id)}
+		p.track(a,id,true);p.track(b,id,true)
 		p.wg.Add(1)
 		go func(x,y net.Conn){
 			defer p.wg.Done()
@@ -70,7 +87,7 @@ func (p *cutProxy) serve(){
 			// fault-matrix tests cannot accumulate detached descriptors.
 			_ = x.Close();_ = y.Close()
 			<-done
-			p.track(x,false);p.track(y,false)
+			p.track(x,0,false);p.track(y,0,false)
 		}(a,b)
 	}
 }
