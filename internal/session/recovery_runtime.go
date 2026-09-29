@@ -467,6 +467,11 @@ func (p *Peer) activatePreparedCarrierOwned(prep *preparedRecovery,ctl RecoveryC
 	return p.activatePreparedCarrier(prep,ctl)
 }
 
+func (p *Peer) RecoverySignalPendingForTest() bool {
+	if p==nil{return false}
+	return len(p.recoveryNeeded)>0
+}
+
 func (p *Peer) RecoveryStats() RecoveryStats {
 	if p.recovery==nil{return RecoveryStats{CurrentEpoch:1,Failures:map[string]uint64{}}}
 	return p.recovery.Stats()
