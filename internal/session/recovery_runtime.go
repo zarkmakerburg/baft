@@ -121,6 +121,7 @@ type preparedRecovery struct {
 	finalized bool
 	activationComplete bool
 	rebindPending bool
+	activatedGeneration uint64
 }
 
 type RecoveryFlowFrontier struct {
@@ -848,6 +849,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 		a.mu.Unlock()
 		if rebound{
 			activatedGeneration,err:=p.activatePreparedCarrier(prep,ctl);if err!=nil{return err}
+			a.mu.Lock();if a.prepared==prep{prep.activatedGeneration=activatedGeneration};a.mu.Unlock()
 			p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 			for i:=range flows{
 				fl:=flows[i].flow
@@ -872,6 +874,7 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	// finished consuming frames, so session reader/pumps can safely take over.
 	activatedGeneration,err:=p.activatePreparedCarrier(prep,ctl)
 	if err!=nil{_,e:=p.markPostCommitFailure(err,ctl);return e}
+	a.mu.Lock();if a.prepared==prep{prep.activatedGeneration=activatedGeneration};a.mu.Unlock()
 	p.carrierSwitchMu.Lock();close(p.carrierSwitchWait);p.carrierSwitchWait=make(chan struct{});p.carrierSwitchMu.Unlock()
 
 	if a.postCommitFault!=nil {
@@ -966,6 +969,14 @@ func (p *Peer) FinalizeRecoveryCommit(ctx context.Context,ctl RecoveryControl) e
 	// not sufficient evidence that blocked application flows may resume.
 	p.publishReplacementReady(activatedGeneration)
 	return nil
+}
+
+func (p *Peer) RecoveryTransactionCarrierGeneration(ctl RecoveryControl)(uint64,bool){
+	if p.recovery==nil{return 0,false}
+	a:=p.recovery
+	a.mu.Lock();defer a.mu.Unlock()
+	if a.prepared==nil||!sameRecoveryTransaction(a.prepared.control,ctl)||a.prepared.activatedGeneration==0{return 0,false}
+	return a.prepared.activatedGeneration,true
 }
 
 func (p *Peer) MarkPostCommitFailure(err error,ctl RecoveryControl) error {
