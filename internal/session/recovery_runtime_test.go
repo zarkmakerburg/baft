@@ -40,7 +40,6 @@ func recoveryFixture(t *testing.T,n int)(*Peer,*bytes.Buffer,context.Context,con
 	}
 	// Unit fixtures do not run a real peer reader. Model the cumulative ACK
 	// proof that the real Runtime obtains from authenticated peer acceptance.
-	p.recovery.peerAcceptanceTestHook=func(fl *flow,end uint64){ _ = fl.onAck(end) }
 	ctx,cancel:=context.WithCancel(context.Background())
 	return p,&old,ctx,cancel
 }
@@ -259,28 +258,13 @@ func proveFinalizationForTest(t *testing.T,p *Peer,ctl RecoveryControl) Recovery
 	return finalCtl
 }
 
-func ackSyntheticPeerAcceptance(p *Peer) {
-	p.mu.Lock()
-	flows:=make([]*flow,0,len(p.flows))
-	for _,fl:=range p.flows{flows=append(flows,fl)}
-	p.mu.Unlock()
-	for _,fl:=range flows{
-		fl.mu.Lock();next:=fl.txNext;acked:=fl.txAcked;fl.mu.Unlock()
-		if next>acked{_ = fl.onAck(next)}
-	}
-}
-
 func withSyntheticPeerAcceptance(p *Peer,fn func() (CommitResult,error))(CommitResult,error){
 	a:=p.recovery
 	a.mu.Lock()
-	old:=a.postCommitFault
-	a.postCommitFault=func(stage string)error{
-		if stage=="after_replay_write"{ackSyntheticPeerAcceptance(p)}
-		if old!=nil{return old(stage)}
-		return nil
-	}
+	old:=a.peerAcceptanceTestHook
+	a.peerAcceptanceTestHook=func(fl *flow,end uint64){ _ = fl.onAck(end) }
 	a.mu.Unlock()
-	defer func(){a.mu.Lock();a.postCommitFault=old;a.mu.Unlock()}()
+	defer func(){a.mu.Lock();a.peerAcceptanceTestHook=old;a.mu.Unlock()}()
 	return fn()
 }
 
