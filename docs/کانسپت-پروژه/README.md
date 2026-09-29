@@ -59,4 +59,7 @@
 
 - `امنیت-فوق-مقاوم/` — Zero Trust، Data Capsule، attestation، breach containment، privacy و post-compromise recovery.
 
+
+- `تاریخ-ارتباطات/` — درس‌های معماری از چاپار، چاسکی، Polybius، تلگراف نوری، هلیوگراف و relayهای تاریخی.
+
 </div>
