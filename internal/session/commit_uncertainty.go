@@ -231,7 +231,7 @@ func clonePreparedForRebind(old *preparedRecovery,c Carrier,sender *outboundSend
 	inc:=old.incarnation+1
 	if inc==0{inc=1}
 	return &preparedRecovery{
-		control:old.control,incarnation:inc,carrier:c,sender:sender,runCtx:runCtx,flows:flows,
+		control:old.control,incarnation:inc,physicalCarrierInstanceID:physicalCarrierInstanceID(old.control.NextEpoch,inc),carrier:c,sender:sender,runCtx:runCtx,flows:flows,
 		published:old.published,finalized:old.finalized,activationComplete:old.activationComplete,
 		rebindPending:true,
 	}
@@ -469,7 +469,7 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 		}
 	}
 	prep=&preparedRecovery{
-		control:ctl,incarnation:1,carrier:c,sender:newSender,runCtx:runCtx,flows:preparedFlows,
+		control:ctl,incarnation:1,physicalCarrierInstanceID:physicalCarrierInstanceID(ctl.NextEpoch,1),carrier:c,sender:newSender,runCtx:runCtx,flows:preparedFlows,
 		published:true,finalized:true,activationComplete:true,rebindPending:true,
 	}
 	p.bindRecoverySenderDiagnostic(newSender,ctl,1,0)
