@@ -1092,3 +1092,31 @@ func TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently(t *testing.T
 	if n:=p.targetAccepts.Load()-targetBefore;n!=0{t.Fatalf("target TCP reopened during FIN_ACK retry accepts_delta=%d",n)}
 	t.Log("PASS FIN_ACK local write without peer acceptance retried until confirmation; no duplicate transition")
 }
+
+
+func TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(25*time.Second))
+	targetBefore:=p.targetAccepts.Load()
+
+	var lastIRGen,lastEXGen uint64
+	for round:=0;round<3;round++{
+		p.proxy.CutAll()
+		epoch:=uint64(round+2)
+		ir,ex:=waitAuthorityPair(t,p,epoch,true)
+		if round>0&&(ir.CarrierGeneration<=lastIRGen||ex.CarrierGeneration<=lastEXGen){
+			t.Fatalf("carrier generation did not advance monotonically round=%d ir=%+v ex=%+v",round,ir,ex)
+		}
+		lastIRGen,lastEXGen=ir.CarrierGeneration,ex.CarrierGeneration
+
+		payload:=make([]byte,96*1024+round*211)
+		for i:=range payload{payload[i]=byte((i*31+round*17+9)%251)}
+		h:=assertEchoHashOnExistingFlow(t,c,payload)
+		t.Logf("round=%d epoch=%d ir_generation=%d ex_generation=%d hash=%x",round+1,epoch,ir.CarrierGeneration,ex.CarrierGeneration,h)
+	}
+	if n:=p.targetAccepts.Load()-targetBefore;n!=0{
+		t.Fatalf("target TCP reopened across consecutive replacements accepts_delta=%d",n)
+	}
+	t.Log("PASS three consecutive same-process carrier replacements preserved one target TCP socket")
+}
