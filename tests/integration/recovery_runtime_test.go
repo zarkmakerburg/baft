@@ -1314,9 +1314,12 @@ func TestExactRebindCurrentIncarnationSurvivesUntilReplayAcceptance(t *testing.T
 		}
 	})
 
-	payload:=make([]byte,3*protocol.MaxPayloadSize+777)
+	// Keep the initial unresolved suffix large enough to span a full DATA
+	// frame, but below the advertised receive-credit ceiling so the application
+	// can commit additional live DATA while peer proof is still absent.
+	payload:=make([]byte,protocol.MaxPayloadSize+777)
 	for i:=range payload{payload[i]=byte((i*29+7)%251)}
-	liveSuffix:=make([]byte,protocol.MaxPayloadSize+313)
+	liveSuffix:=make([]byte,protocol.MaxPayloadSize/2+313)
 	for i:=range liveSuffix{liveSuffix[i]=byte((i*37+19)%251)}
 	expected:=append(append([]byte(nil),payload...),liveSuffix...)
 	wantHash:=sha256.Sum256(expected)
