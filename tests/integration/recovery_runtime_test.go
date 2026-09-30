@@ -115,19 +115,6 @@ type recoveryRuntimePair struct{
 func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	t.Helper()
 	certs:=testPKI(t);dir:=t.TempDir()
-	// reserveAddress closes its probe listener before Runtime binds it. Keep
-	// every pending address distinct inside this multi-listener harness so the
-	// kernel cannot hand the same just-released ephemeral port to two config
-	// fields before either runtime has started.
-	usedAddrs:=map[string]struct{}{}
-	reserveUnique:=func()string{
-		for{
-			a:=reserveAddress(t)
-			if _,exists:=usedAddrs[a];exists{continue}
-			usedAddrs[a]=struct{}{}
-			return a
-		}
-	}
 	write:=func(name string,b []byte)string{p:=filepath.Join(dir,name);if err:=os.WriteFile(p,b,0600);err!=nil{t.Fatal(err)};return p}
 	ca:=write("ca.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:certs.caDER}))
 	cert:=write("server.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:certs.server.Certificate[0]}))
@@ -166,10 +153,18 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	if err:=securityinternal.SaveKeyPair(irPath,irKey);err!=nil{t.Fatal(err)}
 	exPub,_:=securityinternal.EncodePublicKey(exKey.Public);irPub,_:=securityinternal.EncodePublicKey(irKey.Public)
 
-	exMetricsLn,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)}
-	irMetricsLn,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{_ = exMetricsLn.Close();t.Fatal(err)}
-	ex,err:=config.LoadFile("../../configs/example-ex.yaml");if err!=nil{_ = exMetricsLn.Close();_ = irMetricsLn.Close();t.Fatal(err)}
-	ex.Node.ID="ex-recovery";ex.Server.Listen=reserveUnique();ex.Server.ServerName="ex.test"
+	exProvider:=newOwnedListenerProvider()
+	irProvider:=newOwnedListenerProvider()
+	t.Cleanup(exProvider.closeRemaining)
+	t.Cleanup(irProvider.closeRemaining)
+	exServerLn:=bindFixtureTCP(t)
+	exMetricsLn:=bindFixtureTCP(t)
+	irMetricsLn:=bindFixtureTCP(t)
+	ex,err:=config.LoadFile("../../configs/example-ex.yaml");if err!=nil{t.Fatal(err)}
+	ex.Node.ID="ex-recovery";ex.Server.Listen=exServerLn.Addr().String();ex.Server.ServerName="ex.test"
+	exProvider.add(t,node.EndpointServer,ex.Node.ID,exServerLn)
+	exProvider.add(t,node.EndpointMetrics,"metrics",exMetricsLn)
+	irProvider.add(t,node.EndpointMetrics,"metrics",irMetricsLn)
 	ex.Server.AllowedPeerIdentities=[]string{"urn:baft:node:ir-recovery"}
 	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen=exMetricsLn.Addr().String()
 	ex.Transport.Shards=1;ex.TLS=config.TLS{MinVersion:"1.3",CAFile:ca,CertFile:cert,KeyFile:key}
@@ -190,7 +185,10 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	ir.Recovery=ex.Recovery;ir.Routes=nil
 	for i:=0;i<routeCount;i++{
 		id:=routeName(i)
-		ir.Routes=append(ir.Routes,config.Route{ID:"local-"+id,Direction:"outbound",Listen:reserveUnique(),RemoteRoute:id})
+		localID:="local-"+id
+		routeLn:=bindFixtureTCP(t)
+		ir.Routes=append(ir.Routes,config.Route{ID:localID,Direction:"outbound",Listen:routeLn.Addr().String(),RemoteRoute:id})
+		irProvider.add(t,node.EndpointRoute,localID,routeLn)
 	}
 	if err:=config.Validate(ex);err!=nil{t.Fatalf("EX: %v",err)}
 	if err:=config.Validate(ir);err!=nil{t.Fatalf("IR: %v",err)}
@@ -199,8 +197,8 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	pair.ctx=ctx;pair.cancel=cancel;pair.ex=ex;pair.ir=ir;pair.exDone=make(chan error,1);pair.irDone=make(chan error,1)
 	pair.exRuntime=node.NewRuntime()
 	pair.irRuntime=node.NewRuntime()
-	pair.exRuntime.SetMetricsListenerForTest(exMetricsLn)
-	pair.irRuntime.SetMetricsListenerForTest(irMetricsLn)
+	pair.exRuntime.SetListenerProviderForTest(exProvider)
+	pair.irRuntime.SetListenerProviderForTest(irProvider)
 	go func(){pair.exDone<-pair.exRuntime.Run(ctx,ex)}()
 	select{
 	case <-pair.exRuntime.ListenerReadyForTest():
