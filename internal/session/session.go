@@ -1339,7 +1339,13 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 					sendErr=sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer)
 					if sendErr!=nil&&p.recoveryEnabled {
 						p.onCarrierFailureForGeneration(sendErr,generation,SenderStopFrameProcessing)
-						if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{
+						// A failed direct write belongs to the retired physical carrier.
+						// Wait only until carrier authority changes, then re-evaluate the
+						// exact-transaction ownership at the top of this loop. Waiting for
+						// application readiness here creates a liveness cycle: replay proof
+						// gates readiness while this pump is prevented from admitting later
+						// application bytes into the exact replay high-watermark.
+						if werr:=p.waitForCarrierSwitch(ctx,epoch,owner,generation);werr==nil{
 							continue
 						}
 					}
