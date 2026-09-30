@@ -1705,8 +1705,20 @@ func TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot(t *testing.T){
 
 	var drop atomic.Bool
 	drop.Store(true)
+	oldEXGeneration:=ex2.CarrierGeneration
 	p.exRuntime.SetRecoveryFrameHookForTest(func(stage string,fr protocol.Frame)bool{
 		return stage=="before_data_accept"&&drop.Load()
+	})
+	// Keep the fault bound to the retiring physical generation. CutAll closes
+	// the proxy sockets, but bytes already buffered in the old HTTP/2 stream
+	// can still reach the frame hook. Releasing the drop immediately after the
+	// cut lets that stale generation advance peer acceptance and invalidates
+	// this test's captured unacked frontier. The new generation's activation
+	// event is the deterministic authority boundary after which DATA may pass.
+	p.exRuntime.SetRecoveryDiagnosticHookForTest(func(ev session.RecoveryDiagnosticEvent){
+		if ev.Event=="CARRIER_ACTIVATED"&&ev.CarrierGeneration>oldEXGeneration{
+			drop.Store(false)
+		}
 	})
 
 	payload:=make([]byte,3*protocol.MaxPayloadSize+913)
@@ -1733,7 +1745,6 @@ func TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot(t *testing.T){
 	acked,next:=before.TxAcked,before.TxNext
 
 	p.proxy.CutAll()
-	drop.Store(false)
 
 	ir3,ex3:=waitAuthorityPair(t,p,3,true)
 	if ir3.CandidateID==c2||ex3.CandidateID==c2{
