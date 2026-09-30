@@ -109,6 +109,8 @@ type Peer struct {
 	recoveryGate       sync.Mutex
 	recoveryFrameHookMu sync.RWMutex
 	recoveryFrameHook   func(string, protocol.Frame) bool
+	runExitObserverMu sync.RWMutex
+	runExitObserver func(error)
 }
 
 type replayChunk struct {
@@ -280,13 +282,22 @@ func (p *Peer) senderNow() *outboundSender {
 	return s
 }
 
+func (p *Peer) SetRunExitObserverForTest(fn func(error)) {
+	p.runExitObserverMu.Lock();p.runExitObserver=fn;p.runExitObserverMu.Unlock()
+}
+
+func (p *Peer) notifyRunExitForTest(err error) {
+	p.runExitObserverMu.RLock();fn:=p.runExitObserver;p.runExitObserverMu.RUnlock()
+	if fn!=nil{fn(err)}
+}
+
 func (p *Peer) Run(ctx context.Context) error { return p.run(ctx,nil) }
 
 func (p *Peer) RunWithFirstFrame(ctx context.Context, first protocol.Frame) error {
 	return p.run(ctx,&first)
 }
 
-func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
+func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	p.mu.Lock()
 	p.runCtx = runCtx
@@ -297,6 +308,9 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) error {
 		p.senderNow().run(runCtx)
 	}()
 	defer func() {
+		// Test-only lifecycle proof is emitted before destructive cleanup so it
+		// observes the logical Session authority/flows that existed at Run exit.
+		p.notifyRunExitForTest(retErr)
 		cancel()
 		p.closeAll()
 		p.wg.Wait()

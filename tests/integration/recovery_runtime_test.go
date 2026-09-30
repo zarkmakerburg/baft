@@ -1155,6 +1155,11 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	}
 	p.irRuntime.SetRecoveryDiagnosticHookForTest(logDiag("IR"))
 	p.exRuntime.SetRecoveryDiagnosticHookForTest(logDiag("EX"))
+	logLifecycle:=func(side string)func(node.LogicalSessionLifecycleEvent){
+		return func(ev node.LogicalSessionLifecycleEvent){t.Logf("%s logical_lifecycle=%+v",side,ev)}
+	}
+	p.irRuntime.SetLogicalSessionLifecycleHookForTest(logLifecycle("IR"))
+	p.exRuntime.SetLogicalSessionLifecycleHookForTest(logLifecycle("EX"))
 
 	var mode atomic.Int32
 	mode.Store(1)

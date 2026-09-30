@@ -75,6 +75,10 @@ type Runtime struct {
 	dialerReady chan struct{}
 	dialerReadyMu sync.Mutex
 	dialerReadyErr error
+	logicalLifecycleMu sync.Mutex
+	logicalLifecycleSeq uint64
+	logicalLifecycle []LogicalSessionLifecycleEvent
+	logicalLifecycleHook func(LogicalSessionLifecycleEvent)
 }
 
 type RecoveryAuthoritySnapshot struct {
@@ -105,6 +109,76 @@ type RecoveryAuthoritySnapshot struct {
 	PlanDigest string
 	Flows []session.RecoveryFlowFrontier
 }
+
+type LogicalSessionLifecycleEvent struct {
+	Sequence uint64
+	Event string
+	Reason string
+	SessionID string
+	PeerIdentity string
+	SessionEpoch uint64
+	CarrierGeneration uint64
+	CandidateID string
+	PlanDigest string
+	PreparedIncarnation uint64
+	TxnState session.RecoveryTxnState
+	ApplicationReady bool
+	TransactionStable bool
+	ReplayOutstanding bool
+	NeedsRecovery bool
+	NeedsExactTransactionResolution bool
+	ActiveFlows int
+}
+
+func (r *Runtime) SetLogicalSessionLifecycleHookForTest(fn func(LogicalSessionLifecycleEvent)) {
+	r.logicalLifecycleMu.Lock();r.logicalLifecycleHook=fn;r.logicalLifecycleMu.Unlock()
+}
+
+func (r *Runtime) LogicalSessionLifecycleForTest() []LogicalSessionLifecycleEvent {
+	r.logicalLifecycleMu.Lock();defer r.logicalLifecycleMu.Unlock()
+	return append([]LogicalSessionLifecycleEvent(nil),r.logicalLifecycle...)
+}
+
+func (r *Runtime) recordLogicalSessionLifecycle(event,reason string,p *session.Peer) {
+	if r==nil||p==nil{return}
+	st:=p.RecoveryStability()
+	prep:=p.RecoveryPreparedOwnershipForTest()
+	tx,ok:=p.RecoveryTransactionIdentity()
+	ev:=LogicalSessionLifecycleEvent{
+		Event:event,Reason:reason,SessionID:p.SessionID(),PeerIdentity:p.PeerIdentity(),
+		SessionEpoch:p.RecoveryEpoch(),CarrierGeneration:p.RecoveryCarrierGeneration(),
+		PreparedIncarnation:prep.PreparedIncarnation,TxnState:p.RecoveryTransactionState(),
+		ApplicationReady:st.ApplicationReady,TransactionStable:st.TransactionStable,
+		ReplayOutstanding:st.ReplayOutstanding,NeedsRecovery:p.NeedsRecovery(),
+		NeedsExactTransactionResolution:p.NeedsExactTransactionResolution(),
+		ActiveFlows:len(p.RecoveryFlowFrontiersForTest()),
+	}
+	if ok{ev.CandidateID=tx.CandidateID;ev.PlanDigest=tx.PlanDigest}
+	r.logicalLifecycleMu.Lock()
+	r.logicalLifecycleSeq++;ev.Sequence=r.logicalLifecycleSeq
+	r.logicalLifecycle=append(r.logicalLifecycle,ev)
+	if len(r.logicalLifecycle)>512{r.logicalLifecycle=append([]LogicalSessionLifecycleEvent(nil),r.logicalLifecycle[len(r.logicalLifecycle)-512:]...)}
+	hook:=r.logicalLifecycleHook
+	r.logicalLifecycleMu.Unlock()
+	if hook!=nil{hook(ev)}
+}
+
+func (r *Runtime) recordStatusLookupMiss(query session.RecoveryControl,peerIdentity,reason string) {
+	ev:=LogicalSessionLifecycleEvent{
+		Event:"STATUS_LOOKUP_MISS",Reason:reason,SessionID:query.SessionID,PeerIdentity:peerIdentity,
+		SessionEpoch:query.NextEpoch,CandidateID:query.CandidateID,PlanDigest:query.PlanDigest,
+	}
+	r.logicalLifecycleMu.Lock()
+	r.logicalLifecycleSeq++;ev.Sequence=r.logicalLifecycleSeq
+	r.logicalLifecycle=append(r.logicalLifecycle,ev)
+	if len(r.logicalLifecycle)>512{r.logicalLifecycle=append([]LogicalSessionLifecycleEvent(nil),r.logicalLifecycle[len(r.logicalLifecycle)-512:]...)}
+	hook:=r.logicalLifecycleHook
+	r.logicalLifecycleMu.Unlock()
+	if hook!=nil{hook(ev)}
+}
+
+func lifecycleErrorString(err error) string { if err==nil{return ""};return err.Error() }
+
 
 func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
 	r.recoveryFaultMu.Lock()
@@ -570,6 +644,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			r.sessions[h.SessionID]=p
 			r.sessionMu.Unlock()
 			r.registerPeer(p)
+			p.SetRunExitObserverForTest(func(runErr error){r.recordLogicalSessionLifecycle("PEER_RUN_EXIT",lifecycleErrorString(runErr),p)})
 			defer func(){r.unregisterPeer(p);r.unregisterSession(p)}()
 			return p.RunWithFirstFrame(ctx,first)
 		}

@@ -42,10 +42,12 @@ func (r *Runtime) registerSession(p *session.Peer) error {
 	if p==nil{return errors.New("nil session")}
 	id:=p.SessionID()
 	if id==""{return errors.New("session id unavailable")}
-	r.sessionMu.Lock();defer r.sessionMu.Unlock()
+	r.sessionMu.Lock()
 	if r.sessions==nil{r.sessions=map[string]*session.Peer{}}
-	if old:=r.sessions[id];old!=nil&&old!=p{return errors.New("duplicate live session id")}
+	if old:=r.sessions[id];old!=nil&&old!=p{r.sessionMu.Unlock();return errors.New("duplicate live session id")}
 	r.sessions[id]=p
+	r.sessionMu.Unlock()
+	r.recordLogicalSessionLifecycle("LOGICAL_SESSION_REGISTER","",p)
 	return nil
 }
 
@@ -54,8 +56,10 @@ func (r *Runtime) unregisterSession(p *session.Peer) {
 	id:=p.SessionID()
 	if id==""{return}
 	r.sessionMu.Lock()
-	if r.sessions[id]==p{delete(r.sessions,id)}
+	removed:=r.sessions[id]==p
+	if removed{delete(r.sessions,id)}
 	r.sessionMu.Unlock()
+	if removed{r.recordLogicalSessionLifecycle("LOGICAL_SESSION_UNREGISTER","registry owner retired",p)}
 }
 
 func (r *Runtime) sessionByID(id string)*session.Peer{
@@ -451,7 +455,11 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 
 func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader,out io.Writer,peer carrierh2.PeerInfo,query session.RecoveryControl) error {
 	p:=r.sessionByID(query.SessionID)
-	if p==nil{return errors.New("recovery status session not found")}
+	if p==nil{
+		r.recordStatusLookupMiss(query,peer.Identity,"recovery status session not found")
+		return errors.New("recovery status session not found")
+	}
+	r.recordLogicalSessionLifecycle("STATUS_LOOKUP_HIT","",p)
 	if p.PeerIdentity()!=peer.Identity{return errors.New("recovery status peer identity mismatch")}
 	p.RecordRecoveryDiagnosticForTest("HANDLER_CREATED",session.SenderStopUnknown,nil,0)
 	reply,err:=p.EvaluateCommitStatus(query);if err!=nil{return err}
