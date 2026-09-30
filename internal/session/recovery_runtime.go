@@ -581,7 +581,7 @@ func (p *Peer) FenceRecoveryCarrierOwner(owner RecoveryCarrierOwner) bool {
 	}
 	s:=p.sender
 	p.mu.Unlock()
-	if s!=nil{s.stopWithSource(SenderStopRecoveryOwnerFence,ErrCarrierUnavailable)}
+	if s!=nil{s.stopAndFenceWriter(SenderStopRecoveryOwnerFence,ErrCarrierUnavailable)}
 	p.traceRecoveryDiagnostic("OWNER_FENCE_APPLIED",SenderStopRecoveryOwnerFence,ErrCarrierUnavailable,"",s,owner.Transaction,owner.PreparedIncarnation,owner.CarrierGeneration)
 	return true
 }
@@ -608,7 +608,7 @@ func (p *Peer) FenceRecoveryCarrierWriter(generation uint64) {
 	if p.carrierGeneration!=generation{p.mu.Unlock();return}
 	s:=p.sender
 	p.mu.Unlock()
-	if s!=nil{s.stopWithSource(SenderStopRecoveryGenerationFailure,ErrCarrierUnavailable)}
+	if s!=nil{s.stopAndFenceWriter(SenderStopRecoveryGenerationFailure,ErrCarrierUnavailable)}
 }
 
 func (p *Peer) RecoveryFlowFrontiersForTest() []RecoveryFlowFrontier {
@@ -1319,7 +1319,7 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	if runCtx==nil{runCtx=p.runCtx}
 	p.mu.Unlock()
 	if runCtx==nil{return 0,errors.New("session run context unavailable")}
-	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stopWithSource(SenderStopExplicitReplace,ErrCarrierUnavailable)}
+	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stopAndFenceWriter(SenderStopExplicitReplace,ErrCarrierUnavailable)}
 	p.traceRecoveryDiagnostic("CARRIER_ACTIVATED",SenderStopUnknown,nil,"",prep.sender,ctl,prep.incarnation,activatedGeneration)
 	if !prep.sender.isStarted(){
 		p.wg.Add(1)

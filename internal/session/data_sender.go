@@ -415,6 +415,19 @@ func (s *outboundSender) stopWithSource(source SenderStopSource,err error) {
 	}
 }
 
+func (s *outboundSender) stopAndFenceWriter(source SenderStopSource, err error) {
+    if s==nil{return}
+    s.stopWithSource(source,err)
+    // stopWithSource prevents any new queued/direct write, but an already
+    // executing frameWriter.send may still own the HTTP response writer.
+    // Acquiring the same writer mutex is the carrier-lifetime fence: after
+    // this returns no write from this sender can touch the retiring stream.
+    if s.writer!=nil {
+        s.writer.mu.Lock()
+        s.writer.mu.Unlock()
+    }
+}
+
 func (s *outboundSender) stopErrorLocked() error {
 	if s.stopErr != nil {
 		return s.stopErr
