@@ -122,7 +122,7 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
         }
     }
 
-    workerIdentity:="urn:baft:node:worker"
+    workerIdentity:="urn:baft:node:worker"\n    workerProtocolNodeID:="worker"
     for i:=0;i<4;i++{
         letter:=byte('A'+i);id:=liveNodeID(letter)
         target:=newLiveEchoTarget(t)
@@ -132,7 +132,7 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
         exPub,err:=securityinternal.EncodePublicKey(exKey.Public);if err!=nil{t.Fatal(err)}
 
         ex,err:=config.LoadFile("../../configs/example-ex.yaml");if err!=nil{t.Fatal(err)}
-        ex.Node.ID=fmt.Sprintf("ex-%c",letter)
+        ex.Node.ID=fmt.Sprintf("%c",letter)
         ex.Server.Listen=reserveUnique();ex.Server.ServerName="ex.test"
         ex.Server.AllowedPeerIdentities=[]string{workerIdentity}
         ex.Management.UnixSocket=filepath.Join(dir,fmt.Sprintf("ex-%c.sock",letter))
@@ -155,7 +155,7 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
         h.remotes=append(h.remotes,&liveTopologyRemote{id:id,cfg:ex,runtime:rt,done:done,target:target})
 
         src,err:=config.LoadFile("../../configs/example-ir.yaml");if err!=nil{t.Fatal(err)}
-        src.Node.ID=workerIdentity
+        src.Node.ID=workerProtocolNodeID
         src.Peer.Address=ex.Server.Listen;src.Peer.ServerName="ex.test";src.Peer.AllowedIdentity=id
         src.Management.UnixSocket=filepath.Join(dir,fmt.Sprintf("source-%c.sock",letter))
         src.Management.MetricsListen=reserveUnique()
@@ -168,7 +168,7 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
     }
 
     tmpl:=clustersync.WorkerTemplate{
-        NodeID:workerIdentity,NoiseKeyFile:workerNoisePath,TLS:tlsCfg,
+        NodeID:workerProtocolNodeID,NoiseKeyFile:workerNoisePath,TLS:tlsCfg,
         Limits:config.Limits{MaxFlows:128,DataMemoryMiB:128,ReceiveInitialKiB:64,ReceiveMaxMiB:8,ReplayMaxMiB:8},
         Recovery:config.Recovery{Enabled:true,RetentionSeconds:10,Mode:"same_process"},
         RouteBasePort:16000,MetricsBasePort:15000,StateDir:dir,

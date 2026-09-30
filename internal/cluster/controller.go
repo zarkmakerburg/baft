@@ -126,6 +126,30 @@ func (c *WorkerController) ApplyToken(token string, now time.Time) (clustersync.
         stopped=append(stopped,mr)
     }
 
+    // Final pre-commit liveness fence: a runtime that passed readiness but
+    // exited before topology publication must not produce control/runtime split-brain.
+    checkRunning:=func(id string,mr *managedRuntime) error {
+        if mr==nil{return fmt.Errorf("runtime missing NodeID %s before commit",id)}
+        select{
+        case <-mr.done:
+            err:=mr.err();if err==nil{err=errors.New("runtime exited before topology commit")}
+            return fmt.Errorf("NodeID %s: %w",id,err)
+        default:return nil
+        }
+    }
+    for _,id:=range diff.UnchangedNodeIDs{
+        if err:=checkRunning(id,c.runtimes[id]);err!=nil{
+            c.rollbackStopped(stopped);c.stopMany(staged)
+            return clustersync.Snapshot{},false,err
+        }
+    }
+    for _,id:=range added{
+        if err:=checkRunning(id,staged[id]);err!=nil{
+            c.rollbackStopped(stopped);c.stopMany(staged)
+            return clustersync.Snapshot{},false,err
+        }
+    }
+
     snap,changed,err:=c.engine.CommitPrepared(prepared)
     if err!=nil{
         c.rollbackStopped(stopped)
