@@ -36,7 +36,7 @@ type liveEchoTarget struct {
 
 func newLiveEchoTarget(t *testing.T)*liveEchoTarget{
     t.Helper()
-    ln,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)}
+    ln,err:=net.Listen("tcp","127.0.0.3:0");if err!=nil{t.Fatal(err)}
     e:=&liveEchoTarget{ln:ln,conns:map[net.Conn]struct{}{},done:make(chan struct{})}
     go func(){
         defer close(e.done)
@@ -115,7 +115,8 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
     used:=map[string]struct{}{}
     reserveUnique:=func()string{
         for{
-            a:=reserveAddress(t)
+            ln,err:=net.Listen("tcp","127.0.0.2:0");if err!=nil{t.Fatal(err)}
+            a:=ln.Addr().String();_ = ln.Close()
             if _,ok:=used[a];ok{continue}
             used[a]=struct{}{}
             return a
