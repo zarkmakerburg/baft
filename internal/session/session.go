@@ -148,6 +148,7 @@ type flow struct {
 	rxRing          *receiveRing
 	finRecvFinal    uint64
 	finAckSent      bool
+	finAckWriteInFlight bool
 	finAckConfirmed bool
 	writeClosed     bool
 	replay          []replayChunk
@@ -1014,6 +1015,19 @@ func (p *Peer) ackRemoteFin(fl *flow) error {
 		fl.mu.Unlock()
 		return nil
 	}
+	if fl.finAckConfirmed {
+		fl.mu.Unlock()
+		p.finishIfComplete(fl)
+		return nil
+	}
+	// Serialize FIN_ACK emission for this flow. The peer may consume the frame
+	// and return FIN_ACK_CONFIRM before sendControl returns, so the local
+	// acceptance window must be published before the frame becomes writable.
+	if fl.finAckWriteInFlight {
+		fl.mu.Unlock()
+		return nil
+	}
+	fl.finAckWriteInFlight=true
 	final := fl.finRecvFinal
 	needCloseWrite:=!fl.writeClosed
 	if needCloseWrite{fl.writeClosed=true}
@@ -1022,18 +1036,29 @@ func (p *Peer) ackRemoteFin(fl *flow) error {
 	if needCloseWrite {
 		if cw, ok := fl.conn.(interface{ CloseWrite() error }); ok {
 			if err := cw.CloseWrite(); err != nil {
+				fl.mu.Lock()
+				fl.finAckWriteInFlight=false
+				fl.mu.Unlock()
 				return p.sendReset(fl, protocol.ErrorTargetUnreachable)
 			}
 		}
 	}
-	// FIN_ACK write success is not peer-acceptance proof. Re-sending the same
-	// final offset is safe until FIN_ACK_CONFIRM proves the peer consumed it.
-	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final}); err != nil {
-		return err
-	}
+
 	fl.mu.Lock()
 	fl.finAckSent=true
 	fl.mu.Unlock()
+	err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final})
+	fl.mu.Lock()
+	fl.finAckWriteInFlight=false
+	if err!=nil && !fl.finAckConfirmed {
+		// No peer proof exists for this emission. Keep the terminal obligation
+		// retryable instead of pretending a failed local write was delivered.
+		fl.finAckSent=false
+	}
+	fl.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	p.finishIfComplete(fl)
 	return nil
 }
