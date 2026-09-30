@@ -173,7 +173,7 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
         NodeID:workerProtocolNodeID,NoiseKeyFile:workerNoisePath,TLS:tlsCfg,
         Limits:config.Limits{MaxFlows:128,DataMemoryMiB:128,ReceiveInitialKiB:64,ReceiveMaxMiB:8,ReplayMaxMiB:8},
         Recovery:config.Recovery{Enabled:true,RetentionSeconds:10,Mode:"same_process"},
-        RouteBasePort:16000,MetricsBasePort:15000,StateDir:dir,
+        RouteBasePort:62000,MetricsBasePort:64000,StateDir:dir,
     }
     ctrl,err:=cluster.NewWorkerController(ctx,engine,tmpl);if err!=nil{t.Fatal(err)}
     h.controller=ctrl
