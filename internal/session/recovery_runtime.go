@@ -361,6 +361,14 @@ func (p *Peer) onRecoverySenderStop(ev SenderStopEvent) {
 	if p==nil||p.recovery==nil{return}
 	p.recovery.recordSenderStop(ev)
 	if p.role!=Dialer{return}
+	switch ev.Source {
+	case SenderStopWriterError,SenderStopCarrierReaderDecode,SenderStopFrameProcessing,SenderStopRecoveryGenerationFailure:
+		// These sources mean the authoritative Dialer carrier is unusable.
+	default:
+		// Explicit replacement, owner fencing, shutdown, context teardown and
+		// flow closure are lifecycle actions, not evidence for a fresh epoch.
+		return
+	}
 
 	p.mu.Lock()
 	current:=p.sender
