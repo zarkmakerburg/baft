@@ -1255,6 +1255,19 @@ func (p *Peer) runExactLiveDelivery(ctx context.Context,fl *flow) {
 	}
 }
 
+func (p *Peer) exactRecoveryOwnsLedgerRange(fl *flow,end uint64) bool {
+	if p.recovery==nil||fl==nil||end==0{return false}
+	a:=p.recovery
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.prepared==nil{return false}
+	for i:=range a.prepared.flows{
+		act:=&a.prepared.flows[i]
+		if act.flow==fl&&end<=act.replayHighWatermark{return true}
+	}
+	return false
+}
+
 func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 	buf := make([]byte, dataChunk)
 	for {
@@ -1295,7 +1308,18 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				p.queueExactLiveFrame(ctx,fl,protocol.Frame{Type:protocol.TypeData,StreamID:fl.id,Offset:off,Payload:payload},producer)
 			}else{
 				var sendErr error
+				frameEnd:=off+uint64(len(payload))
 				for {
+					// If recovery became authoritative after this DATA entered the
+					// ledger, the exact replay plan already owns this byte range.
+					// Do not keep the application pump blocked behind recovery
+					// readiness or resend the same range through the old direct
+					// path; hand ownership to replay and continue admitting later
+					// application DATA into the exact high-watermark.
+					if p.recoveryEnabled&&p.NeedsExactTransactionResolution()&&p.exactRecoveryOwnsLedgerRange(fl,frameEnd){
+						sendErr=nil
+						break
+					}
 					sender,epoch,owner,generation:=p.currentSenderState()
 					producer:=ProducerLivePump
 					if p.recoveryEnabled&&epoch>1{producer=ProducerRecoveredPump}
