@@ -362,8 +362,10 @@ func (p *Peer) onRecoverySenderStop(ev SenderStopEvent) {
 	p.recovery.recordSenderStop(ev)
 	if p.role!=Dialer{return}
 	switch ev.Source {
-	case SenderStopWriterError,SenderStopCarrierReaderDecode,SenderStopFrameProcessing,SenderStopRecoveryGenerationFailure:
+	case SenderStopWriterError,SenderStopCarrierReaderDecode,SenderStopFrameProcessing,SenderStopRecoveryGenerationFailure,SenderStopContextDone:
 		// These sources mean the authoritative Dialer carrier is unusable.
+		// ContextDone is actionable only because the session-level runCtx
+		// liveness check above rejects normal runtime/session shutdown.
 	default:
 		// Explicit replacement, owner fencing, shutdown, context teardown and
 		// flow closure are lifecycle actions, not evidence for a fresh epoch.
