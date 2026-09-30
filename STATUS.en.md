@@ -9,7 +9,7 @@ Repository: `zarkmakerburg/baft`, branch `main`. Code head before the documentat
 
 - Stage A: complete for its defined scope.
 - Stage B: complete for the defined secure vertical slice.
-- Stage C: in progress and not complete.
+- Stage C: the current multi-Flow/slow-receiver soak gate is green; this does not mean a public benchmark or production readiness.
 - Stage D: same-process ECRL recovery through Step 5.7 is implemented and tested, but Stage D is not complete or production-ready; process-restart/machine-reboot resume and durable ECRL session snapshots remain unimplemented.
 
 ## Stage B evidence
@@ -28,7 +28,16 @@ The active DATA scheduler is now PADL (Pressure-Aged Deficit Leasing), with clas
 
 Shared multi-Shard allocator exhaustion/reuse and conservation snapshots pass in CI run `36341666646`. Privacy-bounded conservation metrics pass in CI run `36341810504`.
 
-Stage C is still formally open only because the dedicated repeated soak workflow must pass.
+### Stage-C soak — current status
+
+The dedicated `stagec-soak` workflow repeats real multi-Flow and slow-receiver transfers 25 times and runs 5 rounds under the race detector.
+
+Evidence:
+- historical failure: run `36342169299` — **FAIL** with `TestConcurrentMultiFlowTransfer: unexpected EOF`.
+- historical pass after the fixes: run `36342627897` — **PASS**.
+- code-head evidence before the documentation commit: run `36519987991` on `6fcf41631dc963af6f9c124f245a3ce7a47bc2fe` — **PASS**, including the repeated soak and race sample.
+
+The current Stage C gate is therefore green, but this is not a public benchmark, a real pilot, or a production-readiness claim.
 
 ## Not complete
 
