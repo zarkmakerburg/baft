@@ -65,7 +65,7 @@ func TestTopologyMutationDoesNotMutateUnrelatedNodes(t *testing.T){
 		if !idsEqual(d.RemovedNodeIDs,[]string{ids[1]})||len(d.AddedNodeIDs)!=0||len(d.ChangedNodeIDs)!=0{t.Fatalf("remove iter=%d diff=%+v",iter,d)}
 
 		added:=cloneSnapshot(base)
-		x:=added.Routes[0];x.NodeID=fmt.Sprintf("urn:baft:node:x-%03d",iter);x.Address=fmt.Sprintf("198.51.100.%d:443",100+(iter%100));x.ServerName=fmt.Sprintf("x-%03d.example",iter);x.AllowedIdentity=fmt.Sprintf("urn:baft:auth:x-%03d",iter)
+		x:=added.Routes[0];x.NodeID=fmt.Sprintf("urn:baft:node:x-%03d",iter);x.Address=fmt.Sprintf("198.51.100.%d:443",100+(iter%100));x.ServerName=fmt.Sprintf("x-%03d.example",iter);x.AllowedIdentity=x.NodeID
 		added.Routes=append(added.Routes,x)
 		d=DiffTopology(base,added)
 		if !idsEqual(d.AddedNodeIDs,[]string{x.NodeID})||len(d.RemovedNodeIDs)!=0||len(d.ChangedNodeIDs)!=0{t.Fatalf("add iter=%d diff=%+v",iter,d)}
@@ -86,10 +86,10 @@ func TestIdentityRotationSemantics(t *testing.T){
 	m,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,testConfigsN(t,8));if err!=nil{t.Fatal(err)}
 	base:=snapshotFromManifest(m);id:=base.Routes[2].NodeID
 	for i:=0;i<100;i++{
-		auth:=cloneSnapshot(base);auth.Routes[2].AllowedIdentity=fmt.Sprintf("urn:baft:rotated:%03d",i)
-		d:=DiffTopology(base,auth);if !idsEqual(d.ChangedNodeIDs,[]string{id})||len(d.AddedNodeIDs)!=0||len(d.RemovedNodeIDs)!=0{t.Fatalf("auth rotation iter=%d diff=%+v",i,d)}
-		repl:=cloneSnapshot(base);newID:=fmt.Sprintf("%s-r%03d",id,i);repl.Routes[2].NodeID=newID
-		d=DiffTopology(base,repl);if !idsEqual(d.RemovedNodeIDs,[]string{id})||!idsEqual(d.AddedNodeIDs,[]string{newID})||len(d.ChangedNodeIDs)!=0{t.Fatalf("NodeID replacement iter=%d diff=%+v",i,d)}
+		credential:=cloneSnapshot(base);credential.Routes[2].NoisePublicKey=fmt.Sprintf("rotated-credential-%03d",i)
+		d:=DiffTopology(base,credential);if !idsEqual(d.ChangedNodeIDs,[]string{id})||len(d.AddedNodeIDs)!=0||len(d.RemovedNodeIDs)!=0{t.Fatalf("credential rotation iter=%d diff=%+v",i,d)}
+		repl:=cloneSnapshot(base);newID:=fmt.Sprintf("urn:baft:node:C-r%03d",i);repl.Routes[2].NodeID=newID;repl.Routes[2].AllowedIdentity=newID
+		d=DiffTopology(base,repl);if !idsEqual(d.RemovedNodeIDs,[]string{id})||!idsEqual(d.AddedNodeIDs,[]string{newID})||len(d.ChangedNodeIDs)!=0{t.Fatalf("identity replacement iter=%d diff=%+v",i,d)}
 	}
 }
 
@@ -100,8 +100,8 @@ func TestManifestRevisionInvariantUnderPermutation(t *testing.T){
 	for i:=0;i<100;i++{m:=permuteNodesForIdentityTest(base,rng.Perm(len(base.Nodes)));r,err:=semanticRevision(m.Nodes);if err!=nil{t.Fatal(err)};if r!=base.Revision{t.Fatalf("permutation %d revision changed",i)}}
 	mutations:=[]func(*Manifest){
 		func(m *Manifest){m.Nodes[0].Address="203.0.113.9:443"},
-		func(m *Manifest){m.Nodes[0].AllowedIdentity="urn:baft:rotated"},
-		func(m *Manifest){m.Nodes[0].ID="urn:baft:node:replacement"},
+		func(m *Manifest){m.Nodes[0].AllowedIdentity="urn:baft:node:rotated";m.Nodes[0].ID=m.Nodes[0].AllowedIdentity},
+		func(m *Manifest){m.Nodes[0].ID="urn:baft:node:replacement";m.Nodes[0].AllowedIdentity=m.Nodes[0].ID},
 		func(m *Manifest){m.Nodes[0].Routes[0].RemoteRoute="changed-route"},
 		func(m *Manifest){m.Nodes[0].NoisePublicKey=m.Nodes[1].NoisePublicKey},
 	}
@@ -113,7 +113,7 @@ func TestTokenIdentityRoundTripAndValidation(t *testing.T){
 	signPub,signPriv,err:=GenerateSigningKeyPair();if err!=nil{t.Fatal(err)}
 	now:=time.Unix(1700000000,0)
 	m,err:=ManifestFromConfigs("goldapp-baft",1,15*time.Minute,now,testConfigsN(t,3));if err!=nil{t.Fatal(err)}
-	for i:=range m.Nodes{m.Nodes[i].ID=fmt.Sprintf("node-%c",'A'+rune(i));m.Nodes[i].Routes[0].ID=fmt.Sprintf("route-%c",'A'+rune(i))}
+	for i:=range m.Nodes{m.Nodes[i].ID=fmt.Sprintf("urn:baft:node:%c",'A'+rune(i));m.Nodes[i].AllowedIdentity=m.Nodes[i].ID;m.Nodes[i].Routes[0].ID=fmt.Sprintf("route-%c",'A'+rune(i))}
 	refreshRevisionForIdentityTest(t,&m)
 	tok,err:=Seal(m,workerPub,signPriv);if err!=nil{t.Fatal(err)}
 	got,err:=Open(tok,workerPriv,signPub,now.Add(time.Second));if err!=nil{t.Fatal(err)}
@@ -127,7 +127,8 @@ func TestTokenIdentityRoundTripAndValidation(t *testing.T){
 		{"empty-node-id",func(x *Manifest){x.Nodes[1].ID=""}},
 		{"duplicate-node-id",func(x *Manifest){x.Nodes[1].ID=x.Nodes[0].ID}},
 		{"duplicate-address",func(x *Manifest){x.Nodes[1].Address=x.Nodes[0].Address}},
-		{"duplicate-allowed-identity",func(x *Manifest){x.Nodes[1].AllowedIdentity=x.Nodes[0].AllowedIdentity}},
+		{"node-id-authority-mismatch",func(x *Manifest){x.Nodes[1].ID="urn:baft:node:mismatch"}},
+		{"duplicate-allowed-identity",func(x *Manifest){x.Nodes[1].AllowedIdentity=x.Nodes[0].AllowedIdentity;x.Nodes[1].ID=x.Nodes[0].AllowedIdentity}},
 		{"empty-route-id",func(x *Manifest){x.Nodes[1].Routes[0].ID=""}},
 		{"duplicate-route-id",func(x *Manifest){x.Nodes[0].Routes=append(x.Nodes[0].Routes,x.Nodes[0].Routes[0])}},
 	}
@@ -151,7 +152,7 @@ func TestWorkerResourceIdentityStableAcrossAddRemove(t *testing.T){
 	baseS:=snapshotFromManifest(m);baseCfg,err:=BuildWorkerConfigs(baseS,workerTemplateForTest());if err!=nil{t.Fatal(err)};baseMap:=configsByNodeForIdentityTest(baseS,baseCfg)
 	for i:=0;i<100;i++{
 		s:=cloneSnapshot(baseS);removedID:=s.Routes[1].NodeID;s.Routes=append(s.Routes[:1:1],s.Routes[2:]...)
-		x:=s.Routes[0];x.NodeID=fmt.Sprintf("node-X-%03d",i);x.Address=fmt.Sprintf("198.51.100.%d:443",100+i%100);x.ServerName=fmt.Sprintf("x-%03d.example",i);x.AllowedIdentity=fmt.Sprintf("urn:baft:auth:x-%03d",i);s.Routes=append(s.Routes,x)
+		x:=s.Routes[0];x.NodeID=fmt.Sprintf("urn:baft:node:X-%03d",i);x.Address=fmt.Sprintf("198.51.100.%d:443",100+i%100);x.ServerName=fmt.Sprintf("x-%03d.example",i);x.AllowedIdentity=x.NodeID;s.Routes=append(s.Routes,x)
 		got,err:=BuildWorkerConfigs(s,workerTemplateForTest());if err!=nil{t.Fatal(err)};gm:=configsByNodeForIdentityTest(s,got)
 		for id,want:=range baseMap{if id==removedID{continue};if !reflect.DeepEqual(want,gm[id]){t.Fatalf("iter=%d unrelated resource changed for %s",i,id)}}
 	}

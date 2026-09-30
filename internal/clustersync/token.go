@@ -213,6 +213,7 @@ func validateNodeDescriptors(nodes []NodeDescriptor) error {
 		if n.Address == "" || n.ServerName == "" || n.NoisePublicKey == "" || n.AllowedIdentity == "" || len(n.Routes) == 0 {
 			return fmt.Errorf("node %q is incomplete", n.ID)
 		}
+		if n.ID != n.AllowedIdentity { return fmt.Errorf("schema v1 NodeID %q must equal AllowedIdentity %q", n.ID, n.AllowedIdentity) }
 		if _, ok := seenNodeID[n.ID]; ok { return fmt.Errorf("duplicate NodeID %q", n.ID) }
 		seenNodeID[n.ID] = struct{}{}
 		if _, ok := seenAddress[n.Address]; ok { return fmt.Errorf("duplicate node address %q", n.Address) }

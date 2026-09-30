@@ -330,12 +330,15 @@ func (r *Runtime) signalDialerReady(err error) {
 	r.dialerReadyOnce.Do(func(){close(r.dialerReady)})
 }
 
-func (r *Runtime) DialerReadyForTest() <-chan struct{} { return r.dialerReady }
+func (r *Runtime) DialerReady() <-chan struct{} { return r.dialerReady }
 
-func (r *Runtime) DialerReadinessForTest() error {
+func (r *Runtime) DialerReadiness() error {
 	r.dialerReadyMu.Lock();defer r.dialerReadyMu.Unlock()
 	return r.dialerReadyErr
 }
+
+func (r *Runtime) DialerReadyForTest() <-chan struct{} { return r.DialerReady() }
+func (r *Runtime) DialerReadinessForTest() error { return r.DialerReadiness() }
 
 func (r *Runtime) ListenerStartupStateForTest() ListenerStartupState {
 	r.listenerStartupMu.Lock();defer r.listenerStartupMu.Unlock()
