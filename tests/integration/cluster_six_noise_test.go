@@ -269,6 +269,7 @@ func runNNodeNoiseMasterHandshakeRoundTrip(t *testing.T, n int) {
 	}
 
 	masterDone := make(chan error, 1)
+	flowOpenErr := make(chan string, n*2)
 	master := cluster.NewMaster()
 	nextMasterRuntime := 0
 	master.SetRuntimeFactoryForTest(func() *node.Runtime {
@@ -276,7 +277,11 @@ func runNNodeNoiseMasterHandshakeRoundTrip(t *testing.T, n int) {
 		if nextMasterRuntime >= len(masterProviders) {
 			t.Fatalf("runtime factory requested %d runtimes for N=%d", nextMasterRuntime+1, n)
 		}
-		rt.SetListenerProviderForTest(masterProviders[nextMasterRuntime])
+		idx:=nextMasterRuntime
+		rt.SetListenerProviderForTest(masterProviders[idx])
+		rt.SetFlowOpenErrorHookForTest(func(routeID string,err error){
+			select{case flowOpenErr<-fmt.Sprintf("node=%d route=%s err=%v",idx+1,routeID,err):default:}
+		})
 		nextMasterRuntime++
 		return rt
 	})
@@ -315,7 +320,14 @@ func runNNodeNoiseMasterHandshakeRoundTrip(t *testing.T, n int) {
 		got := make([]byte, len(payload))
 		if _, err := io.ReadFull(conn, got); err != nil {
 			_ = conn.Close()
-			t.Fatalf("N=%d route=%d read: %v", n, i+1, err)
+			cause:="no OpenFlow error captured"
+			select{case cause=<-flowOpenErr:default:}
+			select{
+			case masterErr:=<-masterDone:
+				t.Fatalf("N=%d route=%d read: %v; flow=%s; master=%v",n,i+1,err,cause,masterErr)
+			default:
+				t.Fatalf("N=%d route=%d read: %v; flow=%s; master=running",n,i+1,err,cause)
+			}
 		}
 		_ = conn.Close()
 		if !bytes.Equal(got, payload) {
