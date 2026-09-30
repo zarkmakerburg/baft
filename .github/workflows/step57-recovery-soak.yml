@@ -77,10 +77,188 @@ jobs:
             -run '^TestStaleFinalizeFailureCannotRegressNewIncarnation$' \
             -count=100 -timeout 20m -v
 
+      - name: P0-A logical-session lifetime diagnostic stress 500x
+        run: |
+          go test ./tests/integration \
+            -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction
+      - name: Hard Class-A live-data recut exact transaction 100x
+        run: |
+          go test ./tests/integration \
+            -run '^TestUnprovenReplayWithLiveDataRecutRemainsExact$' \
+            -count=100 -timeout 25m -v
+
+      - name: Class-B stable transaction fresh epoch 100x
+        run: |
+          go test ./tests/integration \
+            -run '^TestStableRecoveryTransactionAllowsFreshLaterEpoch$' \
+            -count=100 -timeout 25m -v
+
+      - name: Ambiguous replay exact contract 200x
+        run: |
+          go test ./tests/integration \
+            -run '^TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely$' \
+            -count=200 -timeout 30m -v
+
+      - name: Topology x ECRL authority isolation soak
+        run: |
+          go test ./tests/integration \
+            -run 'TestTopologyPrepareRecoveryCommitAuthorityIsolation|TestTopologyCommitDuringRecoveryPrepared|TestTopologyCommitDuringCommitUncertainty|TestTopologyCommitDuringFinalizationUncertainty|TestTopologyMutationDuringReplayOutstanding|TestTopologyPermutationDuringRecoveryNoChurn|TestTopologyAddUnrelatedNodeDuringRecovery|TestTopologyRemoveUnrelatedNodeDuringRecovery|TestStaleTopologyCommitCannotAffectRecovery|TestStaleRecoveryCallbackCannotAffectTopology' \
+            -count=1 -timeout 30m -v
+      - name: Recovery HTTP handler writer lifecycle
+        run: |
+          go test ./internal/session \
+            -run '^TestRecoveryHTTPHandlerDoesNotReturnWhileOwnedSenderCanWrite$' \
+            -count=100 -v
+          go test -race ./internal/session \
+            -run '^TestRecoveryHTTPHandlerDoesNotReturnWhileOwnedSenderCanWrite$' \
+            -count=20 -v
+
+      - name: Recovery stability boundary race 20x
+        run: |
+          go test -race ./tests/integration \
+            -run '^(TestUnprovenReplayCarrierFailureStaysExactTransaction|TestUnprovenReplayWithLiveDataRecutRemainsExact|TestStableRecoveryTransactionAllowsFreshLaterEpoch|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely)$' \
+            -count=20 -timeout 30m -v
+
+      - name: Exact-rebind boundary lifecycle 20x
+        run: |
+          go test ./tests/integration \
+            -run '^(TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$' \
+            -count=20 -timeout 20m -v
+
+      - name: Runtime pair FD/resource lifetime 50 cycles
+        run: |
+          go test ./tests/integration \
+            -run '^TestRecoveryRuntimePairDoesNotLeakResources$' \
+            -count=1 -timeout 20m -v
+
+      - name: Baseline active-flow replacement 20x
+        run: |
+          go test ./tests/integration \
+            -run '^TestRuntimeCarrierReplacementPreservesActiveFlow$' \
+            -count=20 -timeout 15m -v
+
+      - name: Eight-flow replacement 10x
+        run: |
+          go test ./tests/integration \
+            -run '^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$' \
+            -count=10 -timeout 15m -v
+
+      - name: Six-route recovery isolation 5x
+        run: |
+          go test ./tests/integration \
+            -run '^TestRuntimeRecoveryRouteIdentityIsolation$' \
+            -count=5 -timeout 15m -v
+
+      - name: Distributed uncertainty finalization replay FIN matrix 10x
+        run: |
+          go test ./tests/integration \
+            -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$' \
+            -count=10 -timeout 20m -v
+
+      - name: Consecutive independent recovery lifecycle 10x
+        run: |
+          go test ./tests/integration \
+            -run '^TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow$' \
+            -count=10 -timeout 15m -v
+
+      - name: Recovery race sample
+        run: |
+          go test -race ./tests/integration \
+            -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$' \
+            -count=2 -timeout 20m -v
+ \
+            -count=500 -timeout 25m -v
+
       - name: Class-A unresolved exact transaction 100x
         run: |
           go test ./tests/integration \
-            -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction$' \
+            -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction
+      - name: Hard Class-A live-data recut exact transaction 100x
+        run: |
+          go test ./tests/integration \
+            -run '^TestUnprovenReplayWithLiveDataRecutRemainsExact$' \
+            -count=100 -timeout 25m -v
+
+      - name: Class-B stable transaction fresh epoch 100x
+        run: |
+          go test ./tests/integration \
+            -run '^TestStableRecoveryTransactionAllowsFreshLaterEpoch$' \
+            -count=100 -timeout 25m -v
+
+      - name: Ambiguous replay exact contract 200x
+        run: |
+          go test ./tests/integration \
+            -run '^TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely$' \
+            -count=200 -timeout 30m -v
+
+      - name: Topology x ECRL authority isolation soak
+        run: |
+          go test ./tests/integration \
+            -run 'TestTopologyPrepareRecoveryCommitAuthorityIsolation|TestTopologyCommitDuringRecoveryPrepared|TestTopologyCommitDuringCommitUncertainty|TestTopologyCommitDuringFinalizationUncertainty|TestTopologyMutationDuringReplayOutstanding|TestTopologyPermutationDuringRecoveryNoChurn|TestTopologyAddUnrelatedNodeDuringRecovery|TestTopologyRemoveUnrelatedNodeDuringRecovery|TestStaleTopologyCommitCannotAffectRecovery|TestStaleRecoveryCallbackCannotAffectTopology' \
+            -count=1 -timeout 30m -v
+      - name: Recovery HTTP handler writer lifecycle
+        run: |
+          go test ./internal/session \
+            -run '^TestRecoveryHTTPHandlerDoesNotReturnWhileOwnedSenderCanWrite$' \
+            -count=100 -v
+          go test -race ./internal/session \
+            -run '^TestRecoveryHTTPHandlerDoesNotReturnWhileOwnedSenderCanWrite$' \
+            -count=20 -v
+
+      - name: Recovery stability boundary race 20x
+        run: |
+          go test -race ./tests/integration \
+            -run '^(TestUnprovenReplayCarrierFailureStaysExactTransaction|TestUnprovenReplayWithLiveDataRecutRemainsExact|TestStableRecoveryTransactionAllowsFreshLaterEpoch|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely)$' \
+            -count=20 -timeout 30m -v
+
+      - name: Exact-rebind boundary lifecycle 20x
+        run: |
+          go test ./tests/integration \
+            -run '^(TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$' \
+            -count=20 -timeout 20m -v
+
+      - name: Runtime pair FD/resource lifetime 50 cycles
+        run: |
+          go test ./tests/integration \
+            -run '^TestRecoveryRuntimePairDoesNotLeakResources$' \
+            -count=1 -timeout 20m -v
+
+      - name: Baseline active-flow replacement 20x
+        run: |
+          go test ./tests/integration \
+            -run '^TestRuntimeCarrierReplacementPreservesActiveFlow$' \
+            -count=20 -timeout 15m -v
+
+      - name: Eight-flow replacement 10x
+        run: |
+          go test ./tests/integration \
+            -run '^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$' \
+            -count=10 -timeout 15m -v
+
+      - name: Six-route recovery isolation 5x
+        run: |
+          go test ./tests/integration \
+            -run '^TestRuntimeRecoveryRouteIdentityIsolation$' \
+            -count=5 -timeout 15m -v
+
+      - name: Distributed uncertainty finalization replay FIN matrix 10x
+        run: |
+          go test ./tests/integration \
+            -run '^(TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFaultCCommitACKWriteCutResolves|TestDistributedCommitFaultDACKWrittenButNotDecodedResolves|TestDistributedCommitFaultEDuplicateCOMMITIdempotent|TestDistributedCommitFaultFDuplicateCOMMITACKIdempotent|TestDistributedCommitFaultGCandidateDiesBeforeFinalizeResolves|TestDistributedCommitFaultHCandidateDiesAfterFinalizeStartedResolves|TestDistributedCommitFaultIUncertainBlocksImmediateFreshRecovery|TestDistributedCommitFaultJStatusReplyLossRetriesExactTransaction|TestDistributedCommitFaultKDuplicateStatusQueryReplyIdempotent|TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently)$' \
+            -count=10 -timeout 20m -v
+
+      - name: Consecutive independent recovery lifecycle 10x
+        run: |
+          go test ./tests/integration \
+            -run '^TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow$' \
+            -count=10 -timeout 15m -v
+
+      - name: Recovery race sample
+        run: |
+          go test -race ./tests/integration \
+            -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$' \
+            -count=2 -timeout 20m -v
+ \
             -count=100 -timeout 25m -v
 
       - name: Hard Class-A live-data recut exact transaction 100x
