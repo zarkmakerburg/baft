@@ -23,6 +23,7 @@ const (
 	defaultWindow           uint64 = 64 * 1024
 	dataChunk                      = 32 * 1024
 	maxClosedFlowTombstones         = 256
+	maxFlowsPerShard                = 64
 )
 
 var ErrRecoverableDataGap = errors.New("recoverable DATA gap on recovery carrier")
@@ -688,7 +689,7 @@ func (p *Peer) handleHello(fr protocol.Frame) error {
 		SelectedProtocol: 1, SessionID: p.sessionID, Epoch: p.epoch, PeerBootID: p.bootID,
 		AcceptedProfile: protocol.AcceptedProfile{ID: p.profileID, Version: p.profileVersion},
 		NegotiatedLimits: protocol.NegotiatedLimits{
-			MaxFramePayloadBytes: protocol.MaxPayloadSize, MaxFlowsPerShard: 64,
+			MaxFramePayloadBytes: protocol.MaxPayloadSize, MaxFlowsPerShard: maxFlowsPerShard,
 			ReceiveInitialBytes: uint32(defaultWindow), ReceiveMaxBytes: 16 * 1024 * 1024,
 			RetentionMS: 30000,
 		},
@@ -810,7 +811,13 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 		}
 		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")})
 	}
+	full := len(p.flows) >= maxFlowsPerShard
 	p.mu.Unlock()
+	if full {
+		// HELLO_ACK advertises this per-Shard limit; refuse before dialing the target.
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+	}
 
 	target, err := p.routes.Resolve(p.peerID, req.RouteID)
 	if err != nil {

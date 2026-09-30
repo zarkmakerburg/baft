@@ -99,6 +99,26 @@ func TestOpenIsIdempotentAndDoesNotRedial(t *testing.T) {
 	p.closeAll();p.wg.Wait()
 }
 
+func TestOpenBeyondAdvertisedFlowLimitIsRefusedWithoutDial(t *testing.T) {
+	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
+	var out bytes.Buffer
+	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)}
+	var dials atomic.Int32
+	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);return nil,errors.New("must not dial")}
+	p.mu.Lock()
+	for i:=0;i<maxFlowsPerShard;i++{id:=uint64(i*2+1);f:=newFlow(id,"main","00112233445566778899aabbccddeeff",nil,p.allocator);f.openOK=true;p.flows[id]=f}
+	p.mu.Unlock()
+
+	req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:"ffeeddccbbaa99887766554433221100"})
+	if err:=p.handleOpen(context.Background(),protocol.Frame{Type:protocol.TypeOpen,StreamID:uint64(maxFlowsPerShard*2+1),Payload:req});err!=nil{t.Fatal(err)}
+	if got:=dials.Load();got!=0{t.Fatalf("dialed the target %d times past the advertised limit",got)}
+	fr,err:=protocol.Decode(&out);if err!=nil{t.Fatal(err)}
+	if fr.Type!=protocol.TypeOpenErr{t.Fatalf("sent %v, want OPEN_ERR",fr.Type)}
+	oe,err:=protocol.DecodeOpenError(fr.Payload);if err!=nil{t.Fatal(err)}
+	if oe.Code!=protocol.ErrorResourceExhausted{t.Fatalf("OPEN_ERR code=%q",oe.Code)}
+	p.closeAll();p.wg.Wait()
+}
+
 func TestResetClosesOnlyReferencedFlowAndRecordsFixedCode(t *testing.T) {
 	var out bytes.Buffer
 	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)}
