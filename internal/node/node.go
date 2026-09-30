@@ -78,6 +78,7 @@ type Runtime struct {
 	logicalLifecycleMu sync.Mutex
 	logicalLifecycleSeq uint64
 	logicalLifecycle []LogicalSessionLifecycleEvent
+	logicalLifecycleLast map[string]LogicalSessionLifecycleEvent
 	logicalLifecycleHook func(LogicalSessionLifecycleEvent)
 }
 
@@ -139,7 +140,19 @@ func (r *Runtime) LogicalSessionLifecycleForTest() []LogicalSessionLifecycleEven
 	return append([]LogicalSessionLifecycleEvent(nil),r.logicalLifecycle...)
 }
 
-func (r *Runtime) recordLogicalSessionLifecycle(event,reason string,p *session.Peer) {
+func (r *Runtime) appendLogicalSessionLifecycle(ev LogicalSessionLifecycleEvent) {
+	r.logicalLifecycleMu.Lock()
+	if r.logicalLifecycleLast==nil{r.logicalLifecycleLast=map[string]LogicalSessionLifecycleEvent{}}
+	r.logicalLifecycleSeq++;ev.Sequence=r.logicalLifecycleSeq
+	r.logicalLifecycle=append(r.logicalLifecycle,ev)
+	if ev.SessionID!=""{r.logicalLifecycleLast[ev.SessionID]=ev}
+	if len(r.logicalLifecycle)>512{r.logicalLifecycle=append([]LogicalSessionLifecycleEvent(nil),r.logicalLifecycle[len(r.logicalLifecycle)-512:]...)}
+	hook:=r.logicalLifecycleHook
+	r.logicalLifecycleMu.Unlock()
+	if hook!=nil{hook(ev)}
+}
+
+func (r *Runtime) recordLogicalSessionLifecycleForID(event,reason,id string,p *session.Peer) {
 	if r==nil||p==nil{return}
 	st:=p.RecoveryStability()
 	prep:=p.RecoveryPreparedOwnershipForTest()
@@ -153,28 +166,24 @@ func (r *Runtime) recordLogicalSessionLifecycle(event,reason string,p *session.P
 		NeedsExactTransactionResolution:p.NeedsExactTransactionResolution(),
 		ActiveFlows:len(p.RecoveryFlowFrontiersForTest()),
 	}
+	if id!=""{ev.SessionID=id}
 	if ok{ev.CandidateID=tx.CandidateID;ev.PlanDigest=tx.PlanDigest}
-	r.logicalLifecycleMu.Lock()
-	r.logicalLifecycleSeq++;ev.Sequence=r.logicalLifecycleSeq
-	r.logicalLifecycle=append(r.logicalLifecycle,ev)
-	if len(r.logicalLifecycle)>512{r.logicalLifecycle=append([]LogicalSessionLifecycleEvent(nil),r.logicalLifecycle[len(r.logicalLifecycle)-512:]...)}
-	hook:=r.logicalLifecycleHook
-	r.logicalLifecycleMu.Unlock()
-	if hook!=nil{hook(ev)}
+	r.appendLogicalSessionLifecycle(ev)
+}
+
+func (r *Runtime) recordLogicalSessionLifecycle(event,reason string,p *session.Peer) {
+	r.recordLogicalSessionLifecycleForID(event,reason,"",p)
 }
 
 func (r *Runtime) recordStatusLookupMiss(query session.RecoveryControl,peerIdentity,reason string) {
-	ev:=LogicalSessionLifecycleEvent{
-		Event:"STATUS_LOOKUP_MISS",Reason:reason,SessionID:query.SessionID,PeerIdentity:peerIdentity,
-		SessionEpoch:query.NextEpoch,CandidateID:query.CandidateID,PlanDigest:query.PlanDigest,
-	}
 	r.logicalLifecycleMu.Lock()
-	r.logicalLifecycleSeq++;ev.Sequence=r.logicalLifecycleSeq
-	r.logicalLifecycle=append(r.logicalLifecycle,ev)
-	if len(r.logicalLifecycle)>512{r.logicalLifecycle=append([]LogicalSessionLifecycleEvent(nil),r.logicalLifecycle[len(r.logicalLifecycle)-512:]...)}
-	hook:=r.logicalLifecycleHook
+	ev:=r.logicalLifecycleLast[query.SessionID]
 	r.logicalLifecycleMu.Unlock()
-	if hook!=nil{hook(ev)}
+	ev.Event="STATUS_LOOKUP_MISS";ev.Reason=reason;ev.SessionID=query.SessionID;ev.PeerIdentity=peerIdentity
+	// The exact STATUS_QUERY tuple is authoritative for the requested transaction;
+	// all other fields remain the last observed logical-Session authority snapshot.
+	ev.SessionEpoch=query.NextEpoch;ev.CandidateID=query.CandidateID;ev.PlanDigest=query.PlanDigest
+	r.appendLogicalSessionLifecycle(ev)
 }
 
 func lifecycleErrorString(err error) string { if err==nil{return ""};return err.Error() }
@@ -651,6 +660,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			if old:=r.sessions[h.SessionID];old!=nil&&old!=p{r.sessionMu.Unlock();return errors.New("duplicate live session id")}
 			r.sessions[h.SessionID]=p
 			r.sessionMu.Unlock()
+			r.recordLogicalSessionLifecycleForID("LOGICAL_SESSION_REGISTER","listener logical session registered",h.SessionID,p)
 			r.registerPeer(p)
 			p.SetRunExitObserverForTest(func(runErr error){r.recordLogicalSessionLifecycle("PEER_RUN_EXIT",lifecycleErrorString(runErr),p)})
 			p.SetLogicalSessionRetainObserverForTest(func(reason string){r.recordLogicalSessionLifecycle("STALE_LIFECYCLE_RETIRE_REJECTED",reason,p)})
