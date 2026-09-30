@@ -1267,13 +1267,22 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(capacity-n))
 		}
 		if n > 0 {
+			// Application ledger admission and recovery snapshot/freeze share one
+			// authority boundary. Without this gate, BeginRecovery can start
+			// between the exact-obligation check and commitSend: the bytes then
+			// miss both the recovery snapshot and the exact replay high-watermark,
+			// leaving FINALIZED/ReplayOutstanding permanently non-ready.
+			if p.recoveryEnabled{p.recoveryGate.Lock()}
 			exactObligation:=p.recoveryEnabled&&p.NeedsExactTransactionResolution()
 			off, payload, err := fl.commitSend(buf[:n])
+			if err == nil && exactObligation {
+				p.extendExactReplayHighWatermark(fl,off+uint64(len(payload)))
+			}
+			if p.recoveryEnabled{p.recoveryGate.Unlock()}
 			if err != nil {
 				_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(n))
 				return
 			}
-			if exactObligation{p.extendExactReplayHighWatermark(fl,off+uint64(len(payload)))}
 			// In recovery mode account application bytes exactly once when they
 			// enter the session ledger. Carrier replay must never bill them again.
 			if p.recoveryEnabled && p.trafficObserver != nil {
