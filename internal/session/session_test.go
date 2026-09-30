@@ -229,6 +229,27 @@ func TestLateTerminalControlForKnownClosedFlowIsAbsorbed(t *testing.T) {
 	}
 }
 
+func TestInFlightDataAndFinAfterLocalResetAreAbsorbed(t *testing.T) {
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01"});if err!=nil{t.Fatal(err)}
+	local,remote:=net.Pipe();defer remote.Close()
+	f:=newFlow(1,"main","00112233445566778899aabbccddeeff",local,p.allocator);f.openOK=true
+	p.mu.Lock();p.flows[1]=f;p.localReady=true;p.peerReady=true;p.markReadyLocked();p.mu.Unlock()
+	// e.g. the local application closed its socket mid-download; the peer keeps
+	// sending until our RESET reaches it.
+	if err:=p.sendReset(f,protocol.ErrorTargetUnreachable);err!=nil{t.Fatal(err)}
+
+	for _,fr:=range []protocol.Frame{
+		{Type:protocol.TypeData,StreamID:1,Offset:0,Payload:[]byte("in-flight")},
+		{Type:protocol.TypeFin,StreamID:1,Offset:9},
+	}{
+		if err:=p.handleFrame(context.Background(),fr);err!=nil{t.Fatalf("in-flight %v after local RESET tore down the session: %v",fr.Type,err)}
+	}
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeData,StreamID:3,Payload:[]byte("x")});err==nil{
+		t.Fatal("DATA for a truly unknown stream must remain a protocol error")
+	}
+}
+
 func TestClosedFlowTombstonesAreBounded(t *testing.T) {
 	var out bytes.Buffer
 	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01"});if err!=nil{t.Fatal(err)}

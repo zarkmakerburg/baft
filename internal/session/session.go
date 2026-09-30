@@ -578,12 +578,20 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 	case protocol.TypeData:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
+			// The peer may still have DATA/FIN in flight when this side RESET
+			// or finished the Flow; only that Flow is gone, not the Session.
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		return p.handleData(fl, fr)
 	case protocol.TypeFin:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		return p.handleFin(fl, fr.Offset)
