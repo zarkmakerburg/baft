@@ -80,6 +80,8 @@ type Runtime struct {
 	logicalLifecycle []LogicalSessionLifecycleEvent
 	logicalLifecycleLast map[string]LogicalSessionLifecycleEvent
 	logicalLifecycleHook func(LogicalSessionLifecycleEvent)
+	flowOpenErrorMu sync.RWMutex
+	flowOpenErrorHook func(string,error)
 }
 
 type RecoveryAuthoritySnapshot struct {
@@ -129,6 +131,15 @@ type LogicalSessionLifecycleEvent struct {
 	NeedsRecovery bool
 	NeedsExactTransactionResolution bool
 	ActiveFlows int
+}
+
+func (r *Runtime) SetFlowOpenErrorHookForTest(fn func(string,error)) {
+	r.flowOpenErrorMu.Lock();r.flowOpenErrorHook=fn;r.flowOpenErrorMu.Unlock()
+}
+
+func (r *Runtime) recordFlowOpenErrorForTest(routeID string,err error) {
+	r.flowOpenErrorMu.RLock();fn:=r.flowOpenErrorHook;r.flowOpenErrorMu.RUnlock()
+	if fn!=nil{fn(routeID,err)}
 }
 
 func (r *Runtime) SetLogicalSessionLifecycleHookForTest(fn func(LogicalSessionLifecycleEvent)) {
@@ -944,6 +955,7 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 				idx := int((rr.Add(1) - 1) % uint64(len(shards)))
 				go func(c net.Conn, sh *dialerShard) {
 					if err := sh.peer.OpenFlow(ctx, route.RemoteRoute, c); err != nil {
+						r.recordFlowOpenErrorForTest(route.ID,err)
 						_ = c.Close()
 					}
 				}(conn, shards[idx])
