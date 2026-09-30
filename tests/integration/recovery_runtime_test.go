@@ -1145,21 +1145,22 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
 	c:=openRecoveryFlow(t,p);defer c.Close()
 	targetBefore:=p.targetAccepts.Load()
-	logDiag:=func(side string)func(session.RecoveryDiagnosticEvent){
-		return func(ev session.RecoveryDiagnosticEvent){
-			switch ev.Event{
-			case "SENDER_STOPPED","RECOVERY_GENERATION_FAILURE","WAIT_REPLAY_FAILED","DATA_GAP","MUTATION_GENERATION_MISMATCH","FRAME_BEFORE_MUTATION","REPLAY_WRITE_BEGIN","REPLAY_WRITE_SUCCESS","REBIND_CREATED","CARRIER_ACTIVATED","DATA_WRITE_BEGIN","DATA_WRITE_SUCCESS","LIVE_DATA_ATTEMPT","FIRST_LIVE_DATA","PUMPS_RESTORED","REPLACEMENT_READY_PUBLISHED":
-				t.Logf("%s recovery_diag=%+v",side,ev)
-			}
+	// Fail fast on the destructive lifecycle event instead of allowing a
+	// STATUS_QUERY retry storm to obscure the first causal exit.
+	prematureExit:=make(chan node.LogicalSessionLifecycleEvent,1)
+	statusMiss:=make(chan node.LogicalSessionLifecycleEvent,1)
+	p.exRuntime.SetLogicalSessionLifecycleHookForTest(func(ev node.LogicalSessionLifecycleEvent){
+		switch ev.Event{
+		case "PEER_RUN_EXIT":
+			select{case prematureExit<-ev:default:}
+		case "STATUS_LOOKUP_MISS":
+			select{case statusMiss<-ev:default:}
 		}
-	}
-	p.irRuntime.SetRecoveryDiagnosticHookForTest(logDiag("IR"))
-	p.exRuntime.SetRecoveryDiagnosticHookForTest(logDiag("EX"))
-	logLifecycle:=func(side string)func(node.LogicalSessionLifecycleEvent){
-		return func(ev node.LogicalSessionLifecycleEvent){t.Logf("%s logical_lifecycle=%+v",side,ev)}
-	}
-	p.irRuntime.SetLogicalSessionLifecycleHookForTest(logLifecycle("IR"))
-	p.exRuntime.SetLogicalSessionLifecycleHookForTest(logLifecycle("EX"))
+	})
+	defer func(){
+		if !t.Failed(){return}
+		for _,ev:=range p.exRuntime.LogicalSessionLifecycleForTest(){t.Logf("EX lifecycle_trace=%+v",ev)}
+	}()
 
 	var mode atomic.Int32
 	mode.Store(1)
@@ -1242,8 +1243,18 @@ func TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely(t *testing.T){
 	close(replayRelease)
 	close(releaseWriter)
 
-	select{case err:=<-writeDone:if err!=nil{t.Fatalf("client payload write: %v",err)};case <-time.After(12*time.Second):t.Fatal("client write timeout")}
-	select{case err:=<-readDone:if err!=nil{t.Fatalf("client payload read: %v",err)};case <-time.After(20*time.Second):t.Fatal("client payload read timeout")}
+	select{
+	case ev:=<-prematureExit:t.Fatalf("logical Session actor exited before exact rebind: %+v",ev)
+	case ev:=<-statusMiss:t.Fatalf("legitimate exact STATUS_QUERY missed live Session: %+v",ev)
+	case err:=<-writeDone:if err!=nil{t.Fatalf("client payload write: %v",err)}
+	case <-time.After(12*time.Second):t.Fatal("client write timeout")
+	}
+	select{
+	case ev:=<-prematureExit:t.Fatalf("logical Session actor exited before replay proof: %+v",ev)
+	case ev:=<-statusMiss:t.Fatalf("legitimate exact STATUS_QUERY missed live Session: %+v",ev)
+	case err:=<-readDone:if err!=nil{t.Fatalf("client payload read: %v",err)}
+	case <-time.After(20*time.Second):t.Fatal("client payload read timeout")
+	}
 	have:=sha256.Sum256(got)
 	if !bytes.Equal(got,payload)||have!=wantHash{t.Fatalf("replay delivery mismatch got_hash=%x want_hash=%x",have,wantHash)}
 	// This is explicitly Class-A: loss before peer proof must rebind the exact
