@@ -698,6 +698,16 @@ func (p *Peer) extendExactReplayHighWatermark(fl *flow,end uint64) {
 	}
 }
 
+// raisePreparedReplayHighWatermark updates act under the recovery mutex, like
+// every other prepared-flow field: pumps extend the same watermark through
+// extendExactReplayHighWatermark and RecoveryStability copies it concurrently.
+func (p *Peer) raisePreparedReplayHighWatermark(act *preparedFlowRecovery,end uint64) {
+	a:=p.recovery
+	a.mu.Lock()
+	if end>act.replayHighWatermark{act.replayHighWatermark=end}
+	a.mu.Unlock()
+}
+
 func (p *Peer) markExactTerminalObligation(fl *flow,sendFIN,ackPeerFIN bool,final uint64) {
 	if p.recovery==nil||fl==nil{return}
 	a:=p.recovery
@@ -1438,7 +1448,7 @@ func (p *Peer) replayCurrentUnprovenState(ctx context.Context,prep *preparedReco
 		// The exact-transaction delivery obligation is the current ledger suffix.
 		// Local carrier writes never clear this watermark; only cumulative ACK
 		// evidence (txAcked) can prove it satisfied.
-		if final>act.replayHighWatermark{act.replayHighWatermark=final}
+		p.raisePreparedReplayHighWatermark(act,final)
 
 		// Exact-transaction rebind can happen after application pumps produced
 		// additional bytes beyond the immutable commit plan. Those bytes are
@@ -1455,13 +1465,12 @@ func (p *Peer) replayCurrentUnprovenState(ctx context.Context,prep *preparedReco
 			p.traceRecoveryDiagnostic("REBIND_REPLAY_WRITE_SUCCESS",SenderStopUnknown,fmt.Errorf("offset=%d end=%d",fr.Offset,fr.Offset+uint64(len(fr.Payload))),"",prep.sender,ctl,token.PreparedIncarnation,generation)
 		}
 		if finSent&&!finAcked{
-			act.resendFIN=true
-			act.finFinal=final
+			p.recovery.mu.Lock();act.resendFIN=true;act.finFinal=final;p.recovery.mu.Unlock()
 			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final});err!=nil{return err}
 			if !p.recoveryAttemptCurrent(token){return ErrStaleRecoveryIncarnation}
 		}
 		if ackPeerFIN{
-			act.ackPeerFIN=true
+			p.recovery.mu.Lock();act.ackPeerFIN=true;p.recovery.mu.Unlock()
 			if err:=p.withCurrentRecoveryAttempt(token,func()error{return p.ackRemoteFin(fl)});err!=nil{return err}
 		}
 	}
@@ -1578,7 +1587,7 @@ func (p *Peer) FinalizeRecoveryCommitWithGeneration(ctx context.Context,ctl Reco
 		accepted:=fl.txAcked
 		currentHigh:=fl.txNext
 		fl.mu.Unlock()
-		if currentHigh>act.replayHighWatermark{act.replayHighWatermark=currentHigh}
+		p.raisePreparedReplayHighWatermark(act,currentHigh)
 		from:=act.replayFrom
 		if accepted>from{from=accepted}
 		frames,_,err:=fl.replayFramesFrom(from)
