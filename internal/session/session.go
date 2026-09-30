@@ -113,6 +113,8 @@ type Peer struct {
 	runExitObserver func(error)
 	recoveryWaitExpiryHookMu sync.RWMutex
 	recoveryWaitExpiryHook func() bool
+	logicalSessionRetainObserverMu sync.RWMutex
+	logicalSessionRetainObserver func(string)
 }
 
 type replayChunk struct {
@@ -300,6 +302,29 @@ func (p *Peer) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
 func (p *Peer) forceRecoveryCarrierWaitExpiryForTest() bool {
 	p.recoveryWaitExpiryHookMu.RLock();fn:=p.recoveryWaitExpiryHook;p.recoveryWaitExpiryHookMu.RUnlock()
 	return fn!=nil&&fn()
+}
+
+func (p *Peer) SetLogicalSessionRetainObserverForTest(fn func(string)) {
+	p.logicalSessionRetainObserverMu.Lock();p.logicalSessionRetainObserver=fn;p.logicalSessionRetainObserverMu.Unlock()
+}
+
+func (p *Peer) notifyLogicalSessionRetainedForTest(reason string) {
+	p.logicalSessionRetainObserverMu.RLock();fn:=p.logicalSessionRetainObserver;p.logicalSessionRetainObserverMu.RUnlock()
+	if fn!=nil{fn(reason)}
+}
+
+func (p *Peer) activeApplicationFlowCount() int {
+	p.mu.Lock();defer p.mu.Unlock()
+	return len(p.flows)
+}
+
+func (p *Peer) logicalSessionRetentionReason() string {
+	if !p.recoveryEnabled{return ""}
+	if n:=p.activeApplicationFlowCount();n>0{return fmt.Sprintf("active_application_flows=%d",n)}
+	if p.NeedsExactTransactionResolution(){return "exact_recovery_transaction"}
+	st:=p.RecoveryStability()
+	if st.ReplayOutstanding{return "replay_outstanding"}
+	return ""
 }
 
 func (p *Peer) Run(ctx context.Context) error { return p.run(ctx,nil) }

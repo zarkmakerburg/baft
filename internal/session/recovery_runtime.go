@@ -838,16 +838,35 @@ func (p *Peer) DrainRecoverySignals() {
 
 func (p *Peer) waitForCarrierSwitch(ctx context.Context,oldEpoch uint64,oldCarrier string,oldGeneration uint64) error {
 	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
-	for {
-		if p.forceRecoveryCarrierWaitExpiryForTest(){
-			return fmt.Errorf("%w: forced recovery retention expiry",ErrCarrierUnavailable)
+	handleExpiry:=func(forced bool) error {
+		if reason:=p.logicalSessionRetentionReason();reason!=""{
+			// A physical carrier lifetime is not the logical Session lifetime.
+			// Keep the Session registered and alive while application flows or
+			// exact replay/finalization obligations still require this authority.
+			p.notifyLogicalSessionRetainedForTest(reason)
+			t.Reset(p.recoveryRetention)
+			return nil
 		}
+		if forced{return fmt.Errorf("%w: forced recovery retention expiry",ErrCarrierUnavailable)}
+		return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable)
+	}
+	for {
 		e,id,g:=p.currentCarrierIdentity()
 		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
+		if p.forceRecoveryCarrierWaitExpiryForTest(){
+			if err:=handleExpiry(true);err!=nil{return err}
+			continue
+		}
 		p.carrierSwitchMu.Lock();wait:=p.carrierSwitchWait;p.carrierSwitchMu.Unlock()
 		e,id,g=p.currentCarrierIdentity()
 		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
-		select{case <-ctx.Done():return ctx.Err();case <-t.C:return fmt.Errorf("%w: recovery retention expired",ErrCarrierUnavailable);case <-wait:}
+		select{
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			if err:=handleExpiry(false);err!=nil{return err}
+		case <-wait:
+		}
 	}
 }
 

@@ -653,6 +653,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			r.sessionMu.Unlock()
 			r.registerPeer(p)
 			p.SetRunExitObserverForTest(func(runErr error){r.recordLogicalSessionLifecycle("PEER_RUN_EXIT",lifecycleErrorString(runErr),p)})
+			p.SetLogicalSessionRetainObserverForTest(func(reason string){r.recordLogicalSessionLifecycle("STALE_LIFECYCLE_RETIRE_REJECTED",reason,p)})
 			defer func(){r.unregisterPeer(p);r.unregisterSession(p)}()
 			return p.RunWithFirstFrame(ctx,first)
 		}
