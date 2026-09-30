@@ -14,6 +14,45 @@ import (
 	"github.com/zarkmakerburg/baft/internal/routes"
 )
 
+type callbackWriter struct {
+	called bool
+	fn func()
+}
+
+func (w *callbackWriter) Write(p []byte) (int,error) {
+	if !w.called {
+		w.called=true
+		if w.fn!=nil { w.fn() }
+	}
+	return len(p),nil
+}
+
+func TestFinAckConfirmCanArriveBeforeFinAckWriteReturns(t *testing.T) {
+	w:=&callbackWriter{}
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:w},"urn:baft:node:ex-01",nil,Options{
+		NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test",
+	})
+	if err!=nil{t.Fatal(err)}
+	fl:=newFlow(1,"main","00112233445566778899aabbccddeeff",nil,p.allocator)
+	fl.openOK=true
+	fl.finRecv=true
+	fl.finRecvFinal=0
+	fl.rxNext=0
+	fl.rxWritten=0
+	p.mu.Lock();p.flows[fl.id]=fl;p.mu.Unlock()
+
+	var confirmErr error
+	w.fn=func(){confirmErr=fl.onFinAckConfirm(0)}
+	if err:=p.ackRemoteFin(fl);err!=nil{t.Fatalf("FIN_ACK send: %v",err)}
+	if confirmErr!=nil{t.Fatalf("peer FIN_ACK_CONFIRM raced local send publication: %v",confirmErr)}
+	fl.mu.Lock()
+	sent,inFlight,confirmed:=fl.finAckSent,fl.finAckWriteInFlight,fl.finAckConfirmed
+	fl.mu.Unlock()
+	if !sent||inFlight||!confirmed{
+		t.Fatalf("terminal proof state sent=%v in_flight=%v confirmed=%v",sent,inFlight,confirmed)
+	}
+}
+
 func TestFlowRejectsAckPastTxNext(t *testing.T) {
 	f:=newFlow(1,"main","00112233445566778899aabbccddeeff",nil)
 	f.openOK=true
