@@ -6,6 +6,7 @@ import (
     "errors"
     "io"
     "net"
+    "os"
     "sync"
     "sync/atomic"
     "testing"
@@ -148,6 +149,11 @@ func assertNoUnexpectedRuntimeFailure(t *testing.T,h *liveTopologyHarness) {
     }
 }
 
+func authorityIterations(normal int) int {
+    if os.Getenv("BAFT_AUTHORITY_RACE_SAMPLE")=="1" { return 1 }
+    return normal
+}
+
 func TestTopologyPrepareRecoveryCommitAuthorityIsolation(t *testing.T){
     h:=newLiveTopologyHarness(t);defer h.close(t)
     h.apply(t,0,1,2,3)
@@ -158,7 +164,7 @@ func TestTopologyPrepareRecoveryCommitAuthorityIsolation(t *testing.T){
     targetAccepts:=h.remotes[2].target.accepts.Load()
     dPresent:=true
 
-    for i:=0;i<100;i++{
+    for i:=0;i<authorityIterations(100);i++{
         oldGen:=generationOf(t,h);before:=topologyAuthority(t,worker)
         reached:=make(chan struct{});release:=make(chan struct{});var once sync.Once
         h.controller.SetTopologyHookForTest(func(stage string,g uint64){
@@ -199,7 +205,7 @@ func TestTopologyCommitDuringRecoveryPrepared(t *testing.T){
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(10*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load()
     dPresent:=true
-    for i:=0;i<100;i++{
+    for i:=0;i<authorityIterations(100);i++{
         before:=topologyAuthority(t,worker);hit,release:=setRecoveryBarrier(worker,"before_commit",nil)
         proxy.CutAll();select{case <-hit:case <-time.After(8*time.Second):t.Fatal("PREPARED barrier not reached")}
         mid:=topologyAuthority(t,worker)
@@ -221,7 +227,7 @@ func TestTopologyCommitDuringCommitUncertainty(t *testing.T){
     worker,remote,proxy,cID:=topologyECRLC(t,h)
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(10*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load();dPresent:=true
-    for i:=0;i<100;i++{
+    for i:=0;i<authorityIterations(100);i++{
         before:=topologyAuthority(t,worker)
         var failOnce atomic.Bool
         remote.SetRecoveryFaultHookForTest(func(stage string)error{
@@ -250,7 +256,7 @@ func TestTopologyCommitDuringFinalizationUncertainty(t *testing.T){
     worker,remote,proxy,cID:=topologyECRLC(t,h)
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(10*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load();dPresent:=true
-    for i:=0;i<100;i++{
+    for i:=0;i<authorityIterations(100);i++{
         before:=topologyAuthority(t,worker)
         finHit,finRelease:=setRecoveryBarrier(remote,"before_listener_finalize_process",errors.New("authority-isolation finalization uncertainty"))
         statusHit,statusRelease:=setRecoveryBarrier(worker,"status_query_after_send",nil)
@@ -280,7 +286,7 @@ func TestTopologyMutationDuringReplayOutstanding(t *testing.T){
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(15*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load();dPresent:=true
 
-    for iter:=0;iter<100;iter++{
+    for iter:=0;iter<authorityIterations(100);iter++{
         oldBlocked:=make(chan struct{});oldRelease:=make(chan struct{})
         replayBlocked:=make(chan struct{});replayRelease:=make(chan struct{})
         var dataCount atomic.Int32
@@ -338,7 +344,7 @@ func TestTopologyPermutationDuringRecoveryNoChurn(t *testing.T){
     worker,remote,proxy,cID:=topologyECRLC(t,h)
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(10*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load()
-    for i:=0;i<50;i++{
+    for i:=0;i<authorityIterations(50);i++{
         before:=topologyAuthority(t,worker);hit,release:=setRecoveryBarrier(worker,"before_commit",nil)
         proxy.CutAll();select{case <-hit:case <-time.After(8*time.Second):t.Fatal("recovery PREPARED barrier not reached")}
         mid:=topologyAuthority(t,worker);next:=generationOf(t,h)+1
@@ -357,7 +363,7 @@ func TestTopologyAddUnrelatedNodeDuringRecovery(t *testing.T){
     worker,remote,proxy,cID:=topologyECRLC(t,h)
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(10*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load()
-    for i:=0;i<50;i++{
+    for i:=0;i<authorityIterations(50);i++{
         before:=topologyAuthority(t,worker);hit,release:=setRecoveryBarrier(worker,"before_commit",nil)
         proxy.CutAll();select{case <-hit:case <-time.After(8*time.Second):t.Fatal("recovery PREPARED barrier not reached")}
         mid:=topologyAuthority(t,worker)
@@ -380,7 +386,7 @@ func TestTopologyRemoveUnrelatedNodeDuringRecovery(t *testing.T){
     worker,remote,proxy,cID:=topologyECRLC(t,h)
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(10*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load()
-    for i:=0;i<50;i++{
+    for i:=0;i<authorityIterations(50);i++{
         before:=topologyAuthority(t,worker);hit,release:=setRecoveryBarrier(worker,"before_commit",nil)
         proxy.CutAll();select{case <-hit:case <-time.After(8*time.Second):t.Fatal("recovery PREPARED barrier not reached")}
         mid:=topologyAuthority(t,worker)
@@ -404,7 +410,7 @@ func TestStaleTopologyCommitCannotAffectRecovery(t *testing.T){
     worker,_,_,cID:=topologyECRLC(t,h)
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(5*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID)
-    for i:=0;i<100;i++{
+    for i:=0;i<authorityIterations(100);i++{
         before:=topologyAuthority(t,worker);g:=generationOf(t,h)
         staleTok:=topologyECRLToken(t,h,g+1,0,1,2,3)
         prepared,err:=h.engine.PrepareToken(staleTok,h.now.Add(time.Second));if err!=nil{t.Fatal(err)}
@@ -422,7 +428,7 @@ func TestStaleRecoveryCallbackCannotAffectTopology(t *testing.T){
     worker,remote,proxy,cID:=topologyECRLC(t,h)
     flow:=liveOpenFlow(t,h,cID);defer flow.Close();_ = flow.SetDeadline(time.Now().Add(15*time.Minute))
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load()
-    for i:=0;i<100;i++{
+    for i:=0;i<authorityIterations(100);i++{
         a:=topologyAuthority(t,worker)
         proxy.CutAll();stable1,_:=waitTopologyRecoveryStable(t,worker,remote,a.Epoch+1)
         oldPrep,err:=worker.RecoveryPreparedOwnershipForTest();if err!=nil{t.Fatal(err)}
