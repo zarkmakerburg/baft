@@ -74,7 +74,12 @@ func waitTopologyRecoveryStable(t *testing.T,worker,remote *node.Runtime,epoch u
         wa:=worker.RecoveryAuthoritiesForTest()
         ra:=remote.RecoveryAuthoritiesForTest()
         if len(wa)==1&&len(ra)==1&&wa[0].Epoch==epoch&&ra[0].Epoch==epoch&&
+            wa[0].TxnState==session.RecoveryTxnFinalized&&ra[0].TxnState==session.RecoveryTxnFinalized&&
             wa[0].TransactionStable&&ra[0].TransactionStable&&wa[0].ApplicationReady&&ra[0].ApplicationReady&&
+            wa[0].FinalizationStable&&ra[0].FinalizationStable&&
+            !wa[0].ReplayOutstanding&&!ra[0].ReplayOutstanding&&
+            !wa[0].RecoverySignalPending&&!ra[0].RecoverySignalPending&&
+            wa[0].CurrentCarrierUsable&&ra[0].CurrentCarrierUsable&&
             !wa[0].Frozen&&!ra[0].Frozen {
             return wa[0],ra[0]
         }
@@ -94,7 +99,9 @@ func assertRecoveryIdentityEqual(t *testing.T,before,after node.RecoveryAuthorit
         before.ReplayOutstanding!=after.ReplayOutstanding||
         before.FinalizationStable!=after.FinalizationStable||
         before.TransactionStable!=after.TransactionStable||
-        before.RecoveryAttempts!=after.RecoveryAttempts {
+        before.RecoveryAttempts!=after.RecoveryAttempts||
+        before.RecoverySignalPending!=after.RecoverySignalPending||
+        before.CurrentCarrierUsable!=after.CurrentCarrierUsable {
         t.Fatalf("cross-authority mutation before=%+v after=%+v",before,after)
     }
 }

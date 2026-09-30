@@ -357,6 +357,35 @@ func (a *RecoveryAdapter) recordSenderStop(ev SenderStopEvent) {
 	})
 }
 
+func (p *Peer) onRecoverySenderStop(ev SenderStopEvent) {
+	if p==nil||p.recovery==nil{return}
+	p.recovery.recordSenderStop(ev)
+	if p.role!=Dialer{return}
+
+	p.mu.Lock()
+	current:=p.sender
+	currentGeneration:=p.carrierGeneration
+	runCtx:=p.runCtx
+	p.mu.Unlock()
+	if runCtx!=nil&&runCtx.Err()!=nil{return}
+	if current==nil||current.senderID()!=ev.SenderID{return}
+	if ev.CarrierGeneration!=0&&ev.CarrierGeneration!=currentGeneration{return}
+	if !p.NeedsRecovery(){return}
+
+	err:=error(ErrCarrierUnavailable)
+	if ev.Error!=""{err=fmt.Errorf("%w: %s",ErrCarrierUnavailable,ev.Error)}
+	ctl,ok:=p.RecoveryTransactionIdentity()
+	if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
+	p.traceRecoveryDiagnostic("CURRENT_SENDER_STOP_RECOVERY_SIGNAL",ev.Source,err,"current authoritative sender stopped",current,ctl,ev.PreparedIncarnation,currentGeneration)
+	select{case p.recoveryNeeded<-err:default:}
+}
+
+func (p *Peer) RecoveryCarrierUsableForTest() bool {
+	if p==nil{return false}
+	s:=p.senderNow()
+	return s!=nil&&!s.isStopped()
+}
+
 func (p *Peer) bindRecoverySenderDiagnostic(s *outboundSender,ctl RecoveryControl,incarnation,generation uint64) {
 	if p==nil||p.recovery==nil||s==nil{return}
 	physical:=physicalCarrierInstanceID(ctl.NextEpoch,incarnation)
@@ -364,7 +393,7 @@ func (p *Peer) bindRecoverySenderDiagnostic(s *outboundSender,ctl RecoveryContro
 		SessionID:ctl.SessionID,Epoch:ctl.NextEpoch,CandidateID:ctl.CandidateID,PlanDigest:ctl.PlanDigest,
 		PreparedIncarnation:incarnation,CarrierGeneration:generation,PhysicalCarrierInstanceID:physical,
 	})
-	s.setStopObserver(p.recovery.recordSenderStop)
+	s.setStopObserver(p.onRecoverySenderStop)
 	s.setDataWriteObserver(func(dw DataWriteDiagnostic){
 		p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{
 			Event:dw.Event,ProducerKind:dw.ProducerKind,StreamID:dw.StreamID,FrameType:protocol.TypeData,
@@ -773,7 +802,11 @@ func (p *Peer) onCarrierFailureForGeneration(err error,generation uint64,source 
 	if s!=nil{s.stopWithSource(src,stopErr)}
 	ctl,ok:=p.RecoveryTransactionIdentity();if !ok{ctl=RecoveryControl{SessionID:p.SessionID(),NextEpoch:p.RecoveryEpoch(),CandidateID:p.RecoveryOwner()}}
 	p.traceRecoveryDiagnostic("RECOVERY_GENERATION_FAILURE",src,err,"",s,ctl,func()uint64{if p.recovery==nil{return 0};p.recovery.mu.Lock();defer p.recovery.mu.Unlock();if p.recovery.prepared==nil{return 0};return p.recovery.prepared.incarnation}(),generation)
-	select { case p.recoveryNeeded<-err: default: }
+	if p.role==Dialer {
+		select { case p.recoveryNeeded<-err: default: }
+	} else {
+		p.traceRecoveryDiagnostic("PASSIVE_LISTENER_RECOVERY_WAKE_SUPPRESSED",src,err,"listener has no recovery wake consumer",s,ctl,func()uint64{if p.recovery==nil{return 0};p.recovery.mu.Lock();defer p.recovery.mu.Unlock();if p.recovery.prepared==nil{return 0};return p.recovery.prepared.incarnation}(),generation)
+	}
 	return true
 }
 
