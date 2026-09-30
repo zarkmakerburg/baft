@@ -441,6 +441,7 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 			}else{
 				p.RecordRecoveryDiagnosticForTest("OWNER_FENCE_RESULT_REJECTED",session.SenderStopRecoveryOwnerFence,hctx.Err(),generation)
 			}
+			p.RecordRecoveryDiagnosticForTest("HANDLER_RETURN",session.SenderStopRecoveryOwnerFence,nil,generation)
 			return true,nil
 		default:
 			return true,recovery.ErrStateMismatch
@@ -521,6 +522,7 @@ func (r *Runtime) handleCommitStatusResolution(hctx context.Context,in io.Reader
 				}else{
 					p.RecordRecoveryDiagnosticForTest("OWNER_FENCE_RESULT_REJECTED",session.SenderStopRecoveryOwnerFence,hctx.Err(),generation)
 				}
+				p.RecordRecoveryDiagnosticForTest("HANDLER_RETURN",session.SenderStopRecoveryOwnerFence,nil,generation)
 				return nil
 			default:
 				return recovery.ErrStateMismatch

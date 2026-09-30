@@ -121,6 +121,30 @@ func newOutboundSender(writer *frameWriter, recoverable ...bool) *outboundSender
 	}
 }
 
+// writeFrame is the generation-local write admission boundary.  The sender
+// mutex stays held until the exact writer mutex has been acquired, so a stop
+// cannot slip between the stopped check and writer ownership.  Consequently
+// stopAndFenceWriter can join only this sender's in-flight writer and know that
+// no admitted write can begin after its fence returns.
+func (s *outboundSender) writeFrame(frame protocol.Frame) error {
+	if s==nil{return errors.New("nil outbound sender")}
+	s.mu.Lock()
+	if s.stopped {
+		err:=s.stopErrorLocked()
+		s.mu.Unlock()
+		return err
+	}
+	w:=s.writer
+	if w==nil {
+		s.mu.Unlock()
+		return errors.New("outbound sender writer is nil")
+	}
+	w.mu.Lock()
+	s.mu.Unlock()
+	defer w.mu.Unlock()
+	return protocol.Encode(w.w,frame)
+}
+
 func (s *outboundSender) addFlow(flowID uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -165,7 +189,7 @@ func (s *outboundSender) sendControl(frame protocol.Frame) error {
 	}
 	if !s.started && !s.stopped {
 		s.mu.Unlock()
-		return s.writer.send(frame)
+		return s.writeFrame(frame)
 	}
 	if s.stopped {
 		err := s.stopErrorLocked()
@@ -222,7 +246,7 @@ func (s *outboundSender) sendDataWithProducer(ctx context.Context, fl *flow, fra
 		begin,observer:=s.dataWriteDiagnosticLocked(req,"DATA_WRITE_BEGIN"),s.onDataWrite
 		s.mu.Unlock()
 		if observer!=nil{observer(begin)}
-		err:=s.writer.send(frame)
+		err:=s.writeFrame(frame)
 		if err==nil&&observer!=nil{
 			s.mu.Lock();done:=s.dataWriteDiagnosticLocked(req,"DATA_WRITE_SUCCESS");s.mu.Unlock()
 			observer(done)
@@ -300,7 +324,7 @@ func (s *outboundSender) run(ctx context.Context) {
 			s.mu.Unlock()
 			if observer!=nil{observer(begin)}
 		}
-		err := s.writer.send(req.frame)
+		err := s.writeFrame(req.frame)
 		if err != nil && s.recoverable {
 			err = fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)
 		}
