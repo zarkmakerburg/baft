@@ -121,6 +121,15 @@ jobs:
             -run '^TestRecoveryHTTPHandlerDoesNotReturnWhileOwnedSenderCanWrite$' \
             -count=20 -v
 
+      - name: P0-C logical-session lifetime regression and race
+        run: |
+          go test ./tests/integration \
+            -run '^TestLogicalSessionLifetimeRetainsExactStatusAuthority$' \
+            -count=100 -timeout 20m -v
+          go test -race ./tests/integration \
+            -run '^(TestLogicalSessionLifetimeRetainsExactStatusAuthority|TestUnprovenReplayCarrierFailureStaysExactTransaction)$' \
+            -count=50 -timeout 30m -v
+
       - name: Recovery stability boundary race 20x
         run: |
           go test -race ./tests/integration \
