@@ -839,6 +839,9 @@ func (p *Peer) DrainRecoverySignals() {
 func (p *Peer) waitForCarrierSwitch(ctx context.Context,oldEpoch uint64,oldCarrier string,oldGeneration uint64) error {
 	t:=time.NewTimer(p.recoveryRetention);defer t.Stop()
 	for {
+		if p.forceRecoveryCarrierWaitExpiryForTest(){
+			return fmt.Errorf("%w: forced recovery retention expiry",ErrCarrierUnavailable)
+		}
 		e,id,g:=p.currentCarrierIdentity()
 		if g>oldGeneration && (e>oldEpoch || (e==oldEpoch&&id==oldCarrier)){return nil}
 		p.carrierSwitchMu.Lock();wait:=p.carrierSwitchWait;p.carrierSwitchMu.Unlock()

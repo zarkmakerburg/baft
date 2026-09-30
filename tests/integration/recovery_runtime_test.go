@@ -1965,3 +1965,114 @@ func TestUnprovenReplayWithLiveDataRecutRemainsExact(t *testing.T){
 func TestStableRecoveryTransactionAllowsFreshLaterEpoch(t *testing.T){
 	TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot(t)
 }
+
+
+func TestLogicalSessionLifetimeRetainsExactStatusAuthority(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1)
+	defer p.closeAllowErrors()
+	c:=openRecoveryFlow(t,p)
+	defer c.Close()
+
+	lifecycle:=make(chan node.LogicalSessionLifecycleEvent,32)
+	p.exRuntime.SetLogicalSessionLifecycleHookForTest(func(ev node.LogicalSessionLifecycleEvent){
+		switch ev.Event{
+		case "PEER_RUN_EXIT","LOGICAL_SESSION_UNREGISTER","STATUS_LOOKUP_HIT","STATUS_LOOKUP_MISS","STALE_LIFECYCLE_RETIRE_REJECTED":
+			select{case lifecycle<-ev:default:}
+		}
+	})
+
+	var mode atomic.Int32
+	mode.Store(1)
+	oldBlocked:=make(chan struct{});oldRelease:=make(chan struct{})
+	replayBlocked:=make(chan struct{});replayRelease:=make(chan struct{})
+	var oldOnce,replayOnce sync.Once
+	p.exRuntime.SetRecoveryFrameHookForTest(func(stage string,fr protocol.Frame)bool{
+		if stage!="before_data_accept"{return false}
+		switch mode.Load(){
+		case 1:
+			oldOnce.Do(func(){close(oldBlocked)})
+			<-oldRelease
+			return true
+		case 2:
+			replayOnce.Do(func(){close(replayBlocked)})
+			<-replayRelease
+			return true
+		default:
+			return false
+		}
+	})
+
+	payload:=make([]byte,2*protocol.MaxPayloadSize+777)
+	for i:=range payload{payload[i]=byte((i*41+17)%251)}
+	readDone:=make(chan error,1)
+	got:=make([]byte,len(payload))
+	go func(){_,err:=io.ReadFull(c,got);readDone<-err}()
+	writeDone:=make(chan error,1)
+	go func(){_,err:=c.Write(payload);writeDone<-err}()
+
+	select{case <-oldBlocked:case <-time.After(8*time.Second):t.Fatal("old carrier DATA never reached deterministic barrier")}
+	before:=waitSingleFlowFrontier(t,p.irRuntime,func(f session.RecoveryFlowFrontier)bool{
+		return f.TxNext>=f.PeerAccepted+protocol.MaxPayloadSize
+	})
+	if before.PeerAccepted>=before.TxNext{t.Fatalf("expected unresolved old carrier frontier=%+v",before)}
+
+	replayWritten:=make(chan struct{})
+	releaseWriter:=make(chan struct{})
+	var writeOnce sync.Once
+	p.irRuntime.SetRecoveryPostCommitFaultForTest(func(stage string)error{
+		if stage!="after_replay_write"{return nil}
+		fired:=false
+		writeOnce.Do(func(){fired=true;close(replayWritten)})
+		if fired{<-releaseWriter;return errors.New("P0-A deterministic cut after replay local write before peer acceptance")}
+		return nil
+	})
+
+	mode.Store(2)
+	p.proxy.CutAll()
+	close(oldRelease)
+	select{case <-replayBlocked:case <-time.After(8*time.Second):t.Fatal("replacement replay never reached pre-accept barrier")}
+	select{case <-replayWritten:case <-time.After(8*time.Second):t.Fatal("replacement replay local write not observed")}
+
+	classA:=oneRecoveryAuthority(t,p.irRuntime)
+	if classA.TxnState!=session.RecoveryTxnFinalized||!classA.ReplayOutstanding||classA.TransactionStable||
+		classA.CandidateID==""||classA.PlanDigest==""{
+		t.Fatalf("exact Class-A obligation unavailable before lifecycle cut: %+v",classA)
+	}
+
+	expiryInjected:=make(chan struct{})
+	var expiryOnce sync.Once
+	p.exRuntime.SetRecoveryCarrierWaitExpiryHookForTest(func() bool{
+		fired:=false
+		expiryOnce.Do(func(){fired=true;close(expiryInjected)})
+		return fired
+	})
+
+	// Generation 2 ends while the exact FINALIZED transaction still owns
+	// unproven replay. The listener's old lifecycle actor is forced through
+	// the same wait-expiry path that previously killed the logical Session.
+	p.proxy.CutAll()
+	mode.Store(3)
+	close(replayRelease)
+	close(releaseWriter)
+	select{case <-expiryInjected:case <-time.After(8*time.Second):t.Fatal("listener carrier wait-expiry hook not reached")}
+
+	var trace []node.LogicalSessionLifecycleEvent
+	deadline:=time.After(8*time.Second)
+	for {
+		select{
+		case ev:=<-lifecycle:
+			trace=append(trace,ev)
+			if ev.Event=="STATUS_LOOKUP_HIT"{
+				if ev.SessionID!=classA.SessionID{t.Fatalf("status lookup hit wrong session event=%+v classA=%+v",ev,classA)}
+				if ev.CandidateID!=""&&ev.CandidateID!=classA.CandidateID{t.Fatalf("status hit candidate changed event=%+v classA=%+v",ev,classA)}
+				t.Logf("PASS logical Session retained exact authority trace=%+v",trace)
+				return
+			}
+			if ev.Event=="STATUS_LOOKUP_MISS"{
+				t.Fatalf("premature logical Session retirement caused exact STATUS_QUERY miss classA=%+v trace=%+v",classA,trace)
+			}
+		case <-deadline:
+			t.Fatalf("exact STATUS_QUERY did not reach authoritative logical Session classA=%+v lifecycle=%+v ir=%+v ex=%+v",classA,trace,p.irRuntime.RecoveryAuthoritiesForTest(),p.exRuntime.RecoveryAuthoritiesForTest())
+		}
+	}
+}

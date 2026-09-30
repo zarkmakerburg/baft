@@ -111,6 +111,8 @@ type Peer struct {
 	recoveryFrameHook   func(string, protocol.Frame) bool
 	runExitObserverMu sync.RWMutex
 	runExitObserver func(error)
+	recoveryWaitExpiryHookMu sync.RWMutex
+	recoveryWaitExpiryHook func() bool
 }
 
 type replayChunk struct {
@@ -289,6 +291,15 @@ func (p *Peer) SetRunExitObserverForTest(fn func(error)) {
 func (p *Peer) notifyRunExitForTest(err error) {
 	p.runExitObserverMu.RLock();fn:=p.runExitObserver;p.runExitObserverMu.RUnlock()
 	if fn!=nil{fn(err)}
+}
+
+func (p *Peer) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
+	p.recoveryWaitExpiryHookMu.Lock();p.recoveryWaitExpiryHook=fn;p.recoveryWaitExpiryHookMu.Unlock()
+}
+
+func (p *Peer) forceRecoveryCarrierWaitExpiryForTest() bool {
+	p.recoveryWaitExpiryHookMu.RLock();fn:=p.recoveryWaitExpiryHook;p.recoveryWaitExpiryHookMu.RUnlock()
+	return fn!=nil&&fn()
 }
 
 func (p *Peer) Run(ctx context.Context) error { return p.run(ctx,nil) }

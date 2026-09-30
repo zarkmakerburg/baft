@@ -180,6 +180,14 @@ func (r *Runtime) recordStatusLookupMiss(query session.RecoveryControl,peerIdent
 func lifecycleErrorString(err error) string { if err==nil{return ""};return err.Error() }
 
 
+func (r *Runtime) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	for _,p:=range peers{p.SetRecoveryCarrierWaitExpiryHookForTest(fn)}
+}
+
 func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
 	r.recoveryFaultMu.Lock()
 	r.recoveryFault=fn
