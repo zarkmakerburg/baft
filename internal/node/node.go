@@ -773,7 +773,13 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 						for sh.peer.NeedsRecovery()&&ctx.Err()==nil {
 							err:=r.recoverDialerShard(ctx,cfg,tlsCfg,index,sh)
 							if err==nil {
-								sh.peer.DrainRecoverySignals()
+								// Do not drain the coalescing wake channel here. A new
+								// physical-carrier failure can arrive after this recovery
+								// committed but before this goroutine returns to the outer
+								// select. Draining in that window loses the only wake for a
+								// genuinely unusable current generation. A stale wake is
+								// harmless: the outer select consumes it and the level
+								// predicate NeedsRecovery() declines artificial recovery.
 								break
 							}
 							log.Printf("baft shard %d recovery attempt failed: %v",index,err)
@@ -785,13 +791,15 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 								retry=true
 							}
 							if !retry {
-								sh.peer.DrainRecoverySignals()
+								// Preserve any concurrently-arriving wake. The next outer
+								// iteration re-validates it against NeedsRecovery().
 								break
 							}
-							// Drain any coalesced wake; state is the source of truth for
-							// the immediate retry. A short bounded backoff avoids a hot
-							// loop if the authenticated peer is temporarily unavailable.
-							sh.peer.DrainRecoverySignals()
+							// State is the source of truth for this immediate retry.
+							// Leave the coalesced wake intact so a later generation
+							// cannot lose its edge to this attempt's cleanup.
+							// The bounded backoff avoids a hot loop while the peer is
+							// temporarily unavailable.
 							timer:=time.NewTimer(10*time.Millisecond)
 							select{
 							case <-ctx.Done():
