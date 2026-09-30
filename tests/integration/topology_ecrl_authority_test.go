@@ -287,51 +287,105 @@ func TestTopologyMutationDuringReplayOutstanding(t *testing.T){
     instance,_:=h.controller.InstanceTokenForTest(cID);target:=h.remotes[2].target.accepts.Load();dPresent:=true
 
     for iter:=0;iter<authorityIterations(100);iter++{
+        var mode atomic.Int32
+        mode.Store(1)
         oldBlocked:=make(chan struct{});oldRelease:=make(chan struct{})
         replayBlocked:=make(chan struct{});replayRelease:=make(chan struct{})
-        var dataCount atomic.Int32
+        var oldOnce,replayOnce sync.Once
         remote.SetRecoveryFrameHookForTest(func(stage string,fr protocol.Frame)bool{
             if stage!="before_data_accept"{return false}
-            n:=dataCount.Add(1)
-            if n==1{close(oldBlocked);<-oldRelease}
-            if n==2{close(replayBlocked);<-replayRelease}
-            return false
+            switch mode.Load(){
+            case 1:
+                oldOnce.Do(func(){close(oldBlocked)})
+                <-oldRelease
+                return true
+            case 2:
+                replayOnce.Do(func(){close(replayBlocked)})
+                <-replayRelease
+                return true
+            default:
+                return false
+            }
         })
-        replayWritten:=make(chan struct{});writerRelease:=make(chan struct{});var once sync.Once
+
+        replayWritten:=make(chan struct{});writerRelease:=make(chan struct{});var writeOnce sync.Once
         worker.SetRecoveryPostCommitFaultForTest(func(stage string)error{
             if stage=="after_replay_write"{
-                first:=false;once.Do(func(){first=true;close(replayWritten)})
-                if first{<-writerRelease}
+                first:=false
+                writeOnce.Do(func(){first=true;close(replayWritten)})
+                if first{
+                    <-writerRelease
+                    return errors.New("authority-isolation recut after replay write before peer acceptance")
+                }
             }
             return nil
         })
-        payload:=make([]byte,protocol.MaxPayloadSize/2+97)
+
+        payload:=make([]byte,3*protocol.MaxPayloadSize+777)
         for i:=range payload{payload[i]=byte((i*19+iter*13)%251)}
         want:=sha256.Sum256(payload);got:=make([]byte,len(payload))
         rd:=make(chan error,1);wr:=make(chan error,1)
         go func(){_,err:=io.ReadFull(flow,got);rd<-err}()
-        go func(){_,err:=flow.Write(payload);wr<-err}()
+        go func(){
+            for off:=0;off<len(payload);{
+                n,err:=flow.Write(payload[off:])
+                if err!=nil{wr<-err;return}
+                if n<=0{wr<-io.ErrShortWrite;return}
+                off+=n
+            }
+            wr<-nil
+        }()
+
         select{case <-oldBlocked:case <-time.After(8*time.Second):t.Fatal("old DATA barrier not reached")}
-        before:=topologyAuthority(t,worker);proxy.CutAll();close(oldRelease)
-        select{case <-replayBlocked:case <-time.After(8*time.Second):t.Fatal("replay accept barrier not reached")}
-        select{case <-replayWritten:case <-time.After(8*time.Second):t.Fatal("replay write barrier not reached")}
+        beforeFlow:=waitSingleFlowFrontier(t,worker,func(f session.RecoveryFlowFrontier)bool{
+            return f.TxNext>=f.PeerAccepted+protocol.MaxPayloadSize
+        })
+        if beforeFlow.PeerAccepted>=beforeFlow.TxNext{t.Fatalf("expected unaccepted old-carrier bytes frontier=%+v",beforeFlow)}
+        before:=topologyAuthority(t,worker)
+
+        mode.Store(2)
+        proxy.CutAll()
+        close(oldRelease)
+
+        select{case <-replayBlocked:case <-time.After(8*time.Second):t.Fatal("replacement replay accept barrier not reached")}
+        select{case <-replayWritten:case <-time.After(8*time.Second):t.Fatal("replacement replay write barrier not reached")}
+
         mid:=topologyAuthority(t,worker)
-        if !mid.ReplayOutstanding||mid.TransactionStable||mid.ReplayHighWatermark<=mid.ReplayPeerAccepted{t.Fatalf("replay obligation not outstanding %+v",mid)}
+        if mid.Epoch!=before.Epoch+1||mid.CandidateID==""||mid.PlanDigest==""{
+            t.Fatalf("Class-A recovery authority unavailable before topology commit before=%+v mid=%+v",before,mid)
+        }
+        if !mid.ReplayOutstanding||mid.TransactionStable||mid.ReplayHighWatermark<=mid.ReplayPeerAccepted{
+            t.Fatalf("replay obligation not outstanding %+v",mid)
+        }
         if len(mid.Flows)!=1{t.Fatalf("flow frontier count=%d",len(mid.Flows))}
         f:=mid.Flows[0]
         if f.TxAcked>f.ReplayHighWatermark||f.ReplayHighWatermark>f.TxNext{t.Fatalf("frontier invariant violated %+v",f)}
+        candidate,digest:=mid.CandidateID,mid.PlanDigest
 
         next:=generationOf(t,h)+1;idx:=[]int{0,1,2};if !dPresent{idx=[]int{0,1,2,3}}
         topologyECRLApplyExact(t,h,next,idx...)
-        afterTopo:=topologyAuthority(t,worker);assertRecoveryIdentityEqual(t,mid,afterTopo)
+        afterTopo:=topologyAuthority(t,worker)
+        assertRecoveryIdentityEqual(t,mid,afterTopo)
         if afterTopo.TransactionStable{t.Fatal("topology commit made recovery stable")}
 
-        close(replayRelease);close(writerRelease)
-        select{case err:=<-wr:if err!=nil{t.Fatalf("write: %v",err)};case <-time.After(10*time.Second):t.Fatal("write timeout")}
-        select{case err:=<-rd:if err!=nil{t.Fatalf("read: %v",err)};case <-time.After(15*time.Second):t.Fatal("read timeout")}
+        // The replay write has no peer proof. Recut that physical carrier and
+        // force the existing exact transaction to rebind; topology must not
+        // create a fresh recovery transaction or authorize a second epoch.
+        proxy.CutAll()
+        mode.Store(3)
+        close(replayRelease)
+        close(writerRelease)
+
+        select{case err:=<-wr:if err!=nil{t.Fatalf("write: %v",err)};case <-time.After(12*time.Second):t.Fatal("write timeout")}
+        select{case err:=<-rd:if err!=nil{t.Fatalf("read: %v",err)};case <-time.After(20*time.Second):t.Fatal("read timeout")}
         have:=sha256.Sum256(got);if !bytes.Equal(got,payload)||have!=want{t.Fatalf("payload gap/dup got=%x want=%x",have,want)}
-        final,_:=waitTopologyRecoveryStable(t,worker,remote,before.Epoch+1);clearRecoveryHooks(worker,remote)
-        if final.SessionID!=before.SessionID{t.Fatal("SessionID changed")}
+
+        final,_:=waitTopologyRecoveryStable(t,worker,remote,before.Epoch+1)
+        clearRecoveryHooks(worker,remote)
+        if final.SessionID!=before.SessionID||final.Epoch!=before.Epoch+1||
+            final.CandidateID!=candidate||final.PlanDigest!=digest{
+            t.Fatalf("exact Class-A transaction escaped mid=%+v final=%+v",mid,final)
+        }
         if generationOf(t,h)!=next{t.Fatal("recovery changed ClusterGeneration")}
         if gotInst,_:=h.controller.InstanceTokenForTest(cID);gotInst!=instance{t.Fatal("C runtime changed")}
         if h.remotes[2].target.accepts.Load()!=target{t.Fatal("target reopened")}
