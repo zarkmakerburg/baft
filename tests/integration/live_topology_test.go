@@ -122,7 +122,8 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
         }
     }
 
-    workerIdentity:="urn:baft:node:worker"\n    workerProtocolNodeID:="worker"
+    workerIdentity:="urn:baft:node:worker"
+    workerProtocolNodeID:="worker"
     for i:=0;i<4;i++{
         letter:=byte('A'+i);id:=liveNodeID(letter)
         target:=newLiveEchoTarget(t)
