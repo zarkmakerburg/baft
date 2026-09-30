@@ -79,6 +79,7 @@ type liveTopologyHarness struct {
     ctx context.Context
     cancel context.CancelFunc
     controller *cluster.WorkerController
+    engine *clustersync.Engine
     tokenWorkerPub *ecdh.PublicKey
     signPriv ed25519.PrivateKey
     now time.Time
@@ -179,6 +180,7 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
     }
     ctrl,err:=cluster.NewWorkerController(ctx,engine,tmpl);if err!=nil{t.Fatal(err)}
     h.controller=ctrl
+    h.engine=engine
     return h
 }
 
