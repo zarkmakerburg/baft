@@ -7,6 +7,10 @@ on:
     paths:
       - 'internal/session/**'
       - 'internal/node/**'
+      - 'internal/cluster/**'
+      - 'internal/clustersync/**'
+      - 'cmd/baft-worker/**'
+      - 'tests/integration/live_topology_test.go'
       - 'tests/integration/recovery_runtime_test.go'
       - 'tests/integration/cluster_six_noise_test.go'
       - '.github/workflows/step57-recovery-soak.yml'
