@@ -306,7 +306,12 @@ func runNNodeNoiseMasterHandshakeRoundTrip(t *testing.T, n int) {
 	for i, cfg := range masterCfgs {
 		conn, err := net.DialTimeout("tcp", cfg.Routes[0].Listen, time.Second)
 		if err != nil {
-			t.Fatalf("N=%d route=%d dial: %v", n, i+1, err)
+			select{
+			case masterErr:=<-masterDone:
+				t.Fatalf("N=%d route=%d dial: %v; master=%v",n,i+1,err,masterErr)
+			default:
+				t.Fatalf("N=%d route=%d dial: %v; master=running",n,i+1,err)
+			}
 		}
 		payload := bytes.Repeat([]byte(fmt.Sprintf("route-%02d-noise-ok|", i+1)), 128)
 		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
