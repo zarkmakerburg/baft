@@ -72,6 +72,7 @@ type liveTopologyRemote struct {
     runtime *node.Runtime
     done chan error
     target *liveEchoTarget
+    proxy *cutProxy
 }
 
 type liveTopologyHarness struct {
@@ -154,11 +155,12 @@ func newLiveTopologyHarness(t *testing.T)*liveTopologyHarness{
             if actual!=ex.Server.Listen{t.Fatalf("remote %c address got=%s want=%s",letter,actual,ex.Server.Listen)}
         case <-time.After(6*time.Second):t.Fatalf("remote %c readiness timeout",letter)
         }
-        h.remotes=append(h.remotes,&liveTopologyRemote{id:id,cfg:ex,runtime:rt,done:done,target:target})
+        proxy:=newCutProxy(t,ex.Server.Listen)
+        h.remotes=append(h.remotes,&liveTopologyRemote{id:id,cfg:ex,runtime:rt,done:done,target:target,proxy:proxy})
 
         src,err:=config.LoadFile("../../configs/example-ir.yaml");if err!=nil{t.Fatal(err)}
         src.Node.ID=workerProtocolNodeID
-        src.Peer.Address=ex.Server.Listen;src.Peer.ServerName="ex.test";src.Peer.AllowedIdentity=id
+        src.Peer.Address=proxy.Addr();src.Peer.ServerName="ex.test";src.Peer.AllowedIdentity=id
         src.Management.UnixSocket=filepath.Join(dir,fmt.Sprintf("source-%c.sock",letter))
         src.Management.MetricsListen=reserveUnique()
         src.Transport.Shards=1;src.TLS=tlsCfg
@@ -195,6 +197,7 @@ func (h *liveTopologyHarness) close(t *testing.T){
     if h.controller!=nil{if err:=h.controller.Close();err!=nil{t.Errorf("controller close: %v",err)}}
     h.cancel()
     for _,r:=range h.remotes{
+        if r.proxy!=nil{r.proxy.Close()}
         select{case err:=<-r.done:if err!=nil&&!errors.Is(err,context.Canceled){t.Errorf("remote %s: %v",r.id,err)}
         case <-time.After(5*time.Second):t.Errorf("remote %s shutdown timeout",r.id)}
         r.target.close()

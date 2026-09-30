@@ -87,6 +87,7 @@ type RecoveryAuthoritySnapshot struct {
 	SenderID string
 	SenderStopped bool
 	PostCommitFailures uint64
+	RecoveryAttempts uint64
 	RecoverySignalPending bool
 	Frozen bool
 	ActivationComplete bool
@@ -277,7 +278,7 @@ func (r *Runtime) RecoveryAuthoritiesForTest() []RecoveryAuthoritySnapshot {
 		prep:=p.RecoveryPreparedOwnershipForTest()
 		stats:=p.RecoveryStats()
 		st:=p.RecoveryStability()
-		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),PreparedIncarnation:prep.PreparedIncarnation,PreparedID:prep.PreparedID,SenderID:prep.SenderID,SenderStopped:prep.SenderStopped,PostCommitFailures:stats.PostCommitFailures,RecoverySignalPending:p.RecoverySignalPendingForTest(),Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),ApplicationReady:st.ApplicationReady,TransactionStable:st.TransactionStable,ReplayHighWatermark:st.ReplayHighWatermark,ReplayPeerAccepted:st.ReplayPeerAccepted,ReplayOutstanding:st.ReplayOutstanding,FinStable:st.FinStable,FinalizationStable:st.FinalizationStable,TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
+		s:=RecoveryAuthoritySnapshot{SessionID:p.SessionID(),Epoch:p.RecoveryEpoch(),Owner:p.RecoveryOwner(),CarrierGeneration:p.RecoveryCarrierGeneration(),PreparedIncarnation:prep.PreparedIncarnation,PreparedID:prep.PreparedID,SenderID:prep.SenderID,SenderStopped:prep.SenderStopped,PostCommitFailures:stats.PostCommitFailures,RecoveryAttempts:stats.Attempts,RecoverySignalPending:p.RecoverySignalPendingForTest(),Frozen:p.RecoveryFrozen(),ActivationComplete:p.RecoveryActivationComplete(),ApplicationReady:st.ApplicationReady,TransactionStable:st.TransactionStable,ReplayHighWatermark:st.ReplayHighWatermark,ReplayPeerAccepted:st.ReplayPeerAccepted,ReplayOutstanding:st.ReplayOutstanding,FinStable:st.FinStable,FinalizationStable:st.FinalizationStable,TxnState:p.RecoveryTransactionState(),Flows:p.RecoveryFlowFrontiersForTest()}
 		if ok{s.CandidateID=tx.CandidateID;s.NextEpoch=tx.NextEpoch;s.PlanDigest=tx.PlanDigest}
 		out=append(out,s)
 	}

@@ -33,6 +33,14 @@ type RuntimeFailure struct {
     Err error
 }
 
+const (
+    TopologyAfterPrepare = "TOPOLOGY_AFTER_PREPARE"
+    TopologyAfterStageAdd = "TOPOLOGY_AFTER_STAGE_ADD"
+    TopologyAfterStopRemove = "TOPOLOGY_AFTER_STOP_REMOVE"
+    TopologyBeforeCommit = "TOPOLOGY_BEFORE_COMMIT"
+    TopologyAfterCommit = "TOPOLOGY_AFTER_COMMIT"
+)
+
 type managedRuntime struct {
     nodeID string
     managed clustersync.ManagedNodeConfig
@@ -60,6 +68,7 @@ type WorkerController struct {
     failures chan RuntimeFailure
     newRuntime func() managedRuntimeRunner
     nextInstance uint64
+    topologyHook func(string,uint64)
     closed bool
 }
 
@@ -85,6 +94,7 @@ func (c *WorkerController) ApplyToken(token string, now time.Time) (clustersync.
     if !prepared.Changed(){return prepared.Snapshot(),false,nil}
 
     diff:=prepared.Diff()
+    c.fireTopologyHookForTest(TopologyAfterPrepare,prepared.Snapshot().Generation)
     if len(diff.ChangedNodeIDs)>0{
         return clustersync.Snapshot{},false,fmt.Errorf("%w: %v",ErrInPlaceNodeMutationUnsupported,diff.ChangedNodeIDs)
     }
@@ -114,6 +124,8 @@ func (c *WorkerController) ApplyToken(token string, now time.Time) (clustersync.
         staged[id]=mr
     }
 
+    if len(added)>0 { c.fireTopologyHookForTest(TopologyAfterStageAdd,prepared.Snapshot().Generation) }
+
     stopped:=make([]*managedRuntime,0,len(removed))
     for _,id:=range removed{
         mr:=c.runtimes[id]
@@ -125,6 +137,7 @@ func (c *WorkerController) ApplyToken(token string, now time.Time) (clustersync.
         }
         stopped=append(stopped,mr)
     }
+    if len(removed)>0 { c.fireTopologyHookForTest(TopologyAfterStopRemove,prepared.Snapshot().Generation) }
 
     // Final pre-commit liveness fence: a runtime that passed readiness but
     // exited before topology publication must not produce control/runtime split-brain.
@@ -150,6 +163,7 @@ func (c *WorkerController) ApplyToken(token string, now time.Time) (clustersync.
         }
     }
 
+    c.fireTopologyHookForTest(TopologyBeforeCommit,prepared.Snapshot().Generation)
     snap,changed,err:=c.engine.CommitPrepared(prepared)
     if err!=nil{
         c.rollbackStopped(stopped)
@@ -158,6 +172,7 @@ func (c *WorkerController) ApplyToken(token string, now time.Time) (clustersync.
     }
     for _,mr:=range stopped{delete(c.runtimes,mr.nodeID);c.lastStopped[mr.nodeID]=mr}
     for id,mr:=range staged{c.runtimes[id]=mr;delete(c.lastStopped,id)}
+    c.fireTopologyHookForTest(TopologyAfterCommit,snap.Generation)
     return snap,changed,nil
 }
 
@@ -287,4 +302,32 @@ func (c *WorkerController) SetRuntimeFactoryForTest(fn func() managedRuntimeRunn
     c.mu.Lock();defer c.mu.Unlock()
     if fn==nil{c.newRuntime=func() managedRuntimeRunner{return node.NewRuntime()};return}
     c.newRuntime=fn
+}
+
+
+func (c *WorkerController) fireTopologyHookForTest(stage string,generation uint64) {
+    if c.topologyHook!=nil { c.topologyHook(stage,generation) }
+}
+
+func (c *WorkerController) SetTopologyHookForTest(fn func(string,uint64)) {
+    c.mu.Lock();defer c.mu.Unlock()
+    c.topologyHook=fn
+}
+
+func (c *WorkerController) RuntimeForNodeForTest(nodeID string) (*node.Runtime,bool) {
+    c.mu.Lock();defer c.mu.Unlock()
+    mr,ok:=c.runtimes[nodeID]
+    if !ok{return nil,false}
+    r,ok:=mr.runner.(*node.Runtime)
+    return r,ok
+}
+
+func (c *WorkerController) RecoveryAuthorityForNodeForTest(nodeID string) (node.RecoveryAuthoritySnapshot,bool) {
+    c.mu.Lock();mr:=c.runtimes[nodeID];c.mu.Unlock()
+    if mr==nil{return node.RecoveryAuthoritySnapshot{},false}
+    r,ok:=mr.runner.(interface{RecoveryAuthoritiesForTest() []node.RecoveryAuthoritySnapshot})
+    if !ok{return node.RecoveryAuthoritySnapshot{},false}
+    states:=r.RecoveryAuthoritiesForTest()
+    if len(states)!=1{return node.RecoveryAuthoritySnapshot{},false}
+    return states[0],true
 }
