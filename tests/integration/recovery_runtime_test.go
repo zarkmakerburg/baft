@@ -1050,7 +1050,7 @@ func TestDistributedCommitFaultLResolutionDigestMismatchFailsClosedThenRetries(t
 	var mutated atomic.Bool
 	p.exRuntime.SetRecoveryControlHookForTest(func(stage string,ctl *session.RecoveryControl)int{
 		if stage=="listener_status_reply_send"&&mutated.CompareAndSwap(false,true){
-			if len(ctl.PlanDigest)>2{ctl.PlanDigest="00"+ctl.PlanDigest[2:]}else{ctl.PlanDigest="00"}
+			if len(ctl.PlanDigest)>2{\n\t\t\t\tprefix:="00";if strings.HasPrefix(ctl.PlanDigest,prefix){prefix="ff"}\n\t\t\t\tctl.PlanDigest=prefix+ctl.PlanDigest[2:]\n\t\t\t}else if ctl.PlanDigest!="00"{ctl.PlanDigest="00"}else{ctl.PlanDigest="ff"}
 		}
 		return 1
 	})
