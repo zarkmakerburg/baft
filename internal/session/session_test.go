@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync/atomic"
@@ -248,6 +249,27 @@ func TestInFlightDataAndFinAfterLocalResetAreAbsorbed(t *testing.T) {
 	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeData,StreamID:3,Payload:[]byte("x")});err==nil{
 		t.Fatal("DATA for a truly unknown stream must remain a protocol error")
 	}
+}
+
+type resetReadConn struct{ net.Conn }
+
+func (resetReadConn) Read([]byte) (int, error) { return 0, errors.New("read: connection reset by peer") }
+
+func TestLocalReadErrorResetsFlowInsteadOfLeavingItOpen(t *testing.T) {
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01"});if err!=nil{t.Fatal(err)}
+	local,remote:=net.Pipe();defer remote.Close()
+	f:=newFlow(1,"main","00112233445566778899aabbccddeeff",resetReadConn{local},p.allocator);f.openOK=true
+	if err:=f.onWindow(64*1024);err!=nil{t.Fatal(err)}
+	p.mu.Lock();p.flows[1]=f;p.localReady=true;p.peerReady=true;p.markReadyLocked();p.mu.Unlock()
+
+	p.pumpLocal(context.Background(),f)
+
+	if _,err:=p.getFlow(1);err==nil{t.Fatal("application read error left the Flow open")}
+	fr,err:=protocol.Decode(&out);if err!=nil{t.Fatalf("no frame sent to the peer: %v",err)}
+	if fr.Type!=protocol.TypeReset||fr.StreamID!=1{t.Fatalf("sent %v on stream %d, want RESET on 1",fr.Type,fr.StreamID)}
+	rst,err:=protocol.DecodeReset(fr.Payload);if err!=nil{t.Fatal(err)}
+	if rst.Code!=protocol.ErrorTargetUnreachable{t.Fatalf("RESET code=%q",rst.Code)}
 }
 
 func TestClosedFlowTombstonesAreBounded(t *testing.T) {

@@ -1377,6 +1377,16 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 				}else{
 					_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
 				}
+			} else {
+				// A reset application socket must end the Flow on both sides, the
+				// same way pumpTarget handles a failed write; otherwise an idle peer
+				// keeps the target connection and receive budget indefinitely.
+				fl.mu.Lock()
+				closed := fl.closed
+				fl.mu.Unlock()
+				if !closed {
+					_ = p.sendReset(fl, protocol.ErrorTargetUnreachable)
+				}
 			}
 			return
 		}
