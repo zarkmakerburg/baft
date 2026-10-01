@@ -119,6 +119,43 @@ func TestOpenBeyondAdvertisedFlowLimitIsRefusedWithoutDial(t *testing.T) {
 	p.closeAll();p.wg.Wait()
 }
 
+func TestNodeFlowSlotsBoundListenerOpensAndAreReleasedOnClose(t *testing.T) {
+	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
+	slots,err:=resources.NewFlowSlots(1);if err!=nil{t.Fatal(err)}
+	var out bytes.Buffer
+	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test",FlowSlots:slots});if err!=nil{t.Fatal(err)}
+	var dials atomic.Int32;var remotes []net.Conn
+	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);a,b:=net.Pipe();remotes=append(remotes,b);return a,nil}
+	open:=func(id uint64,nonce string){
+		req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:nonce})
+		if err:=p.handleOpen(context.Background(),protocol.Frame{Type:protocol.TypeOpen,StreamID:id,Payload:req});err!=nil{t.Fatal(err)}
+	}
+	open(1,"00112233445566778899aabbccddeeff")
+	if slots.Used()!=1{t.Fatalf("open Flow holds %d node slots, want 1",slots.Used())}
+	out.Reset()
+	open(3,"ffeeddccbbaa99887766554433221100")
+	if got:=dials.Load();got!=1{t.Fatalf("dialed %d targets with max_flows=1",got)}
+	fr,err:=protocol.Decode(&out);if err!=nil{t.Fatal(err)}
+	oe,err:=protocol.DecodeOpenError(fr.Payload)
+	if fr.Type!=protocol.TypeOpenErr||err!=nil||oe.Code!=protocol.ErrorResourceExhausted{t.Fatalf("second OPEN got %v %q %v, want OPEN_ERR RESOURCE_EXHAUSTED",fr.Type,oe.Code,err)}
+
+	p.closeAll();p.wg.Wait()
+	for _,r:=range remotes{_ = r.Close()}
+	if slots.Used()!=0{t.Fatalf("closed Flow kept %d node slots",slots.Used())}
+}
+
+func TestNodeFlowSlotsBoundDialerOpensWithoutSendingOpen(t *testing.T) {
+	slots,err:=resources.NewFlowSlots(1);if err!=nil{t.Fatal(err)}
+	if !slots.TryAcquire(){t.Fatal("setup: could not take the only slot")}
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",FlowSlots:slots});if err!=nil{t.Fatal(err)}
+	p.mu.Lock();p.localReady=true;p.peerReady=true;p.markReadyLocked();p.mu.Unlock()
+	local,remote:=net.Pipe();defer remote.Close();defer local.Close()
+	if err:=p.OpenFlow(context.Background(),"main",local);!errors.Is(err,resources.ErrResourceExhausted){t.Fatalf("OpenFlow err=%v, want RESOURCE_EXHAUSTED",err)}
+	if out.Len()!=0{t.Fatalf("dialer sent %d bytes for a Flow it could not admit",out.Len())}
+	if slots.Used()!=1{t.Fatalf("refused OpenFlow changed slot usage to %d",slots.Used())}
+}
+
 func TestResetClosesOnlyReferencedFlowAndRecordsFixedCode(t *testing.T) {
 	var out bytes.Buffer
 	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)}

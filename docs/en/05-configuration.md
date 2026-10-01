@@ -27,6 +27,8 @@ Baseline configuration requires TLS 1.3, explicit CA/certificate/key files, and 
 
 `data_memory_mib`, receive limits, and replay limits bound Stage-C memory behavior. Receive and replay pools do not silently borrow from each other.
 
+`max_flows` caps concurrent Flows for the whole node, shared across every peer and Shard. Past the cap, EX answers OPEN with `OPEN_ERR RESOURCE_EXHAUSTED` without dialing the target, and IR closes the new local connection without sending OPEN. Independently, each Shard accepts at most 64 Flows (`max_flows_per_shard` in HELLO_ACK); the example value `256` equals 4 Shards × 64.
+
 ## Recovery
 
 `recovery.enabled: true` is rejected until the Stage-D recovery contract is implemented. Unsupported behavior must not be silently ignored.

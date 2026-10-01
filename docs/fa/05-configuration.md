@@ -147,6 +147,8 @@ limits:
 
 Runtime Stage C فعلی budget داده را به poolهای receive و replay غیرقابل‌قرض‌دادن تقسیم می‌کند. per-flow cap نباید از pool مربوط بزرگ‌تر باشد.
 
+`max_flows` سقف Flowهای هم‌زمان کل نود است و بین همه peerها و Shardها مشترک است. سمت EX، OPEN بعد از رسیدن به سقف بدون dial به target با `OPEN_ERR RESOURCE_EXHAUSTED` رد می‌شود؛ سمت IR اتصال محلی جدید بدون ارسال OPEN بسته می‌شود. جدا از آن، هر Shard حداکثر ۶۴ Flow می‌پذیرد (`max_flows_per_shard` در HELLO_ACK)؛ مقدار نمونه `256` برابر ۴ Shard × ۶۴ است.
+
 ## recovery
 
 <div dir="ltr" align="left">

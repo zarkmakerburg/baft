@@ -51,6 +51,9 @@ type Options struct {
 	ProfileVersion     uint32
 	ConfigRevision     string
 	Resources          *resources.Allocator
+	// FlowSlots is shared by every Session of a node to enforce
+	// limits.max_flows; nil means unlimited.
+	FlowSlots          *resources.FlowSlots
 	TrafficObserver    TrafficObserver
 	LatencyObserver    LatencyObserver
 	PingInterval       time.Duration
@@ -68,6 +71,7 @@ type Peer struct {
 	routes             *routes.Table
 	dial               func(context.Context, string, string) (net.Conn, error)
 	allocator          *resources.Allocator
+	flowSlots          *resources.FlowSlots
 	sender             *outboundSender
 	nodeID             string
 	expectedPeerNodeID string
@@ -136,6 +140,7 @@ type flow struct {
 	nonce           string
 	conn            net.Conn
 	allocator       *resources.Allocator
+	slots           *resources.FlowSlots // node-wide slot this Flow holds until close
 	openDone        chan error
 	mu              sync.Mutex
 	openOK          bool
@@ -229,7 +234,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 	}
 	p := &Peer{
 		role: role, carrier: c, writer: frameWriter{w: c.Out}, peerID: peerID,
-		routes: table, allocator: opts.Resources, flows: make(map[uint64]*flow),
+		routes: table, allocator: opts.Resources, flowSlots: opts.FlowSlots, flows: make(map[uint64]*flow),
 		closedFlows: make(map[uint64]struct{}),
 		nodeID: opts.NodeID, expectedPeerNodeID: opts.ExpectedPeerNodeID,
 		bootID: bootID, shardID: opts.ShardID, profileID: opts.ProfileID,
@@ -409,17 +414,24 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 		if p.recoveryEnabled{p.recoveryGate.Unlock()}
 		return recovery.ErrResumeFrozen
 	}
+	if !p.flowSlots.TryAcquire() {
+		if p.recoveryEnabled{p.recoveryGate.Unlock()}
+		return resources.ErrResourceExhausted
+	}
 	id, err := p.allocateStreamID()
 	if err != nil {
+		p.flowSlots.Release()
 		if p.recoveryEnabled{p.recoveryGate.Unlock()}
 		return err
 	}
 	nonceBytes := make([]byte, 16)
 	if _, err := rand.Read(nonceBytes); err != nil {
+		p.flowSlots.Release()
 		if p.recoveryEnabled{p.recoveryGate.Unlock()}
 		return err
 	}
 	fl := newFlow(id, routeID, hex.EncodeToString(nonceBytes), conn, p.allocator)
+	fl.slots = p.flowSlots
 	p.mu.Lock()
 	p.flows[id] = fl
 	p.mu.Unlock()
@@ -824,12 +836,18 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorCode(err.Error())})
 		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
+	if !p.flowSlots.TryAcquire() {
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+	}
 	conn, err := p.dial(ctx, "tcp", target)
 	if err != nil {
+		p.flowSlots.Release()
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: targetDialErrorCode(err)})
 		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
 	fl := newFlow(fr.StreamID, req.RouteID, req.OpenNonce, conn, p.allocator)
+	fl.slots = p.flowSlots
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -1610,7 +1628,10 @@ func (f *flow) close() {
 	allocator := f.allocator
 	resourceID := f.resourceID
 	ring := f.rxRing
+	slots := f.slots
+	f.slots = nil
 	f.mu.Unlock()
+	slots.Release()
 	if deferredWake!=nil{select{case deferredWake<-struct{}{}:default:}}
 	if ring != nil {
 		ring.Close()
