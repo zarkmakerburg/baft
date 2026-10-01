@@ -31,6 +31,7 @@ type IPGuard struct {
 	mu sync.Mutex
 	cfg SecurityConfig
 	clients map[string]*clientState
+	lastSweep time.Time
 }
 
 func newIPGuard(cfg SecurityConfig)*IPGuard{
@@ -71,8 +72,23 @@ func clientIP(r *http.Request,trusted map[string]struct{}) string {
 	return ip.String()
 }
 
+// sweepLocked drops clients whose rate window, failure window and block have
+// all expired. Such an entry carries no state, and without this the map grows
+// by one entry per client IP for the life of the process.
+func (g *IPGuard) sweepLocked(now time.Time){
+	if now.Sub(g.lastSweep)<g.cfg.Window{return}
+	g.lastSweep=now
+	for ip,st:=range g.clients{
+		if now.Before(st.blockedUntil){continue}
+		if !st.windowStart.IsZero()&&now.Sub(st.windowStart)<g.cfg.Window{continue}
+		if !st.failureStart.IsZero()&&now.Sub(st.failureStart)<g.cfg.AuthFailureWindow{continue}
+		delete(g.clients,ip)
+	}
+}
+
 func (g *IPGuard) Allow(ip string,now time.Time)(bool,time.Duration){
 	g.mu.Lock();defer g.mu.Unlock()
+	g.sweepLocked(now)
 	st:=g.clients[ip]
 	if st==nil{st=&clientState{};g.clients[ip]=st}
 	st.lastSeen=now

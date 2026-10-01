@@ -91,7 +91,9 @@ func TestNoiseMorphingRuntime(t *testing.T) {
 	ex.TLS.CAFile = ca
 	ex.TLS.CertFile = cert
 	ex.TLS.KeyFile = tlsKey
-	ir.TLS = ex.TLS
+	// A Noise dialer authenticates with its pinned static key, so like an
+	// installed IR it carries only the CA that verifies the EX website.
+	ir.TLS = config.TLS{MinVersion: "1.3", CAFile: ca}
 	ex.Routes[0].Target = target.Addr().String()
 	ir.Routes[0].Listen = reserveAddress(t)
 	shape := recordshape.DefaultConfig(true)

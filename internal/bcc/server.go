@@ -171,6 +171,9 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 	switch r.Method{
 	case http.MethodGet:
+		// The node list is the cluster topology; it is admin-only like every
+		// other read endpoint.
+		if !s.admin(w,r){return}
 		writeJSON(w,http.StatusOK,s.store.ListNodes())
 	case http.MethodPost:
 		if !s.admin(w,r){return}

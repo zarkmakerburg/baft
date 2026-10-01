@@ -46,8 +46,8 @@ type Server struct {
 type TLS struct {
 	MinVersion     string `json:"min_version"`
 	CAFile         string `json:"ca_file"`
-	CertFile       string `json:"cert_file"`
-	KeyFile        string `json:"key_file"`
+	CertFile       string `json:"cert_file,omitempty"`
+	KeyFile        string `json:"key_file,omitempty"`
 	SessionTickets bool   `json:"session_tickets"`
 }
 type Transport struct {
@@ -131,7 +131,15 @@ func Validate(c Config) error {
 	if c.TLS.SessionTickets {
 		return errors.New("tls.session_tickets must be false in baseline")
 	}
-	if c.TLS.CAFile == "" || c.TLS.CertFile == "" || c.TLS.KeyFile == "" {
+	if c.TLS.CAFile == "" {
+		return errors.New("tls.ca_file is required")
+	}
+	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
+		return errors.New("tls cert_file and key_file must be set together")
+	}
+	// A Noise dialer authenticates with its pinned static key and presents no
+	// outer client certificate, so only it may omit the certificate pair.
+	if c.TLS.CertFile == "" && (c.Noise == nil || c.Node.Role != "dialer") {
 		return errors.New("tls ca_file/cert_file/key_file are required")
 	}
 	if c.Transport.Primary != "h2" {

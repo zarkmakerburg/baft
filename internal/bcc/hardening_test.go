@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -76,10 +77,10 @@ func TestRateLimitAndBruteForceTemporaryBlock(t *testing.T){
 	app.ConfigureSecurity(SecurityConfig{RequestsPerWindow:2,Window:time.Minute,MaxAuthFailures:10,BlockDuration:time.Minute})
 	now=base
 	for i:=0;i<2;i++{
-		req=httptest.NewRequest(http.MethodGet,"/api/nodes",nil);rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,req)
+		req=authReq(http.MethodGet,"/api/nodes","admin",nil);rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,req)
 		if rr.Code!=http.StatusOK{t.Fatalf("rate baseline #%d status=%d",i+1,rr.Code)}
 	}
-	req=httptest.NewRequest(http.MethodGet,"/api/nodes",nil);rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,req)
+	req=authReq(http.MethodGet,"/api/nodes","admin",nil);rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,req)
 	if rr.Code!=http.StatusTooManyRequests{t.Fatalf("rate limit status=%d",rr.Code)}
 	t.Log("PASS rate limiting and temporary brute-force block")
 }
@@ -118,4 +119,38 @@ func TestValidateListenAddressWhitelist(t *testing.T){
 	if err:=ValidateListenAddress("0.0.0.0:8080",[]string{"10.10.10.5"});err==nil{t.Fatal("wildcard listen accepted by unrelated whitelist")}
 	if err:=ValidateListenAddress("10.10.10.5:8080",[]string{"10.10.10.5"});err!=nil{t.Fatalf("whitelisted IP rejected: %v",err)}
 	t.Log("PASS localhost default and explicit non-loopback whitelist")
+}
+
+// The node list is the cluster topology (addresses, roles, public keys,
+// health); only the dashboard reads it, and it must present the admin token.
+func TestNodeListRequiresAdminAndOmitsTokenHashes(t *testing.T){
+	store,_:=OpenStore(filepath.Join(t.TempDir(),"state.json"))
+	if _,err:=store.UpsertNode(Node{ID:"n1",Alias:"N1",Address:"127.0.0.1:22001",Role:"worker",PublicKey:"pk"},"agent-secret");err!=nil{t.Fatal(err)}
+	app,_:=NewServer(store,"admin")
+
+	for _,token:=range []string{"","wrong"}{
+		rr:=httptest.NewRecorder();app.Handler().ServeHTTP(rr,authReq(http.MethodGet,"/api/nodes",token,nil))
+		if rr.Code!=http.StatusUnauthorized{t.Fatalf("GET /api/nodes with token %q: status=%d body=%s",token,rr.Code,rr.Body.String())}
+		if strings.Contains(rr.Body.String(),"127.0.0.1:22001"){t.Fatalf("topology leaked without admin auth: %s",rr.Body.String())}
+	}
+	rr:=httptest.NewRecorder();app.Handler().ServeHTTP(rr,authReq(http.MethodGet,"/api/nodes","admin",nil))
+	if rr.Code!=http.StatusOK||!strings.Contains(rr.Body.String(),"127.0.0.1:22001"){t.Fatalf("admin GET /api/nodes: status=%d body=%s",rr.Code,rr.Body.String())}
+	if strings.Contains(rr.Body.String(),"token_hash"){t.Fatalf("node list exposes agent token hashes: %s",rr.Body.String())}
+}
+
+// Every client IP used to stay in the guard's map forever.
+func TestIPGuardEvictsClientsWithNoLiveState(t *testing.T){
+	g:=newIPGuard(SecurityConfig{RequestsPerWindow:3,Window:time.Minute,MaxAuthFailures:2,AuthFailureWindow:time.Minute,BlockDuration:5*time.Minute})
+	base:=time.Date(2026,10,1,12,0,0,0,time.UTC)
+	for i:=0;i<1000;i++{g.Allow("10.0."+strconv.Itoa(i/250)+"."+strconv.Itoa(i%250),base)}
+	g.AuthFailure("10.9.9.9",base);g.AuthFailure("10.9.9.9",base)
+
+	g.Allow("10.1.1.1",base.Add(2*time.Minute))
+	g.mu.Lock();n:=len(g.clients);_,blockedKept:=g.clients["10.9.9.9"];g.mu.Unlock()
+	if n!=2||!blockedKept{t.Fatalf("after the rate window: %d clients (blocked kept=%v), want the active one and the blocked one",n,blockedKept)}
+	if ok,_:=g.Allow("10.9.9.9",base.Add(3*time.Minute));ok{t.Fatal("eviction lifted a brute-force block early")}
+
+	g.Allow("10.1.1.1",base.Add(10*time.Minute))
+	g.mu.Lock();_,blockedKept=g.clients["10.9.9.9"];g.mu.Unlock()
+	if blockedKept{t.Fatal("expired block was never evicted")}
 }

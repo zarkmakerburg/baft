@@ -505,8 +505,10 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
 		if _,err:=rand.Read(b[:]);err!=nil{return fmt.Errorf("runtime boot id: %w",err)}
 		r.bootID=hex.EncodeToString(b[:])
 	}
-	if err := requirePrivateKeyPermissions(cfg.TLS.KeyFile); err != nil {
-		return err
+	if cfg.TLS.KeyFile != "" {
+		if err := requirePrivateKeyPermissions(cfg.TLS.KeyFile); err != nil {
+			return err
+		}
 	}
 	if r.Resources == nil {
 		a, err := allocatorFromConfig(cfg)
@@ -648,6 +650,11 @@ func loadTLSMaterial(c config.TLS) (*identityMaterial, error) {
 	ca, err := identity.LoadCertPool(c.CAFile)
 	if err != nil {
 		return nil, fmt.Errorf("load CA: %w", err)
+	}
+	// config.Validate allows an empty pair only for a Noise dialer, which
+	// presents no outer client certificate.
+	if c.CertFile == "" && c.KeyFile == "" {
+		return &identityMaterial{ca: ca}, nil
 	}
 	cert, err := identity.LoadKeyPair(c.CertFile, c.KeyFile)
 	if err != nil {
