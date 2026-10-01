@@ -5,13 +5,20 @@
 # installed services and compares SHA-256. It installs packages, creates the
 # baft user and systemd units, so it is meant for a throwaway CI runner.
 #
-#   sudo BAFT_REPO_URL=$PWD BAFT_REF=$(git rev-parse HEAD) tests/e2e/install_two_roles.sh
+#   sudo BAFT_INSTALL_FROM=source BAFT_REPO_URL=$PWD BAFT_REF=$(git rev-parse HEAD) tests/e2e/install_two_roles.sh
+#
+# With BAFT_INSTALL_FROM=release (and BAFT_RELEASE_URL, BAFT_ROOT_PUB,
+# BAFT_REVOCATIONS_URL, e.g. from scripts/release/local_release.sh) it
+# installs the signed release instead and checks nothing was built.
 set -Eeuo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 [[ "$EUID" -eq 0 ]] || { echo "run as root"; exit 1; }
-export BAFT_REPO_URL="${BAFT_REPO_URL:-$ROOT}"
-export BAFT_REF="${BAFT_REF:-$(git rev-parse HEAD)}"
+export BAFT_INSTALL_FROM="${BAFT_INSTALL_FROM:-source}"
+if [[ "$BAFT_INSTALL_FROM" == "source" ]]; then
+  export BAFT_REPO_URL="${BAFT_REPO_URL:-$ROOT}"
+  export BAFT_REF="${BAFT_REF:-$(git rev-parse HEAD)}"
+fi
 WORK="$(mktemp -d)"
 TARGET_PID=""; EX_PID=""
 log() { printf '[install-e2e] %s\n' "$*"; }
@@ -62,6 +69,14 @@ for f in /etc/baft-ex/baft.yaml /etc/baft-ir/baft.yaml; do
   [[ "$(stat -c '%U:%G %a' "$f")" == "root:baft 640" ]] || { stat "$f"; exit 1; }
 done
 [[ "$(stat -c '%U %a' /etc/baft-ex/pki/ca.key)" == "root 600" ]] || { echo "CA key not root-only"; exit 1; }
+if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
+  for p in /opt/baft-ex /opt/baft-ir; do
+    [[ ! -e "$p/src" ]] || { echo "release install built from source in $p"; exit 1; }
+    [[ "$(stat -c '%U %a' "$p/release-state.json")" == "root 644" ]] || { echo "no root-owned release state in $p"; exit 1; }
+    grep -q '"version": "v' "$p/release-state.json" || { cat "$p/release-state.json"; exit 1; }
+  done
+  log "installed signed release: $(/usr/local/bin/baft version)"
+fi
 
 log "wait for both services and the IR route"
 for _ in $(seq 1 60); do
