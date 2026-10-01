@@ -89,6 +89,9 @@ type Peer struct {
 	mu                 sync.Mutex
 	flows              map[uint64]*flow
 	closedFlows        map[uint64]struct{}
+	// pendingOpens holds admitted OPENs whose target dial is still running
+	// (recovery disabled only); guarded by mu.
+	pendingOpens       map[uint64]protocol.OpenRequest
 	closedOrder        []uint64
 	nextID             uint64
 	closed             bool
@@ -235,7 +238,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 	p := &Peer{
 		role: role, carrier: c, writer: frameWriter{w: c.Out}, peerID: peerID,
 		routes: table, allocator: opts.Resources, flowSlots: opts.FlowSlots, flows: make(map[uint64]*flow),
-		closedFlows: make(map[uint64]struct{}),
+		closedFlows: make(map[uint64]struct{}), pendingOpens: make(map[uint64]protocol.OpenRequest),
 		nodeID: opts.NodeID, expectedPeerNodeID: opts.ExpectedPeerNodeID,
 		bootID: bootID, shardID: opts.ShardID, profileID: opts.ProfileID,
 		profileVersion: opts.ProfileVersion, configRevision: opts.ConfigRevision,
@@ -812,18 +815,29 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 	}
 	p.mu.Lock()
 	if existing := p.flows[fr.StreamID]; existing != nil {
-		same := existing.routeID == req.RouteID && existing.nonce == req.OpenNonce
-		openOK := existing.openOK
 		p.mu.Unlock()
+		same := existing.routeID == req.RouteID && existing.nonce == req.OpenNonce
+		existing.mu.Lock()
+		openOK := existing.openOK
+		existing.mu.Unlock()
 		if !same {
 			return errors.New("duplicate stream_id with different OPEN identity")
 		}
 		if !openOK {
-			return errors.New("duplicate OPEN before original completed")
+			// finishOpen is still completing this Flow and will answer it.
+			return nil
 		}
 		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")})
 	}
-	full := len(p.flows) >= maxFlowsPerShard
+	if pending, ok := p.pendingOpens[fr.StreamID]; ok {
+		p.mu.Unlock()
+		if pending.RouteID != req.RouteID || pending.OpenNonce != req.OpenNonce {
+			return errors.New("duplicate stream_id with different OPEN identity")
+		}
+		// The in-flight dial answers this OPEN with OPEN_OK or OPEN_ERR.
+		return nil
+	}
+	full := len(p.flows)+len(p.pendingOpens) >= maxFlowsPerShard
 	p.mu.Unlock()
 	if full {
 		// HELLO_ACK advertises this per-Shard limit; refuse before dialing the target.
@@ -840,52 +854,91 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
 		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
-	conn, err := p.dial(ctx, "tcp", target)
-	if err != nil {
-		p.flowSlots.Release()
-		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: targetDialErrorCode(err)})
-		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+	if p.recoveryEnabled {
+		// Recovery serializes OPEN admission with snapshots through
+		// recoveryGate, held for this whole call, so dial inline.
+		conn, err := p.dial(ctx, "tcp", target)
+		return p.finishOpen(ctx, fr.StreamID, req, conn, err, false)
 	}
-	fl := newFlow(fr.StreamID, req.RouteID, req.OpenNonce, conn, p.allocator)
+	// Dial off the frame loop: a slow or blackholed target must not stall
+	// every other Flow on this Shard for the dial timeout.
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		p.flowSlots.Release()
+		return errors.New("session closed")
+	}
+	p.pendingOpens[fr.StreamID] = req
+	p.mu.Unlock()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		conn, err := p.dial(ctx, "tcp", target)
+		// Failures here are already turned into OPEN_ERR, RESET or a closed
+		// Flow; a broken carrier also ends the frame loop on its own.
+		_ = p.finishOpen(ctx, fr.StreamID, req, conn, err, true)
+	}()
+	return nil
+}
+
+// finishOpen completes an admitted OPEN after the target dial returned. It owns
+// the node flow slot taken by handleOpen and, when pending, the pendingOpens
+// entry, which is replaced by the Flow atomically so a retransmitted OPEN
+// never dials twice.
+func (p *Peer) finishOpen(ctx context.Context, id uint64, req protocol.OpenRequest, conn net.Conn, dialErr error, pending bool) error {
+	if dialErr != nil {
+		if pending {
+			p.mu.Lock()
+			delete(p.pendingOpens, id)
+			p.mu.Unlock()
+		}
+		p.flowSlots.Release()
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: targetDialErrorCode(dialErr)})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: id, Payload: payload})
+	}
+	fl := newFlow(id, req.RouteID, req.OpenNonce, conn, p.allocator)
 	fl.slots = p.flowSlots
 	p.mu.Lock()
+	if pending {
+		delete(p.pendingOpens, id)
+	}
 	if p.closed {
 		p.mu.Unlock()
 		fl.close()
 		return errors.New("session closed")
 	}
-	if old := p.flows[fr.StreamID]; old != nil {
+	if old := p.flows[id]; old != nil {
 		p.mu.Unlock()
 		fl.close()
 		return errors.New("concurrent OPEN conflict")
 	}
-	p.flows[fr.StreamID] = fl
+	p.flows[id] = fl
 	p.mu.Unlock()
 
 	window, err := p.reserveReceiveWindow(fl)
 	if err != nil {
 		fl.close()
-		p.removeFlow(fr.StreamID)
+		p.removeFlow(id)
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
-		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: id, Payload: payload})
 	}
 	fl.mu.Lock()
 	fl.openOK = true
 	fl.mu.Unlock()
 	if err := p.senderNow().addFlow(fl.id); err != nil {
 		fl.close()
-		p.removeFlow(fr.StreamID)
+		p.removeFlow(id)
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
-		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: id, Payload: payload})
 	}
-	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")}); err != nil {
+	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: id, Payload: []byte("{}")}); err != nil {
 		fl.close()
-		p.removeFlow(fr.StreamID)
+		p.removeFlow(id)
 		return err
 	}
 	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: window}); err != nil {
 		fl.close()
-		p.removeFlow(fr.StreamID)
+		p.removeFlow(id)
 		return err
 	}
 	p.startPump(ctx, fl)
