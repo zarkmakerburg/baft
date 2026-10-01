@@ -73,6 +73,10 @@ func TestRecoveryTelemetryFinanceRemainExact(t *testing.T){
 		time.Sleep(50*time.Millisecond)
 	}
 
+	// Count target sockets immediately before the cut rather than relative to
+	// the fixture baseline: the first payload was booked at least one telemetry
+	// tick after startup, so every earlier target socket has been accepted.
+	targetBeforeCut:=p.targetAccepts.Load()
 	p.proxy.CutAll()
 	time.Sleep(350*time.Millisecond)
 	sendEcho(second)
@@ -98,8 +102,12 @@ func TestRecoveryTelemetryFinanceRemainExact(t *testing.T){
 			if again.IngressBytes!=wantBytes||again.EgressBytes!=wantBytes||again.CostMicros!=wantCost||again.RevenueMicros!=wantRevenue{
 				t.Fatalf("post-replacement telemetry double-counted: %+v",again)
 			}
+			if now:=p.targetAccepts.Load();now!=targetBeforeCut{
+				t.Fatalf("target socket reopened during recovery before_cut=%d after=%d",targetBeforeCut,now)
+			}
+			// The whole test must also have used exactly one target socket.
 			if n:=p.targetAccepts.Load()-p.targetBaseline;n!=1{
-				t.Fatalf("target socket reopened during recovery test_accepts=%d baseline=%d total=%d",n,p.targetBaseline,p.targetAccepts.Load())
+				t.Fatalf("target socket count since fixture baseline test_accepts=%d baseline=%d total=%d",n,p.targetBaseline,p.targetAccepts.Load())
 			}
 			t.Logf("PASS recovery telemetry/finance exact boot=%s ingress=%d egress=%d seq=%d",telemetryBoot,again.IngressBytes,again.EgressBytes,cur.Sequence)
 			break
