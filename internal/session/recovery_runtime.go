@@ -40,6 +40,12 @@ type RecoveryOffer struct {
 	// Rejected marks a listener offer sent only to deliver ClosedStreams after
 	// its reconciliation failed; the dialer retries with a fresh snapshot.
 	Rejected bool `json:"rejected,omitempty"`
+	// ResolvePrevious marks a listener answer that refuses a fresh epoch
+	// because its last finalized transaction still has an unproven replay or
+	// terminal-FIN obligation. The dialer may see that transaction as stable,
+	// so it must resolve it exactly (status query, rebind, FINALIZE) before
+	// offering a new epoch; the rebind is where the obligation is re-sent.
+	ResolvePrevious bool `json:"resolve_previous,omitempty"`
 }
 
 type RecoveryPhase string
@@ -114,6 +120,9 @@ type preparedFlowRecovery struct {
 	ackPeerFIN bool
 	ackApplied bool
 	finAckAdvanceApplied bool
+	// repeatOpenOK marks a listener Flow whose OPEN_OK an exact rebind
+	// repeats (see rebindEntryForLiveFlow).
+	repeatOpenOK bool
 	replayApplied int
 	finSentApplied bool
 	peerFinAckApplied bool
@@ -278,6 +287,11 @@ type RecoveryAdapter struct {
 	lastNotCommitted RecoveryControl
 	lastResolutionCommitted RecoveryControl
 	lastResolutionConflict RecoveryControl
+	// peerRequiresExact is set on a dialer whose listener answered a fresh
+	// offer with ResolvePrevious; it pins lastCommit until resolved.
+	peerRequiresExact bool
+	// resolutionFreeze marks a freeze taken by FreezeForExactResolution.
+	resolutionFreeze bool
 	txnState RecoveryTxnState
 	uncertain RecoveryControl
 	attempts atomic.Uint64
@@ -1075,12 +1089,13 @@ var ErrOpenAbandoned = errors.New("OPEN was unanswered when the carrier failed")
 // stream is tombstoned and reaches the listener in RecoveryOffer.ClosedStreams,
 // which closes the listener's copy if the OPEN did arrive. Called with
 // recoveryGate held, so OpenFlow cannot register another Flow meanwhile.
-func (p *Peer) abandonUnansweredOpens() {
-	if p.role!=Dialer{return}
+func (p *Peer) abandonUnansweredOpens() []uint64 {
+	if p.role!=Dialer{return nil}
 	p.mu.Lock()
 	flows:=make([]*flow,0,len(p.flows))
 	for _,fl:=range p.flows{flows=append(flows,fl)}
 	p.mu.Unlock()
+	var abandoned []uint64
 	for _,fl:=range flows{
 		fl.mu.Lock()
 		unanswered:=!fl.openOK&&!fl.closed
@@ -1089,7 +1104,9 @@ func (p *Peer) abandonUnansweredOpens() {
 		select{case fl.openDone<-ErrOpenAbandoned:default:}
 		fl.close()
 		p.removeFlow(fl.id)
+		abandoned=append(abandoned,fl.id)
 	}
+	return abandoned
 }
 
 func (p *Peer) closedStreams() []uint64 {
@@ -1513,6 +1530,10 @@ func (p *Peer) replayCurrentUnprovenState(ctx context.Context,prep *preparedReco
 		final:=fl.txNext
 		ackPeerFIN:=fl.finRecv&&fl.rxWritten==fl.finRecvFinal&&!fl.finAckConfirmed
 		fl.mu.Unlock()
+		if act.repeatOpenOK{
+			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeOpenOK,StreamID:fl.id,Payload:[]byte("{}")});err!=nil{return err}
+			if !p.recoveryAttemptCurrent(token){return ErrStaleRecoveryIncarnation}
+		}
 		// The exact-transaction delivery obligation is the current ledger suffix.
 		// Local carrier writes never clear this watermark; only cumulative ACK
 		// evidence (txAcked) can prove it satisfied.

@@ -108,7 +108,7 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	if sh.peer.NeedsExactTransactionResolution(){
 		resolved,err:=r.resolveDialerCommitUncertainty(ctx,cfg,tlsCfg,sh)
 		if err!=nil{sh.peer.EnsureRecoverySignal(err);return err}
-		if resolved{return nil}
+		if resolved{sh.peer.ClearPeerExactRequirement();return nil}
 		if err:=r.recoveryFail("after_not_committed_resolution");err!=nil{return err}
 	}
 
@@ -139,6 +139,14 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	peer,err:=session.DecodeRecoveryOffer(fr);if err!=nil{
 		sh.peer.RecordRecoveryFailure("snapshot_exchange")
 		return fmt.Errorf("snapshot exchange: %w",err)
+	}
+	if peer.ResolvePrevious{
+		// The listener still owes proof for the last finalized transaction
+		// (typically a FIN written on a carrier that then failed). A fresh
+		// epoch would be refused until retention expires; resolve that exact
+		// transaction first, which re-sends the obligation on a new carrier.
+		if err:=sh.peer.DeferToPreviousTransaction(candidate);err!=nil{return fmt.Errorf("listener requires the previous transaction: %w",err)}
+		return fmt.Errorf("%w: listener requires the previous transaction to be resolved first",session.ErrCommitUncertain)
 	}
 	// A Flow the listener has already closed can never be reconciled. Close
 	// this side's copy and retry with a fresh snapshot.
@@ -272,6 +280,10 @@ func (r *Runtime) finishDialerFinalization(ctx context.Context,sh *dialerShard,o
 func (r *Runtime) resolveDialerCommitUncertainty(ctx context.Context,cfg config.Config,tlsCfg *tls.Config,sh *dialerShard)(bool,error){
 	query,err:=sh.peer.CommitStatusQuery()
 	if err!=nil{return false,err}
+	if sh.peer.RecoveryTransactionState()==session.RecoveryTxnFinalized{
+		release:=sh.peer.FreezeForExactResolution()
+		defer release()
+	}
 	o,err:=r.openRuntimeCarrier(ctx,cfg,tlsCfg)
 	if err!=nil{return false,fmt.Errorf("%w: status carrier: %v",session.ErrCommitUncertain,err)}
 	keepCarrier:=false
@@ -348,7 +360,14 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 	// side's copies before the snapshot so both sides describe one Flow set.
 	p.ClosePeerClosedFlows(remote.ClosedStreams)
 	local,err:=p.BeginRecovery(remote.CandidateID)
-	if err!=nil{return true,err}
+	if err!=nil{
+		if errors.Is(err,session.ErrCommitUncertain)&&p.PreviousTransactionPinned(){
+			// Tell the dialer why, so it resolves the pinned transaction
+			// instead of retrying fresh epochs that are refused the same way.
+			_ = session.EncodeRecoveryOffer(out,session.RecoveryOffer{CandidateID:remote.CandidateID,NextEpoch:remote.NextEpoch,Snapshot:recovery.Snapshot{SessionID:remote.Snapshot.SessionID},ResolvePrevious:true})
+		}
+		return true,err
+	}
 	published:=false
 	var prepared session.RecoveryControl
 	preparedKnown:=false

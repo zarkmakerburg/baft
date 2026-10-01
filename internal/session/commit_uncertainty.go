@@ -90,11 +90,16 @@ func (p *Peer) RecoveryStability() RecoveryStabilitySnapshot {
 		act:=&flows[i]
 		if act.flow==nil{continue}
 		act.flow.mu.Lock()
+		closed:=act.flow.closed
 		acked:=act.flow.txAcked
 		finAcked:=act.flow.finAcked
 		finAckSent:=act.flow.finAckSent
 		finAckConfirmed:=act.flow.finAckConfirmed
 		act.flow.mu.Unlock()
+		// A closed Flow (finished, reset, or closed from the peer's tombstone)
+		// can never prove anything more; counting it pinned the transaction
+		// as unstable forever.
+		if closed{continue}
 		hwm:=act.replayHighWatermark
 		if hwm>selectedHigh{selectedHigh=hwm;out.ReplayHighWatermark=hwm;out.ReplayPeerAccepted=acked}
 		if hwm>0&&acked<hwm{out.ReplayOutstanding=true}
@@ -122,11 +127,13 @@ func (p *Peer) NeedsExactTransactionResolution() bool {
 	a.mu.Lock()
 	state:=a.txnState
 	prepPresent:=a.prepared!=nil
+	peerRequires:=a.peerRequiresExact
 	a.mu.Unlock()
 	switch state {
 	case RecoveryTxnCommitSent,RecoveryTxnUncertain,RecoveryTxnCommitted,RecoveryTxnFinalizing,RecoveryTxnFinalizationUncertain:
 		return true
 	case RecoveryTxnFinalized:
+		if peerRequires{return true}
 		if !prepPresent{return false}
 		st:=p.RecoveryStability()
 		// Carrier Active != Application Ready, and Application Ready !=
@@ -282,7 +289,7 @@ func clonePreparedFlowForIncarnation(in preparedFlowRecovery) preparedFlowRecove
 		flow:in.flow,replayed:in.replayed,replayFrom:in.replayFrom,replayHighWatermark:in.replayHighWatermark,ackAdvance:in.ackAdvance,
 		creditAdvance:in.creditAdvance,finAckAdvance:in.finAckAdvance,
 		finAckConfirmAdvance:in.finAckConfirmAdvance,resendFIN:in.resendFIN,
-		finFinal:in.finFinal,ackPeerFIN:in.ackPeerFIN,
+		finFinal:in.finFinal,ackPeerFIN:in.ackPeerFIN,repeatOpenOK:in.repeatOpenOK,
 	}
 	out.replay=make([]protocol.Frame,len(in.replay))
 	for i,fr:=range in.replay{
@@ -290,6 +297,22 @@ func clonePreparedFlowForIncarnation(in preparedFlowRecovery) preparedFlowRecove
 		out.replay[i].Payload=append([]byte(nil),fr.Payload...)
 	}
 	return out
+}
+
+// rebindEntryForLiveFlow describes a live Flow outside the transaction's own
+// Flow set for an exact rebind. A listener Flow the dialer never granted
+// window to may still be waiting for an OPEN_OK lost with the failed carrier:
+// the rebind repeats that OPEN_OK (the dialer completes the Flow, or resets it
+// if it abandoned the OPEN) instead of replaying data, which it cannot have
+// sent without window.
+func (p *Peer) rebindEntryForLiveFlow(fl *flow)(preparedFlowRecovery,bool){
+	fl.mu.Lock()
+	open:=fl.openOK&&!fl.closed
+	acked,next,granted:=fl.txAcked,fl.txNext,fl.peerMax>0
+	fl.mu.Unlock()
+	if !open{return preparedFlowRecovery{},false}
+	if p.role==Listener&&!granted{return preparedFlowRecovery{flow:fl,repeatOpenOK:true,pumpsRestored:true},true}
+	return preparedFlowRecovery{flow:fl,replayFrom:acked,replayHighWatermark:next,pumpsRestored:true},true
 }
 
 func clonePreparedForRebind(old *preparedRecovery,c Carrier,sender *outboundSender,runCtx context.Context) *preparedRecovery {
@@ -311,18 +334,40 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 	a:=p.recovery
 	a.ownershipMu.Lock()
 	defer a.ownershipMu.Unlock()
+	p.mu.Lock()
+	live:=make([]*flow,0,len(p.flows))
+	for _,fl:=range p.flows{live=append(live,fl)}
+	p.mu.Unlock()
 	a.mu.Lock()
 	oldPrep:=a.prepared
 	if oldPrep==nil||!sameRecoveryTransaction(oldPrep.control,ctl){a.mu.Unlock();return recovery.ErrNotPrepared}
 	newSender:=newOutboundSender(&frameWriter{w:c.Out},p.recoveryEnabled)
+	known:=make(map[uint64]bool,len(oldPrep.flows))
 	for _,act:=range oldPrep.flows{
+		known[act.flow.id]=true
 		if err:=newSender.addFlow(act.flow.id);err!=nil{a.mu.Unlock();return err}
+	}
+	// After activation the transaction's Flow set is no longer the live set:
+	// Flows opened since then have their own unacknowledged data and FINs on
+	// the failed carrier. Carry them like RebindCommittedCarrier's synthetic
+	// rebind does, or their first frame fails the new sender and their
+	// in-flight data is never replayed.
+	var extra []preparedFlowRecovery
+	if oldPrep.activationComplete{
+		for _,fl:=range live{
+			if known[fl.id]{continue}
+			entry,ok:=p.rebindEntryForLiveFlow(fl)
+			if !ok{continue}
+			if err:=newSender.addFlow(fl.id);err!=nil{a.mu.Unlock();return err}
+			extra=append(extra,entry)
+		}
 	}
 	runCtx:=ctx
 	p.mu.Lock()
 	if p.runCtx!=nil{runCtx=p.runCtx}
 	p.mu.Unlock()
 	newPrep:=clonePreparedForRebind(oldPrep,c,newSender,runCtx)
+	newPrep.flows=append(newPrep.flows,extra...)
 	p.bindRecoverySenderDiagnostic(newSender,newPrep.control,newPrep.incarnation,0)
 	p.traceRecoveryDiagnostic("REBIND_CREATED",SenderStopUnknown,nil,"",newSender,newPrep.control,newPrep.incarnation,0)
 	oldSender:=oldPrep.sender
@@ -340,6 +385,7 @@ func (p *Peer) CommitStatusQuery() (RecoveryControl,error) {
 	uncertain:=a.uncertain
 	last:=a.lastCommit
 	prepPresent:=a.prepared!=nil
+	peerRequires:=a.peerRequiresExact
 	a.mu.Unlock()
 	switch state {
 	case RecoveryTxnUncertain,RecoveryTxnCommitSent,RecoveryTxnFinalizationUncertain:
@@ -351,6 +397,11 @@ func (p *Peer) CommitStatusQuery() (RecoveryControl,error) {
 		q:=last;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
 		return q,nil
 	case RecoveryTxnFinalized:
+		if peerRequires{
+			if last.SessionID==""{return RecoveryControl{},recovery.ErrStateMismatch}
+			q:=last;q.Phase=RecoveryPhaseStatusQuery;q.Status=RecoveryResolutionNone
+			return q,nil
+		}
 		if !prepPresent{return RecoveryControl{},ErrCommitUncertain}
 		st:=p.RecoveryStability()
 		if st.TransactionStable&&st.ApplicationReady{return RecoveryControl{},ErrCommitUncertain}
@@ -417,6 +468,11 @@ func (p *Peer) ValidateStatusReply(reply RecoveryControl) error {
 	if !matched&&(reply.Status==RecoveryResolutionConflict||reply.Status==RecoveryResolutionUnknown)&&a.lastResolutionConflict.SessionID!="" {
 		matched=sameRecoveryTransaction(a.lastResolutionConflict,reply)
 	}
+	// A ResolvePrevious query names lastCommit, so its answer may be a
+	// conflict about lastCommit.
+	if !matched&&(reply.Status==RecoveryResolutionConflict||reply.Status==RecoveryResolutionUnknown)&&a.peerRequiresExact&&a.lastCommit.SessionID!="" {
+		matched=sameRecoveryTransaction(a.lastCommit,reply)
+	}
 	if !matched{return recovery.ErrStateMismatch}
 	switch reply.Status{
 	case RecoveryResolutionCommitted,RecoveryResolutionFinalized,RecoveryResolutionNotCommitted,RecoveryResolutionConflict,RecoveryResolutionUnknown:
@@ -478,6 +534,9 @@ func (p *Peer) NoteResolutionConflict(reply RecoveryControl) error {
 	if reply.Status!=RecoveryResolutionConflict&&reply.Status!=RecoveryResolutionUnknown{return recovery.ErrStateMismatch}
 	a:=p.recovery
 	a.mu.Lock()
+	// The listener does not hold this transaction, so it cannot be what it
+	// asked to resolve; fall back to fresh-epoch recovery.
+	a.peerRequiresExact=false
 	if a.lastResolutionConflict.SessionID!=""&&sameRecoveryTransaction(a.lastResolutionConflict,reply){a.mu.Unlock();return ErrCommitUncertain}
 	a.lastResolutionConflict=reply
 	a.mu.Unlock()
@@ -542,11 +601,10 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 	if runCtx==nil{runCtx=ctx}
 	preparedFlows:=make([]preparedFlowRecovery,0,len(flows))
 	for _,fl:=range flows{
-		fl.mu.Lock();open:=fl.openOK&&!fl.closed;fl.mu.Unlock()
-		if open{
-			if err:=newSender.addFlow(fl.id);err!=nil{return err}
-			preparedFlows=append(preparedFlows,preparedFlowRecovery{flow:fl,replayFrom:fl.txAcked,replayHighWatermark:fl.txNext,pumpsRestored:true})
-		}
+		entry,ok:=p.rebindEntryForLiveFlow(fl)
+		if !ok{continue}
+		if err:=newSender.addFlow(fl.id);err!=nil{return err}
+		preparedFlows=append(preparedFlows,entry)
 	}
 	prep=&preparedRecovery{
 		control:ctl,incarnation:1,physicalCarrierInstanceID:physicalCarrierInstanceID(ctl.NextEpoch,1),carrier:c,sender:newSender,runCtx:runCtx,flows:preparedFlows,
@@ -564,4 +622,77 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 	// Another exact rebind won the race; update that prepared transaction
 	// through the normal control-only rebind path.
 	return p.RebindPreparedRecovery(ctx,ctl,c)
+}
+
+// PreviousTransactionPinned reports that this side refuses a fresh epoch
+// because its last finalized transaction still has an unproven obligation.
+// A listener answers such an offer with RecoveryOffer.ResolvePrevious.
+func (p *Peer) PreviousTransactionPinned() bool {
+	return p.RecoveryTransactionState()==RecoveryTxnFinalized&&p.NeedsExactTransactionResolution()
+}
+
+// DeferToPreviousTransaction withdraws the fresh candidate the listener
+// refused with ResolvePrevious and pins the last finalized transaction, so
+// the next attempt resolves it exactly instead of offering another epoch.
+// The candidate never prepared, so the finalized transaction is still the
+// current authority. Without that evidence it only aborts the candidate.
+func (p *Peer) DeferToPreviousTransaction(candidateID string) error {
+	if p.recovery==nil{return errors.New("recovery is disabled")}
+	a:=p.recovery
+	a.mu.Lock()
+	if !a.frozen||a.pendingCandidate!=candidateID||a.txnState!=RecoveryTxnPreparing{a.mu.Unlock();return recovery.ErrStateMismatch}
+	last:=a.lastCommit
+	current:=last.SessionID!=""&&a.engine.CurrentEpoch()==last.NextEpoch&&a.engine.Owner()==last.CandidateID
+	a.mu.Unlock()
+	if !current{
+		p.AbortRecovery(candidateID)
+		return recovery.ErrStateMismatch
+	}
+	a.engine.Abort(a.engine.CurrentEpoch()+1,candidateID)
+	a.aborts.Add(1)
+	a.mu.Lock()
+	if a.pendingCandidate==candidateID{
+		a.frozen=false;a.pendingCandidate="";a.pendingPlan=recovery.Plan{};a.pendingSnapshot=recovery.Snapshot{};a.pendingPeerSnapshot=recovery.Snapshot{};a.pendingRoutes=nil;a.hasPlan=false;a.uncertain=RecoveryControl{}
+		a.txnState=RecoveryTxnFinalized
+		a.peerRequiresExact=true
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+// ClearPeerExactRequirement records that the transaction the listener asked
+// for has been resolved.
+func (p *Peer) ClearPeerExactRequirement() {
+	if p.recovery==nil{return}
+	a:=p.recovery
+	a.mu.Lock();a.peerRequiresExact=false;a.mu.Unlock()
+}
+
+// FreezeForExactResolution stops new Flows from opening while a dialer
+// resolves an exact transaction. The rebind captures the live Flow set on a
+// new sender; a Flow opened meanwhile would be registered only with the dead
+// sender and its first frame would fail the new carrier. Unanswered OPENs are
+// abandoned exactly as BeginRecovery does: their answer, if any, was lost with
+// the failed carrier, and the listener repeats it on the new one, which makes
+// this side reset the Flow there. The returned release undoes the freeze if
+// activation did not already lift it.
+func (p *Peer) FreezeForExactResolution() func() {
+	if p.recovery==nil||p.role!=Dialer{return func(){}}
+	a:=p.recovery
+	p.recoveryGate.Lock()
+	a.mu.Lock()
+	took:=!a.frozen
+	if took{a.frozen=true;a.resolutionFreeze=true}
+	a.mu.Unlock()
+	p.abandonUnansweredOpens()
+	p.recoveryGate.Unlock()
+	return func(){
+		if !took{return}
+		a.mu.Lock()
+		if a.resolutionFreeze{
+			a.resolutionFreeze=false
+			if a.pendingCandidate==""&&a.txnState==RecoveryTxnFinalized{a.frozen=false}
+		}
+		a.mu.Unlock()
+	}
 }
