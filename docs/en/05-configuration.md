@@ -31,7 +31,15 @@ Baseline configuration requires TLS 1.3, explicit CA/certificate/key files, and 
 
 ## Recovery
 
-`recovery.enabled: true` is rejected until the Stage-D recovery contract is implemented. Unsupported behavior must not be silently ignored.
+```yaml
+recovery:
+  enabled: false
+  retention_seconds: 30
+```
+
+`recovery.enabled: true` turns on same-process ECRL carrier replacement (Step 5.7): when a Shard's carrier fails, the live Session rebinds to a new carrier with epoch fencing and bounded replay instead of ending. It requires `retention_seconds` between 1 and 300; `mode` may be omitted or set to `same_process`.
+
+`durable: true` and any other `mode` are rejected rather than silently ignored: recovery state is not persisted, so resume across a process restart or machine reboot is not supported. See [Known limitations](../../KNOWN-LIMITATIONS.en.md) for the exact scope.
 
 ## Revocation (EX)
 

@@ -37,4 +37,4 @@ BAFT is not intended to become a public VPN, arbitrary proxy, automatic Xray con
 
 ## Current implementation versus final design
 
-Stage B provides the secure vertical slice. Stage C is stabilizing allocation, DRR, bounded control scheduling, and slow-receiver behavior. Resume, epochs, cross-Carrier replay, and tombstones belong to Stage D and are not current capabilities.
+Stage B provides the secure vertical slice. Stage C's allocation, scheduling, bounded control, and slow-receiver soak gate is green. Stage D is partly implemented: same-process ECRL carrier replacement, epoch fencing, and bounded replay exist behind `recovery.enabled` (Step 5.7). Durable snapshots and resume across process restart or machine reboot are not current capabilities.
