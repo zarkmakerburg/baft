@@ -77,6 +77,12 @@ type FinanceLedgerEntry struct {
 	RateEffective  time.Time `json:"rate_effective_from"`
 }
 
+// financeRemainder is money not yet large enough to book, in 1/GiB micros.
+type financeRemainder struct {
+	Cost    uint64 `json:"cost"`
+	Revenue uint64 `json:"revenue"`
+}
+
 type NodeFinance struct {
 	NodeID        string    `json:"node_id"`
 	IngressBytes  uint64    `json:"ingress_bytes"`
@@ -137,6 +143,9 @@ type state struct {
 	Policies        map[string]FinancePolicy     `json:"finance_policies,omitempty"`
 	RateHistory     map[string][]FinancePolicy   `json:"finance_rate_history,omitempty"`
 	FinanceLedger   []FinanceLedgerEntry         `json:"finance_ledger,omitempty"`
+	// FinanceRemainders carries each node's sub-micro money between traffic
+	// reports; state written before this field existed starts from zero.
+	FinanceRemainders map[string]financeRemainder `json:"finance_remainders,omitempty"`
 	Telemetry       map[string]TelemetryCursor   `json:"telemetry,omitempty"`
 	History         map[string][]HistoryPoint    `json:"history,omitempty"`
 	ActiveAlerts    map[string]Alert             `json:"active_alerts,omitempty"`
@@ -412,16 +421,23 @@ func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosP
 	return s.saveLocked()
 }
 
-func moneyForBytes(bytes uint64,rate int64) int64 {
-	if rate<=0||bytes==0{return 0}
+// moneyForBytes returns the whole micros owed for bytes at rate, plus the new
+// sub-micro remainder. carry and the returned remainder are in units of
+// 1/GiB micro. Threading the remainder through successive reports makes their
+// sum equal the money for the summed bytes, wherever the reports split them.
+// Rates are capped at 1e9 by SetFinancePolicyAt, so rem*rate+carry fits.
+func moneyForBytes(bytes uint64,rate int64,carry uint64) (int64,uint64) {
 	const gib uint64 = 1 << 30
+	carry%=gib
+	if rate<=0||bytes==0{return 0,carry}
 	whole:=bytes/gib
 	rem:=bytes%gib
-	if whole>uint64(math.MaxInt64/rate){return math.MaxInt64}
+	if whole>uint64(math.MaxInt64/rate){return math.MaxInt64,carry}
 	base:=int64(whole)*rate
-	fraction:=int64((rem*uint64(rate))/gib)
-	if base>math.MaxInt64-fraction{return math.MaxInt64}
-	return base+fraction
+	num:=rem*uint64(rate)+carry
+	fraction:=int64(num/gib)
+	if base>math.MaxInt64-fraction{return math.MaxInt64,carry}
+	return base+fraction,num%gib
 }
 
 func satAdd(a,b int64) int64 {
@@ -457,13 +473,16 @@ func (s *Store) appendFinanceLocked(nodeID string,at time.Time,ingressBytes,egre
 	total:=ingressBytes+egressBytes
 	p,_:=s.rateAtLocked(nodeID,at)
 	if p.Currency==""{p.Currency="IRR"}
-	cost:=moneyForBytes(total,p.CostMicrosPerGiB)
-	revenue:=moneyForBytes(total,p.RevenueMicrosPerGiB)
+	carried:=s.st.FinanceRemainders[nodeID]
+	cost,costRemainder:=moneyForBytes(total,p.CostMicrosPerGiB,carried.Cost)
+	revenue,revenueRemainder:=moneyForBytes(total,p.RevenueMicrosPerGiB,carried.Revenue)
 	profit:=revenue-cost
 
 	f:=s.st.Finance[nodeID]
 	f.NodeID=nodeID
 	if ^uint64(0)-f.IngressBytes<ingressBytes||^uint64(0)-f.EgressBytes<egressBytes{return errors.New("traffic counter overflow")}
+	if s.st.FinanceRemainders==nil{s.st.FinanceRemainders=map[string]financeRemainder{}}
+	s.st.FinanceRemainders[nodeID]=financeRemainder{Cost:costRemainder,Revenue:revenueRemainder}
 	f.IngressBytes+=ingressBytes
 	f.EgressBytes+=egressBytes
 	f.CostMicros=satAdd(f.CostMicros,cost)

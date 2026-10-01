@@ -251,7 +251,16 @@ func mergeAntiRollback(restored *state,current state,createdAt time.Time){
 		bak,ok:=restored.Telemetry[id]
 		if !cursorAhead(cur,bak,ok){continue}
 		restored.Telemetry[id]=cur
-		if f,ok:=current.Finance[id];ok{restored.Finance[id]=f}
+		if f,ok:=current.Finance[id];ok{
+			restored.Finance[id]=f
+			// The sub-micro remainder belongs to the totals it was carried from.
+			if r,ok:=current.FinanceRemainders[id];ok{
+				if restored.FinanceRemainders==nil{restored.FinanceRemainders=map[string]financeRemainder{}}
+				restored.FinanceRemainders[id]=r
+			}else{
+				delete(restored.FinanceRemainders,id)
+			}
+		}
 		if h,ok:=current.History[id];ok{restored.History[id]=append([]HistoryPoint(nil),h...)}
 		if latestRateVersion(current.RateHistory[id])>latestRateVersion(restored.RateHistory[id]){
 			restored.RateHistory[id]=append([]FinancePolicy(nil),current.RateHistory[id]...)
