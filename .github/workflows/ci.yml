@@ -106,6 +106,21 @@ jobs:
       - name: Protocol fuzz smoke
         run: go test ./internal/protocol -run '^$' -fuzz '^FuzzDecode$' -fuzztime 10s
 
+  release-dry-run:
+    # Rehearse a signed release with throwaway keys: reproducible build,
+    # sign, verify, and rejection of tampered or untrusted releases.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Release dry run
+        run: scripts/release/dry_run.sh
+
   e2e-binaries:
     # Real `baft` and `baft-pair` binaries: pair an EX and IR the way
     # install.sh does, run both, and push data through a local echo target.
