@@ -180,4 +180,22 @@ sudo bash install.sh --role ir --pairing-code BAFTPAIR1:...
 
 اسکریپت `tests/e2e/pair_and_run.sh` همین pairing را با باینری واقعی اجرا می‌کند و داده رد می‌کند؛ `tests/e2e/install_two_roles.sh` خود `install.sh` را برای هر دو نقش روی یک ماشین اجرا می‌کند. CI هر دو را اجرا می‌کند.
 
+## کار با نود نصب‌شده
+
+سه فرمان فقط‌خواندنی؛ هیچ‌کدام چیزی روی سرور تغییر نمی‌دهد.
+
+<div dir="ltr" align="left">
+
+```bash
+sudo baft status            # version, installed release, role and peer, routes, service state, flows, recovery counters
+sudo baft doctor            # checks with OK / INFO / WARN / FAIL and a hint for each problem; exit 1 on any FAIL
+sudo baft logs -n 200 -f    # journalctl for the service
+```
+
+</div>
+
+هر سه `--service` می‌گیرند (پیش‌فرض `baft`)؛ `status` و `doctor` علاوه بر آن `--file` (پیش‌فرض `/etc/baft/baft.yaml`)، `--release-state` (پیش‌فرض `/opt/baft/release-state.json`) و `--json` را هم می‌پذیرند.
+
+`doctor` این‌ها را بررسی می‌کند: config و فایل revocation درست load شوند؛ کلیدهای خصوصی فقط برای مالک قابل دسترس باشند؛ سرویس فعال باشد (اگر restart شده باشد WARN)؛ باینری با release امضاشدهٔ نصب‌شده بخواند (برای نصب از سورس WARN)؛ endpoint متریک جواب بدهد و هیچ نقض invariant گزارش نکند؛ IR به EX برسد و route محلی‌اش گوش بدهد، یا listener روی EX اتصال بپذیرد و مقصد routeها جواب بدهد. چند تنظیم شبکه را هم فقط می‌خواند (congestion control، qdisc پیش‌فرض، سقف بافر socket) و `sysctl` پیشنهادی را به‌صورت INFO چاپ می‌کند. تنظیم خودکار برای P2 است.
+
 </div>

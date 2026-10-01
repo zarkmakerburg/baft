@@ -44,6 +44,12 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runConfig(args[1:], stdout, stderr)
 	case "run":
 		return runNode(ctx, args[1:], stdout, stderr)
+	case "status":
+		return runStatus(args[1:], stdout, stderr, hostOps)
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr, hostOps)
+	case "logs":
+		return runLogs(args[1:], stdout, stderr, hostOps)
 	default:
 		usage(stderr)
 		return 2
@@ -159,4 +165,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  baft config validate --file <config.yaml>")
 	fmt.Fprintln(w, "  baft config stealth-pro --file <config.yaml> [padding/jitter flags]")
 	fmt.Fprintln(w, "  baft run --file <config.yaml>")
+	fmt.Fprintln(w, "  baft status [--file /etc/baft/baft.yaml] [--service baft] [--json]")
+	fmt.Fprintln(w, "  baft doctor [--file /etc/baft/baft.yaml] [--service baft] [--json]")
+	fmt.Fprintln(w, "  baft logs [--service baft] [-n 100] [-f]")
 }

@@ -46,3 +46,17 @@ Final systemd hardening, installer/package flow, admin transactions, certificate
 Local clients then connect to `BAFT_ROUTE_LISTEN` on the IR (default `127.0.0.1:1443`); the EX forwards to `BAFT_TARGET` (default `127.0.0.1:2443`, must be a fixed IP). Until the EX accepts the reply the IR dialer exits and systemd restarts it every 2 s.
 
 `tests/e2e/pair_and_run.sh` runs this pairing with the real binaries and pushes data through; `tests/e2e/install_two_roles.sh` runs `install.sh` itself for both roles on one host. CI runs both.
+
+## Operating an installed node
+
+Three read-only commands; none of them changes the host.
+
+```bash
+sudo baft status            # version, installed release, role and peer, routes, service state, flows, recovery counters
+sudo baft doctor            # checks with OK / INFO / WARN / FAIL and a hint for each problem; exit 1 on any FAIL
+sudo baft logs -n 200 -f    # journalctl for the service
+```
+
+All three take `--service` (default `baft`); `status` and `doctor` also take `--file` (default `/etc/baft/baft.yaml`), `--release-state` (default `/opt/baft/release-state.json`) and `--json`.
+
+`doctor` checks: the config and revocation file load; private keys are owner-only; the service is active (WARN if it has restarted); the binary matches the installed signed release (WARN for a source install); the metrics endpoint answers and reports no conservation invariant violation; the IR reaches its EX and its local route listens, or the EX listener accepts and its route targets answer. It also reads (never writes) a few network settings — congestion control, default qdisc, socket buffer limits — and prints the `sysctl` it would recommend as INFO. Automatic tuning is P2.
