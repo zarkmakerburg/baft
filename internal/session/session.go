@@ -1728,6 +1728,11 @@ func (f *flow) close() {
 	close(f.creditWait)
 	deferredWake:=f.deferredLiveWake
 	conn := f.conn
+	// The local side has seen the whole inbound stream only if the peer's FIN
+	// was passed on as CloseWrite. Otherwise the Flow is ending early (RESET,
+	// failed OPEN, session teardown) and a plain close would hand the local
+	// application a clean EOF for a truncated stream, so abort it with RST.
+	abortive := !f.writeClosed
 	allocator := f.allocator
 	resourceID := f.resourceID
 	ring := f.rxRing
@@ -1740,6 +1745,11 @@ func (f *flow) close() {
 		ring.Close()
 	}
 	if conn != nil {
+		if abortive {
+			if l, ok := conn.(interface{ SetLinger(int) error }); ok {
+				_ = l.SetLinger(0)
+			}
+		}
 		_ = conn.Close()
 	}
 	if allocator != nil {

@@ -137,6 +137,8 @@ Flow زمانی کاملاً تمام‌شده است که state دو جهت ا�
 
 RESET و OPEN_ERR از codeهای ثابت استفاده می‌کنند تا مسیر فایل، متن OS یا داده حساس روی wire نرود.
 
+اگر Flow قبل از رسیدن FIN طرف مقابل به socket محلی تمام شود (RESET از هر طرف، OPEN ناموفق، revocation یا پایان Session بدون recovery)، socket محلی با `SO_LINGER=0` بسته می‌شود. یعنی برنامه به‌جای EOF تمیز که شبیه یک جریان کامل است، connection reset می‌بیند. Flowی که با FIN تمام شده همچنان عادی بسته می‌شود.
+
 نمونه codeهای استاندارد:
 
 - `AUTH_FAILED`
