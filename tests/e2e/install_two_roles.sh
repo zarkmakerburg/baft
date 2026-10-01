@@ -104,4 +104,11 @@ systemctl is-active baft-ex baft-ir
 log "traffic through the installed services"
 python3 tests/e2e/echo.py send 1443 "${E2E_MIB:-8}" "${E2E_CONNS:-4}"
 systemctl is-active baft-ex baft-ir
+
+log "operator commands against the installed services"
+for r in ex ir; do
+  /usr/local/bin/baft status --file "/etc/baft-$r/baft.yaml" --service "baft-$r" --release-state "/opt/baft-$r/release-state.json"
+  # doctor exits 1 on any FAIL; INFO/WARN (network tuning, source install) are fine here.
+  /usr/local/bin/baft doctor --file "/etc/baft-$r/baft.yaml" --service "baft-$r" --release-state "/opt/baft-$r/release-state.json"
+done
 log "PASS"

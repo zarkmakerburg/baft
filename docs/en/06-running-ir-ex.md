@@ -57,3 +57,17 @@ By default (`BAFT_INSTALL_FROM=release`) the installer needs only `curl`, `opens
 4. installs the binaries and only then records the release in that state file.
 
 If verification fails nothing is installed. Until the owner's key ceremony pins the root key, release installs stop with a clear error; `--from-source` (`BAFT_INSTALL_FROM=source`) keeps the old clone-and-build path for development. `tests/installer` checks the installer's verifier against releases signed by `internal/release`, including tampering, revocation, replayed lists, downgrade and re-tag.
+
+## Operating an installed node
+
+Three read-only commands; none of them changes the host.
+
+```bash
+sudo baft status            # version, installed release, role and peer, routes, service state, flows, recovery counters
+sudo baft doctor            # checks with OK / INFO / WARN / FAIL and a hint for each problem; exit 1 on any FAIL
+sudo baft logs -n 200 -f    # journalctl for the service
+```
+
+All three take `--service` (default `baft`); `status` and `doctor` also take `--file` (default `/etc/baft/baft.yaml`), `--release-state` (default `/opt/baft/release-state.json`) and `--json`.
+
+`doctor` checks: the config and revocation file load; private keys are owner-only; the service is active (WARN if it has restarted); the binary matches the installed signed release (WARN for a source install); the metrics endpoint answers and reports no conservation invariant violation; the IR reaches its EX and its local route listens, or the EX listener accepts and its route targets answer. It also reads (never writes) a few network settings — congestion control, default qdisc, socket buffer limits — and prints the `sysctl` it would recommend as INFO. Automatic tuning is P2.
