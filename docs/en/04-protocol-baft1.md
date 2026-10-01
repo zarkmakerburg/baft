@@ -57,6 +57,8 @@ FIN carries the final offset for one direction. The receiver verifies it matches
 
 Wire-visible errors use a fixed code vocabulary such as `AUTH_FAILED`, `FLOW_CONTROL_ERROR`, `ROUTE_DENIED`, `TARGET_UNREACHABLE`, `RESOURCE_EXHAUSTED`, `STALE_EPOCH`, and `PROTOCOL_ERROR`. Raw OS/file-path errors are not sent to the peer.
 
+A Flow that ends before the peer's FIN was passed to the local socket (RESET in either direction, a failed OPEN, revocation, or the end of the Session without recovery) is closed abortively: the local socket gets `SO_LINGER=0`, so the application sees a connection reset instead of a clean EOF that would look like a complete stream. A Flow that ended through FIN keeps the graceful close.
+
 ## Resume frames
 
 RESUME frame types are reserved by the protocol, but complete resume semantics belong to Stage D. Parsing a reserved type is not equivalent to implementing recovery.

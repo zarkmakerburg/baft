@@ -1,10 +1,11 @@
 package integration_test
 
 import (
-	"io"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -28,9 +29,11 @@ func TestRevocationReloadCutsEstablishedCarrier(t *testing.T) {
 	n, err := p.exRuntime.ReloadRevocations()
 	if err != nil || n != 1 { t.Fatalf("reload applied %d entries, err=%v", n, err) }
 
+	// The Flow is cut mid-stream, so the application must see a reset, not a
+	// clean EOF that would pass for a complete stream.
 	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, err := c.Read(make([]byte, 1)); err != io.EOF {
-		t.Fatalf("live Flow of the revoked peer was not closed: %v", err)
+	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("live Flow of the revoked peer was not reset: %v", err)
 	}
 	select {
 	case err := <-p.irDone:
