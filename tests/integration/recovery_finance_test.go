@@ -2,37 +2,23 @@ package integration_test
 
 import (
 	"bytes"
-	"context"
-	"crypto/x509"
-	"encoding/pem"
-	"errors"
 	"io"
 	"net"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/bcc"
 	"github.com/zarkmakerburg/baft/internal/config"
-	"github.com/zarkmakerburg/baft/internal/node"
-	"github.com/zarkmakerburg/baft/internal/recordshape"
-	"github.com/zarkmakerburg/baft/internal/securityinternal"
 	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
 func TestRecoveryTelemetryFinanceRemainExact(t *testing.T){
-	certs:=testPKI(t);dir:=t.TempDir()
-	write:=func(name string,b []byte)string{p:=filepath.Join(dir,name);if err:=os.WriteFile(p,b,0600);err!=nil{t.Fatal(err)};return p}
-	ca:=write("ca.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:certs.caDER}))
-	cert:=write("server.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:certs.server.Certificate[0]}))
-	der,err:=x509.MarshalPKCS8PrivateKey(certs.server.PrivateKey);if err!=nil{t.Fatal(err)}
-	key:=write("server.key",pem.EncodeToMemory(&pem.Block{Type:"PRIVATE KEY",Bytes:der}))
-
+	dir:=t.TempDir()
 	store,err:=bcc.OpenStore(filepath.Join(dir,"bcc.json"));if err!=nil{t.Fatal(err)}
-	const nodeID="ir-recovery-finance"
+	// startRuntimePair names the dialer ir-recovery; that is the billed node.
+	const nodeID="ir-recovery"
 	const token="recovery-finance-token"
 	if _,err:=store.UpsertNode(bcc.Node{ID:nodeID,Alias:"IR Recovery Finance",Address:"127.0.0.1:29970",Role:"worker"},token);err!=nil{t.Fatal(err)}
 	const costRate int64=1<<28
@@ -42,63 +28,18 @@ func TestRecoveryTelemetryFinanceRemainExact(t *testing.T){
 	bccHTTP:=httptest.NewServer(app.Handler());defer bccHTTP.Close()
 	t.Setenv("BAFT_AGENT_TOKEN",token)
 
-	targetLn,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)}
-	defer targetLn.Close()
-	var targetAccepts atomic.Int64
-	go func(){
-		for{
-			c,e:=targetLn.Accept();if e!=nil{return}
-			targetAccepts.Add(1)
-			go func(x net.Conn){defer x.Close();_,_=io.Copy(x,x)}(c)
-		}
-	}()
-
-	exKey,err:=securityinternal.GenerateKeyPair();if err!=nil{t.Fatal(err)}
-	irKey,err:=securityinternal.GenerateKeyPair();if err!=nil{t.Fatal(err)}
-	exPath:=filepath.Join(dir,"ex-noise.json");irPath:=filepath.Join(dir,"ir-noise.json")
-	if err:=securityinternal.SaveKeyPair(exPath,exKey);err!=nil{t.Fatal(err)}
-	if err:=securityinternal.SaveKeyPair(irPath,irKey);err!=nil{t.Fatal(err)}
-	exPub,_:=securityinternal.EncodePublicKey(exKey.Public)
-	irPub,_:=securityinternal.EncodePublicKey(irKey.Public)
-
-	ex,err:=config.LoadFile("../../configs/example-ex.yaml");if err!=nil{t.Fatal(err)}
-	ex.Node.ID="ex-recovery-finance"
-	ex.Server.Listen=reserveAddress(t);ex.Server.ServerName="ex.test"
-	ex.Server.AllowedPeerIdentities=[]string{"urn:baft:node:"+nodeID}
-	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen=reserveAddress(t)
-	ex.Transport.Shards=1
-	ex.TLS=config.TLS{MinVersion:"1.3",CAFile:ca,CertFile:cert,KeyFile:key}
-	ex.Noise=&config.Noise{KeyFile:exPath,PeerPublicKey:irPub,RecordShaping:recordshape.Config{}}
-	ex.Recovery=config.Recovery{Enabled:true,RetentionSeconds:10,Mode:"same_process"}
-	ex.Routes=[]config.Route{{ID:"finance-route",Direction:"inbound",Target:targetLn.Addr().String(),AllowedPeers:[]string{"urn:baft:node:"+nodeID}}}
-
-	proxy:=newCutProxy(t,ex.Server.Listen);defer proxy.Close()
-	ir,err:=config.LoadFile("../../configs/example-ir.yaml");if err!=nil{t.Fatal(err)}
-	ir.Node.ID=nodeID
-	ir.Peer.Address=proxy.Addr();ir.Peer.ServerName="ex.test";ir.Peer.AllowedIdentity="urn:baft:node:ex-recovery-finance"
-	ir.Management.UnixSocket=filepath.Join(dir,"ir.sock");ir.Management.MetricsListen=reserveAddress(t)
-	ir.Transport.Shards=1;ir.TLS=ex.TLS
-	ir.Noise=&config.Noise{KeyFile:irPath,PeerPublicKey:exPub,RecordShaping:recordshape.Config{}}
-	ir.Recovery=ex.Recovery
-	ir.Routes=[]config.Route{{ID:"local-finance",Direction:"outbound",Listen:reserveAddress(t),RemoteRoute:"finance-route"}}
+	// The pair owns every listener it hands to the runtimes, so a port cannot
+	// be taken between reservation and bind, and a failed start is reported.
 	spoolPath:=filepath.Join(dir,"telemetry.spool")
-	ir.Telemetry=config.Telemetry{
-		Enabled:true,BCCURL:bccHTTP.URL,AgentTokenEnv:"BAFT_AGENT_TOKEN",
-		IntervalSeconds:1,RouteProbeIntervalSeconds:1,SpoolPath:spoolPath,SpoolMaxPending:64,
-	}
-	if err:=config.Validate(ex);err!=nil{t.Fatalf("EX: %v",err)}
-	if err:=config.Validate(ir);err!=nil{t.Fatalf("IR: %v",err)}
+	p:=startRuntimePair(t,1,true,func(_,ir *config.Config){
+		ir.Telemetry=config.Telemetry{
+			Enabled:true,BCCURL:bccHTTP.URL,AgentTokenEnv:"BAFT_AGENT_TOKEN",
+			IntervalSeconds:1,RouteProbeIntervalSeconds:1,SpoolPath:spoolPath,SpoolMaxPending:64,
+		}
+	})
+	defer p.close(t)
 
-	ctx,cancel:=context.WithTimeout(context.Background(),30*time.Second);defer cancel()
-	exDone:=make(chan error,1);irDone:=make(chan error,1)
-	go func(){exDone<-node.NewRuntime().Run(ctx,ex)}()
-	waitTCP(t,ex.Server.Listen,time.Now().Add(6*time.Second))
-	go func(){irDone<-node.NewRuntime().Run(ctx,ir)}()
-	waitTCP(t,ir.Routes[0].Listen,time.Now().Add(8*time.Second))
-	time.Sleep(100*time.Millisecond)
-	baselineAccepts:=targetAccepts.Load()
-
-	c,err:=net.DialTimeout("tcp",ir.Routes[0].Listen,time.Second);if err!=nil{t.Fatal(err)}
+	c,err:=net.DialTimeout("tcp",p.ir.Routes[0].Listen,time.Second);if err!=nil{t.Fatal(err)}
 	defer c.Close();_ = c.SetDeadline(time.Now().Add(20*time.Second))
 
 	sendEcho:=func(payload []byte){
@@ -121,7 +62,18 @@ func TestRecoveryTelemetryFinanceRemainExact(t *testing.T){
 		time.Sleep(50*time.Millisecond)
 	}
 
-	proxy.CutAll()
+	// Let BCC book the first payload on its own, so the two payloads always
+	// arrive in separate telemetry reports. Both byte counts are odd, which is
+	// the split that used to lose one micro of cost to per-report rounding.
+	deadline=time.Now().Add(6*time.Second)
+	for{
+		fs:=store.FinanceSnapshot()
+		if len(fs)==1&&fs[0].IngressBytes==uint64(len(first))&&fs[0].EgressBytes==uint64(len(first)){break}
+		if time.Now().After(deadline){t.Fatalf("first payload was not booked on its own: %+v",fs)}
+		time.Sleep(50*time.Millisecond)
+	}
+
+	p.proxy.CutAll()
 	time.Sleep(350*time.Millisecond)
 	sendEcho(second)
 
@@ -146,21 +98,13 @@ func TestRecoveryTelemetryFinanceRemainExact(t *testing.T){
 			if again.IngressBytes!=wantBytes||again.EgressBytes!=wantBytes||again.CostMicros!=wantCost||again.RevenueMicros!=wantRevenue{
 				t.Fatalf("post-replacement telemetry double-counted: %+v",again)
 			}
-			if targetAccepts.Load()-baselineAccepts!=1{
-				t.Fatalf("target socket reopened during recovery test_accepts=%d baseline=%d total=%d",targetAccepts.Load()-baselineAccepts,baselineAccepts,targetAccepts.Load())
+			if n:=p.targetAccepts.Load()-p.targetBaseline;n!=1{
+				t.Fatalf("target socket reopened during recovery test_accepts=%d baseline=%d total=%d",n,p.targetBaseline,p.targetAccepts.Load())
 			}
 			t.Logf("PASS recovery telemetry/finance exact boot=%s ingress=%d egress=%d seq=%d",telemetryBoot,again.IngressBytes,again.EgressBytes,cur.Sequence)
 			break
 		}
 		if time.Now().After(deadline){t.Fatalf("finance recovery deadline finance=%+v cursor=%+v ok=%v spoolErr=%v",fs,cur,ok,spErr)}
 		time.Sleep(100*time.Millisecond)
-	}
-
-	cancel()
-	for name,ch:=range map[string]<-chan error{"ex":exDone,"ir":irDone}{
-		select{
-		case e:=<-ch:if e!=nil&&!errors.Is(e,context.Canceled){t.Fatalf("%s runtime: %v",name,e)}
-		case <-time.After(6*time.Second):t.Fatalf("%s shutdown timeout",name)
-		}
 	}
 }
