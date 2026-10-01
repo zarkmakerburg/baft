@@ -159,4 +159,26 @@ jobs:
           git config uploadpack.allowFilter true
           sudo git config --system --add safe.directory '*'
       - name: Install EX and IR, pair, pass traffic
-        run: sudo env BAFT_REPO_URL="file://$GITHUB_WORKSPACE" BAFT_REF="$GITHUB_SHA" tests/e2e/install_two_roles.sh
+        run: sudo env BAFT_INSTALL_FROM=source BAFT_REPO_URL="file://$GITHUB_WORKSPACE" BAFT_REF="$GITHUB_SHA" tests/e2e/install_two_roles.sh
+
+  e2e-install-release:
+    # The production path: install.sh downloads a signed release (built here
+    # with throwaway keys), verifies it, and installs without Go or git.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Build a signed release with throwaway keys
+        run: scripts/release/local_release.sh "$RUNNER_TEMP/rel" v0.0.1-ci
+      - name: Install EX and IR from the release, pair, pass traffic
+        run: |
+          sudo env BAFT_INSTALL_FROM=release \
+            BAFT_RELEASE_URL="file://$RUNNER_TEMP/rel/dist" \
+            BAFT_ROOT_PUB="$(cat "$RUNNER_TEMP/rel/root.pub")" \
+            BAFT_REVOCATIONS_URL="file://$RUNNER_TEMP/rel/revocations.json" \
+            tests/e2e/install_two_roles.sh

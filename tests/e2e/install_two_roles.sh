@@ -5,13 +5,20 @@
 # installed services and compares SHA-256. It installs packages, creates the
 # baft user and systemd units, so it is meant for a throwaway CI runner.
 #
-#   sudo BAFT_REPO_URL=$PWD BAFT_REF=$(git rev-parse HEAD) tests/e2e/install_two_roles.sh
+#   sudo BAFT_INSTALL_FROM=source BAFT_REPO_URL=$PWD BAFT_REF=$(git rev-parse HEAD) tests/e2e/install_two_roles.sh
+#
+# With BAFT_INSTALL_FROM=release (and BAFT_RELEASE_URL, BAFT_ROOT_PUB,
+# BAFT_REVOCATIONS_URL, e.g. from scripts/release/local_release.sh) it
+# installs the signed release instead and checks nothing was built.
 set -Eeuo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 [[ "$EUID" -eq 0 ]] || { echo "run as root"; exit 1; }
-export BAFT_REPO_URL="${BAFT_REPO_URL:-$ROOT}"
-export BAFT_REF="${BAFT_REF:-$(git rev-parse HEAD)}"
+export BAFT_INSTALL_FROM="${BAFT_INSTALL_FROM:-source}"
+if [[ "$BAFT_INSTALL_FROM" == "source" ]]; then
+  export BAFT_REPO_URL="${BAFT_REPO_URL:-$ROOT}"
+  export BAFT_REF="${BAFT_REF:-$(git rev-parse HEAD)}"
+fi
 WORK="$(mktemp -d)"
 TARGET_PID=""; EX_PID=""
 log() { printf '[install-e2e] %s\n' "$*"; }
@@ -20,8 +27,21 @@ cleanup() {
   [[ -n "$TARGET_PID" ]] && kill "$TARGET_PID" 2>/dev/null
   [[ -n "$EX_PID" ]] && kill "$EX_PID" 2>/dev/null
   if [[ $rc -ne 0 ]]; then
-    for f in "$WORK"/*.out "$WORK"/*.err; do [[ -f "$f" ]] && { echo "== $f"; tail -n 40 "$f"; }; done
-    for s in baft-ex baft-ir; do journalctl -u "$s" -n 40 --no-pager 2>/dev/null || true; done
+    diag="$WORK/diag"
+    {
+      for f in "$WORK"/*.out "$WORK"/*.err; do [[ -f "$f" ]] && { echo "== $f"; tail -n 40 "$f"; }; done
+      for s in baft-ex baft-ir; do echo "== journal $s"; journalctl -u "$s" -n 40 --no-pager 2>/dev/null || true; done
+    } >"$diag" 2>&1
+    cat "$diag"
+    # Job logs are not always retrievable; annotations are. One annotation
+    # per section keeps the failure readable from the checks API.
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      awk '/^== /{if (msg != "") print msg; msg=$0; next} {msg = msg "\\n" $0} END{if (msg != "") print msg}' "$diag" |
+        tail -n 8 | while IFS= read -r section; do
+          section="${section//%/%25}"
+          printf '::error title=install e2e diagnostics::%s\n' "${section//\\n/%0A}"
+        done
+    fi
   fi
   rm -rf "$WORK"
   exit $rc
@@ -62,6 +82,14 @@ for f in /etc/baft-ex/baft.yaml /etc/baft-ir/baft.yaml; do
   [[ "$(stat -c '%U:%G %a' "$f")" == "root:baft 640" ]] || { stat "$f"; exit 1; }
 done
 [[ "$(stat -c '%U %a' /etc/baft-ex/pki/ca.key)" == "root 600" ]] || { echo "CA key not root-only"; exit 1; }
+if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
+  for p in /opt/baft-ex /opt/baft-ir; do
+    [[ ! -e "$p/src" ]] || { echo "release install built from source in $p"; exit 1; }
+    [[ "$(stat -c '%U %a' "$p/release-state.json")" == "root 644" ]] || { echo "no root-owned release state in $p"; exit 1; }
+    grep -q '"version": "v' "$p/release-state.json" || { cat "$p/release-state.json"; exit 1; }
+  done
+  log "installed signed release: $(/usr/local/bin/baft version)"
+fi
 
 log "wait for both services and the IR route"
 for _ in $(seq 1 60); do
