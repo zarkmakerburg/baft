@@ -140,6 +140,12 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 		sh.peer.RecordRecoveryFailure("snapshot_exchange")
 		return fmt.Errorf("snapshot exchange: %w",err)
 	}
+	// A Flow the listener has already closed can never be reconciled. Close
+	// this side's copy and retry with a fresh snapshot.
+	if closed:=sh.peer.ClosePeerClosedFlows(peer.ClosedStreams);closed>0||peer.Rejected{
+		sh.peer.RecordRecoveryFailure("snapshot_exchange")
+		return fmt.Errorf("%w: listener rejected the snapshot, closed %d flows it had already closed",errRecoverySnapshotTransient,closed)
+	}
 	if err:=sh.peer.ReconcileRecovery(candidate,peer);err!=nil{
 		if errors.Is(err,recovery.ErrStateMismatch){
 			return fmt.Errorf("%w: reconcile: %v",errRecoverySnapshotTransient,err)
@@ -337,6 +343,10 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 	if p.PeerIdentity()!=peer.Identity{return true,errors.New("recovery peer identity mismatch")}
 	p.RecordRecoveryDiagnosticForTest("HANDLER_CREATED",session.SenderStopUnknown,nil,0)
 
+	// Flows the dialer has already closed, or whose unanswered OPEN it
+	// abandoned when the carrier failed, cannot be recovered. Close this
+	// side's copies before the snapshot so both sides describe one Flow set.
+	p.ClosePeerClosedFlows(remote.ClosedStreams)
 	local,err:=p.BeginRecovery(remote.CandidateID)
 	if err!=nil{return true,err}
 	published:=false
@@ -348,7 +358,16 @@ func (r *Runtime) handleIncomingRecovery(hctx context.Context,cfg config.Config,
 		p.AbortRecovery(remote.CandidateID)
 	}()
 	if local.NextEpoch!=remote.NextEpoch{return true,errors.New("recovery epoch mismatch")}
-	if err:=p.ReconcileRecovery(remote.CandidateID,remote);err!=nil{return true,err}
+	if err:=p.ReconcileRecovery(remote.CandidateID,remote);err!=nil{
+		if errors.Is(err,recovery.ErrStateMismatch){
+			// The dialer may still hold a Flow this side has closed. Send the
+			// tombstones so its next attempt can converge; without them the
+			// same mismatch repeats until retention expires.
+			rejected:=local;rejected.Rejected=true
+			_ = session.EncodeRecoveryOffer(out,rejected)
+		}
+		return true,err
+	}
 	if err:=session.EncodeRecoveryOffer(out,local);err!=nil{return true,fmt.Errorf("snapshot exchange: %w",err)}
 
 	prepared,err=p.PrepareRecoveryCommit(hctx,remote.CandidateID,session.Carrier{In:in,Out:out})

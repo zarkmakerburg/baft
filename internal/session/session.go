@@ -528,6 +528,15 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 	case protocol.TypeOpenOK:
 		fl, err := p.getFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				// The dialer gave up on this OPEN (cancelled, or abandoned when the
+				// carrier failed) after the listener had opened it. Have the
+				// listener close its side so the target connection is not kept.
+				if payload, perr := protocol.EncodeControl(protocol.Reset{Code: protocol.ErrorStateMismatch}); perr == nil {
+					_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeReset, StreamID: fr.StreamID, Payload: payload})
+				}
+				return nil
+			}
 			return err
 		}
 		fl.mu.Lock()
@@ -541,6 +550,9 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 	case protocol.TypeOpenErr:
 		fl, err := p.getFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		oe, err := protocol.DecodeOpenError(fr.Payload)
