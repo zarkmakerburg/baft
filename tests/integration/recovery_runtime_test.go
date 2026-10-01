@@ -114,6 +114,11 @@ type recoveryRuntimePair struct{
 
 func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	t.Helper()
+	return startRuntimePair(t,routeCount,true)
+}
+
+func startRuntimePair(t *testing.T,routeCount int,recoveryEnabled bool)*recoveryRuntimePair{
+	t.Helper()
 	certs:=testPKI(t);dir:=t.TempDir()
 	write:=func(name string,b []byte)string{p:=filepath.Join(dir,name);if err:=os.WriteFile(p,b,0600);err!=nil{t.Fatal(err)};return p}
 	ca:=write("ca.pem",pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:certs.caDER}))
@@ -169,7 +174,7 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	ex.Management.UnixSocket=filepath.Join(dir,"ex.sock");ex.Management.MetricsListen=exMetricsLn.Addr().String()
 	ex.Transport.Shards=1;ex.TLS=config.TLS{MinVersion:"1.3",CAFile:ca,CertFile:cert,KeyFile:key}
 	ex.Noise=&config.Noise{KeyFile:exPath,PeerPublicKey:irPub,RecordShaping:recordshape.Config{}}
-	ex.Recovery=config.Recovery{Enabled:true,RetentionSeconds:10,Mode:"same_process"}
+	ex.Recovery=config.Recovery{Enabled:recoveryEnabled,RetentionSeconds:10,Mode:"same_process"}
 	ex.Routes=nil
 	for i:=0;i<routeCount;i++{
 		id:=routeName(i)

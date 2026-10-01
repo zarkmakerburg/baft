@@ -23,6 +23,7 @@ const (
 	defaultWindow           uint64 = 64 * 1024
 	dataChunk                      = 32 * 1024
 	maxClosedFlowTombstones         = 256
+	maxFlowsPerShard                = 64
 )
 
 var ErrRecoverableDataGap = errors.New("recoverable DATA gap on recovery carrier")
@@ -578,12 +579,20 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 	case protocol.TypeData:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
+			// The peer may still have DATA/FIN in flight when this side RESET
+			// or finished the Flow; only that Flow is gone, not the Session.
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		return p.handleData(fl, fr)
 	case protocol.TypeFin:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		return p.handleFin(fl, fr.Offset)
@@ -680,7 +689,7 @@ func (p *Peer) handleHello(fr protocol.Frame) error {
 		SelectedProtocol: 1, SessionID: p.sessionID, Epoch: p.epoch, PeerBootID: p.bootID,
 		AcceptedProfile: protocol.AcceptedProfile{ID: p.profileID, Version: p.profileVersion},
 		NegotiatedLimits: protocol.NegotiatedLimits{
-			MaxFramePayloadBytes: protocol.MaxPayloadSize, MaxFlowsPerShard: 64,
+			MaxFramePayloadBytes: protocol.MaxPayloadSize, MaxFlowsPerShard: maxFlowsPerShard,
 			ReceiveInitialBytes: uint32(defaultWindow), ReceiveMaxBytes: 16 * 1024 * 1024,
 			RetentionMS: 30000,
 		},
@@ -802,7 +811,13 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 		}
 		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")})
 	}
+	full := len(p.flows) >= maxFlowsPerShard
 	p.mu.Unlock()
+	if full {
+		// HELLO_ACK advertises this per-Shard limit; refuse before dialing the target.
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+	}
 
 	target, err := p.routes.Resolve(p.peerID, req.RouteID)
 	if err != nil {
@@ -1368,6 +1383,16 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 					p.markExactTerminalObligation(fl,true,false,final)
 				}else{
 					_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
+				}
+			} else {
+				// A reset application socket must end the Flow on both sides, the
+				// same way pumpTarget handles a failed write; otherwise an idle peer
+				// keeps the target connection and receive budget indefinitely.
+				fl.mu.Lock()
+				closed := fl.closed
+				fl.mu.Unlock()
+				if !closed {
+					_ = p.sendReset(fl, protocol.ErrorTargetUnreachable)
 				}
 			}
 			return

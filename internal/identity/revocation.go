@@ -34,7 +34,7 @@ func (r *RevocationSet) IsRevoked(identity, serial, fingerprint string) bool {
 	if r == nil {
 		return false
 	}
-	serial = normalizeHex(serial)
+	serial = normalizeSerial(serial)
 	fingerprint = normalizeHex(fingerprint)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -46,7 +46,7 @@ func (r *RevocationSet) Watch(identity, serial, fingerprint string) (<-chan stru
 	if r == nil {
 		return ch, func() {}
 	}
-	serial = normalizeHex(serial)
+	serial = normalizeSerial(serial)
 	fingerprint = normalizeHex(fingerprint)
 	r.mu.Lock()
 	if r.revokedLocked(identity, serial, fingerprint) {
@@ -82,7 +82,7 @@ func (r *RevocationSet) RevokeSerial(serial string) {
 	if r == nil {
 		return
 	}
-	serial = normalizeHex(serial)
+	serial = normalizeSerial(serial)
 	if serial == "" {
 		return
 	}
@@ -133,4 +133,14 @@ func normalizeHex(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.ReplaceAll(s, ":", "")
 	return s
+}
+
+// normalizeSerial also drops leading zeros: openssl prints serials padded to
+// whole bytes ("0A1B") while the carrier uses big.Int.Text(16) ("a1b").
+func normalizeSerial(s string) string {
+	s = normalizeHex(s)
+	if t := strings.TrimLeft(s, "0"); t != "" || s == "" {
+		return t
+	}
+	return "0"
 }

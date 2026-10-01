@@ -3,9 +3,9 @@
 > Persian: [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md)
 
 - BAFT remains research software and is not declared production-ready.
-- Stage C is incomplete; the slow-receiver liveness gate still has a failing result.
+- The current Stage-C soak for multi-Flow/slow-receiver and its race sample are green; public benchmarking, a real pilot, and production readiness are still unproven.
 - Passing COR-01 is a correctness result on runner/local networking, not a public-network benchmark.
-- allocator, DRR, and bounded control scheduling are in the data path, but long soak and multi-Shard stress are incomplete.
+- allocator, TWRL, PADL, and control scheduling are in the data path; the shared multi-Shard budget and the current repeated soak are tested.
 - same-process ECRL carrier replacement, same-process epoch fencing, and bounded replay are implemented and covered by Step 5.7 runtime tests.
 - durable ECRL session snapshots, process-restart resume, and machine-reboot resume are not implemented or claimed.
 - endpoint-pool/relay production paths are incomplete.
@@ -14,6 +14,7 @@
 - final systemd/installer/config rollback/certificate rotation/support-bundle operations are incomplete.
 - no real Iran↔EX pilot has been run.
 - no universal throughput, undetectability, or guaranteed-connectivity claim has been established.
+- the IR public listener does not authenticate end users automatically; if it is exposed beyond loopback, separate service-layer security is required.
 
 
 ## Step 5.7 recovery scope

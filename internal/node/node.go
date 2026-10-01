@@ -861,7 +861,12 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 		shards = append(shards, sh)
 		go func(index int, sh *dialerShard) {
 			err := sh.peer.Run(ctx)
-			if ctx.Err() == nil && err != nil {
+			if ctx.Err() == nil {
+				// Without recovery, Run returns nil on a clean carrier EOF; the
+				// Shard is still dead and must not stay in the route rotation.
+				if err == nil {
+					err = errors.New("carrier closed by peer")
+				}
 				runErr <- fmt.Errorf("shard %d: %w", index, err)
 			}
 		}(i, sh)
