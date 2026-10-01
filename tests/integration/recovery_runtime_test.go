@@ -216,6 +216,14 @@ func startRuntimePair(t *testing.T,routeCount int,recoveryEnabled bool,configure
 	}
 	go func(){pair.irDone<-pair.irRuntime.Run(ctx,ir)}()
 	waitTCP(t,ir.Routes[0].Listen,time.Now().Add(8*time.Second))
+	// The route listener is bound by the fixture before the IR runtime starts,
+	// so waitTCP's probe connection only becomes a Flow, and a target socket,
+	// once the carrier is up. On a slow runner that is later than a fixed
+	// sleep, and the probe was then counted as a reopened target socket. Wait
+	// for it before taking the baseline.
+	for deadline:=time.Now().Add(8*time.Second);pair.targetAccepts.Load()==0&&time.Now().Before(deadline);{
+		time.Sleep(5*time.Millisecond)
+	}
 	time.Sleep(50*time.Millisecond)
 	pair.targetBaseline=pair.targetAccepts.Load()
 	return pair
