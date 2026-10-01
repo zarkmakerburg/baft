@@ -1,0 +1,72 @@
+name: release
+
+# Builds, signs and verifies a release when a v* tag is pushed, then opens a
+# draft GitHub release for the owner to review and publish.
+#
+# Needs a protected `release` environment holding:
+#   BAFT_RELEASE_SIGNING_KEY  release signing private key (baft-release keygen)
+#   BAFT_RELEASE_KEY_CERT     root-signed certificate for that key (baft-release certify)
+# and the root public key committed at release/keys/root.pub.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Check the tag and the pinned root key
+        run: |
+          set -euo pipefail
+          if [ ! -s release/keys/root.pub ]; then
+            echo "::error::release/keys/root.pub is missing; commit the offline root public key first"
+            exit 1
+          fi
+          git fetch --no-tags origin main release-v1-goldapp
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main &&
+             ! git merge-base --is-ancestor "$GITHUB_SHA" origin/release-v1-goldapp; then
+            echo "::error::tag $GITHUB_REF_NAME points at a commit that is not on main or release-v1-goldapp"
+            exit 1
+          fi
+      - name: Build
+        run: scripts/release/build.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/dist"
+      - name: Sign
+        env:
+          BAFT_RELEASE_SIGNING_KEY: ${{ secrets.BAFT_RELEASE_SIGNING_KEY }}
+          BAFT_RELEASE_KEY_CERT: ${{ secrets.BAFT_RELEASE_KEY_CERT }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$BAFT_RELEASE_KEY_CERT" > "$RUNNER_TEMP/release-key.cert.json"
+          go run ./cmd/baft-release sign -dir "$RUNNER_TEMP/dist" \
+            -version "$GITHUB_REF_NAME" -commit "$GITHUB_SHA" \
+            -cert "$RUNNER_TEMP/release-key.cert.json" -root-pub release/keys/root.pub \
+            -build-flag -trimpath -build-flag -buildvcs=false -build-flag 'CGO_ENABLED=0' \
+            -build-flag '-ldflags=-s -w -buildid='
+      - name: Verify against the pinned root key
+        run: go run ./cmd/baft-release verify -dir "$RUNNER_TEMP/dist" -root-pub release/keys/root.pub
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* \
+            --draft --verify-tag --title "BAFT $GITHUB_REF_NAME" \
+            --notes "Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub"
