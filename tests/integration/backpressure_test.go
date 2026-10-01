@@ -305,6 +305,14 @@ func runSlowReceiver(t *testing.T, stealth bool) {
 	case <-time.After(time.Second):
 		t.Fatal("source writer did not stop after cancellation")
 	}
+	// The target fixture closes its own conn on cancellation, so targetDone no
+	// longer proves BAFT released it. EX's Run closes every target conn before
+	// it returns, so a prompt serverErr is the BAFT-side check.
+	select {
+	case <-serverErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EX session did not stop after cancellation")
+	}
 	select {
 	case <-targetDone:
 	case <-time.After(2 * time.Second):
@@ -312,10 +320,6 @@ func runSlowReceiver(t *testing.T, stealth bool) {
 	}
 	select {
 	case <-irDone:
-	case <-time.After(time.Second):
-	}
-	select {
-	case <-serverErr:
 	case <-time.After(time.Second):
 	}
 }
