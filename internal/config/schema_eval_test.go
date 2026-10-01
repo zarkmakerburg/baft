@@ -157,6 +157,24 @@ func TestSchemaAndValidateAgree(t *testing.T) {
 			d["noise"] = doc{"key_file": "/etc/baft/noise-key.json", "peer_public_key": key(1), "allowed_peer_public_keys": doc{"urn:baft:node:ir-01": key(1)}}
 		}, false},
 		{"noise dialer", "ir", func(d doc) { d["noise"] = doc{"key_file": "/etc/baft/noise-key.json", "peer_public_key": key(1)} }, true},
+		{"noise dialer without client certificate", "ir", func(d doc) {
+			d["noise"] = doc{"key_file": "/etc/baft/noise-key.json", "peer_public_key": key(1)}
+			delete(d["tls"].(doc), "cert_file")
+			delete(d["tls"].(doc), "key_file")
+		}, true},
+		{"noise dialer with cert but no key", "ir", func(d doc) {
+			d["noise"] = doc{"key_file": "/etc/baft/noise-key.json", "peer_public_key": key(1)}
+			delete(d["tls"].(doc), "key_file")
+		}, false},
+		{"mTLS dialer without client certificate", "ir", func(d doc) {
+			delete(d["tls"].(doc), "cert_file")
+			delete(d["tls"].(doc), "key_file")
+		}, false},
+		{"noise listener without server certificate", "ex", func(d doc) {
+			d["noise"] = doc{"key_file": "/etc/baft/noise-key.json", "peer_public_key": key(1)}
+			delete(d["tls"].(doc), "cert_file")
+			delete(d["tls"].(doc), "key_file")
+		}, false},
 		{"noise dialer with allowlist", "ir", func(d doc) {
 			d["noise"] = doc{"key_file": "/etc/baft/noise-key.json", "allowed_peer_public_keys": doc{"urn:baft:node:ex-01": key(1)}}
 		}, false},

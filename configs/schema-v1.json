@@ -112,7 +112,7 @@
     },
     "tls": {
       "type": "object", "additionalProperties": false,
-      "required": ["min_version", "ca_file", "cert_file", "key_file", "session_tickets"],
+      "required": ["min_version", "ca_file", "session_tickets"],
       "properties": {
         "min_version": {"const": "1.3"},
         "ca_file": {"type": "string", "minLength": 1},
@@ -213,6 +213,9 @@
     {"if": {"properties": {"node": {"properties": {"role": {"const": "listener"}}}}}, "then": {"required": ["server"], "not": {"required": ["peer"]}}},
     {"if": {"required": ["noise"], "properties": {"noise": {"required": ["peer_public_key"]}, "node": {"properties": {"role": {"const": "listener"}}}}}, "then": {"properties": {"server": {"properties": {"allowed_peer_identities": {"maxItems": 1}}}}}},
     {"if": {"required": ["noise"], "properties": {"node": {"properties": {"role": {"const": "dialer"}}}}}, "then": {"properties": {"noise": {"required": ["peer_public_key"]}}}},
-    {"if": {"required": ["revocation"]}, "then": {"properties": {"node": {"properties": {"role": {"const": "listener"}}}}}}
+    {"if": {"required": ["revocation"]}, "then": {"properties": {"node": {"properties": {"role": {"const": "listener"}}}}}},
+    {"if": {"properties": {"tls": {"required": ["cert_file"]}}}, "then": {"properties": {"tls": {"required": ["key_file"]}}}},
+    {"if": {"properties": {"tls": {"required": ["key_file"]}}}, "then": {"properties": {"tls": {"required": ["cert_file"]}}}},
+    {"if": {"not": {"required": ["noise"], "properties": {"node": {"properties": {"role": {"const": "dialer"}}}}}}, "then": {"properties": {"tls": {"required": ["cert_file", "key_file"]}}}}
   ]
 }

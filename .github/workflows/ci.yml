@@ -105,3 +105,43 @@ jobs:
         run: go vet ./...
       - name: Protocol fuzz smoke
         run: go test ./internal/protocol -run '^$' -fuzz '^FuzzDecode$' -fuzztime 10s
+
+  e2e-binaries:
+    # Real `baft` and `baft-pair` binaries: pair an EX and IR the way
+    # install.sh does, run both, and push data through a local echo target.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Build
+        run: go build -o "$RUNNER_TEMP/bin/" ./cmd/baft ./cmd/baft-pair
+      - name: Pair and pass traffic
+        run: BIN_DIR="$RUNNER_TEMP/bin" tests/e2e/pair_and_run.sh
+      - name: Pair and pass traffic (record shaping)
+        run: BIN_DIR="$RUNNER_TEMP/bin" E2E_RECORD_SHAPING=1 tests/e2e/pair_and_run.sh
+      - name: Pair and pass traffic under CPU load
+        run: |
+          for i in $(seq "$(nproc)"); do (while :; do :; done) & done
+          BIN_DIR="$RUNNER_TEMP/bin" tests/e2e/pair_and_run.sh
+          kill $(jobs -p)
+
+  e2e-install:
+    # install.sh on a fresh Ubuntu runner with systemd: EX and IR on one host
+    # under separate service names, paired through the installer itself.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Let root clone this checkout with a blob filter
+        run: |
+          git config uploadpack.allowFilter true
+          sudo git config --system --add safe.directory '*'
+      - name: Install EX and IR, pair, pass traffic
+        run: sudo env BAFT_REPO_URL="file://$GITHUB_WORKSPACE" BAFT_REF="$GITHUB_SHA" tests/e2e/install_two_roles.sh

@@ -15,7 +15,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		die("usage: baft-pair <keygen|ex-code|ir-apply> ...")
+		die("usage: baft-pair <keygen|pki|ex-code|ir-apply|ex-accept> ...")
 	}
 	switch os.Args[1] {
 	case "keygen":
@@ -24,6 +24,10 @@ func main() {
 		exCode(os.Args[2:])
 	case "ir-apply":
 		irApply(os.Args[2:])
+	case "ex-accept":
+		exAccept(os.Args[2:])
+	case "pki":
+		pki(os.Args[2:])
 	default:
 		die("unknown command")
 	}
@@ -53,7 +57,8 @@ func exCode(args []string) {
 	caFile := fs.String("ca-file", "", "outer TLS CA PEM")
 	pskOut := fs.String("psk-out", "", "one-time PSK file")
 	ttl := fs.Duration("ttl", 15*time.Minute, "pairing lifetime")
-	recordShaping := fs.Bool("record-shaping", false, "mark legacy pairing descriptor for record shaping (runtime uses explicit noise config)")
+	recordShaping := fs.Bool("record-shaping", false, "enable record shaping in the configs generated from this pairing (both peers)")
+	pendingOut := fs.String("pending-out", "", "write the state ex-accept needs to verify the IR reply")
 	_ = fs.Parse(args)
 	if *keyPath == "" || *address == "" || *serverName == "" || *identity == "" || *caFile == "" || *pskOut == "" {
 		die("missing required flag")
@@ -76,6 +81,11 @@ func exCode(args []string) {
 	if err := atomicWrite(*pskOut, []byte(base64.RawURLEncoding.EncodeToString(psk)+"\n"), 0o600); err != nil {
 		die(err.Error())
 	}
+	if *pendingOut != "" {
+		if err := writePending(*pendingOut, *identity, *serverName, psk, d.ExpiresUnix, *recordShaping); err != nil {
+			die(err.Error())
+		}
+	}
 	code, err := d.Encode()
 	if err != nil {
 		die(err.Error())
@@ -88,6 +98,9 @@ func irApply(args []string) {
 	code := fs.String("code", "", "BAFTPAIR1 code")
 	keyPath := fs.String("key", "", "initiator Noise key file")
 	stateDir := fs.String("state-dir", "", "state directory")
+	identity := fs.String("identity", "", "IR node identity for --config-out (default: a random urn:baft:node:ir-...)")
+	routeListen := fs.String("route-listen", "127.0.0.1:1443", "loopback address local clients connect to")
+	c := addCommonFlags(fs, "")
 	_ = fs.Parse(args)
 	if *code == "" || *keyPath == "" || *stateDir == "" {
 		die("missing required flag")
@@ -102,11 +115,11 @@ func irApply(args []string) {
 	}
 	localPub, _ := securityinternal.EncodePublicKey(local.Public)
 	payload := struct {
-		Version          int                                `json:"version"`
-		Descriptor       securityinternal.PairingDescriptor `json:"descriptor"`
-		LocalPublicKey   string                             `json:"local_public_key"`
-		ResponderKey     string                             `json:"responder_key"`
-		OneTimePSK       string                             `json:"one_time_psk"`
+		Version        int                                `json:"version"`
+		Descriptor     securityinternal.PairingDescriptor `json:"descriptor"`
+		LocalPublicKey string                             `json:"local_public_key"`
+		ResponderKey   string                             `json:"responder_key"`
+		OneTimePSK     string                             `json:"one_time_psk"`
 	}{
 		Version:        1,
 		Descriptor:     d,
@@ -124,10 +137,34 @@ func irApply(args []string) {
 	if err := atomicWrite(filepath.Join(*stateDir, "pairing.pending.json"), append(b, '\n'), 0o600); err != nil {
 		die(err.Error())
 	}
-	if err := atomicWrite(filepath.Join(*stateDir, "peer-ca.pem"), ca, 0o600); err != nil {
+	caPath := filepath.Join(*stateDir, "peer-ca.pem")
+	if err := atomicWrite(caPath, ca, 0o600); err != nil {
 		die(err.Error())
 	}
-	fmt.Println(localPub)
+	if *c.configOut == "" {
+		fmt.Println(localPub)
+		return
+	}
+	// With --config-out, write a runnable dialer config and print the reply
+	// the EX operator passes to ex-accept.
+	if *identity == "" {
+		*identity = identityPrefix + randomNodeID("ir")
+	}
+	if *c.unixSocket == "" {
+		*c.unixSocket = filepath.Join(*stateDir, "admin.sock")
+	}
+	cfg, err := irConfig(d, *identity, caPath, *keyPath, *routeListen, c)
+	if err != nil {
+		die(err.Error())
+	}
+	if err := writeConfig(*c.configOut, cfg); err != nil {
+		die(err.Error())
+	}
+	reply, err := securityinternal.NewPairingReply(d, responder, psk, *identity, local.Public)
+	if err != nil {
+		die(err.Error())
+	}
+	fmt.Println(reply)
 }
 
 func loadOrCreate(path string) (securityinternal.KeyPair, error) {
