@@ -6,14 +6,23 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	baftmetrics "github.com/zarkmakerburg/baft/internal/metrics"
 )
 
 func (r *Runtime) startMetrics(ctx context.Context, addr string) (<-chan error, func(), error) {
-	ln,err:=net.Listen("tcp",addr)
-	if err!=nil{return nil,nil,fmt.Errorf("metrics listen %s: %w",addr,err)}
+	ln,err:=r.takeEndpointListenerForTest(EndpointMetrics,"metrics",addr)
+	if err!=nil{return nil,nil,err}
+	if ln==nil {
+		ln,err=r.takeMetricsListenerForTest(addr)
+		if err!=nil{return nil,nil,err}
+	}
+	if ln==nil{
+		ln,err=net.Listen("tcp",addr)
+		if err!=nil{return nil,nil,fmt.Errorf("metrics listen %s: %w",addr,err)}
+	}
 	srv:=&http.Server{
 		Handler:baftmetrics.Handler(r.metricsSnapshot),
 		ReadHeaderTimeout:5*time.Second,
@@ -25,11 +34,13 @@ func (r *Runtime) startMetrics(ctx context.Context, addr string) (<-chan error, 
 		if errors.Is(err,http.ErrServerClosed){err=nil}
 		done<-err
 	}()
+	var stopOnce sync.Once
 	stop:=func(){
-		shutdownCtx,cancel:=context.WithTimeout(context.Background(),2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-		_ = ln.Close()
+		stopOnce.Do(func(){
+			shutdownCtx,cancel:=context.WithTimeout(context.Background(),2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdownCtx)
+		})
 	}
 	go func(){<-ctx.Done();stop()}()
 	return done,stop,nil

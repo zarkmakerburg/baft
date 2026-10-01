@@ -33,3 +33,7 @@ Boot/session/epoch fencing, snapshots, replay, tombstones, duplicate-free Carrie
 
 ## D2/E/F/G/H
 Endpoint/relay work, reproducible performance benchmarking, operations/packaging, bounded research transports, and real-server pilot work remain future stages.
+
+## R3.1 current review candidate
+
+Probabilistic normal/Laplace padding, tunable jitter, pinned Noise runtime wiring and pre-authentication HTML fallback are implemented. See [R3.1 guide](docs/en/21-stealth-pro.md) and [Hoosha report](reports/HOOSHA-R3.1.md). Full local tests/race/vet and ECRL differential pass. Stage D remains paused. Fresh-VM provisioning, jitter performance acceptance and real-path detectability validation remain open; v0.2-Pro is not released.

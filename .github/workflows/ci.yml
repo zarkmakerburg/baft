@@ -1,8 +1,9 @@
 name: ci
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, release-v1-goldapp]
   pull_request:
 
 permissions:
@@ -11,7 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -27,9 +28,120 @@ jobs:
           git diff --exit-code -- go.mod go.sum
       - name: Unit and integration tests
         run: go test ./...
+      - name: Step 1 stability evidence
+        run: |
+          go test ./tests/integration -run '^TestSixNodeNoiseMasterHandshakeRoundTrip$' -count=1 -v
+          go test ./tests/integration -run '^TestNNodeNoiseMasterHandshakeRoundTrip$' -count=1 -v
+          go test ./internal/recovery -run '^TestSixRouteECRLEngineHealth$' -count=1 -v
+          go test ./internal/recordshape -run 'TestMorphingStatistics1000|TestStatisticalGateRejectsFixedBucketAndPeriodicMutants' -count=1 -v
+      - name: Step 2 sync integrity evidence
+        run: go test ./internal/clustersync -run 'TestTokenRoundTripSixNodes|TestTokenTamperRejected|TestWorkerDetectsSignedNodeUpdateAndSyncs|TestRollbackAndWrongSignerRejected|TestBuildWorkerConfigsMirrorsExactlySixRoutes|TestChangedRouteIndexesPinpointsSingleNodeUpdate' -count=1 -v
+      - name: Step 3 dynamic BCC evidence
+        run: |
+          go test ./internal/cluster -run 'TestValidateMasterConfigsDynamicSizes|TestMasterFailFastCancelsDynamicPeerSet' -count=1 -v
+          go test ./internal/clustersync -run 'TestTokenDynamicNodeCounts|TestBuildWorkerConfigsDynamicNodeCounts' -count=1 -v
+          go test ./internal/bcc -run 'TestDynamicRegistryAndEnrollmentJobs|TestOneClickDeployCreatesOnlyTypedJobs|TestHealthProbeAndDashboard' -count=1 -v
+      - name: N-node invariant evidence
+        run: |
+          go test ./tests/integration -run '^(TestNNodeNoiseMasterHandshakeRoundTrip|TestNNodeNoiseMasterHandshakeRandomizedCardinality)$' -count=1 -v
+          go test ./internal/cluster -run '^TestValidateMasterConfigsDynamicSizes$' -count=1 -v
+          go test ./internal/clustersync -run '^(TestTokenDynamicNodeCounts|TestBuildWorkerConfigsDynamicNodeCounts)$' -count=1 -v
+          go test ./internal/bcc -run '^TestDynamicRegistryAndEnrollmentJobs$' -count=1 -v
+      - name: Live identity-keyed topology reconciliation evidence
+        run: |
+          go test ./internal/cluster -run 'TestLiveTopologyPermutationNoRuntimeChurn|TestLiveTopologyAddOnlyStartsAddedNode|TestLiveTopologyRemoveOnlyStopsRemovedNode|TestLiveTopologyAddFailureRollsBack|TestChangedExistingNodeFailsBeforeMutation|TestSameGenerationSemanticNoOp|TestSameGenerationConflictFailsClosed|TestRollbackGenerationDoesNotTouchRuntime|TestAllowedIdentityURIReplacementIsRemoveAdd' -count=1 -v
+          go test -race ./internal/cluster -run 'TestWorkerControllerConcurrentApplySerialized' -count=20 -v
+          go test ./tests/integration -run 'TestLiveTopologyRemoveUnrelatedNodePreservesActiveFlow|TestLiveTopologyAddUnrelatedNodePreservesActiveFlow|TestTopologyGenerationDoesNotAdvanceUnrelatedSessionEpoch' -count=1 -timeout 15m -v
+      - name: Topology x ECRL authority isolation evidence
+        run: |
+          go test ./tests/integration -run 'TestTopologyPrepareRecoveryCommitAuthorityIsolation|TestTopologyCommitDuringRecoveryPrepared|TestTopologyCommitDuringCommitUncertainty|TestTopologyCommitDuringFinalizationUncertainty|TestTopologyMutationDuringReplayOutstanding|TestTopologyPermutationDuringRecoveryNoChurn|TestTopologyAddUnrelatedNodeDuringRecovery|TestTopologyRemoveUnrelatedNodeDuringRecovery|TestStaleTopologyCommitCannotAffectRecovery|TestStaleRecoveryCallbackCannotAffectTopology' -count=1 -timeout 30m -v
+          BAFT_AUTHORITY_RACE_SAMPLE=1 go test -race ./tests/integration -run 'TestTopologyPrepareRecoveryCommitAuthorityIsolation|TestTopologyCommitDuringRecoveryPrepared|TestTopologyCommitDuringCommitUncertainty|TestTopologyCommitDuringFinalizationUncertainty|TestTopologyMutationDuringReplayOutstanding|TestTopologyPermutationDuringRecoveryNoChurn|TestTopologyAddUnrelatedNodeDuringRecovery|TestTopologyRemoveUnrelatedNodeDuringRecovery|TestStaleTopologyCommitCannotAffectRecovery|TestStaleRecoveryCallbackCannotAffectTopology' -count=20 -timeout 30m -v
+          go test ./internal/session -run '^TestRecoveryHTTPHandlerDoesNotReturnWhileOwnedSenderCanWrite$' -count=100 -v
+          go test -race ./internal/session -run '^TestRecoveryHTTPHandlerDoesNotReturnWhileOwnedSenderCanWrite$' -count=20 -v
+      - name: Step 4 multi-peer mesh evidence
+        run: |
+          go test ./tests/integration -run 'TestNoiseListenerAcceptsAndSeparatesTwoIRPeers|TestIRToIRNoiseMeshRoundTrip' -count=1 -v
+          go test ./internal/failover -run '^TestProxyFallsBackToSecondary$' -count=1 -v
+          go test ./internal/bcc -run '^TestFinancialTrafficSync$' -count=1 -v
+      - name: Step 5.1 telemetry evidence
+        run: |
+          go test ./internal/telemetry -run '^TestExporterQueuesRetriesAndPreservesSequence$' -count=1 -v
+          go test ./internal/bcc -run '^TestFinancialTrafficSync$' -count=1 -v
+          go test ./tests/integration -run '^TestRuntimeTelemetryReachesBCCExactlyOnce$' -count=1 -v
+      - name: Step 5.2 monitoring evidence
+        run: |
+          go test ./internal/bcc -run '^TestMonitoringAlertsAndSevenDayHistory$' -count=1 -v
+          go test ./tests/integration -run '^TestRouteDisconnectTurnsMonitoringDownWithin30Seconds$' -count=1 -v
+      - name: Step 5.3 finance and monitoring completion evidence
+        run: |
+          go test ./internal/bcc -run 'TestForcedStaleAlertFiresOnceAndResolvesOnce|TestWebhookSecretNeverAppearsInAPIResponses|TestNodeRegistrationUsesEnvTokenAndRejectsRawSecret|TestFinanceRateChangeMidDayUsesEffectiveVersion|TestFinanceDailyMonthlyAndClusterSumsMatch|TestFinanceTehranDayBoundary|TestFinanceDuplicateAndOutOfOrderDoNotChangeReports|TestFinanceReportAPIAndCSV' -count=1 -v
+          go test ./tests/integration -run '^TestBadNoiseHandshakeIncrementsTelemetryAndReachesBCC$' -count=1 -v
+      - name: Step 5.4 BCC hardening evidence
+        run: |
+          go test ./internal/bcc -run 'TestAuditLogAdminTransactionsAndTamperDetection|TestRateLimitAndBruteForceTemporaryBlock|TestAgentTokenRotationGraceAndImmediateRevoke|TestValidateListenAddressWhitelist' -count=1 -v
+      - name: Step 5.5 backup restore and anchor evidence
+        run: |
+          go test ./internal/bcc -run 'TestAuditAnchorsDetectFullyRewrittenChainAndFireOnSecurityChanges|TestTrustedProxyXForwardedForAcceptedOnlyFromConfiguredProxy|TestEncryptedBackupFreshRestoreFullStateAndAudit|TestBackupRejectsWrongKeyTamperAndSchemaWithoutChangingState|TestRestorePreservesPostBackupRotationAndRevoke|TestRestorePreservesTelemetryHighWatermarkAndFinanceIdempotency|TestBackupSnapshotRemainsInternallyConsistentDuringTelemetry|TestScheduledBackupRetentionDefaultsSevenDailyFourWeekly|TestBackupKeyComesOnlyFromEnvironment|TestTelemetryBootIDAntiRollbackEqualTimestampUsesIngestID|TestTelemetryBootIDAntiRollbackClockSkewUsesIngestID|TestRestoreFaultInjectionLeavesStateAndAuditUnchanged|TestRestoreRejectsCorruptCurrentAuditBeforeMutation|TestDurableRevokeAnchorRetryAfterRestart|TestDurableRotationAnchorRetryAfterRestart|TestMultiplePendingAuditAnchorsPreserveOrderAndNoLoss|TestAuditAnchorACKRemovesPendingAndProvidesIdempotencyKey' -count=1 -v
+      - name: Step 5.6 persistent telemetry reliability evidence
+        run: |
+          go test ./internal/telemetry -run 'TestPersistentQueueSurvivesRestartAndDeliversInOrder|TestMultipleRestartsDuringOutagePreserveOrder|TestCorruptedSpoolFailsClosed|TestSpoolCapacityNoSilentEviction|TestPendingReportsUseCurrentTokenAfterRotationAndSpoolHasNoSecret|TestConcurrentSampleFlushAndSpoolOpen|TestExporterObservabilityShowsCapacityAndRecovery' -count=1 -v
+          go test ./internal/bcc -run 'TestCrashAfterServerCommitBeforeLocalACKExactlyOnceFinance|TestRetiredBootIDReplayRejectedAcrossBCCRestart|TestRetiredBootIDSurvivesOldBackupRestore' -count=1 -v
+          go test ./tests/integration -run '^TestRuntimePersistentTelemetrySurvivesOutageAndRestart$' -count=1 -v
+      - name: Step 5.7 ECRL runtime integration evidence
+        run: |
+          go test ./internal/config -run '^TestValidateSameProcessRecoveryScope$' -count=1 -v
+          go test ./internal/node -run 'TestRuntimeCandidateSetupFailureKeepsOldOwner|TestRuntimeSnapshotExchangeFailureKeepsOldOwner|TestRuntimeFailureImmediatelyBeforeCommitKeepsOldOwner' -count=1 -v
+          go test ./internal/session -run 'TestOldEpochFramesRejectedAfterCommit|TestRecoveryFailureBeforeCommitKeepsOldOwner|TestRecoveryFailureImmediatelyBeforeCommitKeepsOldOwner|TestRecoveryPeerBootChangeFailsClosed|TestCompetingRecoveryCandidatesSingleWinner|TestRecoveryDuringFINPreservesCloseSemantics|TestRecoveryDuringFINPreservesPendingFinAck|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestRecoveryBoundedReplayMissingBytesFailsClosed|TestRecoveryFreezeRejectsNewOpenOnLiveSession|TestRecoveryDisabledBaselineUnchanged|TestDuplicateCommitIsIdempotent|TestLostCommitACKRetryIsIdempotent|TestPlanDigestMismatchRejectsCommit|TestPostCommitReplayFailureNeverReauthorizesOldEpoch|TestPostCommitFailureCanRecoverToNextEpoch|TestPostCommitFailureDoesNotLeaveSessionFrozen|TestRecoveryCommitMetricsReflectAuthorityChange' -count=1 -v
+          go test ./tests/integration -run 'TestTwoRuntimeDialerPreCommitFailureKeepsBothOldEpoch|TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch' -count=1 -v
+          go test ./tests/integration -run '^TestRuntimeCarrierReplacementPreservesActiveFlow$' -count=3 -v
+          go test ./tests/integration -run 'TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestRecoveryTelemetryFinanceRemainExact' -count=1 -v
+      - name: Step 5.7 P0 distributed commit uncertainty evidence
+        run: |
+          go test ./internal/session -run 'TestCommitUncertainCannotAbortWithoutProof|TestCommittedResolutionCatchesUpExactTransaction|TestNotCommittedResolutionAllowsAbort|TestConflictingResolutionFailsClosed|TestUncertainBlocksFreshRecovery|TestDuplicateResolutionIsIdempotent|TestFinalizeRetryIsIdempotent|TestDuplicateCommitIsIdempotent|TestLostCommitACKRetryIsIdempotent|TestPlanDigestMismatchRejectsCommit|TestPostCommitReplayFailureNeverReauthorizesOldEpoch|TestPostCommitFailureCanRecoverToNextEpoch|TestPostCommitFailureDoesNotLeaveSessionFrozen|TestRecoveryCommitMetricsReflectAuthorityChange|TestReplacementWaitRequiresApplicationReadyFrontier|TestInitialFinalizePublishesActivatedGeneration|TestReplacementReadyGenerationMonotonicAcrossRebind|TestStaleReplacementGenerationCannotRegressOrWakeNewerState|TestWakeWithoutReadinessAdvanceDoesNotReleaseReplacement|TestRecoveryRestoresAuthenticatedPeerCreditFrontier|TestRecoveryPeerCreditNeverRegressesPastNewerOldCarrierWindow' -count=1 -v
+          go test ./tests/integration -run 'TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFault|TestTwoRuntimeDialerPreCommitFailureKeepsBothOldEpoch|TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestUnprovenReplayCarrierFailureStaysExactTransaction|TestUnprovenReplayWithLiveDataRecutRemainsExact|TestStableRecoveryTransactionAllowsFreshLaterEpoch|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot|TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow|TestOldFinalizeInvocationCannotAdoptReboundPreparedCarrier|TestStaleFinalizeTeardownCannotFenceNewIncarnation|TestStaleFinalizeFailureCannotRegressNewIncarnation' -count=1 -v
       - name: Race detector
         run: go test -race ./...
       - name: Vet
         run: go vet ./...
       - name: Protocol fuzz smoke
         run: go test ./internal/protocol -run '^$' -fuzz '^FuzzDecode$' -fuzztime 10s
+
+  e2e-binaries:
+    # Real `baft` and `baft-pair` binaries: pair an EX and IR the way
+    # install.sh does, run both, and push data through a local echo target.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Build
+        run: go build -o "$RUNNER_TEMP/bin/" ./cmd/baft ./cmd/baft-pair
+      - name: Pair and pass traffic
+        run: BIN_DIR="$RUNNER_TEMP/bin" tests/e2e/pair_and_run.sh
+      - name: Pair and pass traffic (record shaping)
+        run: BIN_DIR="$RUNNER_TEMP/bin" E2E_RECORD_SHAPING=1 tests/e2e/pair_and_run.sh
+      - name: Pair and pass traffic under CPU load
+        run: |
+          for i in $(seq "$(nproc)"); do (while :; do :; done) & done
+          BIN_DIR="$RUNNER_TEMP/bin" tests/e2e/pair_and_run.sh
+          kill $(jobs -p)
+
+  e2e-install:
+    # install.sh on a fresh Ubuntu runner with systemd: EX and IR on one host
+    # under separate service names, paired through the installer itself.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Let root clone this checkout with a blob filter
+        run: |
+          git config uploadpack.allowFilter true
+          sudo git config --system --add safe.directory '*'
+      - name: Install EX and IR, pair, pass traffic
+        run: sudo env BAFT_REPO_URL="file://$GITHUB_WORKSPACE" BAFT_REF="$GITHUB_SHA" tests/e2e/install_two_roles.sh

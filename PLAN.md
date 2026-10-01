@@ -108,4 +108,55 @@
 - [ ] rollback
 - [ ] گزارش محدودیت و نتیجه
 
+
+## R2 v0.1 — وضعیت اجرا
+
+- [x] تشخیص Debian/Ubuntu در installer
+- [x] تشخیص amd64/arm64
+- [x] نصب/تطبیق Go 1.27.1 با checksum manifest
+- [x] build با `-trimpath -ldflags="-s -w"`
+- [x] نصب `/usr/local/bin/baft`
+- [x] ساخت system user `baft`
+- [x] systemd hardening شامل `NoNewPrivileges=true` و `PrivateTmp=true`
+- [x] ابزار `baft-pair`
+- [x] descriptor `BAFTPAIR1`
+- [x] apply اتمیک pairing state در IR
+- [x] Noise Pattern IK با `github.com/flynn/noise v1.1.0`
+- [x] enrollment اولیه با `IKpsk0`
+- [x] تست Noise روی HTTP/2 در حضور TLS-terminating intermediary
+- [x] race test
+- [ ] اتصال SecurityInternal به `node.Runtime` production data path
+- [ ] حذف اتمیک PSK یک‌بارمصرف پس از pin موفق در runtime واقعی
+- [ ] تست نصب کامل روی VM تازه Debian و Ubuntu
+- [ ] Stage D Replay Engine — **PAUSED**
+
+### Non-goal فعلی
+
+probabilistic timing/packet morphing برای دورزدن traffic analysis یا فیلترینگ در R2 v0.1 پیاده‌سازی نشده است.
+
+
+## R3 safe — برنامه
+
+- [x] `internal/recordshape` با bucket padding deterministic
+- [x] اعمال shaping بعد از Noise encryption و قبل از wire
+- [x] propagation گزینه از EX داخل Pairing descriptor
+- [x] `--enable-record-shaping` در installer
+- [x] تست bounded wire sizes و round-trip
+- [x] Integration Noise/H2 intermediary با shaping روشن
+- [ ] production wiring به `node.Runtime`
+- [ ] VM install test روی Debian/Ubuntu
+- [ ] R4 public distribution — **BLOCKED تا بعد از review**
+- [ ] Stage D Replay — **PAUSED**
+
+### خارج از scope
+
+random packet-size morphing و timing jitter برای شکست تحلیل آماری یا سامانه‌های فیلترینگ در این شاخه پیاده‌سازی نمی‌شوند.
+
+
+## R3.1 — نامزد بررسی v0.2-Pro
+
+Padding احتمالی نرمال/لاپلاس، jitter قابل تنظیم و پاسخ HTML پیش از ورود به Session پیاده شد. حالت صریح Noise با peer pin‌شده اکنون به Runtime متصل است. آزمون‌های محلی و Differential مدل/موتور ECRL پاس شدند؛ Stage D و recovery همچنان متوقف‌اند.
+
+[گزارش سه‌بخشی هوشا و شواهد](reports/HOOSHA-R3.1.md). این بخش وضعیت فعلی شاخه R3.1 است و توضیحات R2/R3 بالا سوابق تاریخی‌اند. نسخه نهایی v0.2-Pro، نصب VM تازه، حفظ سرعت با jitter و اثبات مقاومت فیلترینگ هنوز تأیید نشده‌اند.
+
 </div>

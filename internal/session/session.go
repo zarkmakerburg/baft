@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
+	"github.com/zarkmakerburg/baft/internal/recovery"
 	"github.com/zarkmakerburg/baft/internal/resources"
 	"github.com/zarkmakerburg/baft/internal/routes"
 )
@@ -21,7 +23,10 @@ const (
 	defaultWindow           uint64 = 64 * 1024
 	dataChunk                      = 32 * 1024
 	maxClosedFlowTombstones         = 256
+	maxFlowsPerShard                = 64
 )
+
+var ErrRecoverableDataGap = errors.New("recoverable DATA gap on recovery carrier")
 
 type Role uint8
 
@@ -35,6 +40,9 @@ type Carrier struct {
 	Out io.Writer
 }
 
+type TrafficObserver func(ingressBytes, egressBytes uint64)
+type LatencyObserver func(rtt time.Duration)
+
 type Options struct {
 	NodeID             string
 	ExpectedPeerNodeID string
@@ -43,6 +51,16 @@ type Options struct {
 	ProfileVersion     uint32
 	ConfigRevision     string
 	Resources          *resources.Allocator
+	// FlowSlots is shared by every Session of a node to enforce
+	// limits.max_flows; nil means unlimited.
+	FlowSlots          *resources.FlowSlots
+	TrafficObserver    TrafficObserver
+	LatencyObserver    LatencyObserver
+	PingInterval       time.Duration
+	RecoveryEnabled    bool
+	RecoveryRetention  time.Duration
+	CarrierID          string
+	BootID             string
 }
 
 type Peer struct {
@@ -53,6 +71,7 @@ type Peer struct {
 	routes             *routes.Table
 	dial               func(context.Context, string, string) (net.Conn, error)
 	allocator          *resources.Allocator
+	flowSlots          *resources.FlowSlots
 	sender             *outboundSender
 	nodeID             string
 	expectedPeerNodeID string
@@ -70,16 +89,54 @@ type Peer struct {
 	mu                 sync.Mutex
 	flows              map[uint64]*flow
 	closedFlows        map[uint64]struct{}
+	// pendingOpens holds admitted OPENs whose target dial is still running
+	// (recovery disabled only); guarded by mu.
+	pendingOpens       map[uint64]protocol.OpenRequest
 	closedOrder        []uint64
+	// finishedFins maps a Flow that finished gracefully to the final offset
+	// of this side's FIN; bounded and evicted together with closedOrder.
+	finishedFins       map[uint64]uint64
 	nextID             uint64
 	closed             bool
 	wg                 sync.WaitGroup
+	trafficObserver    TrafficObserver
+	latencyObserver    LatencyObserver
+	pingInterval       time.Duration
+	recoveryEnabled    bool
+	recoveryRetention  time.Duration
+	recovery           *RecoveryAdapter
+	recoveryNeeded     chan error
+	carrierSwitchMu    sync.Mutex
+	carrierSwitchWait  chan struct{}
+	replacementMu      sync.Mutex
+	replacementWait    chan struct{}
+	replacementReadyGeneration uint64
+	carrierID          string
+	carrierEpoch       uint64
+	carrierGeneration  uint64
+	carrierPhysicalInstanceID uint64
+	peerBootID         string
+	runCtx             context.Context
+	recoveryGate       sync.Mutex
+	recoveryFrameHookMu sync.RWMutex
+	recoveryFrameHook   func(string, protocol.Frame) bool
+	runExitObserverMu sync.RWMutex
+	runExitObserver func(error)
+	recoveryWaitExpiryHookMu sync.RWMutex
+	recoveryWaitExpiryHook func() bool
+	logicalSessionRetainObserverMu sync.RWMutex
+	logicalSessionRetainObserver func(string)
 }
 
 type replayChunk struct {
 	start uint64
 	end   uint64
 	data  []byte
+}
+
+type deferredLiveFrame struct {
+	frame protocol.Frame
+	producer DataProducerKind
 }
 
 type flow struct {
@@ -89,6 +146,7 @@ type flow struct {
 	nonce           string
 	conn            net.Conn
 	allocator       *resources.Allocator
+	slots           *resources.FlowSlots // node-wide slot this Flow holds until close
 	openDone        chan error
 	mu              sync.Mutex
 	openOK          bool
@@ -102,13 +160,24 @@ type flow struct {
 	rxRing          *receiveRing
 	finRecvFinal    uint64
 	finAckSent      bool
+	finAckWriteInFlight bool
+	finAckConfirmed bool
+	writeClosed     bool
 	replay          []replayChunk
 	creditWait      chan struct{}
+	ackWait         chan struct{}
 	finSent         bool
 	finRecv         bool
 	finAcked        bool
 	closed          bool
 	resetCode       protocol.ErrorCode
+	localPumpRunning bool
+	targetPumpRunning bool
+	localPumpDone chan struct{}
+	targetPumpDone chan struct{}
+	deferredLive []deferredLiveFrame
+	deferredLiveRunning bool
+	deferredLiveWake chan struct{}
 }
 
 type frameWriter struct {
@@ -160,30 +229,48 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 	if opts.Resources == nil {
 		opts.Resources = defaultAllocator()
 	}
-	bootID, err := randomHex128()
-	if err != nil {
-		return nil, err
+	bootID:=opts.BootID
+	if bootID=="" {
+		var err error
+		bootID,err=randomHex128()
+		if err!=nil{return nil,err}
+	} else {
+		b,err:=hex.DecodeString(bootID)
+		if err!=nil||len(b)!=16||bootID!=hex.EncodeToString(b){return nil,errors.New("boot_id must be lowercase 128-bit hex")}
 	}
 	p := &Peer{
 		role: role, carrier: c, writer: frameWriter{w: c.Out}, peerID: peerID,
-		routes: table, allocator: opts.Resources, flows: make(map[uint64]*flow),
-		closedFlows: make(map[uint64]struct{}),
+		routes: table, allocator: opts.Resources, flowSlots: opts.FlowSlots, flows: make(map[uint64]*flow),
+		closedFlows: make(map[uint64]struct{}), finishedFins: make(map[uint64]uint64), pendingOpens: make(map[uint64]protocol.OpenRequest),
 		nodeID: opts.NodeID, expectedPeerNodeID: opts.ExpectedPeerNodeID,
 		bootID: bootID, shardID: opts.ShardID, profileID: opts.ProfileID,
 		profileVersion: opts.ProfileVersion, configRevision: opts.ConfigRevision,
-		epoch: "1", readyCh: make(chan struct{}),
+		epoch: "1", readyCh: make(chan struct{}), trafficObserver: opts.TrafficObserver,
+		latencyObserver: opts.LatencyObserver, pingInterval: opts.PingInterval,
+		recoveryEnabled: opts.RecoveryEnabled, recoveryRetention: opts.RecoveryRetention,
+		recoveryNeeded: make(chan error,1), carrierSwitchWait: make(chan struct{}), replacementWait: make(chan struct{}), replacementReadyGeneration:1, carrierEpoch:1, carrierGeneration:1, carrierPhysicalInstanceID:physicalCarrierInstanceID(1,1),
 	}
 	if role == Dialer {
 		p.nextID = 1
-		p.sessionID, err = randomHex128()
+		sid,err:=randomHex128()
 		if err != nil {
 			return nil, err
 		}
+		p.sessionID=sid
 	} else {
 		p.nextID = 2
 	}
 	p.dial = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
-	p.sender = newOutboundSender(&p.writer)
+	p.sender = newOutboundSender(&p.writer,p.recoveryEnabled)
+	if p.recoveryEnabled {
+		if p.recoveryRetention <= 0 { p.recoveryRetention = 30 * time.Second }
+		if p.recoveryRetention > 300*time.Second { return nil, errors.New("recovery retention exceeds 300 seconds") }
+		p.carrierID = opts.CarrierID
+		if p.carrierID == "" { p.carrierID = "carrier-1" }
+		eng, err := recovery.NewEngine(1,p.carrierID,recovery.EngineOptions{})
+		if err != nil { return nil, err }
+		p.recovery = newRecoveryAdapter(p,eng)
+	}
 	return p, nil
 }
 
@@ -195,32 +282,124 @@ func randomHex128() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func (p *Peer) Run(ctx context.Context) error {
+func (p *Peer) SetRecoveryFrameHookForTest(fn func(string, protocol.Frame) bool) {
+	p.recoveryFrameHookMu.Lock();p.recoveryFrameHook=fn;p.recoveryFrameHookMu.Unlock()
+}
+
+func (p *Peer) dropRecoveryFrameForTest(stage string,fr protocol.Frame) bool {
+	p.recoveryFrameHookMu.RLock();fn:=p.recoveryFrameHook;p.recoveryFrameHookMu.RUnlock()
+	return fn!=nil&&fn(stage,fr)
+}
+
+func (p *Peer) senderNow() *outboundSender {
+	if !p.recoveryEnabled{return p.sender}
+	p.mu.Lock()
+	s:=p.sender
+	p.mu.Unlock()
+	return s
+}
+
+func (p *Peer) SetRunExitObserverForTest(fn func(error)) {
+	p.runExitObserverMu.Lock();p.runExitObserver=fn;p.runExitObserverMu.Unlock()
+}
+
+func (p *Peer) notifyRunExitForTest(err error) {
+	p.runExitObserverMu.RLock();fn:=p.runExitObserver;p.runExitObserverMu.RUnlock()
+	if fn!=nil{fn(err)}
+}
+
+func (p *Peer) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
+	p.recoveryWaitExpiryHookMu.Lock();p.recoveryWaitExpiryHook=fn;p.recoveryWaitExpiryHookMu.Unlock()
+}
+
+func (p *Peer) forceRecoveryCarrierWaitExpiryForTest() bool {
+	p.recoveryWaitExpiryHookMu.RLock();fn:=p.recoveryWaitExpiryHook;p.recoveryWaitExpiryHookMu.RUnlock()
+	return fn!=nil&&fn()
+}
+
+func (p *Peer) SetLogicalSessionRetainObserverForTest(fn func(string)) {
+	p.logicalSessionRetainObserverMu.Lock();p.logicalSessionRetainObserver=fn;p.logicalSessionRetainObserverMu.Unlock()
+}
+
+func (p *Peer) notifyLogicalSessionRetainedForTest(reason string) {
+	p.logicalSessionRetainObserverMu.RLock();fn:=p.logicalSessionRetainObserver;p.logicalSessionRetainObserverMu.RUnlock()
+	if fn!=nil{fn(reason)}
+}
+
+func (p *Peer) activeApplicationFlowCount() int {
+	p.mu.Lock();defer p.mu.Unlock()
+	return len(p.flows)
+}
+
+func (p *Peer) logicalSessionRetentionReason() string {
+	if !p.recoveryEnabled{return ""}
+	if n:=p.activeApplicationFlowCount();n>0{return fmt.Sprintf("active_application_flows=%d",n)}
+	if p.NeedsExactTransactionResolution(){return "exact_recovery_transaction"}
+	st:=p.RecoveryStability()
+	if st.ReplayOutstanding{return "replay_outstanding"}
+	return ""
+}
+
+func (p *Peer) Run(ctx context.Context) error { return p.run(ctx,nil) }
+
+func (p *Peer) RunWithFirstFrame(ctx context.Context, first protocol.Frame) error {
+	return p.run(ctx,&first)
+}
+
+func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 	runCtx, cancel := context.WithCancel(ctx)
+	p.mu.Lock()
+	p.runCtx = runCtx
+	p.mu.Unlock()
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		p.sender.run(runCtx)
+		p.senderNow().run(runCtx)
 	}()
 	defer func() {
+		// Test-only lifecycle proof is emitted before destructive cleanup so it
+		// observes the logical Session authority/flows that existed at Run exit.
+		p.notifyRunExitForTest(retErr)
 		cancel()
 		p.closeAll()
 		p.wg.Wait()
 	}()
 	if p.role == Dialer {
-		if err := p.sendHello(); err != nil {
-			return err
+		if err := p.sendHello(); err != nil { return err }
+		if p.pingInterval > 0 {
+			p.wg.Add(1)
+			go func() { defer p.wg.Done(); p.pingLoop(runCtx) }()
 		}
 	}
+	if first != nil {
+		epoch,carrierID,generation:=p.currentCarrierIdentity()
+		if err:=p.handleFrameFrom(runCtx,epoch,carrierID,*first,generation);err!=nil{return err}
+	}
 	for {
-		f, err := protocol.Decode(p.carrier.In)
+		carrier,epoch,carrierID,generation:=p.currentCarrier()
+		f, err := protocol.Decode(carrier.In)
 		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, io.EOF) {
-				return ctx.Err()
+			if ctx.Err() != nil { return ctx.Err() }
+			if !p.recoveryEnabled {
+				if errors.Is(err,io.EOF){return ctx.Err()}
+				return err
 			}
-			return err
+			p.onCarrierFailureForGeneration(err,generation,SenderStopCarrierReaderDecode)
+			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);err!=nil{return err}
+			continue
 		}
-		if err := p.handleFrame(runCtx, f); err != nil {
+		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f,generation); err != nil {
+			if p.recoveryEnabled && errors.Is(err,recovery.ErrStaleEpoch) {
+				// A delayed frame from a fenced carrier is expected during
+				// replacement. Reject it without mutating flow state, then
+				// continue on the currently authoritative carrier.
+				continue
+			}
+			if p.recoveryEnabled && errors.Is(err,ErrCarrierUnavailable) {
+				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
+				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);werr!=nil{return werr}
+				continue
+			}
 			return err
 		}
 	}
@@ -236,24 +415,39 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 	if err := p.waitReady(ctx); err != nil {
 		return err
 	}
+	if p.recoveryEnabled{p.recoveryGate.Lock()}
+	if p.recovery!=nil && p.recovery.IsFrozen(){
+		if p.recoveryEnabled{p.recoveryGate.Unlock()}
+		return recovery.ErrResumeFrozen
+	}
+	if !p.flowSlots.TryAcquire() {
+		if p.recoveryEnabled{p.recoveryGate.Unlock()}
+		return resources.ErrResourceExhausted
+	}
 	id, err := p.allocateStreamID()
 	if err != nil {
+		p.flowSlots.Release()
+		if p.recoveryEnabled{p.recoveryGate.Unlock()}
 		return err
 	}
 	nonceBytes := make([]byte, 16)
 	if _, err := rand.Read(nonceBytes); err != nil {
+		p.flowSlots.Release()
+		if p.recoveryEnabled{p.recoveryGate.Unlock()}
 		return err
 	}
 	fl := newFlow(id, routeID, hex.EncodeToString(nonceBytes), conn, p.allocator)
+	fl.slots = p.flowSlots
 	p.mu.Lock()
 	p.flows[id] = fl
 	p.mu.Unlock()
+	if p.recoveryEnabled{p.recoveryGate.Unlock()}
 
 	payload, err := protocol.EncodeControl(protocol.OpenRequest{RouteID: routeID, OpenNonce: fl.nonce})
 	if err != nil {
 		return err
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpen, StreamID: id, Payload: payload}); err != nil {
+	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpen, StreamID: id, Payload: payload}); err != nil {
 		fl.close()
 		p.removeFlow(id)
 		return err
@@ -270,7 +464,7 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 		p.removeFlow(id)
 		return ctx.Err()
 	}
-	if err := p.sender.addFlow(fl.id); err != nil {
+	if err := p.senderNow().addFlow(fl.id); err != nil {
 		_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
 		return err
 	}
@@ -297,7 +491,7 @@ func newFlow(id uint64, routeID, nonce string, conn net.Conn, alloc ...*resource
 	}
 	return &flow{
 		id: id, resourceID: rid, routeID: routeID, nonce: nonce, conn: conn,
-		allocator: a, openDone: make(chan error, 1), creditWait: make(chan struct{}),
+		allocator: a, openDone: make(chan error, 1), creditWait: make(chan struct{}), ackWait: make(chan struct{}),
 	}
 }
 
@@ -325,11 +519,27 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 		return errors.New("application frame received before READY")
 	}
 	switch fr.Type {
+	case protocol.TypeResumeDone:
+		if p.recovery==nil{return errors.New("unexpected recovery control while recovery disabled")}
+		return p.HandleRecoveryControlFrame(fr)
+	case protocol.TypePing:
+		return p.handlePing(fr)
+	case protocol.TypePong:
+		return p.handlePong(fr)
 	case protocol.TypeOpen:
 		return p.handleOpen(ctx, fr)
 	case protocol.TypeOpenOK:
 		fl, err := p.getFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				// The dialer gave up on this OPEN (cancelled, or abandoned when the
+				// carrier failed) after the listener had opened it. Have the
+				// listener close its side so the target connection is not kept.
+				if payload, perr := protocol.EncodeControl(protocol.Reset{Code: protocol.ErrorStateMismatch}); perr == nil {
+					_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeReset, StreamID: fr.StreamID, Payload: payload})
+				}
+				return nil
+			}
 			return err
 		}
 		fl.mu.Lock()
@@ -343,6 +553,9 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 	case protocol.TypeOpenErr:
 		fl, err := p.getFlow(fr.StreamID)
 		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		oe, err := protocol.DecodeOpenError(fr.Payload)
@@ -371,24 +584,40 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 			}
 			return err
 		}
+		fl.mu.Lock()
+		beforeAck:=fl.txAcked
+		fl.mu.Unlock()
 		if err := fl.onAck(fr.Offset); err != nil {
 			return err
 		}
-		p.sender.updatePressure(fl.id, fl.replayPressure())
+		p.senderNow().updatePressure(fl.id, fl.replayPressure())
+		if p.recoveryEnabled && fr.Offset>beforeAck {
+			ctl:=RecoveryControl{}
+			inc:=uint64(0)
+			if p.recovery!=nil {
+				p.recovery.mu.Lock()
+				if p.recovery.prepared!=nil {
+					ctl=p.recovery.prepared.control
+					inc=p.recovery.prepared.incarnation
+				}
+				p.recovery.mu.Unlock()
+			}
+			_,_,gen:=p.currentCarrierIdentity()
+			p.traceRecoveryDiagnostic("REPLAY_ACK_ACCEPTED",SenderStopUnknown,fmt.Errorf("stream=%d accepted=%d previous=%d",fl.id,fr.Offset,beforeAck),"",p.senderNow(),ctl,inc,gen)
+		}
 		return nil
 	case protocol.TypeData:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
+			// The peer may still have DATA/FIN in flight when this side RESET
+			// or finished the Flow; only that Flow is gone, not the Session.
+			if p.isClosedFlow(fr.StreamID) {
+				return nil
+			}
 			return err
 		}
 		return p.handleData(fl, fr)
 	case protocol.TypeFin:
-		fl, err := p.getOpenFlow(fr.StreamID)
-		if err != nil {
-			return err
-		}
-		return p.handleFin(fl, fr.Offset)
-	case protocol.TypeFinAck:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
 			if p.isClosedFlow(fr.StreamID) {
@@ -396,9 +625,28 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 			}
 			return err
 		}
+		return p.handleFin(fl, fr.Offset)
+	case protocol.TypeFinAck:
+		fl, err := p.getOpenFlow(fr.StreamID)
+		if err != nil {
+			if p.isClosedFlow(fr.StreamID) {
+				return p.reconfirmFinishedFinAck(fr.StreamID, fr.Offset)
+			}
+			return err
+		}
 		if err := fl.onFinAck(fr.Offset); err != nil {
 			return err
 		}
+		if err:=p.senderNow().sendControl(protocol.Frame{Type:protocol.TypeFinAckConfirm,StreamID:fl.id,Offset:fr.Offset});err!=nil{return err}
+		p.finishIfComplete(fl)
+		return nil
+	case protocol.TypeFinAckConfirm:
+		fl,err:=p.getOpenFlow(fr.StreamID)
+		if err!=nil{
+			if p.isClosedFlow(fr.StreamID){return nil}
+			return err
+		}
+		if err:=fl.onFinAckConfirm(fr.Offset);err!=nil{return err}
 		p.finishIfComplete(fl)
 		return nil
 	case protocol.TypeReset:
@@ -437,7 +685,7 @@ func (p *Peer) sendHello() error {
 	if err != nil {
 		return err
 	}
-	return p.sender.sendControl(protocol.Frame{Type: protocol.TypeHello, Payload: payload})
+	return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeHello, Payload: payload})
 }
 
 func (p *Peer) handleHello(fr protocol.Frame) error {
@@ -464,13 +712,14 @@ func (p *Peer) handleHello(fr protocol.Frame) error {
 	}
 	p.helloSeen = true
 	p.sessionID = h.SessionID
+	p.peerBootID = h.BootID
 	p.epoch = h.Epoch
 	p.shardID = h.ShardID
 	ack := protocol.HelloAck{
 		SelectedProtocol: 1, SessionID: p.sessionID, Epoch: p.epoch, PeerBootID: p.bootID,
 		AcceptedProfile: protocol.AcceptedProfile{ID: p.profileID, Version: p.profileVersion},
 		NegotiatedLimits: protocol.NegotiatedLimits{
-			MaxFramePayloadBytes: protocol.MaxPayloadSize, MaxFlowsPerShard: 64,
+			MaxFramePayloadBytes: protocol.MaxPayloadSize, MaxFlowsPerShard: maxFlowsPerShard,
 			ReceiveInitialBytes: uint32(defaultWindow), ReceiveMaxBytes: 16 * 1024 * 1024,
 			RetentionMS: 30000,
 		},
@@ -480,7 +729,7 @@ func (p *Peer) handleHello(fr protocol.Frame) error {
 	if err != nil {
 		return err
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeHelloAck, Payload: payload}); err != nil {
+	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeHelloAck, Payload: payload}); err != nil {
 		return err
 	}
 	return p.sendReady()
@@ -504,6 +753,7 @@ func (p *Peer) handleHelloAck(fr protocol.Frame) error {
 		return errors.New("HELLO_ACK state mismatch")
 	}
 	p.helloSeen = true
+	p.peerBootID = ack.PeerBootID
 	p.mu.Unlock()
 	return p.sendReady()
 }
@@ -513,7 +763,7 @@ func (p *Peer) sendReady() error {
 	if err != nil {
 		return err
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeReady, Payload: payload}); err != nil {
+	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeReady, Payload: payload}); err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -572,74 +822,146 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 	if p.role != Listener {
 		return errors.New("dialer received unexpected OPEN")
 	}
+	if p.recoveryEnabled{p.recoveryGate.Lock();defer p.recoveryGate.Unlock()}
+	if p.recovery!=nil && p.recovery.IsFrozen(){
+		// A frozen listener cannot admit a Flow, but an OPEN still in flight
+		// on the carrier must not end the whole Session, which returning
+		// ErrResumeFrozen here did. Refuse just this OPEN; if the answer is
+		// lost with the carrier, the dialer abandons the unanswered OPEN.
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorStateMismatch})
+		_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return nil
+	}
 	req, err := protocol.DecodeOpen(fr.Payload)
 	if err != nil {
 		return err
 	}
 	p.mu.Lock()
 	if existing := p.flows[fr.StreamID]; existing != nil {
-		same := existing.routeID == req.RouteID && existing.nonce == req.OpenNonce
-		openOK := existing.openOK
 		p.mu.Unlock()
+		same := existing.routeID == req.RouteID && existing.nonce == req.OpenNonce
+		existing.mu.Lock()
+		openOK := existing.openOK
+		existing.mu.Unlock()
 		if !same {
 			return errors.New("duplicate stream_id with different OPEN identity")
 		}
 		if !openOK {
-			return errors.New("duplicate OPEN before original completed")
+			// finishOpen is still completing this Flow and will answer it.
+			return nil
 		}
-		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")})
 	}
+	if pending, ok := p.pendingOpens[fr.StreamID]; ok {
+		p.mu.Unlock()
+		if pending.RouteID != req.RouteID || pending.OpenNonce != req.OpenNonce {
+			return errors.New("duplicate stream_id with different OPEN identity")
+		}
+		// The in-flight dial answers this OPEN with OPEN_OK or OPEN_ERR.
+		return nil
+	}
+	full := len(p.flows)+len(p.pendingOpens) >= maxFlowsPerShard
 	p.mu.Unlock()
+	if full {
+		// HELLO_ACK advertises this per-Shard limit; refuse before dialing the target.
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+	}
 
 	target, err := p.routes.Resolve(p.peerID, req.RouteID)
 	if err != nil {
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorCode(err.Error())})
-		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
-	conn, err := p.dial(ctx, "tcp", target)
-	if err != nil {
-		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: targetDialErrorCode(err)})
-		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+	if !p.flowSlots.TryAcquire() {
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
 	}
-	fl := newFlow(fr.StreamID, req.RouteID, req.OpenNonce, conn, p.allocator)
+	if p.recoveryEnabled {
+		// Recovery serializes OPEN admission with snapshots through
+		// recoveryGate, held for this whole call, so dial inline.
+		conn, err := p.dial(ctx, "tcp", target)
+		return p.finishOpen(ctx, fr.StreamID, req, conn, err, false)
+	}
+	// Dial off the frame loop: a slow or blackholed target must not stall
+	// every other Flow on this Shard for the dial timeout.
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		p.flowSlots.Release()
+		return errors.New("session closed")
+	}
+	p.pendingOpens[fr.StreamID] = req
+	p.mu.Unlock()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		conn, err := p.dial(ctx, "tcp", target)
+		// Failures here are already turned into OPEN_ERR, RESET or a closed
+		// Flow; a broken carrier also ends the frame loop on its own.
+		_ = p.finishOpen(ctx, fr.StreamID, req, conn, err, true)
+	}()
+	return nil
+}
+
+// finishOpen completes an admitted OPEN after the target dial returned. It owns
+// the node flow slot taken by handleOpen and, when pending, the pendingOpens
+// entry, which is replaced by the Flow atomically so a retransmitted OPEN
+// never dials twice.
+func (p *Peer) finishOpen(ctx context.Context, id uint64, req protocol.OpenRequest, conn net.Conn, dialErr error, pending bool) error {
+	if dialErr != nil {
+		if pending {
+			p.mu.Lock()
+			delete(p.pendingOpens, id)
+			p.mu.Unlock()
+		}
+		p.flowSlots.Release()
+		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: targetDialErrorCode(dialErr)})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: id, Payload: payload})
+	}
+	fl := newFlow(id, req.RouteID, req.OpenNonce, conn, p.allocator)
+	fl.slots = p.flowSlots
+	p.mu.Lock()
+	if pending {
+		delete(p.pendingOpens, id)
+	}
 	if p.closed {
 		p.mu.Unlock()
 		fl.close()
 		return errors.New("session closed")
 	}
-	if old := p.flows[fr.StreamID]; old != nil {
+	if old := p.flows[id]; old != nil {
 		p.mu.Unlock()
 		fl.close()
 		return errors.New("concurrent OPEN conflict")
 	}
-	p.flows[fr.StreamID] = fl
+	p.flows[id] = fl
 	p.mu.Unlock()
 
 	window, err := p.reserveReceiveWindow(fl)
 	if err != nil {
 		fl.close()
-		p.removeFlow(fr.StreamID)
+		p.removeFlow(id)
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
-		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: id, Payload: payload})
 	}
 	fl.mu.Lock()
 	fl.openOK = true
 	fl.mu.Unlock()
-	if err := p.sender.addFlow(fl.id); err != nil {
+	if err := p.senderNow().addFlow(fl.id); err != nil {
 		fl.close()
-		p.removeFlow(fr.StreamID)
+		p.removeFlow(id)
 		payload, _ := protocol.EncodeControl(protocol.OpenError{Code: protocol.ErrorResourceExhausted})
-		return p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: fr.StreamID, Payload: payload})
+		return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenErr, StreamID: id, Payload: payload})
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: fr.StreamID, Payload: []byte("{}")}); err != nil {
+	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeOpenOK, StreamID: id, Payload: []byte("{}")}); err != nil {
 		fl.close()
-		p.removeFlow(fr.StreamID)
+		p.removeFlow(id)
 		return err
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: window}); err != nil {
+	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: window}); err != nil {
 		fl.close()
-		p.removeFlow(fr.StreamID)
+		p.removeFlow(id)
 		return err
 	}
 	p.startPump(ctx, fl)
@@ -663,7 +985,7 @@ func (p *Peer) sendReset(fl *flow, code protocol.ErrorCode) error {
 	if err != nil {
 		return err
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeReset, StreamID: fl.id, Payload: payload}); err != nil {
+	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeReset, StreamID: fl.id, Payload: payload}); err != nil {
 		return err
 	}
 	fl.mu.Lock()
@@ -733,27 +1055,51 @@ func (p *Peer) grantReceive(fl *flow) error {
 	if err != nil {
 		return err
 	}
-	return p.sender.sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: max})
+	return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: max})
 }
 
 func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
+	fl.mu.Lock()
+	before:=fl.rxNext
+	fl.mu.Unlock()
 	ack, duplicate, err := fl.acceptData(fr.Offset, fr.Payload)
 	if err != nil {
+		if p.recoveryEnabled && errors.Is(err,ErrRecoverableDataGap) {
+			_,_,currentGeneration:=p.currentCarrierIdentity()
+			p.traceRecoveryFrameDiagnostic("DATA_GAP",fr,currentGeneration,currentGeneration,before,fmt.Errorf("%w: offset=%d rx_next=%d",err,fr.Offset,before))
+			// A later replay frame can still be buffered on a physical carrier
+			// whose earlier frame was written but never accepted. Local write
+			// order is not peer-delivery proof. Preserve the Flow and force an
+			// exact-transaction carrier rebind so replay restarts from the
+			// ACK-derived frontier. Recovery-disabled behavior remains unchanged.
+			return fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)
+		}
 		return p.sendReset(fl, protocol.ErrorFlowControl)
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeAck, StreamID: fl.id, Offset: ack}); err != nil {
+	if err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeAck, StreamID: fl.id, Offset: ack}); err != nil {
 		return err
 	}
 	if duplicate {
 		return nil
 	}
+	if p.trafficObserver != nil && ack>before {
+		p.trafficObserver(ack-before,0)
+	}
 	return nil
 }
 
 func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
+	exactObligation:=p.recoveryEnabled&&p.NeedsExactTransactionResolution()
 	fl.mu.Lock()
 	if finalOffset != fl.rxNext {
+		accepted:=fl.rxNext
 		fl.mu.Unlock()
+		if p.recoveryEnabled && finalOffset>accepted {
+			// A FIN written after DATA may outlive the physical carrier even when
+			// the preceding DATA was not peer-accepted. Do not turn that delivery
+			// ambiguity into an application reset; rebind and replay exact state.
+			return fmt.Errorf("%w: FIN ahead of accepted DATA",ErrCarrierUnavailable)
+		}
 		return errors.New("FIN final_offset does not match accepted data")
 	}
 	if fl.finRecv && fl.finRecvFinal != finalOffset {
@@ -764,6 +1110,7 @@ func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 	fl.finRecvFinal = finalOffset
 	ready := fl.rxWritten == finalOffset
 	fl.mu.Unlock()
+	if exactObligation{p.markExactTerminalObligation(fl,false,true,finalOffset)}
 
 	if ready {
 		return p.ackRemoteFin(fl)
@@ -773,24 +1120,52 @@ func (p *Peer) handleFin(fl *flow, finalOffset uint64) error {
 
 func (p *Peer) ackRemoteFin(fl *flow) error {
 	fl.mu.Lock()
-	if fl.finAckSent {
-		fl.mu.Unlock()
-		return nil
-	}
 	if !fl.finRecv || fl.rxWritten != fl.finRecvFinal {
 		fl.mu.Unlock()
 		return nil
 	}
+	if fl.finAckConfirmed {
+		fl.mu.Unlock()
+		p.finishIfComplete(fl)
+		return nil
+	}
+	// Serialize FIN_ACK emission for this flow. The peer may consume the frame
+	// and return FIN_ACK_CONFIRM before sendControl returns, so the local
+	// acceptance window must be published before the frame becomes writable.
+	if fl.finAckWriteInFlight {
+		fl.mu.Unlock()
+		return nil
+	}
+	fl.finAckWriteInFlight=true
 	final := fl.finRecvFinal
-	fl.finAckSent = true
+	needCloseWrite:=!fl.writeClosed
+	if needCloseWrite{fl.writeClosed=true}
 	fl.mu.Unlock()
 
-	if cw, ok := fl.conn.(interface{ CloseWrite() error }); ok {
-		if err := cw.CloseWrite(); err != nil {
-			return p.sendReset(fl, protocol.ErrorTargetUnreachable)
+	if needCloseWrite {
+		if cw, ok := fl.conn.(interface{ CloseWrite() error }); ok {
+			if err := cw.CloseWrite(); err != nil {
+				fl.mu.Lock()
+				fl.finAckWriteInFlight=false
+				fl.mu.Unlock()
+				return p.sendReset(fl, protocol.ErrorTargetUnreachable)
+			}
 		}
 	}
-	if err := p.sender.sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final}); err != nil {
+
+	fl.mu.Lock()
+	fl.finAckSent=true
+	fl.mu.Unlock()
+	err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final})
+	fl.mu.Lock()
+	fl.finAckWriteInFlight=false
+	if err!=nil && !fl.finAckConfirmed {
+		// No peer proof exists for this emission. Keep the terminal obligation
+		// retryable instead of pretending a failed local write was delivered.
+		fl.finAckSent=false
+	}
+	fl.mu.Unlock()
+	if err != nil {
 		return err
 	}
 	p.finishIfComplete(fl)
@@ -799,29 +1174,73 @@ func (p *Peer) ackRemoteFin(fl *flow) error {
 
 func (p *Peer) finishIfComplete(fl *flow) {
 	fl.mu.Lock()
-	done := fl.finAckSent && fl.finAcked
+	// A locally written FIN_ACK is not enough to destroy flow state. The flow
+	// can be released only after our FIN was acknowledged and the peer proved
+	// receipt of the FIN_ACK we sent for its FIN.
+	done := fl.finAcked && fl.finAckSent && fl.finAckConfirmed
+	final := fl.txNext
 	fl.mu.Unlock()
 	if !done {
 		return
 	}
 	fl.close()
 	p.removeFlow(fl.id)
+	p.mu.Lock()
+	if _, ok := p.closedFlows[fl.id]; ok {
+		p.finishedFins[fl.id] = final
+	}
+	p.mu.Unlock()
 }
 
 func (p *Peer) startPump(ctx context.Context, fl *flow) {
+	fl.mu.Lock()
+	if fl.closed||fl.conn==nil||fl.finSent||fl.localPumpRunning { fl.mu.Unlock(); return }
+	done:=make(chan struct{})
+	fl.localPumpRunning=true
+	fl.localPumpDone=done
+	fl.mu.Unlock()
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		defer func(){
+			fl.mu.Lock()
+			if fl.localPumpDone==done { fl.localPumpRunning=false; close(done) }
+			fl.mu.Unlock()
+		}()
 		p.pumpLocal(ctx, fl)
 	}()
 }
 
 func (p *Peer) startTargetPump(ctx context.Context, fl *flow) {
+	fl.mu.Lock()
+	if fl.closed||fl.conn==nil||fl.finAckSent||fl.targetPumpRunning { fl.mu.Unlock(); return }
+	done:=make(chan struct{})
+	fl.targetPumpRunning=true
+	fl.targetPumpDone=done
+	fl.mu.Unlock()
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		defer func(){
+			fl.mu.Lock()
+			if fl.targetPumpDone==done { fl.targetPumpRunning=false; close(done) }
+			fl.mu.Unlock()
+		}()
 		p.pumpTarget(ctx, fl)
 	}()
+}
+
+func (p *Peer) ensurePumpsAfterRecovery(ctx context.Context,fl *flow){
+	fl.mu.Lock()
+	localRunning,localDone:=fl.localPumpRunning,fl.localPumpDone
+	targetRunning,targetDone:=fl.targetPumpRunning,fl.targetPumpDone
+	fl.mu.Unlock()
+	if !localRunning { p.startPump(ctx,fl) } else if localDone!=nil {
+		p.wg.Add(1);go func(){defer p.wg.Done();select{case <-ctx.Done():case <-localDone:p.startPump(ctx,fl)}}()
+	}
+	if !targetRunning { p.startTargetPump(ctx,fl) } else if targetDone!=nil {
+		p.wg.Add(1);go func(){defer p.wg.Done();select{case <-ctx.Done():case <-targetDone:p.startTargetPump(ctx,fl)}}()
+	}
 }
 
 func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
@@ -863,7 +1282,10 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			_ = p.ackRemoteFin(fl)
 			return
 		}
-		if err := p.grantReceive(fl); err != nil {
+		for {
+			epoch,owner,generation:=p.currentCarrierIdentity()
+			err := p.grantReceive(fl)
+			if err==nil{break}
 			// FIN completion can race the credit refresh. A Flow that became
 			// terminal while this goroutine was between delivery and WINDOW
 			// must absorb that late credit intent instead of emitting RESET.
@@ -871,17 +1293,100 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			closed = fl.closed
 			finalReady = fl.finRecv && !fl.finAckSent && fl.rxWritten == fl.finRecvFinal
 			fl.mu.Unlock()
-			if closed {
-				return
-			}
-			if finalReady {
-				_ = p.ackRemoteFin(fl)
-				return
+			if closed{return}
+			if finalReady{_ = p.ackRemoteFin(fl);return}
+			if p.recoveryEnabled {
+				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
+				if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
 			}
 			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
 			return
 		}
 	}
+}
+
+func (p *Peer) queueExactLiveFrame(ctx context.Context,fl *flow,fr protocol.Frame,producer DataProducerKind) {
+	if fl==nil{return}
+	fl.mu.Lock()
+	if fl.closed{fl.mu.Unlock();return}
+	if fl.deferredLiveWake==nil{fl.deferredLiveWake=make(chan struct{},1)}
+	fl.deferredLive=append(fl.deferredLive,deferredLiveFrame{frame:fr,producer:producer})
+	start:=!fl.deferredLiveRunning
+	if start{fl.deferredLiveRunning=true}
+	wake:=fl.deferredLiveWake
+	fl.mu.Unlock()
+	if start{
+		p.wg.Add(1)
+		go func(){defer p.wg.Done();p.runExactLiveDelivery(ctx,fl)}()
+	}
+	select{case wake<-struct{}{}:default:}
+}
+
+func (p *Peer) runExactLiveDelivery(ctx context.Context,fl *flow) {
+	defer func(){fl.mu.Lock();fl.deferredLiveRunning=false;fl.mu.Unlock()}()
+	for{
+		fl.mu.Lock()
+		if fl.closed{fl.mu.Unlock();return}
+		if len(fl.deferredLive)==0{
+			wake:=fl.deferredLiveWake
+			fl.mu.Unlock()
+			select{case <-ctx.Done():return;case <-wake:continue}
+		}
+		item:=fl.deferredLive[0]
+		fl.mu.Unlock()
+
+		for{
+			sender,epoch,owner,generation:=p.currentSenderState()
+			if sender==nil{return}
+			// Exact-transaction live DATA may be committed while the recovery
+			// carrier is active but not application-ready. Never send on epoch 1
+			// or through a generation that has not crossed the readiness barrier.
+			if epoch<=1{
+				if err:=p.waitForCarrierSwitch(ctx,epoch,owner,generation);err!=nil{return}
+				continue
+			}
+			if err:=p.waitForGenerationReady(ctx,generation);err!=nil{return}
+			currentSender,currentEpoch,currentOwner,currentGeneration:=p.currentSenderState()
+			if currentGeneration!=generation||currentEpoch!=epoch||currentOwner!=owner||currentSender!=sender{continue}
+			var err error
+			if item.frame.Type==protocol.TypeFin{
+				// Written only after every DATA item queued before it.
+				err=sender.sendControl(item.frame)
+			}else{
+				if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,item.producer,item.frame.Offset,item.frame.Offset+uint64(len(item.frame.Payload)),generation)}
+				err=sender.sendDataWithProducer(ctx,fl,item.frame,item.producer)
+			}
+			if err!=nil&&p.recoveryEnabled{
+				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
+				if werr:=p.waitForCarrierSwitch(ctx,epoch,owner,generation);werr==nil{continue}
+				return
+			}
+			if err!=nil{return}
+			break
+		}
+
+		fl.mu.Lock()
+		if len(fl.deferredLive)>0&&fl.deferredLive[0].frame.Offset==item.frame.Offset&&
+			fl.deferredLive[0].frame.Offset+uint64(len(fl.deferredLive[0].frame.Payload))==item.frame.Offset+uint64(len(item.frame.Payload)){
+			copy(fl.deferredLive,fl.deferredLive[1:])
+			fl.deferredLive[len(fl.deferredLive)-1]=deferredLiveFrame{}
+			fl.deferredLive=fl.deferredLive[:len(fl.deferredLive)-1]
+		}
+		fl.mu.Unlock()
+	}
+}
+
+func (p *Peer) exactRecoveryOwnsLedgerRange(fl *flow,end uint64) bool {
+	if p.recovery==nil||fl==nil||end==0{return false}
+	a:=p.recovery
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.prepared==nil{return false}
+	for i:=range a.prepared.flows{
+		act:=&a.prepared.flows[i]
+		if act.flow==fl&&end<=act.replayHighWatermark{return true}
+	}
+	return false
 }
 
 func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
@@ -896,22 +1401,112 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 			_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(capacity-n))
 		}
 		if n > 0 {
+			// Application ledger admission and recovery snapshot/freeze share one
+			// authority boundary. Without this gate, BeginRecovery can start
+			// between the exact-obligation check and commitSend: the bytes then
+			// miss both the recovery snapshot and the exact replay high-watermark,
+			// leaving FINALIZED/ReplayOutstanding permanently non-ready.
+			if p.recoveryEnabled{p.recoveryGate.Lock()}
+			exactObligation:=p.recoveryEnabled&&p.NeedsExactTransactionResolution()
 			off, payload, err := fl.commitSend(buf[:n])
+			if err == nil && exactObligation {
+				p.extendExactReplayHighWatermark(fl,off+uint64(len(payload)))
+			}
+			if p.recoveryEnabled{p.recoveryGate.Unlock()}
 			if err != nil {
 				_ = fl.allocator.Release(fl.resourceID, resources.Replay, int64(n))
 				return
 			}
-			if err := p.sender.sendData(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload}); err != nil {
-				return
+			// In recovery mode account application bytes exactly once when they
+			// enter the session ledger. Carrier replay must never bill them again.
+			if p.recoveryEnabled && p.trafficObserver != nil {
+				p.trafficObserver(0,uint64(n))
+			}
+			if exactObligation {
+				_,epoch,_,_:=p.currentSenderState()
+				producer:=ProducerLivePump
+				if epoch>1{producer=ProducerRecoveredPump}
+				p.queueExactLiveFrame(ctx,fl,protocol.Frame{Type:protocol.TypeData,StreamID:fl.id,Offset:off,Payload:payload},producer)
+			}else{
+				var sendErr error
+				frameEnd:=off+uint64(len(payload))
+				for {
+					// If recovery became authoritative after this DATA entered the
+					// ledger, the exact replay plan already owns this byte range.
+					// Do not keep the application pump blocked behind recovery
+					// readiness or resend the same range through the old direct
+					// path; hand ownership to replay and continue admitting later
+					// application DATA into the exact high-watermark.
+					if p.recoveryEnabled&&p.NeedsExactTransactionResolution()&&p.exactRecoveryOwnsLedgerRange(fl,frameEnd){
+						sendErr=nil
+						break
+					}
+					sender,epoch,owner,generation:=p.currentSenderState()
+					producer:=ProducerLivePump
+					if p.recoveryEnabled&&epoch>1{producer=ProducerRecoveredPump}
+					// Carrier authority can change before replay/application readiness.
+					// A surviving pump from the prior physical generation must never
+					// bypass the recovery release barrier merely because its previous
+					// write happened to return nil. Wait for this exact generation to
+					// be application-ready, then re-read ownership before sending.
+					if p.recoveryEnabled&&epoch>1 {
+						if err:=p.waitForGenerationReady(ctx,generation);err!=nil{return}
+						currentSender,currentEpoch,currentOwner,currentGeneration:=p.currentSenderState()
+						if currentGeneration!=generation||currentEpoch!=epoch||currentOwner!=owner||currentSender!=sender{
+							continue
+						}
+					}
+					if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,producer,off,off+uint64(len(payload)),generation)}
+					sendErr=sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer)
+					if sendErr!=nil&&p.recoveryEnabled {
+						p.onCarrierFailureForGeneration(sendErr,generation,SenderStopFrameProcessing)
+						// A failed direct write belongs to the retired physical carrier.
+						// Wait only until carrier authority changes, then re-evaluate the
+						// exact-transaction ownership at the top of this loop. Waiting for
+						// application readiness here creates a liveness cycle: replay proof
+						// gates readiness while this pump is prevented from admitting later
+						// application bytes into the exact replay high-watermark.
+						if werr:=p.waitForCarrierSwitch(ctx,epoch,owner,generation);werr==nil{
+							continue
+						}
+					}
+					break
+				}
+				if sendErr!=nil{return}
+			}
+			if !p.recoveryEnabled && p.trafficObserver != nil {
+				p.trafficObserver(0,uint64(n))
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
+				exactObligation:=p.recoveryEnabled&&p.NeedsExactTransactionResolution()
 				fl.mu.Lock()
 				final := fl.txNext
 				fl.finSent = true
 				fl.mu.Unlock()
-				_ = p.sender.sendControl(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
+				if exactObligation{
+					p.markExactTerminalObligation(fl,true,false,final)
+					// The obligation keeps this FIN for a rebind, but nothing else
+					// writes it on the live carrier. Queue it behind this Flow's
+					// exact live DATA so it goes out in order once the current
+					// generation is application-ready; withholding it left the
+					// Flow half-closed, its slot leaked, and the transaction
+					// unstable until another carrier failed.
+					p.queueExactLiveFrame(ctx,fl,protocol.Frame{Type:protocol.TypeFin,StreamID:fl.id,Offset:final},ProducerRecoveredPump)
+				}else{
+					_ = p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFin, StreamID: fl.id, Offset: final})
+				}
+			} else {
+				// A reset application socket must end the Flow on both sides, the
+				// same way pumpTarget handles a failed write; otherwise an idle peer
+				// keeps the target connection and receive budget indefinitely.
+				fl.mu.Lock()
+				closed := fl.closed
+				fl.mu.Unlock()
+				if !closed {
+					_ = p.sendReset(fl, protocol.ErrorTargetUnreachable)
+				}
 			}
 			return
 		}
@@ -980,10 +1575,37 @@ func (f *flow) onWindow(max uint64) error {
 	if !f.openOK {
 		return errors.New("WINDOW before OPEN_OK")
 	}
+	// close() has already closed creditWait; a WINDOW still in flight for a
+	// Flow that is closing must not close it again.
+	if f.closed {
+		return nil
+	}
 	if max < f.peerMax {
 		return errors.New("WINDOW moved backwards")
 	}
 	if max == f.peerMax {
+		return nil
+	}
+	f.peerMax = max
+	close(f.creditWait)
+	f.creditWait = make(chan struct{})
+	return nil
+}
+
+func (f *flow) restoreRecoveryPeerCredit(max uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.openOK {
+		return errors.New("recovery credit before OPEN_OK")
+	}
+	if f.closed {
+		return nil
+	}
+	// Recovery snapshots are immutable transaction evidence, but the old
+	// authoritative carrier can still deliver a newer WINDOW after that
+	// snapshot and before authority commit. Never regress that newer proven
+	// frontier; only advance when the recovered peer snapshot is higher.
+	if max <= f.peerMax {
 		return nil
 	}
 	f.peerMax = max
@@ -1016,6 +1638,10 @@ func (f *flow) onAck(ack uint64) error {
 		return nil
 	}
 	f.txAcked = ack
+	if f.ackWait!=nil {
+		close(f.ackWait)
+	}
+	f.ackWait=make(chan struct{})
 	var released int64
 	keep := 0
 	for _, chunk := range f.replay {
@@ -1051,7 +1677,7 @@ func (f *flow) acceptData(offset uint64, payload []byte) (uint64, bool, error) {
 		return 0, false, errors.New("FLOW_CONTROL_ERROR")
 	}
 	if offset > f.rxNext {
-		return 0, false, errors.New("DATA gap is not allowed")
+		return 0, false, ErrRecoverableDataGap
 	}
 	if end <= f.rxNext {
 		return f.rxNext, true, nil
@@ -1083,6 +1709,15 @@ func (f *flow) onFinAck(off uint64) error {
 	return nil
 }
 
+func (f *flow) onFinAckConfirm(off uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.openOK{return errors.New("FIN_ACK_CONFIRM before OPEN_OK")}
+	if !f.finRecv||!f.finAckSent||off!=f.finRecvFinal{return errors.New("invalid FIN_ACK_CONFIRM")}
+	f.finAckConfirmed=true
+	return nil
+}
+
 func (f *flow) close() {
 	f.mu.Lock()
 	if f.closed {
@@ -1091,11 +1726,16 @@ func (f *flow) close() {
 	}
 	f.closed = true
 	close(f.creditWait)
+	deferredWake:=f.deferredLiveWake
 	conn := f.conn
 	allocator := f.allocator
 	resourceID := f.resourceID
 	ring := f.rxRing
+	slots := f.slots
+	f.slots = nil
 	f.mu.Unlock()
+	slots.Release()
+	if deferredWake!=nil{select{case deferredWake<-struct{}{}:default:}}
 	if ring != nil {
 		ring.Close()
 	}
@@ -1143,12 +1783,13 @@ func (p *Peer) removeFlow(id uint64) {
 				evict := p.closedOrder[0]
 				p.closedOrder = p.closedOrder[1:]
 				delete(p.closedFlows, evict)
+				delete(p.finishedFins, evict)
 			}
 		}
 	}
 	p.mu.Unlock()
-	if p.sender != nil {
-		p.sender.removeFlow(id, errors.New("flow closed"))
+	if s:=p.senderNow();s!=nil {
+		s.removeFlow(id, errors.New("flow closed"))
 	}
 }
 
@@ -1190,6 +1831,65 @@ func writeConnFull(w io.Writer, p []byte) error {
 		if n == 0 {
 			return io.ErrShortWrite
 		}
+	}
+	return nil
+}
+
+
+func (p *Peer) pingLoop(ctx context.Context) {
+	if err:=p.waitReady(ctx);err!=nil{return}
+	send:=func() bool {
+		var payload [8]byte
+		binary.BigEndian.PutUint64(payload[:],uint64(time.Now().UnixNano()))
+		if err:=p.senderNow().sendControl(protocol.Frame{Type:protocol.TypePing,Payload:payload[:]});err!=nil{return false}
+		return true
+	}
+	if !send(){return}
+	t:=time.NewTicker(p.pingInterval)
+	defer t.Stop()
+	for{
+		select{
+		case <-ctx.Done():return
+		case <-t.C:
+			if !send(){return}
+		}
+	}
+}
+
+func (p *Peer) handlePing(fr protocol.Frame) error {
+	if len(fr.Payload)!=8{return errors.New("invalid PING payload")}
+	payload:=append([]byte(nil),fr.Payload...)
+	return p.senderNow().sendControl(protocol.Frame{Type:protocol.TypePong,Payload:payload})
+}
+
+func (p *Peer) handlePong(fr protocol.Frame) error {
+	if len(fr.Payload)!=8{return errors.New("invalid PONG payload")}
+	sent:=int64(binary.BigEndian.Uint64(fr.Payload))
+	now:=time.Now().UnixNano()
+	if sent<=0||sent>now{return errors.New("invalid PONG timestamp")}
+	rtt:=time.Duration(now-sent)
+	if rtt>time.Minute{return errors.New("implausible PONG RTT")}
+	if p.latencyObserver!=nil{p.latencyObserver(rtt)}
+	return nil
+}
+
+// reconfirmFinishedFinAck answers a FIN_ACK for a Flow this side already
+// finished. Recovery can finish a Flow from the peer's snapshot evidence that
+// it sent FIN_ACK, without that frame ever arriving here; the peer then waits
+// for a FIN_ACK_CONFIRM that nothing would send, keeping its Flow and its
+// recovery transaction open. It is confirmed only for a graceful finish whose
+// FIN ended at the acknowledged offset.
+func (p *Peer) reconfirmFinishedFinAck(id, off uint64) error {
+	p.mu.Lock()
+	final, ok := p.finishedFins[id]
+	p.mu.Unlock()
+	if !ok || final != off {
+		return nil
+	}
+	// Best effort, like the RESET for a late OPEN_OK: if this carrier is
+	// failing, the next rebind sends the FIN_ACK again.
+	if s := p.senderNow(); s != nil {
+		_ = s.sendControl(protocol.Frame{Type: protocol.TypeFinAckConfirm, StreamID: id, Offset: off})
 	}
 	return nil
 }

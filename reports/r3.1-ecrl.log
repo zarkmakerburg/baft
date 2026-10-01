@@ -1,0 +1,63 @@
+=== RUN   TestECRLF01ZombieCarrier
+--- PASS: TestECRLF01ZombieCarrier (0.00s)
+=== RUN   TestECRLF02DualCandidate
+--- PASS: TestECRLF02DualCandidate (0.00s)
+=== RUN   TestECRLF03LostACK
+--- PASS: TestECRLF03LostACK (0.00s)
+=== RUN   TestECRLF04AcceptedNotDeliveredPartition
+--- PASS: TestECRLF04AcceptedNotDeliveredPartition (0.00s)
+=== RUN   TestECRLF05TombstoneResurrection
+--- PASS: TestECRLF05TombstoneResurrection (0.00s)
+=== RUN   TestECRLF06LostFIN
+--- PASS: TestECRLF06LostFIN (0.00s)
+=== RUN   TestECRLF06LostFINACK
+--- PASS: TestECRLF06LostFINACK (0.00s)
+=== RUN   TestECRLF06DuplicateFINIdempotence
+--- PASS: TestECRLF06DuplicateFINIdempotence (0.00s)
+=== RUN   TestECRLF07PeerRestart
+--- PASS: TestECRLF07PeerRestart (0.00s)
+=== RUN   TestECRLF08InconsistentSnapshot
+--- PASS: TestECRLF08InconsistentSnapshot (0.00s)
+=== RUN   TestECRLF09DeterministicPropertySweep
+--- PASS: TestECRLF09DeterministicPropertySweep (0.00s)
+=== RUN   TestECRLF10ExactByteStream
+--- PASS: TestECRLF10ExactByteStream (0.04s)
+=== RUN   TestECRLFutureDurableSlowTargetReplayBoundNoDeadlock
+--- PASS: TestECRLFutureDurableSlowTargetReplayBoundNoDeadlock (0.00s)
+=== RUN   TestEngineECRLF01ZombieCarrier
+--- PASS: TestEngineECRLF01ZombieCarrier (0.00s)
+=== RUN   TestEngineECRLF02DualCandidate
+--- PASS: TestEngineECRLF02DualCandidate (0.00s)
+=== RUN   TestEngineECRLF03LostACK
+--- PASS: TestEngineECRLF03LostACK (0.00s)
+=== RUN   TestEngineECRLF07PeerRestart
+--- PASS: TestEngineECRLF07PeerRestart (0.00s)
+=== RUN   TestEngineECRLF08InconsistentSnapshot
+--- PASS: TestEngineECRLF08InconsistentSnapshot (0.00s)
+=== RUN   TestEngineECRLF09DeterministicSnapshotSweep
+--- PASS: TestEngineECRLF09DeterministicSnapshotSweep (0.00s)
+=== RUN   TestEngineAIdentityVectorFrozenAcrossPrepareCommit
+--- PASS: TestEngineAIdentityVectorFrozenAcrossPrepareCommit (0.00s)
+=== RUN   TestStage1DifferentialGenerated
+    engine_refinement_test.go:68: DIFFERENTIAL seed=3964471334 exhaustive=2048 generated=10000 total=12048
+--- PASS: TestStage1DifferentialGenerated (0.03s)
+=== RUN   TestEngineCommitAtomicLateAuthorize
+--- PASS: TestEngineCommitAtomicLateAuthorize (0.00s)
+=== RUN   TestEngineCommitAtomicNoMixedAuthority
+--- PASS: TestEngineCommitAtomicNoMixedAuthority (0.00s)
+=== RUN   TestEngineConcurrentPrepareCommitInterleavings
+=== RUN   TestEngineConcurrentPrepareCommitInterleavings/a-before-commit
+=== RUN   TestEngineConcurrentPrepareCommitInterleavings/a-after-commit
+=== RUN   TestEngineConcurrentPrepareCommitInterleavings/b-before-commit
+=== RUN   TestEngineConcurrentPrepareCommitInterleavings/b-after-commit
+--- PASS: TestEngineConcurrentPrepareCommitInterleavings (0.00s)
+    --- PASS: TestEngineConcurrentPrepareCommitInterleavings/a-before-commit (0.00s)
+    --- PASS: TestEngineConcurrentPrepareCommitInterleavings/a-after-commit (0.00s)
+    --- PASS: TestEngineConcurrentPrepareCommitInterleavings/b-before-commit (0.00s)
+    --- PASS: TestEngineConcurrentPrepareCommitInterleavings/b-after-commit (0.00s)
+=== RUN   TestDurableSnapshotFlagDefaultsOff
+--- PASS: TestDurableSnapshotFlagDefaultsOff (0.00s)
+=== RUN   TestDurableSnapshotPolicyOnlyWhenExplicitlyEnabled
+--- PASS: TestDurableSnapshotPolicyOnlyWhenExplicitlyEnabled (0.00s)
+PASS
+ok  	github.com/zarkmakerburg/baft/internal/recovery	0.073s

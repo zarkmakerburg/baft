@@ -2,14 +2,20 @@ name: stagec-soak
 
 on:
   push:
-    branches: [main]
+    branches: [main, release-v1-goldapp]
     paths:
       - 'internal/session/**'
+      - 'internal/node/**'
       - 'internal/resources/**'
       - 'internal/scheduler/**'
       - 'internal/carrier/**'
       - 'tests/integration/**'
       - '.github/workflows/stagec-soak.yml'
+      - '.github/workflows/step57-recovery-soak.yml'
+      - '.github/workflows/ci.yml'
+      - 'STATUS.md'
+      - 'TEST-RESULTS.md'
+      - 'KNOWN-LIMITATIONS.md'
   workflow_dispatch:
 
 concurrency:

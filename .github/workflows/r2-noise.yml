@@ -1,0 +1,51 @@
+name: r3.1-probabilistic-morphing
+
+on:
+  push:
+    branches: [r3-record-shaping-safe, r3.1-probabilistic-morphing]
+  pull_request:
+    branches: [r3-record-shaping-safe, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  r3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Module metadata
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Complete correctness gate
+        run: go test ./... -count=1
+      - name: Statistical evidence and ECRL differential
+        run: |
+          go test ./internal/recordshape -run 'Statistics1000|StatisticalGate' -count=1 -v
+          go test ./internal/recovery -run 'TestStage1DifferentialGenerated|TestEngine' -count=1 -v
+      - name: Race and static analysis
+        run: |
+          go test -race ./... -count=1
+          go vet ./...
+      - name: Bounded record parser fuzz smoke
+        run: go test ./internal/recordshape -run '^$' -fuzz FuzzMorphingReadFrame -fuzztime=5s
+      - name: Installer and builds
+        run: |
+          bash -n install.sh
+          go build ./cmd/baft ./cmd/baft-pair
+      - name: Package complete R3.1 source
+        run: git archive --format=zip --output=baft-r3.1-pro.zip HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baft-r3.1-pro
+          path: baft-r3.1-pro.zip
+          if-no-files-found: error
+          retention-days: 14

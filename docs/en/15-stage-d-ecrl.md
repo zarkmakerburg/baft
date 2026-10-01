@@ -570,3 +570,15 @@ After this document, implementation may proceed only in this order:
 4. ECRL-F10 exact-byte-stream;
 5. only then may claim status move from **Research hypothesis** to **Supported engineering result**.
 
+
+## 9. Transitional Flows and a pinned previous transaction
+
+Real traffic opens and closes Flows constantly, so a carrier often fails while a Flow is mid-OPEN or mid-close, or just after a recovery while its proofs are still in flight. `TestRecoveryConvergesWhileShortFlowsOpenAndClose` (a CI and recovery-soak gate) cuts the carrier four times under such churn and then requires that every short Flow finishes on both sides without another failure. These rules make it pass:
+
+1. **Tombstones.** Each recovery offer carries the Flows its sender closed recently (`ClosedStreams`); the receiver closes its copy before reconciling.
+2. **Resolve the previous transaction first.** A listener whose last finalized transaction still owes replay or terminal-FIN proof refuses a fresh epoch and answers `ResolvePrevious`; the dialer withdraws its candidate, keeps that transaction pinned, and resolves it exactly (status query, rebind, FINALIZE). A conflict reply releases the pin. While it runs, new OPENs are held and unanswered OPENs are abandoned.
+3. **A rebind carries the live Flow set.** Flows opened after activation are rebound with their unacknowledged data; for a listener Flow the dialer never granted window to, the OPEN_OK is repeated (the dialer completes the Flow or resets it).
+4. **No withheld FIN.** A FIN written while the transaction is still unproven is queued behind that Flow's exact live DATA and sent once the carrier is application-ready. It used to be kept only for a later rebind, leaving the Flow half-closed, its slot held and the transaction unstable.
+5. **Late terminal frames.** A FIN_ACK for a Flow already finished gracefully at that offset is confirmed (recovery may have finished it from the peer's evidence). A closed Flow no longer counts toward transaction stability. A WINDOW reaching a closing Flow no longer panics the process, and an OPEN reaching a frozen listener is refused instead of ending the Session.
+
+Measured on this branch: churn 200/200 runs, 150/150 under full CPU load, plus earlier 30/30 and 8/8 with the race detector. Before the fixes: 2/12 (and 30–46 leaked Flow slots per run once the drain check was added).

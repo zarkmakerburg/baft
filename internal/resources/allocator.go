@@ -133,6 +133,23 @@ func (a *Allocator) reserveLocked(flowID uint64, kind Kind, n int64) error {
 	return nil
 }
 
+func (a *Allocator) CanRelease(flowID uint64, kind Kind, n int64) error {
+	if flowID==0 || n<=0 { return errors.New("flowID and release bytes must be positive") }
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	fr,ok:=a.flows[flowID]
+	if !ok { return errors.New("flow has no reservation") }
+	switch kind {
+	case Receive:
+		if n>fr.receive { return errors.New("receive release exceeds reservation") }
+	case Replay:
+		if n>fr.replay { return errors.New("replay release exceeds reservation") }
+	default:
+		return fmt.Errorf("unknown reservation kind %d",kind)
+	}
+	return nil
+}
+
 func (a *Allocator) Release(flowID uint64, kind Kind, n int64) error {
 	if flowID==0 || n<=0 { return errors.New("flowID and release bytes must be positive") }
 	a.mu.Lock()

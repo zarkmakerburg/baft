@@ -125,6 +125,9 @@ type Engine struct {
 	scheduler EngineScheduler
 	activeFlows map[uint64]string
 	frozenFlows map[uint64]string
+	lastCommittedEpoch uint64
+	lastCommittedCandidate string
+	lastCommittedPlan Plan
 }
 
 func NewEngine(initialEpoch uint64, owner string, opts EngineOptions) (*Engine, error) {
@@ -252,6 +255,8 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 		if pf.FinRecv && !lf.FinSent { return Plan{}, ErrStateMismatch }
 		if lf.FinAcked && !pf.FinAckSent { return Plan{}, ErrStateMismatch }
 		if pf.FinAcked && !lf.FinAckSent { return Plan{}, ErrStateMismatch }
+		if lf.FinAckConfirmed && !pf.FinAcked { return Plan{}, ErrStateMismatch }
+		if pf.FinAckConfirmed && !lf.FinAcked { return Plan{}, ErrStateMismatch }
 
 		localReplay := pf.RxAccepted
 		if e.faults.replayFromK {
@@ -265,8 +270,13 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 			PeerAckAdvanceTo: lf.RxAccepted,
 			LocalReleaseThrough: lf.TxAcked,
 			PeerReleaseThrough: pf.TxAcked,
-			LocalFinAckCanAdvance: pf.FinAckSent && !lf.FinAcked,
-			PeerFinAckCanAdvance: lf.FinAckSent && !pf.FinAcked,
+			// FIN_ACK write success is never synthesized into peer acceptance.
+			// In same-process recovery the receiver records FinAcked itself; if
+			// delivery was ambiguous, the sender retries FIN_ACK idempotently.
+			LocalFinAckCanAdvance: false,
+			PeerFinAckCanAdvance: false,
+			LocalFinAckConfirmCanAdvance: pf.FinAcked && lf.FinAckSent && !lf.FinAckConfirmed,
+			PeerFinAckConfirmCanAdvance: lf.FinAcked && pf.FinAckSent && !pf.FinAckConfirmed,
 		})
 	}
 	sortFlowPlans(out.Flows)
@@ -275,7 +285,15 @@ func (e *Engine) reconcileLocked(local, peer Snapshot, expectedPeerBootID string
 
 func (e *Engine) Commit(next uint64,candidateID string,plan Plan)error{
 	e.mu.Lock()
-	if e.pendingEpoch!=next||e.pendingCandidate!=candidateID||candidateID==""||!e.hasPendingPlan{e.mu.Unlock();return ErrNotPrepared}
+	if candidateID==""{e.mu.Unlock();return ErrNotPrepared}
+	if e.currentEpoch==next {
+		if e.lastCommittedEpoch==next&&e.lastCommittedCandidate==candidateID&&plansEqual(e.lastCommittedPlan,plan){
+			e.mu.Unlock();return nil
+		}
+		if e.owner==candidateID{e.mu.Unlock();return ErrEnginePlanMismatch}
+		e.mu.Unlock();return ErrStaleEpoch
+	}
+	if e.pendingEpoch!=next||e.pendingCandidate!=candidateID||!e.hasPendingPlan{e.mu.Unlock();return ErrNotPrepared}
 	if next!=e.currentEpoch+1{e.mu.Unlock();return ErrStaleEpoch}
 	if !plansEqual(e.pendingPlan,plan){e.mu.Unlock();return ErrEnginePlanMismatch}
 	e.point("commit_locked_before_publish")
@@ -289,6 +307,9 @@ func (e *Engine) Commit(next uint64,candidateID string,plan Plan)error{
 		e.currentEpoch=next
 		e.owner=candidateID
 	}
+	e.lastCommittedEpoch=next
+	e.lastCommittedCandidate=candidateID
+	e.lastCommittedPlan=clonePlan(plan)
 	e.pendingEpoch=0;e.pendingCandidate="";e.pendingPlan=Plan{};e.hasPendingPlan=false;e.frozenFlows=nil
 	e.mu.Unlock();e.point("commit_after_publish");return nil
 }
@@ -353,6 +374,7 @@ func validateSnapshotEngine(s Snapshot) error {
 		if f.RxDelivered > f.RxAccepted || f.RxAccepted > f.RxCredit { return ErrStateMismatch }
 		if f.FinAcked && !f.FinSent { return ErrStateMismatch }
 		if f.FinAckSent && !f.FinRecv { return ErrStateMismatch }
+		if f.FinAckConfirmed && !f.FinAckSent { return ErrStateMismatch }
 	}
 	return nil
 }

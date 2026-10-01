@@ -34,3 +34,15 @@ SIGINT/SIGTERM are converted to context cancellation so listeners, carriers, and
 Common failures include strict-config rejection, hostname mismatch, peer/Route authorization failure, missing Route, unreachable fixed target, and insecure private-key permissions.
 
 Final systemd hardening, installer/package flow, admin transactions, certificate-rotation operations, support bundles, and real-path pilot procedures are later-stage work.
+
+## Installed path: pairing writes both configs
+
+`install.sh` now provisions a runnable pair without hand-written YAML:
+
+1. EX: `sudo bash install.sh --role ex --public-address HOST` builds the binaries, creates the Noise key and the outer TLS PKI (`baft-pair pki`, no OpenSSL needed), and prints a one-time `BAFTPAIR1:` code. It then waits for the IR's reply (or prints the `baft-pair ex-accept` command to run later when `BAFT_NONINTERACTIVE=1`).
+2. IR: `sudo bash install.sh --role ir --pairing-code BAFTPAIR1:...` runs `baft-pair ir-apply --config-out`, which writes `/etc/baft/baft.yaml` (a Noise dialer pinned to the EX key, no client certificate), starts the service, and prints a `BAFTREPLY1:` code.
+3. EX: paste the reply. `baft-pair ex-accept` checks it with an HMAC keyed by the pairing code's one-time PSK (a reply from anyone without the code is rejected), writes the listener config pinned to the IR key, deletes the PSK, and the service starts.
+
+Local clients then connect to `BAFT_ROUTE_LISTEN` on the IR (default `127.0.0.1:1443`); the EX forwards to `BAFT_TARGET` (default `127.0.0.1:2443`, must be a fixed IP). Until the EX accepts the reply the IR dialer exits and systemd restarts it every 2 s.
+
+`tests/e2e/pair_and_run.sh` runs this pairing with the real binaries and pushes data through; `tests/e2e/install_two_roles.sh` runs `install.sh` itself for both roles on one host. CI runs both.

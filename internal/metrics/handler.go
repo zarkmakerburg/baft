@@ -14,6 +14,17 @@ type Snapshot struct {
 	CreditExposureBytes   uint64
 	ReplayOutstandingBytes uint64
 	InvariantViolations   int
+	RecoveryAttempts      uint64
+	RecoveryCommits       uint64
+	RecoveryAborts        uint64
+	RecoveryPostCommitFailures uint64
+	RecoveryCommitUncertain uint64
+	RecoveryCommitResolutionCommitted uint64
+	RecoveryCommitResolutionNotCommitted uint64
+	RecoveryCommitResolutionConflict uint64
+	RecoveryCurrentEpoch  uint64
+	RecoveryReplayedBytes uint64
+	RecoveryFailures      map[string]uint64
 }
 
 type Provider func() Snapshot
@@ -65,5 +76,51 @@ func Handler(provider Provider) http.Handler {
 		fmt.Fprintln(w, "# HELP baft_conservation_invariant_violations Number of currently observed TWRL invariant violations.")
 		fmt.Fprintln(w, "# TYPE baft_conservation_invariant_violations gauge")
 		fmt.Fprintf(w, "baft_conservation_invariant_violations %d\n", s.InvariantViolations)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_attempts_total Same-process carrier recovery attempts.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_attempts_total counter")
+		fmt.Fprintf(w, "baft_recovery_attempts_total %d\n", s.RecoveryAttempts)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commits_total Successfully committed same-process carrier recoveries.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commits_total counter")
+		fmt.Fprintf(w, "baft_recovery_commits_total %d\n", s.RecoveryCommits)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_aborts_total Aborted same-process carrier recoveries.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_aborts_total counter")
+		fmt.Fprintf(w, "baft_recovery_aborts_total %d\n", s.RecoveryAborts)
+		fmt.Fprintln(w, "# HELP baft_recovery_post_commit_failures_total Failures after ECRL authority commit; old epochs remain fenced.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_post_commit_failures_total counter")
+		fmt.Fprintf(w, "baft_recovery_post_commit_failures_total %d\n", s.RecoveryPostCommitFailures)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commit_uncertain_total Commit transactions that entered distributed uncertainty after COMMIT was sent or locally published.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commit_uncertain_total counter")
+		fmt.Fprintf(w, "baft_recovery_commit_uncertain_total %d\n", s.RecoveryCommitUncertain)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commit_resolution_committed_total Uncertain transactions resolved as committed.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commit_resolution_committed_total counter")
+		fmt.Fprintf(w, "baft_recovery_commit_resolution_committed_total %d\n", s.RecoveryCommitResolutionCommitted)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commit_resolution_not_committed_total Uncertain transactions resolved with authenticated NOT_COMMITTED proof.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commit_resolution_not_committed_total counter")
+		fmt.Fprintf(w, "baft_recovery_commit_resolution_not_committed_total %d\n", s.RecoveryCommitResolutionNotCommitted)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_commit_resolution_conflict_total Uncertain transaction resolutions that failed closed as conflict or unknown.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_commit_resolution_conflict_total counter")
+		fmt.Fprintf(w, "baft_recovery_commit_resolution_conflict_total %d\n", s.RecoveryCommitResolutionConflict)
+
+
+		fmt.Fprintln(w, "# HELP baft_recovery_current_epoch Highest current ECRL session epoch in this runtime.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_current_epoch gauge")
+		fmt.Fprintf(w, "baft_recovery_current_epoch %d\n", s.RecoveryCurrentEpoch)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_replayed_bytes_total Bytes replayed from bounded session replay memory during recovery.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_replayed_bytes_total counter")
+		fmt.Fprintf(w, "baft_recovery_replayed_bytes_total %d\n", s.RecoveryReplayedBytes)
+
+		fmt.Fprintln(w, "# HELP baft_recovery_failures_total Recovery failures by bounded reason.")
+		fmt.Fprintln(w, "# TYPE baft_recovery_failures_total counter")
+		for _,reason:=range []string{"candidate_setup","snapshot_exchange","peer_restart","state_mismatch","replay_unavailable","lease_conflict","commit","post_commit_failure","other"} {
+			fmt.Fprintf(w, "baft_recovery_failures_total{reason=%q} %d\n", reason, s.RecoveryFailures[reason])
+		}
 	})
 }

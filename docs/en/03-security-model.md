@@ -24,6 +24,8 @@ HELLO `node_id` is state metadata. The authenticated URI SAN remains the trust s
 
 Runtime revocation supports peer identity, certificate serial, and SHA-256 fingerprint. Established H2 carriers register watchers so emergency revocation cancels the active Carrier as well as rejecting future connections.
 
+The operator input is `revocation.file` on EX, read at start (fail-closed) and on `systemctl reload`; see [Configuration](05-configuration.md).
+
 ## Route security
 
 OPEN carries `route_id` and `open_nonce`; it never carries an arbitrary target address. The receiving Node resolves the Route from local configuration.

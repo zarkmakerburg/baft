@@ -2,8 +2,12 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/resources"
@@ -101,4 +105,86 @@ func TestOutboundSenderPADLSeesReplayPressure(t *testing.T) {
 	if err:=s.data.Enqueue(scheduler.Item{FlowID:3,Bytes:1,Value:r3});err!=nil{t.Fatal(err)}
 	req,ok:=s.nextLocked();if !ok{t.Fatal("no selection")}
 	if req.frame.StreamID!=3{t.Fatalf("expected low-pressure flow 3, got %d",req.frame.StreamID)}
+}
+
+
+type alwaysFailWriter struct{}
+
+func (alwaysFailWriter) Write([]byte)(int,error){return 0,io.ErrClosedPipe}
+
+func TestRecoverableSenderReturnsCarrierUnavailableToCaller(t *testing.T){
+	s:=newOutboundSender(&frameWriter{w:alwaysFailWriter{}},true)
+	ctx,cancel:=context.WithCancel(context.Background())
+	defer cancel()
+	go s.run(ctx)
+	deadline:=time.Now().Add(time.Second)
+	for{
+		s.mu.Lock();started:=s.started;s.mu.Unlock()
+		if started{break}
+		if time.Now().After(deadline){t.Fatal("sender did not start")}
+		time.Sleep(time.Millisecond)
+	}
+	err:=s.sendControl(protocol.Frame{Type:protocol.TypePing,Payload:make([]byte,8)})
+	if !errors.Is(err,ErrCarrierUnavailable){t.Fatalf("caller received non-recoverable error: %v",err)}
+}
+
+
+type recoveryHandlerBlockingWriter struct {
+	once sync.Once
+	entered chan struct{}
+	release chan struct{}
+	mu sync.Mutex
+	writes int
+}
+
+func newRecoveryHandlerBlockingWriter() *recoveryHandlerBlockingWriter {
+	return &recoveryHandlerBlockingWriter{entered:make(chan struct{}),release:make(chan struct{})}
+}
+
+func (w *recoveryHandlerBlockingWriter) Write(p []byte)(int,error) {
+	w.once.Do(func(){close(w.entered)})
+	<-w.release
+	w.mu.Lock();w.writes++;w.mu.Unlock()
+	return len(p),nil
+}
+
+func (w *recoveryHandlerBlockingWriter) writeCount() int {
+	w.mu.Lock();defer w.mu.Unlock();return w.writes
+}
+
+func TestRecoveryHTTPHandlerDoesNotReturnWhileOwnedSenderCanWrite(t *testing.T) {
+	w:=newRecoveryHandlerBlockingWriter()
+	s:=newOutboundSender(&frameWriter{w:w},true)
+	req:=&outboundRequest{
+		frame:protocol.Frame{Type:protocol.TypePing,Payload:make([]byte,8)},
+		done:make(chan error,1),control:true,
+	}
+	if err:=s.control.Enqueue(resources.ControlItem{WireBytes:protocol.HeaderSize+8,Value:req});err!=nil{t.Fatal(err)}
+	ctx,cancel:=context.WithCancel(context.Background())
+	defer cancel()
+	go s.run(ctx)
+	select{case <-w.entered:case <-time.After(time.Second):t.Fatal("owned sender never entered writer")}
+
+	fenced:=make(chan struct{})
+	go func(){
+		s.stopAndFenceWriter(SenderStopRecoveryOwnerFence,ErrCarrierUnavailable)
+		close(fenced)
+	}()
+	select{
+	case <-fenced:
+		t.Fatal("handler fence returned while generation-owned writer could still write")
+	default:
+	}
+
+	close(w.release)
+	select{case <-req.done:case <-time.After(time.Second):t.Fatal("in-flight writer did not terminate")}
+	select{case <-fenced:case <-time.After(time.Second):t.Fatal("generation writer join did not complete")}
+
+	before:=w.writeCount()
+	if err:=s.sendControl(protocol.Frame{Type:protocol.TypePing,Payload:make([]byte,8)});err==nil{
+		t.Fatal("stopped generation admitted a write after handler fence")
+	}
+	if after:=w.writeCount();after!=before{
+		t.Fatalf("write occurred after generation fence before=%d after=%d",before,after)
+	}
 }

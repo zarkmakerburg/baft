@@ -236,7 +236,9 @@ func TestECRLF06LostFINACK(t *testing.T){
 	peer.Flows[0].FinRecv=true
 	peer.Flows[0].FinAckSent=true
 	plan,err:=Reconcile(local,peer,"peer-boot");if err!=nil{t.Fatal(err)}
-	if !plan.Flows[0].LocalFinAckCanAdvance{t.Fatal("F06: lost FIN_ACK was not recoverable")}
+	if plan.Flows[0].LocalFinAckCanAdvance{t.Fatal("F06: peer FIN_ACK write was incorrectly treated as local acceptance proof")}
+	// Ambiguous FIN_ACK is recovered by idempotent retransmission; reconcile
+	// must not fabricate FinAcked from the peer's local-write state.
 }
 
 func TestECRLF06DuplicateFINIdempotence(t *testing.T){

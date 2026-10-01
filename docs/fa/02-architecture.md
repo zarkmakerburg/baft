@@ -99,6 +99,8 @@ peer validates / accepts bytes
 
 Half-close با `FIN(final_offset)` و `FIN_ACK(final_offset)` مدل می‌شود؛ بستن یک جهت به معنی حذف فوری جهت دیگر نیست.
 
+وقتی recovery خاموش است، EX پس از پذیرش OPEN، dial به target را خارج از حلقه خواندن frameهای Shard انجام می‌دهد؛ بنابراین یک target کند یا بی‌پاسخ، Flowهای دیگر همان Shard را تا timeout اتصال متوقف نمی‌کند. OPEN تکراری با همان route و nonce در این فاصله پاسخ جداگانه نمی‌گیرد و همان dial در جریان، OPEN_OK یا OPEN_ERR را می‌فرستد. با recovery روشن، پذیرش OPEN برای هماهنگی با snapshot همچنان زیر `recoveryGate` و هم‌زمان انجام می‌شود.
+
 ## Session handshake
 
 برای Session جدید:
