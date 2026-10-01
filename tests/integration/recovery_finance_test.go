@@ -105,6 +105,10 @@ func TestRecoveryTelemetryFinanceRemainExact(t *testing.T){
 			if now:=p.targetAccepts.Load();now!=targetBeforeCut{
 				t.Fatalf("target socket reopened during recovery before_cut=%d after=%d",targetBeforeCut,now)
 			}
+			// The whole test must also have used exactly one target socket.
+			if n:=p.targetAccepts.Load()-p.targetBaseline;n!=1{
+				t.Fatalf("target socket count since fixture baseline test_accepts=%d baseline=%d total=%d",n,p.targetBaseline,p.targetAccepts.Load())
+			}
 			t.Logf("PASS recovery telemetry/finance exact boot=%s ingress=%d egress=%d seq=%d",telemetryBoot,again.IngressBytes,again.EgressBytes,cur.Sequence)
 			break
 		}
