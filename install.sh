@@ -160,8 +160,10 @@ fi
 
 NOISE_KEY="$BAFT_CONFIG_DIR/noise-key.json"
 "$BAFT_PAIR_BIN" keygen --file "$NOISE_KEY" >/dev/null
-chown root:"$BAFT_USER" "$NOISE_KEY"
-chmod 0640 "$NOISE_KEY"
+# The service reads this key as $BAFT_USER, and the runtime refuses a private
+# key that group or other can access, so it must be owner-only for that user.
+chown "$BAFT_USER:$BAFT_USER" "$NOISE_KEY"
+chmod 0600 "$NOISE_KEY"
 
 generate_outer_pki_ex() {
   local host="$1" pki="$BAFT_CONFIG_DIR/pki"
@@ -178,7 +180,11 @@ generate_outer_pki_ex() {
   openssl req -new -key "$pki/server.key" -subj "/CN=$host"     -addext "subjectAltName=$SAN" -out "$pki/server.csr"
   openssl x509 -req -in "$pki/server.csr" -CA "$pki/ca.pem" -CAkey "$pki/ca.key"     -CAcreateserial -days 825 -copy_extensions copyall -out "$pki/server.pem"
   rm -f "$pki/server.csr" "$pki/ca.srl"
-  chmod 0600 "$pki/ca.key" "$pki/server.key"
+  chmod 0600 "$pki/ca.key"
+  # Same contract as the Noise key: the service user owns server.key. The CA
+  # signing key stays root-only; the service never needs it.
+  chown "$BAFT_USER:$BAFT_USER" "$pki/server.key"
+  chmod 0600 "$pki/server.key"
   chmod 0644 "$pki/ca.pem" "$pki/server.pem"
 }
 
