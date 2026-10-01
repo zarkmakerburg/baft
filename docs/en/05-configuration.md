@@ -19,6 +19,8 @@ Dial address, TLS server name, and expected peer identity are intentionally sepa
 
 Baseline configuration requires TLS 1.3, explicit CA/certificate/key files, and disabled session tickets. Runtime also checks private-key file permissions.
 
+Exception: a Noise dialer (`node.role: dialer` with a `noise` section) presents no outer client certificate — its pinned Noise static key authenticates it — so it may omit `cert_file` and `key_file` and keep only `ca_file`, which verifies the EX's website certificate. The two fields must be set together or not at all; listeners and mTLS dialers still require both. `baft-pair ir-apply --config-out` writes IR configs in this form.
+
 ## Transport
 
 `primary: h2` is the only default transport. H3 remains disabled until its later experimental gate. Shards are limited to 1..8.

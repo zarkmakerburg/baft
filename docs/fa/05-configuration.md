@@ -112,6 +112,8 @@ tls:
 - session ticket غیرفعال است؛
 - کلید private هنگام run نباید برای group/other قابل خواندن/نوشتن باشد.
 
+استثنا: dialer در حالت Noise (یعنی `node.role: dialer` همراه با بخش `noise`) هیچ گواهی کلاینتی در TLS بیرونی ارائه نمی‌کند، چون کلید ایستای pin‌شدهٔ Noise هویتش را ثابت می‌کند. پس می‌تواند `cert_file` و `key_file` را حذف کند و فقط `ca_file` را نگه دارد که گواهی وب‌سایت EX را verify می‌کند. این دو فیلد یا باید با هم باشند یا هیچ‌کدام نباشند؛ listener و dialer حالت mTLS همچنان هر دو را لازم دارند. دستور `baft-pair ir-apply --config-out` config IR را به همین شکل می‌نویسد.
+
 ## transport
 
 <div dir="ltr" align="left">
