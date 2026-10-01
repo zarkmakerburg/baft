@@ -215,6 +215,7 @@ Type=simple
 User=$BAFT_USER
 Group=$BAFT_USER
 ExecStart=$BAFT_BIN run --file $BAFT_CONFIG_DIR/baft.yaml
+ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=true

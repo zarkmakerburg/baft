@@ -25,6 +25,7 @@ type Config struct {
 	Routes        []Route    `json:"routes"`
 	Management    Management `json:"management"`
 	Telemetry     Telemetry  `json:"telemetry,omitempty"`
+	Revocation    *Revocation `json:"revocation,omitempty"`
 	Logging       Logging    `json:"logging"`
 }
 
@@ -178,6 +179,9 @@ func Validate(c Config) error {
 		return err
 	}
 	if err := validateTelemetry(c.Telemetry); err != nil {
+		return err
+	}
+	if err := validateRevocation(c); err != nil {
 		return err
 	}
 	seen := make(map[string]struct{}, len(c.Routes))

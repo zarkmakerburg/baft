@@ -44,6 +44,8 @@ Revocation فقط در handshake کافی نیست. Runtime دارای deny/revo
 
 است. watcherهای Carrier فعال ثبت می‌شوند و revocation جدید context Carrier مربوط را cancel می‌کند.
 
+ورودی operator فایل `revocation.file` روی EX است که هنگام شروع (fail-closed) و با `systemctl reload` خوانده می‌شود؛ جزئیات در [Configuration](05-configuration.md).
+
 ## امنیت Route
 
 OPEN فقط `route_id` و `open_nonce` حمل می‌کند. EX مقصد را از جدول محلی ثابت resolve می‌کند. ورودی peer نمی‌تواند host، port، shell command یا path عملیاتی دلخواه تعیین کند.

@@ -201,6 +201,37 @@ routes:
 
 در implementation baseline، target باید IP ثابت + port باشد؛ hostname آزاد، wildcard و مقصد peer-supplied پذیرفته نمی‌شود.
 
+## revocation روی EX
+
+<div dir="ltr" align="left">
+
+```yaml
+revocation:
+  file: /etc/baft/revoked.yaml
+```
+
+</div>
+
+بخش اختیاری `revocation` فقط برای listener مجاز است، چون فقط listener هویت peer هر Carrier را احراز می‌کند؛ مسیر باید مطلق باشد. فایل فهرست با همان parser سخت‌گیرانه YAML (یا JSON) خوانده می‌شود و فایل خالی یعنی فهرست خالی:
+
+<div dir="ltr" align="left">
+
+```yaml
+identities:
+  - urn:baft:node:ir-02
+serials:
+  - "0A:1B:2C"
+fingerprints:
+  - "<SHA-256 گواهی، 64 رقم hex>"
+```
+
+</div>
+
+- اگر `revocation.file` تنظیم شده ولی فایل نیست یا نامعتبر است، node شروع نمی‌شود (fail-closed).
+- `systemctl reload baft` (سیگنال SIGHUP) فایل را دوباره می‌خواند؛ Carrierهای فعال peer تازه revoke‌شده فوراً قطع می‌شوند. فایل نامعتبر در reload رد می‌شود و فهرست فعلی حفظ می‌شود.
+- revocation فقط افزایشی است: حذف یک مورد از فایل تا restart بعدی اثر ندارد.
+- serialها مستقل از `:` و صفرهای ابتدایی و بزرگی/کوچکی حروف مقایسه می‌شوند. در حالت Noise فقط `identities` اثر دارد، چون آنجا گواهی کلاینت در TLS بیرونی وجود ندارد.
+
 ## management و metrics
 
 <div dir="ltr" align="left">
