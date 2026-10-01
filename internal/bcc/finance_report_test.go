@@ -164,3 +164,79 @@ func TestFinanceReportAPIAndCSV(t *testing.T){
 	}
 	t.Log("PASS finance JSON+CSV API")
 }
+
+// Money is rounded down to whole micros. Rounding each telemetry report on its
+// own made a node's totals depend on where the reports happened to split the
+// same traffic (TestRecoveryTelemetryFinanceRemainExact, CI run 36849598434).
+func TestFinanceTotalsDoNotDependOnReportBoundaries(t *testing.T){
+	const first,second uint64=384*1024+17,512*1024+29
+	const costRate,revenueRate int64=1<<28,1<<29
+	const gib uint64=1<<30
+	total:=2*(first+second)
+	wantCost:=int64(total*uint64(costRate)/gib)
+	wantRevenue:=int64(total*uint64(revenueRate)/gib)
+
+	for name,reports:=range map[string][][2]uint64{
+		"one report":      {{first+second,first+second}},
+		"one per payload": {{first,first},{second,second}},
+		"mid-transfer":    {{first,0},{0,first},{second,1},{0,second-1}},
+		"byte by byte":    {{1,0},{1,0},{1,0},{first+second-3,first+second}},
+	}{
+		s,err:=OpenStore(t.TempDir()+"/state.json");if err!=nil{t.Fatal(err)}
+		if _,err:=s.UpsertNode(Node{ID:"n1",Alias:"N1",Address:"127.0.0.1:22001",Role:"worker"},"tok");err!=nil{t.Fatal(err)}
+		if err:=s.SetFinancePolicy("n1",costRate,revenueRate);err!=nil{t.Fatal(err)}
+		var f NodeFinance
+		for _,r:=range reports{
+			if f,err=s.AddTraffic("n1","tok",r[0],r[1]);err!=nil{t.Fatal(err)}
+		}
+		if f.CostMicros!=wantCost||f.RevenueMicros!=wantRevenue||f.ProfitMicros!=wantRevenue-wantCost{
+			t.Errorf("%s: cost=%d revenue=%d profit=%d, want %d %d %d",name,f.CostMicros,f.RevenueMicros,f.ProfitMicros,wantCost,wantRevenue,wantRevenue-wantCost)
+		}
+		var ledgerCost,ledgerRevenue,ledgerProfit int64
+		s.mu.Lock()
+		for _,e:=range s.st.FinanceLedger{ledgerCost+=e.CostMicros;ledgerRevenue+=e.RevenueMicros;ledgerProfit+=e.ProfitMicros}
+		s.mu.Unlock()
+		if ledgerCost!=f.CostMicros||ledgerRevenue!=f.RevenueMicros||ledgerProfit!=f.ProfitMicros{
+			t.Errorf("%s: ledger sums %d/%d/%d differ from node totals %d/%d/%d",name,ledgerCost,ledgerRevenue,ledgerProfit,f.CostMicros,f.RevenueMicros,f.ProfitMicros)
+		}
+	}
+}
+
+// The carried remainder is money, not bytes, so it survives a rate change and
+// a store reopen.
+func TestFinanceRemainderSurvivesRateChangeAndReopen(t *testing.T){
+	path:=t.TempDir()+"/state.json"
+	s,err:=OpenStore(path);if err!=nil{t.Fatal(err)}
+	if _,err:=s.UpsertNode(Node{ID:"n1",Alias:"N1",Address:"127.0.0.1:22001",Role:"worker"},"tok");err!=nil{t.Fatal(err)}
+	const gib uint64=1<<30
+	// 3/4 micro at the first rate, then 1/4 micro at the second: exactly one micro.
+	if err:=s.SetFinancePolicy("n1",3,0);err!=nil{t.Fatal(err)}
+	if _,err:=s.AddTraffic("n1","tok",gib/4,0);err!=nil{t.Fatal(err)}
+	s,err=OpenStore(path);if err!=nil{t.Fatal(err)}
+	if err:=s.SetFinancePolicy("n1",1,0);err!=nil{t.Fatal(err)}
+	f,err:=s.AddTraffic("n1","tok",gib/4,0);if err!=nil{t.Fatal(err)}
+	if f.CostMicros!=1{t.Fatalf("cost=%d, want 1 micro from 3/4 + 1/4",f.CostMicros)}
+}
+
+// When restore keeps a node's newer live totals, the remainder carried from
+// those totals must stay with them rather than the backup's.
+func TestRestoreKeepsFinanceRemainderWithPreservedTotals(t *testing.T){
+	live:=state{
+		Telemetry:map[string]TelemetryCursor{"n1":{NodeID:"n1",IngestID:9},"n2":{NodeID:"n2",IngestID:9}},
+		Finance:map[string]NodeFinance{"n1":{NodeID:"n1",CostMicros:5},"n2":{NodeID:"n2",CostMicros:5}},
+		FinanceRemainders:map[string]financeRemainder{"n1":{Cost:7}},
+	}
+	backup:=state{
+		Telemetry:map[string]TelemetryCursor{"n1":{NodeID:"n1",IngestID:3},"n2":{NodeID:"n2",IngestID:3}},
+		Finance:map[string]NodeFinance{"n1":{NodeID:"n1",CostMicros:2},"n2":{NodeID:"n2",CostMicros:2}},
+		FinanceRemainders:map[string]financeRemainder{"n1":{Cost:99},"n2":{Cost:99}},
+	}
+	normalizeState(&live);normalizeState(&backup)
+	mergeAntiRollback(&backup,live,time.Now())
+	if backup.Finance["n1"].CostMicros!=5||backup.FinanceRemainders["n1"].Cost!=7{
+		t.Fatalf("n1 restored totals=%+v remainder=%+v, want the live pair",backup.Finance["n1"],backup.FinanceRemainders["n1"])
+	}
+	if r,ok:=backup.FinanceRemainders["n2"];ok{
+		t.Fatalf("n2 kept the backup remainder %+v although its live totals have none",r)
+	}
+}
