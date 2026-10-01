@@ -428,3 +428,61 @@ func TestClosedFlowTombstonesAreBounded(t *testing.T) {
 	if n!=maxClosedFlowTombstones||order!=maxClosedFlowTombstones{t.Fatalf("tombstones map=%d order=%d",n,order)}
 	if p.isClosedFlow(1){t.Fatal("oldest tombstone should have been evicted")}
 }
+
+// Recovery can finish a Flow from the peer's evidence that it sent FIN_ACK
+// without that frame arriving. When the FIN_ACK does arrive later, the peer is
+// still waiting for FIN_ACK_CONFIRM; only a graceful finish at that offset is
+// confirmed.
+func TestFinishedFlowReconfirmsLateFinAck(t *testing.T) {
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01"});if err!=nil{t.Fatal(err)}
+	p.mu.Lock();p.localReady=true;p.peerReady=true;p.markReadyLocked();p.mu.Unlock()
+	f:=newFlow(5,"main","00112233445566778899aabbccddeeff",nil,p.allocator);f.openOK=true
+	f.txNext=40;f.finSent=true;f.finAcked=true;f.finRecv=true;f.finRecvFinal=7;f.finAckSent=true;f.finAckConfirmed=true
+	p.mu.Lock();p.flows[5]=f;p.mu.Unlock()
+	p.finishIfComplete(f)
+	if _,err:=p.getFlow(5);err==nil{t.Fatal("fixture Flow did not finish")}
+
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeFinAck,StreamID:5,Offset:39});err!=nil{t.Fatal(err)}
+	if out.Len()!=0{t.Fatal("confirmed a FIN_ACK for a different final offset")}
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeFinAck,StreamID:5,Offset:40});err!=nil{t.Fatal(err)}
+	fr,err:=protocol.Decode(&out);if err!=nil{t.Fatalf("no FIN_ACK_CONFIRM sent: %v",err)}
+	if fr.Type!=protocol.TypeFinAckConfirm||fr.StreamID!=5||fr.Offset!=40{t.Fatalf("sent %v stream=%d offset=%d",fr.Type,fr.StreamID,fr.Offset)}
+
+	// A Flow closed any other way (here: reset) is never confirmed.
+	g:=newFlow(7,"main","00112233445566778899aabbccddeeff",nil,p.allocator);g.openOK=true;g.txNext=9
+	p.mu.Lock();p.flows[7]=g;p.mu.Unlock()
+	g.close();p.removeFlow(7)
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeFinAck,StreamID:7,Offset:9});err!=nil{t.Fatal(err)}
+	if out.Len()!=0{t.Fatal("confirmed a FIN_ACK for a Flow that did not finish gracefully")}
+}
+
+// A Flow is closed before it is removed from the Session, so a WINDOW can
+// still reach it in between. close() has already closed creditWait; closing
+// it again panicked the whole process.
+func TestWindowAfterFlowCloseDoesNotPanic(t *testing.T) {
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01"});if err!=nil{t.Fatal(err)}
+	f:=newFlow(9,"main","00112233445566778899aabbccddeeff",nil,p.allocator);f.openOK=true
+	f.close()
+	if err:=f.onWindow(64*1024);err!=nil{t.Fatal(err)}
+	if err:=f.restoreRecoveryPeerCredit(128*1024);err!=nil{t.Fatal(err)}
+}
+
+// An OPEN still in flight when the listener freezes for recovery must not end
+// the Session (it used to return ErrResumeFrozen to the frame loop); only that
+// OPEN is refused.
+func TestFrozenListenerRefusesOpenWithoutEndingSession(t *testing.T) {
+	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
+	out:=&lockedBuffer{}
+	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test",RecoveryEnabled:true,RecoveryRetention:time.Second,CarrierID:"carrier-1"});if err!=nil{t.Fatal(err)}
+	var dials atomic.Int32
+	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);return nil,errors.New("must not dial")}
+	req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:"00112233445566778899aabbccddeeff"})
+
+	p.recovery.mu.Lock();p.recovery.frozen=true;p.recovery.mu.Unlock()
+	if err:=p.handleOpen(context.Background(),protocol.Frame{Type:protocol.TypeOpen,StreamID:1,Payload:req});err!=nil{t.Fatalf("frozen listener ended the Session on OPEN: %v",err)}
+	frs:=out.frames(t)
+	if len(frs)!=1||frs[0].Type!=protocol.TypeOpenErr||frs[0].StreamID!=1{t.Fatalf("frames %+v, want one OPEN_ERR on stream 1",frs)}
+	if dials.Load()!=0{t.Fatal("refused OPEN dialed the target")}
+}

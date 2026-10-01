@@ -12,6 +12,7 @@ on:
       - 'cmd/baft-worker/**'
       - 'tests/integration/live_topology_test.go'
       - 'tests/integration/recovery_runtime_test.go'
+      - 'tests/integration/recovery_churn_test.go'
       - 'tests/integration/cluster_six_noise_test.go'
       - '.github/workflows/step57-recovery-soak.yml'
       - '.github/workflows/stagec-soak.yml'
@@ -183,3 +184,12 @@ jobs:
           go test -race ./tests/integration \
             -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$' \
             -count=2 -timeout 20m -v
+
+      - name: Recovery under concurrent Flow churn 50x and race 10x
+        run: |
+          go test ./tests/integration \
+            -run '^TestRecoveryConvergesWhileShortFlowsOpenAndClose$' \
+            -count=50 -timeout 30m -v
+          go test -race ./tests/integration \
+            -run '^TestRecoveryConvergesWhileShortFlowsOpenAndClose$' \
+            -count=10 -timeout 30m -v

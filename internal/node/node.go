@@ -23,6 +23,7 @@ import (
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/identity"
 	baftmetrics "github.com/zarkmakerburg/baft/internal/metrics"
+	"github.com/zarkmakerburg/baft/internal/recovery"
 	"github.com/zarkmakerburg/baft/internal/resources"
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/routes"
@@ -953,7 +954,11 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 							retry:=false
 							if errors.Is(err,session.ErrPostCommitFailure)||errors.Is(err,session.ErrCommitUncertain)||sh.peer.NeedsExactTransactionResolution(){
 								retry=sh.peer.NeedsRecovery()
-							} else if errors.Is(err,errRecoverySnapshotTransient)&&sh.peer.NeedsRecovery(){
+							} else if (errors.Is(err,errRecoverySnapshotTransient)||errors.Is(err,recovery.ErrResumeFrozen))&&sh.peer.NeedsRecovery(){
+								// ErrResumeFrozen means a Flow was mid-transition at
+								// snapshot time; nothing else re-signals recovery, so
+								// giving up here would strand the Session until
+								// retention expires.
 								retry=true
 							}
 							if !retry {

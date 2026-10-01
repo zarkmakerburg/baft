@@ -32,6 +32,20 @@ type RecoveryOffer struct {
 	NextEpoch   uint64            `json:"next_epoch"`
 	Snapshot    recovery.Snapshot `json:"snapshot"`
 	Routes      map[uint64]string `json:"routes"`
+	// ClosedStreams lists the Flows this side closed recently (its bounded
+	// tombstones). The receiver closes its own copy of each before reconciling:
+	// the engine requires both snapshots to hold the same Flow set, which a
+	// frame lost with the carrier would otherwise make impossible.
+	ClosedStreams []uint64 `json:"closed_streams,omitempty"`
+	// Rejected marks a listener offer sent only to deliver ClosedStreams after
+	// its reconciliation failed; the dialer retries with a fresh snapshot.
+	Rejected bool `json:"rejected,omitempty"`
+	// ResolvePrevious marks a listener answer that refuses a fresh epoch
+	// because its last finalized transaction still has an unproven replay or
+	// terminal-FIN obligation. The dialer may see that transaction as stable,
+	// so it must resolve it exactly (status query, rebind, FINALIZE) before
+	// offering a new epoch; the rebind is where the obligation is re-sent.
+	ResolvePrevious bool `json:"resolve_previous,omitempty"`
 }
 
 type RecoveryPhase string
@@ -106,6 +120,9 @@ type preparedFlowRecovery struct {
 	ackPeerFIN bool
 	ackApplied bool
 	finAckAdvanceApplied bool
+	// repeatOpenOK marks a listener Flow whose OPEN_OK an exact rebind
+	// repeats (see rebindEntryForLiveFlow).
+	repeatOpenOK bool
 	replayApplied int
 	finSentApplied bool
 	peerFinAckApplied bool
@@ -270,6 +287,11 @@ type RecoveryAdapter struct {
 	lastNotCommitted RecoveryControl
 	lastResolutionCommitted RecoveryControl
 	lastResolutionConflict RecoveryControl
+	// peerRequiresExact is set on a dialer whose listener answered a fresh
+	// offer with ResolvePrevious; it pins lastCommit until resolved.
+	peerRequiresExact bool
+	// resolutionFreeze marks a freeze taken by FreezeForExactResolution.
+	resolutionFreeze bool
 	txnState RecoveryTxnState
 	uncertain RecoveryControl
 	attempts atomic.Uint64
@@ -1027,15 +1049,24 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 		a.recordFailure("lease_conflict")
 		return RecoveryOffer{},recovery.ErrLeaseConflict
 	}
+	previous:=a.txnState
 	if err:=a.transitionLocked(RecoveryTxnPreparing);err!=nil{a.mu.Unlock();return RecoveryOffer{},err}
 	a.mu.Unlock()
 	a.attempts.Add(1)
-	snap,routes,err:=p.recoverySnapshot();if err!=nil{a.recordFailure("snapshot_exchange");return RecoveryOffer{},err}
+	// Nothing is frozen until Prepare succeeds, so a failure before that must
+	// not leave the adapter in PREPARING with no candidate.
+	notPrepared:=func(){
+		a.mu.Lock()
+		if !a.frozen&&a.txnState==RecoveryTxnPreparing{a.txnState=previous}
+		a.mu.Unlock()
+	}
+	p.abandonUnansweredOpens()
+	snap,routes,err:=p.recoverySnapshot();if err!=nil{notPrepared();a.recordFailure("snapshot_exchange");return RecoveryOffer{},err}
 	ids:=make([]recovery.FlowIdentity,0,len(snap.Flows))
 	for _,f:=range snap.Flows{ids=append(ids,recovery.FlowIdentity{StreamID:f.StreamID,OpenNonce:f.OpenNonce})}
-	if err:=a.engine.SetActiveFlows(ids);err!=nil{a.recordFailure("lease_conflict");return RecoveryOffer{},err}
+	if err:=a.engine.SetActiveFlows(ids);err!=nil{notPrepared();a.recordFailure("lease_conflict");return RecoveryOffer{},err}
 	next:=a.engine.CurrentEpoch()+1
-	if err:=a.engine.Prepare(next,candidateID);err!=nil{a.recordFailure("lease_conflict");return RecoveryOffer{},err}
+	if err:=a.engine.Prepare(next,candidateID);err!=nil{notPrepared();a.recordFailure("lease_conflict");return RecoveryOffer{},err}
 	a.mu.Lock()
 	a.frozen=true
 	a.pendingCandidate=candidateID
@@ -1045,7 +1076,61 @@ func (p *Peer) BeginRecovery(candidateID string)(RecoveryOffer,error){
 	a.pendingRoutes=cloneRecoveryRoutes(routes)
 	a.hasPlan=false
 	a.mu.Unlock()
-	return RecoveryOffer{CandidateID:candidateID,NextEpoch:next,Snapshot:cloneRecoverySnapshot(snap),Routes:cloneRecoveryRoutes(routes)},nil
+	return RecoveryOffer{CandidateID:candidateID,NextEpoch:next,Snapshot:cloneRecoverySnapshot(snap),Routes:cloneRecoveryRoutes(routes),ClosedStreams:p.closedStreams()},nil
+}
+
+// ErrOpenAbandoned ends an OpenFlow whose OPEN was still unanswered when the
+// carrier failed.
+var ErrOpenAbandoned = errors.New("OPEN was unanswered when the carrier failed")
+
+// abandonUnansweredOpens fails dialer Flows whose OPEN was never answered on
+// the carrier that just failed. Whether the listener saw that OPEN is
+// unknowable here, so the Flow cannot be part of a recovery snapshot. Its
+// stream is tombstoned and reaches the listener in RecoveryOffer.ClosedStreams,
+// which closes the listener's copy if the OPEN did arrive. Called with
+// recoveryGate held, so OpenFlow cannot register another Flow meanwhile.
+func (p *Peer) abandonUnansweredOpens() []uint64 {
+	if p.role!=Dialer{return nil}
+	p.mu.Lock()
+	flows:=make([]*flow,0,len(p.flows))
+	for _,fl:=range p.flows{flows=append(flows,fl)}
+	p.mu.Unlock()
+	var abandoned []uint64
+	for _,fl:=range flows{
+		fl.mu.Lock()
+		unanswered:=!fl.openOK&&!fl.closed
+		fl.mu.Unlock()
+		if !unanswered{continue}
+		select{case fl.openDone<-ErrOpenAbandoned:default:}
+		fl.close()
+		p.removeFlow(fl.id)
+		abandoned=append(abandoned,fl.id)
+	}
+	return abandoned
+}
+
+func (p *Peer) closedStreams() []uint64 {
+	p.mu.Lock();defer p.mu.Unlock()
+	return append([]uint64(nil),p.closedOrder...)
+}
+
+// ClosePeerClosedFlows closes local Flows that the peer reports as already
+// closed and returns how many it closed. Such a Flow can never be reconciled:
+// the final FIN_ACK_CONFIRM or a RESET was lost with the carrier, or the peer
+// abandoned an unanswered OPEN. Closing it is what the lost frame would have
+// done, and it lets both snapshots describe the same Flow set again.
+func (p *Peer) ClosePeerClosedFlows(streams []uint64) int {
+	if p.recovery==nil||len(streams)==0{return 0}
+	// An unresolved exact transaction pins its Flow set.
+	if p.NeedsExactTransactionResolution(){return 0}
+	closed:=0
+	for _,id:=range streams{
+		fl,err:=p.getFlow(id);if err!=nil{continue}
+		fl.close()
+		p.removeFlow(id)
+		closed++
+	}
+	return closed
 }
 
 func (p *Peer) ReconcileRecovery(candidateID string,peer RecoveryOffer) error {
@@ -1445,6 +1530,10 @@ func (p *Peer) replayCurrentUnprovenState(ctx context.Context,prep *preparedReco
 		final:=fl.txNext
 		ackPeerFIN:=fl.finRecv&&fl.rxWritten==fl.finRecvFinal&&!fl.finAckConfirmed
 		fl.mu.Unlock()
+		if act.repeatOpenOK{
+			if err:=prep.sender.sendControl(protocol.Frame{Type:protocol.TypeOpenOK,StreamID:fl.id,Payload:[]byte("{}")});err!=nil{return err}
+			if !p.recoveryAttemptCurrent(token){return ErrStaleRecoveryIncarnation}
+		}
 		// The exact-transaction delivery obligation is the current ledger suffix.
 		// Local carrier writes never clear this watermark; only cumulative ACK
 		// evidence (txAcked) can prove it satisfied.
@@ -1822,6 +1911,8 @@ func DecodeRecoveryOffer(fr protocol.Frame)(RecoveryOffer,error){
 	var o RecoveryOffer
 	if err:=dec.Decode(&o);err!=nil{return RecoveryOffer{},err}
 	if o.CandidateID==""||o.NextEpoch==0||o.Snapshot.SessionID==""{return RecoveryOffer{},recovery.ErrStateMismatch}
+	if len(o.ClosedStreams)>maxClosedFlowTombstones{return RecoveryOffer{},recovery.ErrStateMismatch}
+	for _,id:=range o.ClosedStreams{if id==0{return RecoveryOffer{},recovery.ErrStateMismatch}}
 	return o,nil
 }
 
