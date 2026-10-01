@@ -48,7 +48,7 @@ func TestDynamicRegistryAndEnrollmentJobs(t *testing.T){
 	app,err:=NewServer(store,"admin-secret");if err!=nil{t.Fatal(err)}
 
 	rr:=httptest.NewRecorder()
-	app.Handler().ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/api/nodes",nil))
+	app.Handler().ServeHTTP(rr,authReq(http.MethodGet,"/api/nodes","admin-secret",nil))
 	if rr.Code!=200{t.Fatalf("nodes status=%d",rr.Code)}
 	var nodes []Node
 	if err:=json.Unmarshal(rr.Body.Bytes(),&nodes);err!=nil{t.Fatal(err)}
