@@ -14,7 +14,7 @@ Status: implementation proposed for owner approval. Launch-1 step P1-A from [22-
 
 ## Non-scope
 
-- Installing from releases and fetching the revocation list on servers (P1-B).
+- Installing from releases and fetching the revocation list on servers (P1-B, now in `install.sh`).
 - Agent update verification (P1-D).
 - Sigstore or GitHub artifact attestations. They can be added later on top of this; they are not the trust root.
 
@@ -47,7 +47,7 @@ Releases stay installable after their certificate expires, because rule 4 checks
 
 ### Trust state (anti-rollback)
 
-A server keeps `/var/lib/baft/release-state.json`: the accepted version and commit and the highest revocation `sequence` seen. The P1-B installer runs `verify -state <file>` before installing and `verify -state <file> -update-state` after the new binaries are in place. A missing file means first install. The revocation sequence in the state never goes down, even after an explicit downgrade.
+A server keeps a root-owned `/opt/baft/release-state.json` (`$BAFT_PREFIX/release-state.json`): the accepted version and commit and the highest revocation `sequence` seen. `install.sh` checks it before installing and updates it after the new binaries are in place (see [06-running-ir-ex.md](06-running-ir-ex.md)); `baft-release verify -state <file> [-update-state]` uses the same file format. A missing file means first install. The revocation sequence in the state never goes down, even after an explicit downgrade.
 
 ## Invariants
 
@@ -75,7 +75,7 @@ Also sign the initial (empty) revocation list:
 ./baft-release revoke -root-key root.key -valid-days 180 -out revocations.json
 ```
 
-1. Commit `root.pub` as `release/keys/root.pub` and `revocations.json` as `release/keys/revocations.json` (via PR).
+1. Commit `root.pub` as `release/keys/root.pub` and `revocations.json` as `release/keys/revocations.json`, and put the same root key in `BAFT_PINNED_ROOT_PUB` in `install.sh` (one PR; `tests/docs` fails if the two differ).
 2. In GitHub, create the environment `release`, restrict it to tags `v*`, and add the secrets `BAFT_RELEASE_SIGNING_KEY` (contents of `release.key`) and `BAFT_RELEASE_KEY_CERT` (contents of `release-key.cert.json`).
 3. Delete `release.key` from the offline machine once the secret is stored.
 

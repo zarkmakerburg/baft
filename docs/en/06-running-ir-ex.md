@@ -39,13 +39,24 @@ Final systemd hardening, installer/package flow, admin transactions, certificate
 
 `install.sh` now provisions a runnable pair without hand-written YAML:
 
-1. EX: `sudo bash install.sh --role ex --public-address HOST` builds the binaries, creates the Noise key and the outer TLS PKI (`baft-pair pki`, no OpenSSL needed), and prints a one-time `BAFTPAIR1:` code. It then waits for the IR's reply (or prints the `baft-pair ex-accept` command to run later when `BAFT_NONINTERACTIVE=1`).
+1. EX: `sudo bash install.sh --role ex --public-address HOST` installs the binaries (see "Where the binaries come from" below), creates the Noise key and the outer TLS PKI (`baft-pair pki`, no OpenSSL needed), and prints a one-time `BAFTPAIR1:` code. It then waits for the IR's reply (or prints the `baft-pair ex-accept` command to run later when `BAFT_NONINTERACTIVE=1`).
 2. IR: `sudo bash install.sh --role ir --pairing-code BAFTPAIR1:...` runs `baft-pair ir-apply --config-out`, which writes `/etc/baft/baft.yaml` (a Noise dialer pinned to the EX key, no client certificate), starts the service, and prints a `BAFTREPLY1:` code.
 3. EX: paste the reply. `baft-pair ex-accept` checks it with an HMAC keyed by the pairing code's one-time PSK (a reply from anyone without the code is rejected), writes the listener config pinned to the IR key, deletes the PSK, and the service starts.
 
 Local clients then connect to `BAFT_ROUTE_LISTEN` on the IR (default `127.0.0.1:1443`); the EX forwards to `BAFT_TARGET` (default `127.0.0.1:2443`, must be a fixed IP). Until the EX accepts the reply the IR dialer exits and systemd restarts it every 2 s.
 
-`tests/e2e/pair_and_run.sh` runs this pairing with the real binaries and pushes data through; `tests/e2e/install_two_roles.sh` runs `install.sh` itself for both roles on one host. CI runs both.
+`tests/e2e/pair_and_run.sh` runs this pairing with the real binaries and pushes data through; `tests/e2e/install_two_roles.sh` runs `install.sh` itself for both roles on one host. CI runs it twice: from source (`e2e-install`) and from a signed release built with throwaway keys (`e2e-install-release`).
+
+### Where the binaries come from
+
+By default (`BAFT_INSTALL_FROM=release`) the installer needs only `curl`, `openssl` and `python3`; there is no Go, git or compiler on the server. It:
+
+1. downloads `manifest.json`, `release-key.cert.json`, `SHA256SUMS` and this architecture's `baft` and `baft-pair` from the latest GitHub release (`--version vX.Y.Z` pins one; `BAFT_RELEASE_URL` overrides the location), and the current revocation list (`BAFT_REVOCATIONS_URL`, default `release/keys/revocations.json` on `main`);
+2. verifies them before running anything downloaded, with the rules of [23-p1a-signed-releases.md](23-p1a-signed-releases.md): root key pinned in `install.sh` (`BAFT_PINNED_ROOT_PUB`), certificate, mandatory unexpired revocation list, manifest signature, `SHA256SUMS` and each binary's hash. Only the downloaded artifacts are required; any other file is rejected;
+3. refuses a release older than the installed one (unless `--allow-downgrade`) and a version already installed from a different commit, using the root-owned `$BAFT_PREFIX/release-state.json` (default `/opt/baft/release-state.json`);
+4. installs the binaries and only then records the release in that state file.
+
+If verification fails nothing is installed. Until the owner's key ceremony pins the root key, release installs stop with a clear error; `--from-source` (`BAFT_INSTALL_FROM=source`) keeps the old clone-and-build path for development. `tests/installer` checks the installer's verifier against releases signed by `internal/release`, including tampering, revocation, replayed lists, downgrade and re-tag.
 
 ## Operating an installed node
 

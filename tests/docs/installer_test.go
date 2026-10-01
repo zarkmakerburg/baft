@@ -38,3 +38,29 @@ func TestInstallerKeyOwnershipMatchesRuntimeContract(t *testing.T) {
 		t.Error("install.sh gives the CA private key to the service user")
 	}
 }
+
+// install.sh pins the release root key it trusts. Once the owner commits
+// release/keys/root.pub, the installer must pin exactly that key.
+func TestInstallerPinsTheCommittedReleaseRoot(t *testing.T) {
+	b, err := os.ReadFile("../../install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^BAFT_PINNED_ROOT_PUB="([^"]*)"$`).FindStringSubmatch(string(b))
+	if m == nil {
+		t.Fatal("install.sh has no BAFT_PINNED_ROOT_PUB line")
+	}
+	root, err := os.ReadFile("../../release/keys/root.pub")
+	if os.IsNotExist(err) {
+		if m[1] != "" {
+			t.Fatalf("install.sh pins root %q but release/keys/root.pub is not committed", m[1])
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.TrimSpace(string(root)); m[1] != want {
+		t.Fatalf("install.sh pins root %q, release/keys/root.pub is %q", m[1], want)
+	}
+}
