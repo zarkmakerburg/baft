@@ -368,7 +368,7 @@ func TestRestoreFaultInjectionLeavesStateAndAuditUnchanged(t *testing.T){
 			if !bytes.Equal(beforeAudit,afterAudit){t.Fatalf("audit changed after %s",stage)}
 			if err:=app.audit.Verify();err!=nil{t.Fatalf("audit invalid after %s: %v",stage,err)}
 
-			req:=httptest.NewRequest(http.MethodGet,"/api/nodes",nil)
+			req:=authReq(http.MethodGet,"/api/nodes","admin",nil)
 			resp:=httptest.NewRecorder();app.Handler().ServeHTTP(resp,req)
 			if resp.Code!=http.StatusOK{t.Fatalf("BCC not operational after %s status=%d",stage,resp.Code)}
 		})
