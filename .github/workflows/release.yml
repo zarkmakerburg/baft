@@ -6,7 +6,9 @@ name: release
 # Needs a protected `release` environment holding:
 #   BAFT_RELEASE_SIGNING_KEY  release signing private key (baft-release keygen)
 #   BAFT_RELEASE_KEY_CERT     root-signed certificate for that key (baft-release certify)
-# and the root public key committed at release/keys/root.pub.
+# and, committed by the root holder, the root public key at
+# release/keys/root.pub and the current root-signed revocation list at
+# release/keys/revocations.json (it must not be expired).
 on:
   push:
     tags: ['v*']
@@ -41,6 +43,10 @@ jobs:
             echo "::error::release/keys/root.pub is missing; commit the offline root public key first"
             exit 1
           fi
+          if [ ! -s release/keys/revocations.json ]; then
+            echo "::error::release/keys/revocations.json is missing; sign an initial list with baft-release revoke"
+            exit 1
+          fi
           git fetch --no-tags origin main release-v1-goldapp
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main &&
              ! git merge-base --is-ancestor "$GITHUB_SHA" origin/release-v1-goldapp; then
@@ -62,11 +68,13 @@ jobs:
             -build-flag -trimpath -build-flag -buildvcs=false -build-flag 'CGO_ENABLED=0' \
             -build-flag '-ldflags=-s -w -buildid='
       - name: Verify against the pinned root key
-        run: go run ./cmd/baft-release verify -dir "$RUNNER_TEMP/dist" -root-pub release/keys/root.pub
+        run: |
+          go run ./cmd/baft-release verify -dir "$RUNNER_TEMP/dist" -root-pub release/keys/root.pub \
+            -revocations release/keys/revocations.json
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* \
             --draft --verify-tag --title "BAFT $GITHUB_REF_NAME" \
-            --notes "Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub"
+            --notes "Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub -revocations release/keys/revocations.json"

@@ -5,12 +5,16 @@
 //	baft-release keygen  -out root            # root.key (keep offline) + root.pub (commit)
 //	baft-release keygen  -out release         # release.key (CI secret) + release.pub
 //	baft-release certify -root-key root.key -release-pub release.pub -valid-days 180 -out release-key.cert.json
-//	baft-release revoke  -root-key root.key -key-id <id> [-in revocations.json] -out revocations.json
+//	baft-release revoke  -root-key root.key [-key-id <id>] [-in revocations.json] [-valid-days 180] -out revocations.json
+//
+// revoke with no -key-id re-signs the list unchanged with a new expiry; the
+// root holder must do that before the current list expires.
 //
 // In CI and on servers:
 //
 //	baft-release sign   -dir dist -version v1.0.0 -commit <sha> -cert release-key.cert.json -root-pub root.pub
-//	baft-release verify -dir dist -root-pub root.pub [-revocations revocations.json]
+//	baft-release verify -dir dist -root-pub root.pub -revocations revocations.json \
+//	    [-state /var/lib/baft/release-state.json [-update-state] [-allow-downgrade]]
 package main
 
 import (
@@ -172,8 +176,9 @@ func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 func revoke(args []string, stdout io.Writer) error {
 	fs := newFlags("revoke")
 	rootKey := fs.String("root-key", "", "offline root private key file")
-	in := fs.String("in", "", "existing revocation list to extend (optional)")
+	in := fs.String("in", "", "current revocation list to extend; its sequence is carried forward")
 	out := fs.String("out", "", "revocation list output file")
+	days := fs.Int("valid-days", 180, "list validity in days; re-sign before it expires")
 	var ids multi
 	fs.Var(&ids, "key-id", "release key id to revoke (repeatable)")
 	if err := fs.Parse(args); err != nil {
@@ -187,6 +192,7 @@ func revoke(args []string, stdout io.Writer) error {
 		return err
 	}
 	all := map[string]bool{}
+	seq := uint64(1)
 	if *in != "" {
 		env, err := release.ReadEnvelope(*in)
 		if err != nil {
@@ -199,6 +205,7 @@ func revoke(args []string, stdout io.Writer) error {
 		for _, id := range prev.RevokedKeyIDs {
 			all[id] = true
 		}
+		seq = prev.Sequence + 1
 	}
 	for _, id := range ids {
 		all[id] = true
@@ -207,14 +214,19 @@ func revoke(args []string, stdout io.Writer) error {
 	for id := range all {
 		list = append(list, id)
 	}
-	env, err := release.SignRevocations(root, list, time.Now())
+	now := time.Now()
+	env, err := release.SignRevocations(root, seq, list, now, now.Add(time.Duration(*days)*24*time.Hour))
 	if err != nil {
 		return err
 	}
 	if err := release.WriteEnvelope(*out, env); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "%d revoked key id(s) in %s\n", len(list), *out)
+	fmt.Fprintf(stdout, "revocation list sequence %d: %d revoked key id(s), expires %s, in %s\n",
+		seq, len(list), now.Add(time.Duration(*days)*24*time.Hour).UTC().Format(time.RFC3339), *out)
+	if *in == "" {
+		fmt.Fprintln(stdout, "note: started a new list at sequence 1; servers that saw a higher sequence will refuse it (pass -in to extend the current list)")
+	}
 	return nil
 }
 
@@ -284,30 +296,46 @@ func verify(args []string, stdout io.Writer) error {
 	fs := newFlags("verify")
 	dir := fs.String("dir", "", "release directory")
 	rootPub := fs.String("root-pub", "", "pinned root public key")
-	revPath := fs.String("revocations", "", "root-signed revocation list (optional)")
+	revPath := fs.String("revocations", "", "current root-signed revocation list")
+	statePath := fs.String("state", "", "trust state file; refuses downgrades and replayed revocation lists (missing file: first install)")
+	update := fs.Bool("update-state", false, "record this release in -state after it verifies")
+	downgrade := fs.Bool("allow-downgrade", false, "accept a release older than the one in -state")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := need(fs, "dir", "root-pub"); err != nil {
+	if err := need(fs, "dir", "root-pub", "revocations"); err != nil {
 		return err
+	}
+	if (*update || *downgrade) && *statePath == "" {
+		return errors.New("-update-state and -allow-downgrade need -state")
 	}
 	root, err := release.ReadPublic(*rootPub)
 	if err != nil {
 		return err
 	}
-	in := release.VerifyInput{Dir: *dir, Root: root}
-	if *revPath != "" {
-		env, err := release.ReadEnvelope(*revPath)
-		if err != nil {
-			return err
-		}
-		in.Revocations = &env
-	}
-	m, err := release.VerifyDir(in)
+	rev, err := release.ReadEnvelope(*revPath)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "OK %s %s: %d artifacts, release key %s, root %s\n",
-		m.Version, m.Commit[:12], len(m.Artifacts), m.SigningKeyID, release.KeyID(root))
+	in := release.VerifyInput{Dir: *dir, Root: root, Revocations: &rev, AllowDowngrade: *downgrade}
+	var state release.TrustState
+	if *statePath != "" {
+		if state, err = release.ReadState(*statePath); err != nil {
+			return err
+		}
+		in.State = &state
+	}
+	v, err := release.VerifyDir(in)
+	if err != nil {
+		return err
+	}
+	if *update {
+		if err := release.WriteState(*statePath, state.Advance(v, time.Now())); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(stdout, "OK %s %s: %d artifacts, release key %s, root %s, revocation list %d (expires %s)\n",
+		v.Version, v.Commit[:12], len(v.Artifacts), v.SigningKeyID, release.KeyID(root),
+		v.Revocations.Sequence, v.Revocations.ExpiresAt.Format(time.RFC3339))
 	return nil
 }
