@@ -10,8 +10,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "key_file",
-        "peer_public_key"
+        "key_file"
+      ],
+      "oneOf": [
+        {"required": ["peer_public_key"]},
+        {"required": ["allowed_peer_public_keys"]}
       ],
       "properties": {
         "key_file": {
@@ -21,6 +24,14 @@
         "peer_public_key": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "allowed_peer_public_keys": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          }
         },
         "cover_html_file": {
           "type": "string"
@@ -135,9 +146,27 @@
       "type": "object", "additionalProperties": false,
       "required": ["enabled", "retention_seconds"],
       "properties": {
-        "enabled": {"const": false},
-        "retention_seconds": {"type": "integer", "minimum": 0, "maximum": 300}
-      }
+        "enabled": {"type": "boolean"},
+        "retention_seconds": {"type": "integer", "minimum": 0, "maximum": 300},
+        "mode": {"const": "same_process"},
+        "durable": {"const": false}
+      },
+      "if": {"properties": {"enabled": {"const": true}}},
+      "then": {"properties": {"retention_seconds": {"minimum": 1}}}
+    },
+    "telemetry": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "bcc_url": {"type": "string"},
+        "agent_token_env": {"type": "string"},
+        "interval_seconds": {"type": "integer", "minimum": 0, "maximum": 3600},
+        "route_probe_interval_seconds": {"type": "integer", "minimum": 0, "maximum": 60},
+        "spool_path": {"type": "string"},
+        "spool_max_pending": {"type": "integer", "minimum": 0, "maximum": 1000000}
+      },
+      "if": {"required": ["enabled"], "properties": {"enabled": {"const": true}}},
+      "then": {"required": ["bcc_url"], "properties": {"bcc_url": {"minLength": 1}}}
     },
     "revocation": {
       "type": "object", "additionalProperties": false,
@@ -182,6 +211,8 @@
   "allOf": [
     {"if": {"properties": {"node": {"properties": {"role": {"const": "dialer"}}}}}, "then": {"required": ["peer"], "not": {"required": ["server"]}}},
     {"if": {"properties": {"node": {"properties": {"role": {"const": "listener"}}}}}, "then": {"required": ["server"], "not": {"required": ["peer"]}}},
-    {"if": {"required": ["noise"], "properties": {"node": {"properties": {"role": {"const": "listener"}}}}}, "then": {"properties": {"server": {"properties": {"allowed_peer_identities": {"maxItems": 1}}}}}}
+    {"if": {"required": ["noise"], "properties": {"noise": {"required": ["peer_public_key"]}, "node": {"properties": {"role": {"const": "listener"}}}}}, "then": {"properties": {"server": {"properties": {"allowed_peer_identities": {"maxItems": 1}}}}}},
+    {"if": {"required": ["noise"], "properties": {"node": {"properties": {"role": {"const": "dialer"}}}}}, "then": {"properties": {"noise": {"required": ["peer_public_key"]}}}},
+    {"if": {"required": ["revocation"]}, "then": {"properties": {"node": {"properties": {"role": {"const": "listener"}}}}}}
   ]
 }
