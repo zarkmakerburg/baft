@@ -150,4 +150,34 @@ permission فایل key را محدود کنید. هدف این check جلوگی
 - support bundle؛
 - real-path pilot و rollback عملیاتی.
 
+## مسیر نصب: pairing هر دو config را می‌سازد
+
+حالا `install.sh` بدون نوشتن دستی YAML یک جفت قابل اجرا می‌سازد:
+
+1. روی EX دستور زیر را اجرا کنید. باینری‌ها ساخته می‌شوند، کلید Noise و PKI بیرونی TLS ساخته می‌شود (با `baft-pair pki`، بدون نیاز به OpenSSL) و یک کد یک‌بارمصرف `BAFTPAIR1:` چاپ می‌شود. بعد installer منتظر کد پاسخ IR می‌ماند (با `BAFT_NONINTERACTIVE=1` دستور `baft-pair ex-accept` را برای اجرای بعدی چاپ می‌کند).
+
+<div dir="ltr" align="left">
+
+```bash
+sudo bash install.sh --role ex --public-address HOST
+```
+
+</div>
+
+2. روی IR دستور زیر را با همان کد اجرا کنید. `baft-pair ir-apply --config-out` فایل `/etc/baft/baft.yaml` را می‌نویسد (dialer در حالت Noise، pin‌شده به کلید EX، بدون گواهی کلاینت)، سرویس بالا می‌آید و یک کد `BAFTREPLY1:` چاپ می‌شود.
+
+<div dir="ltr" align="left">
+
+```bash
+sudo bash install.sh --role ir --pairing-code BAFTPAIR1:...
+```
+
+</div>
+
+3. کد پاسخ را در EX بچسبانید. `baft-pair ex-accept` آن را با HMAC و کلید PSK یک‌بارمصرفِ کد pairing بررسی می‌کند (پاسخ کسی که کد را ندارد رد می‌شود)، config سمت listener را pin‌شده به کلید IR می‌نویسد، PSK را پاک می‌کند و سرویس بالا می‌آید.
+
+بعد از آن برنامه‌های محلی به `BAFT_ROUTE_LISTEN` روی IR وصل می‌شوند (پیش‌فرض `127.0.0.1:1443`) و EX ترافیک را به `BAFT_TARGET` می‌فرستد (پیش‌فرض `127.0.0.1:2443`؛ باید IP ثابت باشد). تا وقتی EX پاسخ را نپذیرفته، dialer روی IR خارج می‌شود و systemd هر ۲ ثانیه دوباره اجرایش می‌کند.
+
+اسکریپت `tests/e2e/pair_and_run.sh` همین pairing را با باینری واقعی اجرا می‌کند و داده رد می‌کند؛ `tests/e2e/install_two_roles.sh` خود `install.sh` را برای هر دو نقش روی یک ماشین اجرا می‌کند. CI هر دو را اجرا می‌کند.
+
 </div>
