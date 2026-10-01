@@ -22,7 +22,11 @@
 
 ## قواعد verify
 
-Release فقط وقتی پذیرفته می‌شود که: گواهی با Root pinشده امضا شده باشد؛ کلید release باطل نشده باشد؛ manifest با کلید گواهی‌شده امضا شده باشد؛ زمان امضای manifest داخل بازهٔ اعتبار گواهی باشد؛ `SHA256SUMS` با manifest بخواند؛ و هر فایل پوشه دقیقاً همان آرتیفکت امضاشده با همان اندازه و hash باشد.
+Release فقط وقتی پذیرفته می‌شود که: گواهی با Root pinشده امضا شده باشد؛ فهرست ابطالِ امضاشده با Root داده شده باشد، منقضی نشده باشد و `sequence` آن از مقدار ثبت‌شده در trust state کمتر نباشد؛ کلید release در آن فهرست نباشد؛ manifest با کلید گواهی‌شده امضا شده باشد؛ زمان امضای manifest داخل بازهٔ اعتبار گواهی باشد؛ `SHA256SUMS` با manifest بخواند؛ و هر فایل پوشه دقیقاً همان آرتیفکت امضاشده با همان اندازه و hash باشد. با trust state (`-state`)، نسخهٔ قدیمی‌تر از نسخهٔ پذیرفته‌شده رد می‌شود مگر با `-allow-downgrade`، و همان نسخه از commit دیگر هرگز پذیرفته نمی‌شود.
+
+## Trust state (جلوگیری از downgrade)
+
+هر سرور فایل `/var/lib/baft/release-state.json` را نگه می‌دارد: نسخه و commit پذیرفته‌شده و بیشترین `sequence` فهرست ابطال. installer در P1-B قبل از نصب `verify -state` و بعد از نصب `verify -state -update-state` را اجرا می‌کند. `sequence` در state هرگز پایین نمی‌آید. فهرست ابطال اجباری است و تاریخ انقضا دارد، پس مهاجم نه می‌تواند آن را حذف کند و نه فهرست قدیمی را بعد از انقضا یا بعد از دیدن `sequence` بالاتر دوباره بدهد.
 
 ## Invariantها
 
@@ -33,16 +37,17 @@ Release فقط وقتی پذیرفته می‌شود که: گواهی با Root 
 
 ## راه‌اندازی یک‌باره توسط صاحب پروژه
 
-روی ماشین آفلاین: `keygen` برای root و release، سپس `certify` (دستورها در نسخهٔ انگلیسی). بعد `root.pub` را با PR در `release/keys/root.pub` بگذارید، در گیت‌هاب environment به نام `release` (محدود به tagهای `v*`) با secretهای `BAFT_RELEASE_SIGNING_KEY` و `BAFT_RELEASE_KEY_CERT` بسازید، و `release.key` را از ماشین آفلاین پاک کنید.
+روی ماشین آفلاین: `keygen` برای root و release، سپس `certify` (دستورها در نسخهٔ انگلیسی). فهرست ابطال اولیه (خالی) را هم امضا کنید: `baft-release revoke -root-key root.key -valid-days 180 -out revocations.json`. بعد `root.pub` و `revocations.json` را با PR در `release/keys/` بگذارید، در گیت‌هاب environment به نام `release` (محدود به tagهای `v*`) با secretهای `BAFT_RELEASE_SIGNING_KEY` و `BAFT_RELEASE_KEY_CERT` بسازید، و `release.key` را از ماشین آفلاین پاک کنید.
 
 ## چرخش و ابطال
 
 - چرخش: کلید release جدید، گواهی با Root، جایگزینی secretها. سرورها تغییری لازم ندارند.
-- ابطال: `baft-release revoke` و انتشار فهرست؛ P1-B سرورها را وادار به دریافت آن می‌کند.
+- ابطال: `baft-release revoke -in release/keys/revocations.json -key-id <id> -out revocations.json` و commit آن. همیشه `-in` بدهید تا `sequence` بالا برود.
+- تمدید: قبل از `expires_at` فهرست را بدون تغییر با `revoke -in ...` دوباره امضا و commit کنید. فهرست منقضی، release و نصب را تا تمدید متوقف می‌کند.
 
 ## تست‌ها و Exit Criteria
 
-- `go test ./internal/release` و `scripts/release/dry_run.sh` (شامل بررسی تکرارپذیری build و رد آرتیفکت دستکاری‌شده، Root اشتباه، کلید باطل‌شده و کلید بدون گواهی).
+- `go test ./internal/release` و `scripts/release/dry_run.sh` (شامل بررسی تکرارپذیری build و رد آرتیفکت دستکاری‌شده، Root اشتباه، کلید باطل‌شده، کلید بدون گواهی، نبودِ فهرست ابطال، فهرست تکراری قدیمی و downgrade).
 - CI سبز، و یک tag آزمایشی که draft release آن روی ماشین دیگری verify شود.
 
 ## Rollback

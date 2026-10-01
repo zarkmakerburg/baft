@@ -27,7 +27,7 @@ Every signed document is a [DSSE](https://github.com/secure-systems-lab/dsse) en
 | `release-key.cert.json` | root | release key id and public key, `not_before`, `not_after` (at most 400 days) |
 | `manifest.json` | release key | version, commit, `created_at`, signing key id, hash of `SHA256SUMS`, every artifact's name, OS, arch, size and SHA-256, provenance (builder, repository, ref, workflow, run id, Go version, build flags) |
 | `SHA256SUMS` | covered by the manifest | `sha256sum -c` compatible |
-| revocations (published separately) | root | revoked release key ids |
+| `release/keys/revocations.json` | root | `sequence`, `issued_at`, `expires_at` (at most 400 days), revoked release key ids |
 
 Key id = first 16 bytes of SHA-256 over the raw public key, in hex.
 
@@ -36,13 +36,18 @@ Key id = first 16 bytes of SHA-256 over the raw public key, in hex.
 `baft-release verify` accepts a release only if all of these hold:
 
 1. The certificate is signed by the pinned root and is for purpose `baft-release`.
-2. The release key is not in the root-signed revocation list, when one is given.
+2. A root-signed revocation list is given, has not expired, and its `sequence` is not lower than the one recorded in the trust state (when one is used). The release key is not in it.
 3. The manifest is signed by the certified release key, and `signing_key_id` matches.
 4. The manifest's `created_at` lies inside the certificate's validity window.
 5. `SHA256SUMS` matches its hash in the manifest and lists exactly the manifest's artifacts.
 6. Every file in the directory is a signed artifact or release metadata; every signed artifact is present with the signed size and hash.
+7. With a trust state (`-state`): the release is not older than the accepted one (SemVer precedence) unless `-allow-downgrade` is given, and the accepted version is never accepted again from a different commit, even with `-allow-downgrade`.
 
-Releases stay installable after their certificate expires, because rule 4 checks signing time, not install time. A leaked release key is handled by revocation, not expiry.
+Releases stay installable after their certificate expires, because rule 4 checks signing time, not install time. A leaked release key is handled by revocation, not expiry. That is why the revocation list is mandatory and expires: an attacker cannot strip it, and cannot replay an old list after its `expires_at`, or after a server has seen a newer `sequence`.
+
+### Trust state (anti-rollback)
+
+A server keeps `/var/lib/baft/release-state.json`: the accepted version and commit and the highest revocation `sequence` seen. The P1-B installer runs `verify -state <file>` before installing and `verify -state <file> -update-state` after the new binaries are in place. A missing file means first install. The revocation sequence in the state never goes down, even after an explicit downgrade.
 
 ## Invariants
 
@@ -64,20 +69,27 @@ go build -o baft-release ./cmd/baft-release
 
 Then:
 
-1. Commit `root.pub` as `release/keys/root.pub` (via PR).
+Also sign the initial (empty) revocation list:
+
+```
+./baft-release revoke -root-key root.key -valid-days 180 -out revocations.json
+```
+
+1. Commit `root.pub` as `release/keys/root.pub` and `revocations.json` as `release/keys/revocations.json` (via PR).
 2. In GitHub, create the environment `release`, restrict it to tags `v*`, and add the secrets `BAFT_RELEASE_SIGNING_KEY` (contents of `release.key`) and `BAFT_RELEASE_KEY_CERT` (contents of `release-key.cert.json`).
 3. Delete `release.key` from the offline machine once the secret is stored.
 
 ## Rotation and revocation
 
 - Rotation: generate a new release key, certify it with the root, replace both secrets. Servers need no change.
-- Revocation: `baft-release revoke -root-key root.key -key-id <id> [-in revocations.json] -out revocations.json`, publish the list, rotate. P1-B makes servers fetch it.
+- Revocation: `baft-release revoke -root-key root.key -in release/keys/revocations.json -key-id <id> -out revocations.json`, commit it as `release/keys/revocations.json`, rotate. Always pass `-in` so the `sequence` grows; a fresh list restarts at 1 and servers that saw more refuse it.
+- Refresh: before the list's `expires_at`, re-sign it unchanged with `revoke -in release/keys/revocations.json -out revocations.json` and commit it. An expired list stops releases and installs until it is refreshed.
 - Root compromise needs re-pinning every server; that is why the root stays offline.
 
 ## Tests
 
-- `go test ./internal/release`: round trip, tampered artifact, extra or missing file, tampered `SHA256SUMS`, tampered manifest, uncertified signing key, wrong root, signing outside validity, revocation (and forged revocation lists), payload-type confusion, input validation.
-- `scripts/release/dry_run.sh` (CI job `release-dry-run`): two builds are byte-identical, and the CLI signs, verifies and rejects a wrong root, a revoked key, a tampered artifact and an uncertified signing key.
+- `go test ./internal/release`: round trip, tampered artifact, extra or missing file, tampered `SHA256SUMS`, tampered manifest, uncertified signing key, wrong root, signing outside validity, revocation (and forged revocation lists), missing, expired and replayed revocation lists, downgrade, re-tag of an accepted version, SemVer ordering, trust state round trip, payload-type confusion, input validation.
+- `scripts/release/dry_run.sh` (CI job `release-dry-run`): two builds are byte-identical, and the CLI signs, verifies and rejects (for the expected reason) a wrong root, a missing revocation list, a downgrade, a replayed revocation list, a revoked key, a tampered artifact and an uncertified signing key; an explicit `-allow-downgrade` is accepted.
 
 ## Exit criteria
 
