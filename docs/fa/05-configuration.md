@@ -161,7 +161,9 @@ recovery:
 
 </div>
 
-تا پیش از کامل‌شدن Stage D، `enabled: true` باید با خطای واضح رد شود؛ silently ignoring ممنوع است.
+`recovery.enabled: true` تعویض Carrier در همان process با ECRL را فعال می‌کند (Step 5.7): وقتی Carrier یک Shard از کار بیفتد، Session زنده به‌جای پایان یافتن، با epoch fencing و bounded replay به Carrier جدید متصل می‌شود. در این حالت `retention_seconds` باید بین 1 و 300 باشد؛ `mode` می‌تواند حذف شود یا `same_process` باشد.
+
+`durable: true` و هر `mode` دیگر با خطای واضح رد می‌شوند و silently ignoring ممنوع است: وضعیت recovery پایدار نمی‌شود، پس resume بعد از restart پردازه یا reboot ماشین پشتیبانی نمی‌شود. محدوده دقیق در [محدودیت‌های شناخته‌شده](../../KNOWN-LIMITATIONS.md) آمده است.
 
 ## Route خروجی روی IR
 

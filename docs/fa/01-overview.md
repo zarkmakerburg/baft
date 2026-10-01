@@ -51,7 +51,7 @@ BAFT قرار نیست:
 
 ## وضعیت کنونی در برابر طراحی نهایی
 
-مرحله B عملاً vertical slice امن را ساخته است. Stage C در حال تثبیت allocator، DRR، صف کنترل و رفتار receiver کند است. Resume، epoch، replay بین Carrierهای جایگزین و tombstone متعلق به Stage D هستند و هنوز قابلیت جاری محسوب نمی‌شوند.
+مرحله B عملاً vertical slice امن را ساخته است. گیت soak فعلی Stage C برای allocator، scheduling، صف کنترل و receiver کند سبز است. Stage D بخشی پیاده شده است: تعویض Carrier در همان process با ECRL، epoch fencing و bounded replay پشت `recovery.enabled` وجود دارند (Step 5.7). snapshot پایدار و resume بعد از restart پردازه یا reboot ماشین هنوز قابلیت جاری نیستند.
 
 ## چرا پروژه مرحله‌ای است؟
 
