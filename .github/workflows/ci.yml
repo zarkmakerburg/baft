@@ -27,7 +27,15 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
       - name: Unit and integration tests
-        run: go test ./...
+        run: |
+          set -o pipefail
+          go test ./... 2>&1 | tee "$RUNNER_TEMP/go-test.log"
+      - name: Report failing tests
+        # Job logs are not always retrievable; annotations are.
+        if: failure()
+        run: |
+          grep -E -- '^(--- FAIL|FAIL|panic:)|_test\.go:[0-9]+:' "$RUNNER_TEMP/go-test.log" | head -40 |
+            sed 's/%/%25/g; s/^/::error title=go test::/' || true
       - name: Step 1 stability evidence
         run: |
           go test ./tests/integration -run '^TestSixNodeNoiseMasterHandshakeRoundTrip$' -count=1 -v
