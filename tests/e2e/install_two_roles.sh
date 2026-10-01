@@ -27,8 +27,21 @@ cleanup() {
   [[ -n "$TARGET_PID" ]] && kill "$TARGET_PID" 2>/dev/null
   [[ -n "$EX_PID" ]] && kill "$EX_PID" 2>/dev/null
   if [[ $rc -ne 0 ]]; then
-    for f in "$WORK"/*.out "$WORK"/*.err; do [[ -f "$f" ]] && { echo "== $f"; tail -n 40 "$f"; }; done
-    for s in baft-ex baft-ir; do journalctl -u "$s" -n 40 --no-pager 2>/dev/null || true; done
+    diag="$WORK/diag"
+    {
+      for f in "$WORK"/*.out "$WORK"/*.err; do [[ -f "$f" ]] && { echo "== $f"; tail -n 40 "$f"; }; done
+      for s in baft-ex baft-ir; do echo "== journal $s"; journalctl -u "$s" -n 40 --no-pager 2>/dev/null || true; done
+    } >"$diag" 2>&1
+    cat "$diag"
+    # Job logs are not always retrievable; annotations are. One annotation
+    # per section keeps the failure readable from the checks API.
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      awk '/^== /{if (msg != "") print msg; msg=$0; next} {msg = msg "\\n" $0} END{if (msg != "") print msg}' "$diag" |
+        tail -n 8 | while IFS= read -r section; do
+          section="${section//%/%25}"
+          printf '::error title=install e2e diagnostics::%s\n' "${section//\\n/%0A}"
+        done
+    fi
   fi
   rm -rf "$WORK"
   exit $rc
