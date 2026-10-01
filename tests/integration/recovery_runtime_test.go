@@ -117,7 +117,7 @@ func startRecoveryRuntimePair(t *testing.T,routeCount int)*recoveryRuntimePair{
 	return startRuntimePair(t,routeCount,true)
 }
 
-func startRuntimePair(t *testing.T,routeCount int,recoveryEnabled bool)*recoveryRuntimePair{
+func startRuntimePair(t *testing.T,routeCount int,recoveryEnabled bool,configure ...func(ex,ir *config.Config))*recoveryRuntimePair{
 	t.Helper()
 	certs:=testPKI(t);dir:=t.TempDir()
 	write:=func(name string,b []byte)string{p:=filepath.Join(dir,name);if err:=os.WriteFile(p,b,0600);err!=nil{t.Fatal(err)};return p}
@@ -195,6 +195,7 @@ func startRuntimePair(t *testing.T,routeCount int,recoveryEnabled bool)*recovery
 		ir.Routes=append(ir.Routes,config.Route{ID:localID,Direction:"outbound",Listen:routeLn.Addr().String(),RemoteRoute:id})
 		irProvider.add(t,node.EndpointRoute,localID,routeLn)
 	}
+	for _,fn:=range configure{fn(&ex,&ir)}
 	if err:=config.Validate(ex);err!=nil{t.Fatalf("EX: %v",err)}
 	if err:=config.Validate(ir);err!=nil{t.Fatalf("IR: %v",err)}
 

@@ -27,35 +27,40 @@ func DecodeYAML(r io.Reader) (Config, error) {
 	if len(b) > maxYAMLConfigBytes {
 		return Config{}, errors.New("config exceeds 1 MiB limit")
 	}
-
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	var doc yaml.Node
-	if err := dec.Decode(&doc); err != nil {
-		return Config{}, err
-	}
-	if len(doc.Content) != 1 {
-		return Config{}, errors.New("config must contain one YAML document")
-	}
-	if err := validateYAMLNode(&doc, 0); err != nil {
-		return Config{}, err
-	}
-	var extra yaml.Node
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return Config{}, errors.New("multiple YAML documents are not allowed")
-		}
-		return Config{}, err
-	}
-
-	var raw map[string]any
-	if err := doc.Content[0].Decode(&raw); err != nil {
-		return Config{}, err
-	}
-	j, err := json.Marshal(raw)
+	j, err := yamlDocumentJSON(b)
 	if err != nil {
 		return Config{}, err
 	}
 	return DecodeJSON(bytes.NewReader(j))
+}
+
+// yamlDocumentJSON applies the hardened single-document YAML rules shared by
+// the config and the revocation file, and returns the document as JSON.
+func yamlDocumentJSON(b []byte) ([]byte, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	var doc yaml.Node
+	if err := dec.Decode(&doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) != 1 {
+		return nil, errors.New("input must contain one YAML document")
+	}
+	if err := validateYAMLNode(&doc, 0); err != nil {
+		return nil, err
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("multiple YAML documents are not allowed")
+		}
+		return nil, err
+	}
+
+	var raw map[string]any
+	if err := doc.Content[0].Decode(&raw); err != nil {
+		return nil, err
+	}
+	return json.Marshal(raw)
 }
 
 func validateYAMLNode(n *yaml.Node, depth int) error {

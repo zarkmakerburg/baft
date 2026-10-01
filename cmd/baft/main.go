@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -76,9 +77,18 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args[1:]); err != nil || *file == "" || fs.NArg() != 0 {
 		return 2
 	}
-	if _, err := config.LoadFile(*file); err != nil {
+	cfg, err := config.LoadFile(*file)
+	if err != nil {
 		fmt.Fprintln(stderr, "invalid config:", err)
 		return 1
+	}
+	// A listener refuses to start without a valid revocation list, so the
+	// list is part of what "valid" means.
+	if cfg.Revocation != nil {
+		if _, err := config.LoadRevocationFile(cfg.Revocation.File); err != nil {
+			fmt.Fprintln(stderr, "invalid revocation file:", err)
+			return 1
+		}
 	}
 	fmt.Fprintln(stdout, "valid")
 	return 0
@@ -98,11 +108,48 @@ func runNode(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "starting BAFT node %s (%s)\n", cfg.Node.ID, cfg.Node.Role)
-	if err := node.NewRuntime().Run(ctx, cfg); err != nil {
+	rt := node.NewRuntime()
+	stopReload := reloadOnHUP(ctx, rt, stderr)
+	defer stopReload()
+	if err := rt.Run(ctx, cfg); err != nil {
 		fmt.Fprintln(stderr, "node stopped:", err)
 		return 1
 	}
 	return 0
+}
+
+// reloadOnHUP re-applies revocation.file on SIGHUP (`systemctl reload baft`).
+// Handling SIGHUP unconditionally also keeps a reload from terminating a node
+// that has no revocation file.
+func reloadOnHUP(ctx context.Context, rt *node.Runtime, stderr io.Writer) func() {
+	ctx, cancel := context.WithCancel(ctx)
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				n, err := rt.ReloadRevocations()
+				switch {
+				case errors.Is(err, node.ErrNoRevocationFile):
+					fmt.Fprintln(stderr, "reload: no revocation.file configured")
+				case err != nil:
+					fmt.Fprintln(stderr, "reload: revocation file rejected, keeping current revocations:", err)
+				default:
+					fmt.Fprintf(stderr, "reload: %d revocation entries applied\n", n)
+				}
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(hup)
+		cancel()
+		<-done
+	}
 }
 
 func usage(w io.Writer) {

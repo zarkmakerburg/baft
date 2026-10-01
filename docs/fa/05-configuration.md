@@ -147,6 +147,8 @@ limits:
 
 Runtime Stage C فعلی budget داده را به poolهای receive و replay غیرقابل‌قرض‌دادن تقسیم می‌کند. per-flow cap نباید از pool مربوط بزرگ‌تر باشد.
 
+`max_flows` سقف Flowهای هم‌زمان کل نود است و بین همه peerها و Shardها مشترک است. سمت EX، OPEN بعد از رسیدن به سقف بدون dial به target با `OPEN_ERR RESOURCE_EXHAUSTED` رد می‌شود؛ سمت IR اتصال محلی جدید بدون ارسال OPEN بسته می‌شود. جدا از آن، هر Shard حداکثر ۶۴ Flow می‌پذیرد (`max_flows_per_shard` در HELLO_ACK)؛ مقدار نمونه `256` برابر ۴ Shard × ۶۴ است.
+
 ## recovery
 
 <div dir="ltr" align="left">
@@ -198,6 +200,37 @@ routes:
 </div>
 
 در implementation baseline، target باید IP ثابت + port باشد؛ hostname آزاد، wildcard و مقصد peer-supplied پذیرفته نمی‌شود.
+
+## revocation روی EX
+
+<div dir="ltr" align="left">
+
+```yaml
+revocation:
+  file: /etc/baft/revoked.yaml
+```
+
+</div>
+
+بخش اختیاری `revocation` فقط برای listener مجاز است، چون فقط listener هویت peer هر Carrier را احراز می‌کند؛ مسیر باید مطلق باشد. فایل فهرست با همان parser سخت‌گیرانه YAML (یا JSON) خوانده می‌شود و فایل خالی یعنی فهرست خالی:
+
+<div dir="ltr" align="left">
+
+```yaml
+identities:
+  - urn:baft:node:ir-02
+serials:
+  - "0A:1B:2C"
+fingerprints:
+  - "<SHA-256 گواهی، 64 رقم hex>"
+```
+
+</div>
+
+- اگر `revocation.file` تنظیم شده ولی فایل نیست یا نامعتبر است، node شروع نمی‌شود (fail-closed).
+- `systemctl reload baft` (سیگنال SIGHUP) فایل را دوباره می‌خواند؛ Carrierهای فعال peer تازه revoke‌شده فوراً قطع می‌شوند. فایل نامعتبر در reload رد می‌شود و فهرست فعلی حفظ می‌شود.
+- revocation فقط افزایشی است: حذف یک مورد از فایل تا restart بعدی اثر ندارد.
+- serialها مستقل از `:` و صفرهای ابتدایی و بزرگی/کوچکی حروف مقایسه می‌شوند. در حالت Noise فقط `identities` اثر دارد، چون آنجا گواهی کلاینت در TLS بیرونی وجود ندارد.
 
 ## management و metrics
 

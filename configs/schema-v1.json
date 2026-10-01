@@ -139,6 +139,13 @@
         "retention_seconds": {"type": "integer", "minimum": 0, "maximum": 300}
       }
     },
+    "revocation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["file"],
+      "properties": {
+        "file": {"type": "string", "pattern": "^/"}
+      }
+    },
     "routes": {
       "type": "array",
       "items": {

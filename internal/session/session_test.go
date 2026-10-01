@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,41 @@ import (
 	"github.com/zarkmakerburg/baft/internal/resources"
 	"github.com/zarkmakerburg/baft/internal/routes"
 )
+
+// lockedBuffer collects frames written by background OPEN completions.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) { l.mu.Lock(); defer l.mu.Unlock(); return l.b.Write(p) }
+func (l *lockedBuffer) reset() { l.mu.Lock(); l.b.Reset(); l.mu.Unlock() }
+
+func (l *lockedBuffer) frames(t *testing.T) []protocol.Frame {
+	t.Helper()
+	l.mu.Lock()
+	r := bytes.NewReader(append([]byte(nil), l.b.Bytes()...))
+	l.mu.Unlock()
+	var out []protocol.Frame
+	for r.Len() > 0 {
+		fr, err := protocol.Decode(r)
+		if err != nil { t.Fatal(err) }
+		out = append(out, fr)
+	}
+	return out
+}
+
+func (l *lockedBuffer) waitFrames(t *testing.T, n int) []protocol.Frame {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if frs := l.frames(t); len(frs) >= n || time.Now().After(deadline) {
+			if len(frs) < n { t.Fatalf("got %d frames, want %d", len(frs), n) }
+			return frs
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 type callbackWriter struct {
 	called bool
@@ -86,17 +122,67 @@ func TestFlowRejectsWindowRegression(t *testing.T) {
 
 func TestOpenIsIdempotentAndDoesNotRedial(t *testing.T) {
 	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
-	var out bytes.Buffer
-	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)}
-	var dials atomic.Int32;var remote net.Conn
-	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);a,b:=net.Pipe();remote=b;return a,nil}
+	out:=&lockedBuffer{}
+	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)}
+	var dials atomic.Int32;remote:=make(chan net.Conn,1)
+	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);a,b:=net.Pipe();remote<-b;return a,nil}
 	req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:"00112233445566778899aabbccddeeff"})
 	fr:=protocol.Frame{Type:protocol.TypeOpen,StreamID:1,Payload:req}
+	count:=func(typ protocol.FrameType)int{n:=0;for _,f:=range out.frames(t){if f.Type==typ{n++}};return n}
 	if err:=p.handleOpen(context.Background(),fr);err!=nil{t.Fatal(err)}
-	if err:=p.handleOpen(context.Background(),fr);err!=nil{t.Fatal(err)}
+	if err:=p.handleOpen(context.Background(),fr);err!=nil{t.Fatal(err)} // may arrive while the dial is pending
+	for deadline:=time.Now().Add(2*time.Second);count(protocol.TypeWindow)==0;time.Sleep(time.Millisecond){
+		if time.Now().After(deadline){t.Fatal("OPEN never completed")}
+	}
+	before:=count(protocol.TypeOpenOK)
+	if err:=p.handleOpen(context.Background(),fr);err!=nil{t.Fatal(err)} // after the Flow is open
+	if got:=count(protocol.TypeOpenOK);got!=before+1{t.Fatalf("retransmitted OPEN on an open Flow sent %d OPEN_OK, want 1",got-before)}
 	if got:=dials.Load();got!=1{t.Fatalf("dial count=%d",got)}
-	if remote!=nil{_ = remote.Close()}
-	p.closeAll();p.wg.Wait()
+	p.closeAll();p.wg.Wait();(<-remote).Close()
+}
+
+func TestSlowTargetDialDoesNotBlockTheFrameLoop(t *testing.T) {
+	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
+	out:=&lockedBuffer{}
+	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)}
+	release:=make(chan struct{});var released sync.Once;defer released.Do(func(){close(release)})
+	var dials atomic.Int32;remote:=make(chan net.Conn,1)
+	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);<-release;a,b:=net.Pipe();remote<-b;return a,nil}
+	req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:"00112233445566778899aabbccddeeff"})
+	fr:=protocol.Frame{Type:protocol.TypeOpen,StreamID:1,Payload:req}
+
+	done:=make(chan error,1)
+	go func(){done<-p.handleOpen(context.Background(),fr)}()
+	select{
+	case err:=<-done:if err!=nil{t.Fatal(err)}
+	case <-time.After(time.Second):t.Fatal("handleOpen blocked the Shard frame loop on a slow target dial")
+	}
+	// A retransmitted OPEN while the dial is in flight is answered by that dial.
+	if err:=p.handleOpen(context.Background(),fr);err!=nil{t.Fatal(err)}
+	if len(out.frames(t))!=0{t.Fatal("OPEN answered before the target dial finished")}
+
+	released.Do(func(){close(release)})
+	frs:=out.waitFrames(t,2)
+	if frs[0].Type!=protocol.TypeOpenOK||frs[1].Type!=protocol.TypeWindow||frs[0].StreamID!=1{t.Fatalf("frames %v %v, want OPEN_OK then WINDOW on stream 1",frs[0].Type,frs[1].Type)}
+	if got:=dials.Load();got!=1{t.Fatalf("dial count=%d",got)}
+	p.closeAll();p.wg.Wait();(<-remote).Close()
+}
+
+func TestAsyncOpenDialFailureAnswersOpenErrAndReleasesSlot(t *testing.T) {
+	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
+	slots,err:=resources.NewFlowSlots(1);if err!=nil{t.Fatal(err)}
+	out:=&lockedBuffer{}
+	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test",FlowSlots:slots});if err!=nil{t.Fatal(err)}
+	p.dial=func(context.Context,string,string)(net.Conn,error){return nil,errors.New("connect: connection refused")}
+	req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:"00112233445566778899aabbccddeeff"})
+	if err:=p.handleOpen(context.Background(),protocol.Frame{Type:protocol.TypeOpen,StreamID:1,Payload:req});err!=nil{t.Fatal(err)}
+	frs:=out.waitFrames(t,1)
+	oe,err:=protocol.DecodeOpenError(frs[0].Payload)
+	if frs[0].Type!=protocol.TypeOpenErr||err!=nil||oe.Code!=protocol.ErrorTargetUnreachable{t.Fatalf("got %v %q %v, want OPEN_ERR TARGET_UNREACHABLE",frs[0].Type,oe.Code,err)}
+	p.wg.Wait()
+	if slots.Used()!=0{t.Fatalf("failed dial kept %d node slots",slots.Used())}
+	p.mu.Lock();pending:=len(p.pendingOpens);p.mu.Unlock()
+	if pending!=0{t.Fatalf("failed dial left %d pending OPENs",pending)}
 }
 
 func TestOpenBeyondAdvertisedFlowLimitIsRefusedWithoutDial(t *testing.T) {
@@ -117,6 +203,43 @@ func TestOpenBeyondAdvertisedFlowLimitIsRefusedWithoutDial(t *testing.T) {
 	oe,err:=protocol.DecodeOpenError(fr.Payload);if err!=nil{t.Fatal(err)}
 	if oe.Code!=protocol.ErrorResourceExhausted{t.Fatalf("OPEN_ERR code=%q",oe.Code)}
 	p.closeAll();p.wg.Wait()
+}
+
+func TestNodeFlowSlotsBoundListenerOpensAndAreReleasedOnClose(t *testing.T) {
+	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
+	slots,err:=resources.NewFlowSlots(1);if err!=nil{t.Fatal(err)}
+	out:=&lockedBuffer{}
+	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test",FlowSlots:slots});if err!=nil{t.Fatal(err)}
+	var dials atomic.Int32;remote:=make(chan net.Conn,1)
+	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);a,b:=net.Pipe();remote<-b;return a,nil}
+	open:=func(id uint64,nonce string){
+		req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:nonce})
+		if err:=p.handleOpen(context.Background(),protocol.Frame{Type:protocol.TypeOpen,StreamID:id,Payload:req});err!=nil{t.Fatal(err)}
+	}
+	open(1,"00112233445566778899aabbccddeeff")
+	if slots.Used()!=1{t.Fatalf("admitted OPEN holds %d node slots, want 1",slots.Used())}
+	out.waitFrames(t,2) // OPEN_OK + WINDOW
+	out.reset()
+	open(3,"ffeeddccbbaa99887766554433221100")
+	if got:=dials.Load();got!=1{t.Fatalf("dialed %d targets with max_flows=1",got)}
+	fr:=out.waitFrames(t,1)[0]
+	oe,err:=protocol.DecodeOpenError(fr.Payload)
+	if fr.Type!=protocol.TypeOpenErr||err!=nil||oe.Code!=protocol.ErrorResourceExhausted{t.Fatalf("second OPEN got %v %q %v, want OPEN_ERR RESOURCE_EXHAUSTED",fr.Type,oe.Code,err)}
+
+	p.closeAll();p.wg.Wait();(<-remote).Close()
+	if slots.Used()!=0{t.Fatalf("closed Flow kept %d node slots",slots.Used())}
+}
+
+func TestNodeFlowSlotsBoundDialerOpensWithoutSendingOpen(t *testing.T) {
+	slots,err:=resources.NewFlowSlots(1);if err!=nil{t.Fatal(err)}
+	if !slots.TryAcquire(){t.Fatal("setup: could not take the only slot")}
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",FlowSlots:slots});if err!=nil{t.Fatal(err)}
+	p.mu.Lock();p.localReady=true;p.peerReady=true;p.markReadyLocked();p.mu.Unlock()
+	local,remote:=net.Pipe();defer remote.Close();defer local.Close()
+	if err:=p.OpenFlow(context.Background(),"main",local);!errors.Is(err,resources.ErrResourceExhausted){t.Fatalf("OpenFlow err=%v, want RESOURCE_EXHAUSTED",err)}
+	if out.Len()!=0{t.Fatalf("dialer sent %d bytes for a Flow it could not admit",out.Len())}
+	if slots.Used()!=1{t.Fatalf("refused OpenFlow changed slot usage to %d",slots.Used())}
 }
 
 func TestResetClosesOnlyReferencedFlowAndRecordsFixedCode(t *testing.T) {

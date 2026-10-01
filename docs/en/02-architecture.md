@@ -29,6 +29,8 @@ Redirects, environment HTTP proxies, and HTTP/1 fallback are disabled.
 
 A new Session orders `HELLO → HELLO_ACK → READY` before application frames. Each Flow is one bidirectional TCP connection with independent directional offsets, ACK/WINDOW state, and FIN/FIN_ACK half-close semantics.
 
+With recovery disabled, EX admits an OPEN and then dials the target outside the Shard's frame-reading loop, so a slow or unresponsive target does not stall the other Flows on that Shard for the dial timeout. A retransmitted OPEN with the same route and nonce gets no separate answer in the meantime; the in-flight dial sends OPEN_OK or OPEN_ERR. With recovery enabled, OPEN admission stays synchronous under `recoveryGate` so it is serialized with recovery snapshots.
+
 ## Writer ownership
 
 Control and DATA use separate scheduling rules but ultimately serialize through a single Carrier writer. This prevents frame bytes from being interleaved by concurrent goroutines.
