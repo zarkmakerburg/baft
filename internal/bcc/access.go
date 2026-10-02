@@ -424,8 +424,9 @@ func (s *Server) serveDashboardOrLogin(w http.ResponseWriter, r *http.Request, a
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, base string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method != http.MethodPost {
-		http.Redirect(w, r, base, http.StatusSeeOther)
+		fmt.Fprintf(w, loginHTML, html.EscapeString(base+"login"), "")
 		return
 	}
 	ip := s.clientIP(r)
@@ -440,7 +441,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, bas
 	if !userOK || !passOK {
 		s.guard.AuthFailure(ip, s.now())
 		_ = s.auditLogin(r, "failure")
-		s.serveDashboardOrLogin(w, r, a, base, "Wrong username or password.")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, loginHTML, html.EscapeString(base+"login"), "Wrong username or password.")
 		return
 	}
 	s.guard.AuthSuccess(ip)
@@ -465,13 +468,66 @@ func (s *Server) auditLogin(r *http.Request, outcome string) error {
 	return err
 }
 
-const loginHTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+const welcomeHTML = `<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BAFT Command Center</title><meta name="robots" content="noindex">
-<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;min-height:100vh;margin:0}
-form{background:#1e293b;padding:24px;border-radius:12px;display:grid;gap:12px;width:min(320px,90vw)}
-input,button{padding:10px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0}button{background:#2563eb;border:0}
-.err{color:#fca5a5}</style></head><body>
-<form method="post" action="%s"><b>BAFT Command Center</b>
+<style>
+:root{color-scheme:dark;--bg:#030303;--gold:#f3bd45;--gold2:#ffe18a;--muted:#c7bdab;--line:#5b4319;--text:#fff}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#030303;color:var(--text);font-family:Vazirmatn,Tahoma,Inter,system-ui,sans-serif;overflow-x:hidden}
+.hero{position:relative;min-height:100vh;display:grid;grid-template-columns:minmax(420px,.9fr) minmax(520px,1.1fr);align-items:center;gap:36px;padding:88px 72px 56px;background:radial-gradient(circle at 74% 38%,rgba(243,189,69,.22),rgba(3,3,3,.28) 34%,#030303 72%)}
+.hero:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,#030303 0%,rgba(3,3,3,.94) 30%,rgba(3,3,3,.5) 58%,rgba(3,3,3,.12) 100%);pointer-events:none}
+.hero:after{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px);background-size:92px 92px;mask-image:linear-gradient(to bottom,transparent,#000 12%,#000 88%,transparent);pointer-events:none}
+.copy,.stage{position:relative;z-index:1}.brand{display:flex;align-items:center;gap:14px;margin-bottom:36px;direction:ltr}.mark{letter-spacing:12px;font-weight:900;font-size:28px;color:#fff}.live{border:1px solid var(--line);border-radius:999px;padding:8px 13px;color:var(--gold2);font-size:12px;font-weight:800;background:rgba(11,11,12,.78)}
+.logo-badge{width:min(260px,42vw);height:190px;margin-bottom:22px;display:grid;place-items:center;border-radius:26px;background:radial-gradient(circle at 50% 32%,rgba(255,225,138,.18),rgba(5,5,5,.62) 54%,rgba(5,5,5,.05));border:1px solid rgba(243,189,69,.22);box-shadow:0 32px 80px rgba(0,0,0,.48)}
+.logo-badge .b{font-size:118px;font-weight:950;line-height:1;background:linear-gradient(135deg,#8f5d11,#ffe18a 35%,#f3bd45 62%,#101010 63%,#050505 82%);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 0 42px rgba(243,189,69,.35)}
+h1{font-size:clamp(42px,5.2vw,76px);line-height:1.12;margin:0 0 20px;font-weight:950;letter-spacing:0}.gold{color:var(--gold)}
+p{font-size:20px;line-height:1.9;color:#eee6d5;margin:0 0 28px;max-width:720px}.actions{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.btn{display:inline-flex;align-items:center;gap:12px;text-decoration:none;border-radius:16px;padding:17px 28px;font-weight:950;font-size:19px;transition:.2s transform,.2s box-shadow}.primary{background:linear-gradient(135deg,#f3bd45,#ffe18a);color:#090909;box-shadow:0 20px 48px rgba(243,189,69,.26)}.primary:hover{transform:translateY(-2px);box-shadow:0 26px 60px rgba(243,189,69,.34)}.ghost{border:1px solid rgba(255,255,255,.2);color:#fff;background:rgba(11,11,12,.5)}
+.strip{display:flex;gap:22px;flex-wrap:wrap;margin-top:48px;color:#eee6d5;direction:ltr}.chip{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:800}.dot{width:10px;height:10px;border-radius:50%;background:var(--gold);box-shadow:0 0 18px var(--gold)}
+.stage{min-height:560px;display:grid;place-items:center;perspective:1000px}.panel{position:absolute;right:6%;bottom:9%;width:330px;padding:18px;border-radius:24px;background:rgba(7,7,7,.72);border:1px solid rgba(243,189,69,.24);box-shadow:0 28px 80px rgba(0,0,0,.5);backdrop-filter:blur(10px)}
+.panel b{display:block;font-size:18px;margin-bottom:12px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;direction:ltr}.metric{background:#050505;border:1px solid #2f2819;border-radius:14px;padding:10px}.metric span{display:block;color:#a99b83;font-size:10px;font-weight:800}.metric strong{display:block;color:#fff;margin-top:5px}.scene{width:min(720px,52vw);aspect-ratio:1;position:relative;transform-style:preserve-3d;animation:float 7s ease-in-out infinite}
+canvas{width:100%;height:100%;display:block;filter:drop-shadow(0 0 35px rgba(243,189,69,.3))}.orbit{position:absolute;inset:8%;border:1px solid rgba(243,189,69,.28);border-radius:50%;transform:rotateX(68deg) rotateZ(-22deg);box-shadow:0 0 50px rgba(243,189,69,.14)}.orbit:nth-child(2){inset:16%;transform:rotateX(72deg) rotateZ(34deg)}.orbit:nth-child(3){inset:24%;transform:rotateX(58deg) rotateZ(-58deg)}
+@keyframes float{0%,100%{transform:translateY(0) rotateX(0deg)}50%{transform:translateY(-16px) rotateX(3deg)}}@media(max-width:980px){.hero{grid-template-columns:1fr;padding:72px 24px}.stage{min-height:420px;order:-1}.scene{width:min(620px,92vw)}.panel{position:relative;right:auto;bottom:auto;width:100%;margin-top:-30px}.brand{margin-bottom:18px}.logo-badge{display:none}}@media(max-width:560px){.hero{padding:44px 18px}.mark{font-size:20px;letter-spacing:8px}p{font-size:16px}.actions{align-items:stretch}.btn{justify-content:center;width:100%}.strip{gap:12px}.chip{width:100%}}
+</style></head>
+<body><main class="hero"><section class="copy">
+<div class="brand"><div class="mark">BAFT</div><div class="live">BCC READY</div></div>
+<div class="logo-badge" aria-hidden="true"><div class="b">B</div></div>
+<h1><span class="gold">بافت؛</span> زیرساخت تاب‌آور برای مسیرهای چندگانه</h1>
+<p>مرکز فرمان BAFT آماده است. از این صفحه وارد BCC شوید، وضعیت نودها را ببینید، مسیرهای فعال را کنترل کنید و failover را از یک نقطه مدیریت کنید.</p>
+<div class="actions"><a class="btn primary" href="%s">شروع سریع ←</a><a class="btn ghost" href="#status">وضعیت نصب</a></div>
+<div class="strip" id="status"><div class="chip"><i class="dot"></i>ECRL Runtime</div><div class="chip"><i class="dot"></i>N-Node Failover</div><div class="chip"><i class="dot"></i>RTL Safe</div><div class="chip"><i class="dot"></i>Logo Preserved</div></div>
+</section><section class="stage" aria-label="Rotating BAFT command globe">
+<div class="scene"><canvas id="globe" width="900" height="900"></canvas><i class="orbit"></i><i class="orbit"></i><i class="orbit"></i></div>
+<div class="panel"><b>Live Command Surface</b><div class="metrics"><div class="metric"><span>ROUTES</span><strong>N</strong></div><div class="metric"><span>FAILOVER</span><strong style="color:#92f0bf">READY</strong></div><div class="metric"><span>ACCESS</span><strong>SECURE</strong></div></div></div>
+</section></main>
+<script>
+(function(){
+const c=document.getElementById("globe"),ctx=c.getContext("2d"),W=c.width,C=W/2,R=310;
+const pts=[];for(let lat=-70;lat<=70;lat+=10){for(let lon=-180;lon<180;lon+=10){pts.push({lat:lat*Math.PI/180,lon:lon*Math.PI/180});}}
+const hubs=[[-8,52],[35,51],[25,55],[41,29],[52,5],[28,77],[1,103]].map(function(x){return{lat:x[0]*Math.PI/180,lon:x[1]*Math.PI/180};});
+function project(lat,lon,t){lon+=t;const x=Math.cos(lat)*Math.sin(lon),y=Math.sin(lat),z=Math.cos(lat)*Math.cos(lon);const s=1.08/(1.55-z*.42);return{x:C+x*R*s,y:C-y*R*s,z:z,s:s};}
+function draw(t){ctx.clearRect(0,0,W,W);let g=ctx.createRadialGradient(C-120,C-140,40,C,C,R+90);g.addColorStop(0,"rgba(255,225,138,.58)");g.addColorStop(.28,"rgba(243,189,69,.22)");g.addColorStop(.62,"rgba(20,20,18,.92)");g.addColorStop(1,"rgba(0,0,0,.02)");ctx.fillStyle=g;ctx.beginPath();ctx.arc(C,C,R,0,Math.PI*2);ctx.fill();ctx.strokeStyle="rgba(255,225,138,.35)";ctx.lineWidth=2;ctx.stroke();ctx.save();ctx.beginPath();ctx.arc(C,C,R,0,Math.PI*2);ctx.clip();
+for(let lat=-60;lat<=60;lat+=20){ctx.beginPath();let moved=false;for(let lon=-180;lon<=180;lon+=6){let p=project(lat*Math.PI/180,lon*Math.PI/180,t);if(p.z<-.8)continue;if(!moved){ctx.moveTo(p.x,p.y);moved=true}else ctx.lineTo(p.x,p.y)}ctx.strokeStyle="rgba(243,189,69,.18)";ctx.lineWidth=1;ctx.stroke();}
+for(let lon=-180;lon<180;lon+=20){ctx.beginPath();let moved=false;for(let lat=-80;lat<=80;lat+=4){let p=project(lat*Math.PI/180,lon*Math.PI/180,t);if(p.z<-.8)continue;if(!moved){ctx.moveTo(p.x,p.y);moved=true}else ctx.lineTo(p.x,p.y)}ctx.strokeStyle="rgba(255,255,255,.07)";ctx.stroke();}
+pts.forEach(function(pt){let p=project(pt.lat,pt.lon,t);if(p.z<-.15)return;ctx.fillStyle="rgba(255,225,138,"+(.05+p.z*.18)+")";ctx.fillRect(p.x,p.y,1.2*p.s,1.2*p.s);});
+for(let i=0;i<hubs.length;i++){for(let j=i+1;j<hubs.length;j+=2){let a=project(hubs[i].lat,hubs[i].lon,t),b=project(hubs[j].lat,hubs[j].lon,t);if(a.z<-.05||b.z<-.05)continue;ctx.beginPath();ctx.moveTo(a.x,a.y);let mx=(a.x+b.x)/2,my=(a.y+b.y)/2-90*Math.max(a.s,b.s);ctx.quadraticCurveTo(mx,my,b.x,b.y);ctx.strokeStyle="rgba(243,189,69,.32)";ctx.lineWidth=2;ctx.stroke();}}
+hubs.forEach(function(h,i){let p=project(h.lat,h.lon,t);if(p.z<-.08)return;ctx.beginPath();ctx.arc(p.x,p.y,7*p.s,0,Math.PI*2);ctx.fillStyle=i%2?"#ffe18a":"#f3bd45";ctx.shadowBlur=18;ctx.shadowColor="#f3bd45";ctx.fill();ctx.shadowBlur=0;});ctx.restore();requestAnimationFrame(function(){draw(t+.0038);});}
+draw(0);
+})();
+</script></body></html>`
+
+const loginHTML = `<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BAFT Command Center Login</title><meta name="robots" content="noindex">
+<style>
+:root{color-scheme:dark;--gold:#f3bd45;--gold2:#ffe18a;--muted:#c7bdab;--line:#5b4319}
+*{box-sizing:border-box}body{font-family:Vazirmatn,Tahoma,Inter,system-ui,sans-serif;background:radial-gradient(circle at 70% 20%,rgba(243,189,69,.22),#030303 46%);color:#fff;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}
+body:before{content:"";position:fixed;inset:0;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px);background-size:84px 84px;pointer-events:none}
+form{position:relative;background:linear-gradient(180deg,rgba(17,16,13,.9),rgba(5,5,5,.92));border:1px solid rgba(243,189,69,.28);box-shadow:0 34px 90px rgba(0,0,0,.56);padding:30px;border-radius:22px;display:grid;gap:14px;width:min(390px,92vw)}
+.brand{direction:ltr;letter-spacing:9px;font-size:24px;font-weight:950;margin-bottom:2px}.sub{color:var(--muted);font-size:14px;line-height:1.7;margin-bottom:10px}
+input,button{font:inherit;padding:13px 14px;border-radius:14px;border:1px solid #2f2819;background:#050505;color:#fff}input:focus{outline:2px solid rgba(243,189,69,.32);border-color:var(--gold)}
+button{background:linear-gradient(135deg,var(--gold),var(--gold2));color:#090909;border:0;font-weight:950;cursor:pointer}.err{min-height:18px;color:#ffabb6;font-size:13px}.safe{color:#92f0bf;font-size:12px;direction:ltr;text-align:left}
+</style></head><body>
+<form method="post" action="%s"><div class="brand">BAFT</div><b>ورود به Command Center</b><div class="sub">برای ادامه، اطلاعات دسترسی ساخته‌شده بعد از نصب را وارد کنید.</div>
 <input name="username" autocomplete="username" placeholder="username" required>
 <input name="password" type="password" autocomplete="current-password" placeholder="password" required>
-<button>Sign in</button><div class="err">%s</div></form></body></html>`
+<button>ورود به BCC</button><div class="err">%s</div><div class="safe">Secret-path protected · Session guarded · No index</div></form></body></html>`
