@@ -245,3 +245,24 @@ func TestRetiredEnrollJobsAreFailedNotServed(t *testing.T) {
 		t.Fatalf("retired job: %+v", j)
 	}
 }
+
+func TestDashboardHasServerAndTunnelControlsWithoutStoringCredentials(t *testing.T) {
+	for _, want := range []string{`id="bsFp"`, `id="bsGo"`, `id="tnRows"`, "/api/bootstrap/hostkey", "/api/bootstrap", "/api/tunnels/cancel"} {
+		if !strings.Contains(dashboardHTML, want) {
+			t.Errorf("dashboard lacks %s", want)
+		}
+	}
+	// The install button stays disabled until the fingerprint is confirmed,
+	// credentials are wiped after the request and never put in browser storage.
+	if !strings.Contains(dashboardHTML, `id="bsGo" onclick="bsRun()" disabled`) {
+		t.Error("install button is enabled before the fingerprint is confirmed")
+	}
+	if !strings.Contains(dashboardHTML, "q('#bsPass').value=q('#bsKey').value=q('#bsPhrase').value=''") {
+		t.Error("credential fields are not cleared after the request")
+	}
+	for _, bad := range []string{"localStorage.setItem('bsPass'", "localStorage.setItem('bsKey'", "sessionStorage"} {
+		if strings.Contains(dashboardHTML, bad) {
+			t.Errorf("dashboard stores credentials: %s", bad)
+		}
+	}
+}
