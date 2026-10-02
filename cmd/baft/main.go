@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/node"
@@ -50,6 +51,8 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runDoctor(args[1:], stdout, stderr, hostOps)
 	case "logs":
 		return runLogs(args[1:], stdout, stderr, hostOps)
+	case "support-bundle":
+		return runSupportBundle(args[1:], stdout, stderr, hostOps, time.Now)
 	default:
 		usage(stderr)
 		return 2
@@ -168,4 +171,5 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  baft status [--file /etc/baft/baft.yaml] [--service baft] [--json]")
 	fmt.Fprintln(w, "  baft doctor [--file /etc/baft/baft.yaml] [--service baft] [--json]")
 	fmt.Fprintln(w, "  baft logs [--service baft] [-n 100] [-f]")
+	fmt.Fprintln(w, "  baft support-bundle [--out file.tar.gz] [-n 500]   # secret-safe diagnostics archive")
 }

@@ -132,4 +132,19 @@ if api "$BCC/api/jobs" | grep -qE 'BAFTPAIR1:|BAFTREPLY1:'; then fail "a pairing
 for n in ex ir; do
   if find "/var/lib/baft-$n/tunnels" -name psk -o -name pending.json -o -name pairing.pending.json | grep -q .; then fail "$n kept one-time pairing files"; fi
 done
+log "support bundle from a running node contains no key material"
+BUNDLE="$WORK/bundle-ex.tar.gz"
+/usr/local/bin/baft support-bundle --service baft-ex --file /etc/baft-ex/baft.yaml --release-state /opt/baft/release-state.json --out "$BUNDLE" >/dev/null \
+  || fail "baft support-bundle failed"
+[[ "$(stat -c '%a' "$BUNDLE")" == "600" ]] || fail "support bundle is not owner-only"
+tar -tzf "$BUNDLE" | grep -qx manifest.json || fail "support bundle has no manifest"
+python3 - "$BUNDLE" /etc/baft-ex/noise-key.json /etc/baft-ex/pki/server.key <<'PY' || fail "support bundle leaks key material"
+import re, sys, tarfile
+bundle, *keyfiles = sys.argv[1:]
+text = b"".join(tarfile.open(bundle).extractfile(m).read() for m in tarfile.open(bundle).getmembers() if m.isfile())
+for kf in keyfiles:
+    for tok in re.findall(rb"[A-Za-z0-9_+/=-]{32,}", open(kf, "rb").read()):
+        if tok in text:
+            print("leaked from", kf); sys.exit(1)
+PY
 log "PASS"

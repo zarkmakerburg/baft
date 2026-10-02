@@ -209,4 +209,18 @@ sudo baft logs -n 200 -f    # journalctl for the service
 
 `doctor` این‌ها را بررسی می‌کند: config و فایل revocation درست load شوند؛ کلیدهای خصوصی فقط برای مالک قابل دسترس باشند؛ سرویس فعال باشد (اگر restart شده باشد WARN)؛ باینری با release امضاشدهٔ نصب‌شده بخواند (برای نصب از سورس WARN)؛ endpoint متریک جواب بدهد و هیچ نقض invariant گزارش نکند؛ IR به EX برسد و route محلی‌اش گوش بدهد، یا listener روی EX اتصال بپذیرد و مقصد routeها جواب بدهد. چند تنظیم شبکه را هم فقط می‌خواند (congestion control، qdisc پیش‌فرض، سقف بافر socket) و `sysctl` پیشنهادی را به‌صورت INFO چاپ می‌کند. تنظیم خودکار برای P2 است.
 
+## Support bundle
+
+<div dir="ltr" align="left">
+
+```bash
+sudo baft support-bundle [--file /etc/baft/baft.yaml] [--service baft] [--out report.tar.gz] [-n 500]
+```
+
+</div>
+
+یک آرشیو فقط‌برای‌مالک (`0600`) برای گزارش خطا می‌نویسد؛ فایل موجود را بازنویسی نمی‌کند و فقط از میزبان می‌خواند. محتوا: `status.json`، `doctor.json`، پیکربندی، وضعیت ریلیز نصب‌کننده، unit سرویس و خلاصهٔ `systemctl show`، `-n` خط آخر journal، `system.txt` (‏`uname` و `/etc/os-release`) و `manifest.json` شامل اندازه و SHA-256 هر فایل، شمار حذف‌شده‌ها و هر چیزی که جمع‌آوری نشد.
+
+هرگز جمع‌آوری نمی‌شود: فایل کلید خصوصی Noise یا TLS، فایل‌های جفت‌سازی و PSK، توکن agent یا ادمین، payload کاربر. هر فایل متنی پیش از ذخیره redact می‌شود: کلید خصوصی PEM، کدهای `BAFTPAIR1:` و `BAFTREPLY1:`، توکن `Bearer` و مقداردهی `token` / `password` / `passphrase` / `secret` / `private_key`. نشانی‌ها، نام میزبان‌ها و هویت نودها redact **نمی‌شوند**؛ پیش از اشتراک‌گذاری، بسته را مرور کن. CI روی یک نود در حال اجرا بررسی می‌کند که هیچ بایتی از فایل‌های کلید در بسته نیامده باشد (`tests/e2e/launch1.sh`).
+
 </div>
