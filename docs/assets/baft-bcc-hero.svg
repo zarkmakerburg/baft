@@ -1,93 +1,150 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="460" viewBox="0 0 1400 460" role="img" aria-labelledby="title desc">
-<title id="title">BAFT — BCC visual identity</title>
-<desc id="desc">BAFT project hero using the BAFT Command Center dark navy and gold visual system.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="720" viewBox="0 0 1536 720" role="img" aria-labelledby="title desc">
+<title id="title">BAFT Command Center visual system</title>
+<desc id="desc">A black and gold RTL-safe BAFT Command Center hero showing live topology, failover readiness, signed jobs, and audit status. The official BAFT logo is preserved separately and is not redrawn in this visual.</desc>
 <defs>
-  <radialGradient id="bg" cx="50%" cy="0%" r="95%">
-    <stop offset="0%" stop-color="#182238"/>
-    <stop offset="48%" stop-color="#0d121d"/>
-    <stop offset="100%" stop-color="#090b10"/>
+  <radialGradient id="bg" cx="74%" cy="18%" r="86%">
+    <stop offset="0%" stop-color="#3a2a0f"/>
+    <stop offset="38%" stop-color="#0c0b08"/>
+    <stop offset="100%" stop-color="#030303"/>
   </radialGradient>
-  <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0">
-    <stop offset="0%" stop-color="#d99f32"/>
-    <stop offset="50%" stop-color="#f0c66a"/>
-    <stop offset="100%" stop-color="#e8b54a"/>
+  <radialGradient id="flare" cx="50%" cy="50%" r="50%">
+    <stop offset="0%" stop-color="#ffe18a" stop-opacity=".92"/>
+    <stop offset="34%" stop-color="#f3bd45" stop-opacity=".38"/>
+    <stop offset="100%" stop-color="#f3bd45" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#8f5d11"/>
+    <stop offset="26%" stop-color="#ffe18a"/>
+    <stop offset="54%" stop-color="#f3bd45"/>
+    <stop offset="100%" stop-color="#9b6418"/>
   </linearGradient>
-  <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
-    <feGaussianBlur stdDeviation="10" result="b"/>
-    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  <linearGradient id="softGold" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0%" stop-color="#f3bd45" stop-opacity="0"/>
+    <stop offset="50%" stop-color="#ffe18a" stop-opacity=".95"/>
+    <stop offset="100%" stop-color="#f3bd45" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#16120a"/>
+    <stop offset="100%" stop-color="#090909"/>
+  </linearGradient>
+  <filter id="glow" x="-55%" y="-55%" width="210%" height="210%">
+    <feGaussianBlur stdDeviation="8" result="blur"/>
+    <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="shadow" x="-20%" y="-24%" width="140%" height="148%">
+    <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#000000" flood-opacity=".56"/>
   </filter>
 </defs>
-<rect width="1400" height="460" rx="28" fill="url(#bg)"/>
-<rect x="1" y="1" width="1398" height="458" rx="27" fill="none" stroke="#263147" stroke-width="2"/>
 
-<g opacity=".42">
-  <path d="M0 110H1400M0 230H1400M0 350H1400" stroke="#1b2536" stroke-width="1"/>
-  <path d="M180 0V460M420 0V460M660 0V460M900 0V460M1140 0V460" stroke="#151d2b" stroke-width="1"/>
+<rect width="1536" height="720" rx="0" fill="#030303"/>
+<rect width="1536" height="720" fill="url(#bg)"/>
+<path d="M0 96H1536M0 188H1536M0 280H1536M0 372H1536M0 464H1536M0 556H1536M0 648H1536" stroke="#ffffff" stroke-opacity=".035"/>
+<path d="M144 0V720M288 0V720M432 0V720M576 0V720M720 0V720M864 0V720M1008 0V720M1152 0V720M1296 0V720M1440 0V720" stroke="#ffffff" stroke-opacity=".03"/>
+
+<g opacity=".72">
+  <path d="M960 86C1132 96 1274 164 1422 296" fill="none" stroke="#f3bd45" stroke-opacity=".55" stroke-width="2"/>
+  <path d="M856 548C1042 430 1210 364 1510 358" fill="none" stroke="#f3bd45" stroke-opacity=".42" stroke-width="2"/>
+  <path d="M800 222C1012 256 1162 260 1392 160" fill="none" stroke="#ffe18a" stroke-opacity=".25" stroke-width="1.5"/>
+  <path d="M928 618C1126 566 1300 528 1488 628" fill="none" stroke="#ffe18a" stroke-opacity=".2" stroke-width="1.5"/>
+  <circle cx="948" cy="86" r="48" fill="url(#flare)"/>
+  <circle cx="948" cy="86" r="6" fill="#ffe18a"/>
+  <circle cx="1238" cy="186" r="54" fill="url(#flare)"/>
+  <circle cx="1238" cy="186" r="7" fill="#ffe18a"/>
+  <circle cx="1392" cy="160" r="42" fill="url(#flare)"/>
+  <circle cx="1392" cy="160" r="5" fill="#ffe18a"/>
+  <circle cx="1150" cy="452" r="56" fill="url(#flare)"/>
+  <circle cx="1150" cy="452" r="7" fill="#ffe18a"/>
+  <circle cx="1334" cy="548" r="48" fill="url(#flare)"/>
+  <circle cx="1334" cy="548" r="6" fill="#ffe18a"/>
 </g>
 
-<g transform="translate(78 72)">
-  <circle cx="34" cy="34" r="28" fill="#111722" stroke="#e8b54a" stroke-width="2"/>
-  <path d="M18 35c0-10 8-18 18-18h9M50 18c10 0 18 8 18 18s-8 18-18 18h-8M44 54c-10 0-18-8-18-18" fill="none" stroke="url(#gold)" stroke-width="7" stroke-linecap="round"/>
-  <text x="88" y="42" fill="#eef1f6" font-size="28" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">BAFT COMMAND CENTER</text>
-  <text x="88" y="70" fill="#8e9aaf" font-size="15" font-family="Inter,Segoe UI,Arial,sans-serif">Secure transport fabric · signed operations · recovery-aware control</text>
-</g>
+<g transform="translate(88 82)">
+  <rect x="0" y="0" width="160" height="42" rx="21" fill="#0b0b0c" stroke="#5b4319"/>
+  <circle cx="25" cy="21" r="6" fill="#92f0bf"/>
+  <text x="50" y="27" fill="#fff8df" font-size="13" font-weight="700" letter-spacing="2" font-family="Inter,Segoe UI,Arial,sans-serif">BCC LIVE</text>
 
-<text x="78" y="190" fill="#eef1f6" font-size="68" font-weight="800" font-family="Inter,Segoe UI,Arial,sans-serif">BAFT</text>
-<text x="78" y="233" fill="#e8b54a" font-size="22" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">Bounded · Authenticated · Fail-safe · Transactional</text>
-<text x="78" y="271" fill="#8e9aaf" font-size="18" font-family="Inter,Segoe UI,Arial,sans-serif">Signed Releases · Secure Agent · BCC Control Plane · Native Tunnel Builder</text>
+  <text x="0" y="112" fill="#ffffff" font-size="76" font-weight="900" font-family="Inter,Segoe UI,Arial,sans-serif">BAFT</text>
+  <text x="0" y="166" fill="#f3bd45" font-size="38" font-weight="800" font-family="Vazirmatn,Tahoma,Arial,sans-serif" direction="rtl" unicode-bidi="plaintext">مرکز فرماندهی بافت</text>
+  <text x="0" y="218" fill="#f7f1e4" font-size="28" font-weight="800" font-family="Vazirmatn,Tahoma,Arial,sans-serif" direction="rtl" unicode-bidi="plaintext">کنترل مسیرهای چندگانه، امضای عملیات، و failover آماده</text>
+  <text x="0" y="258" fill="#c7bdab" font-size="17" font-family="Vazirmatn,Tahoma,Arial,sans-serif" direction="rtl" unicode-bidi="plaintext">تم کلی BCC با صفحه اصلی هماهنگ شده: مشکی عمیق، طلایی گرم، کارت‌های متراکم و RTL تمیز.</text>
 
-<g transform="translate(78 314)">
-  <rect width="210" height="74" rx="14" fill="#111722" stroke="#263147"/>
-  <text x="18" y="27" fill="#8e9aaf" font-size="13" font-family="Inter,Segoe UI,Arial,sans-serif">RELEASE</text>
-  <text x="18" y="54" fill="#92f0bf" font-size="24" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">v0.1.0</text>
-
-  <g transform="translate(226 0)">
-    <rect width="210" height="74" rx="14" fill="#111722" stroke="#263147"/>
-    <text x="18" y="27" fill="#8e9aaf" font-size="13" font-family="Inter,Segoe UI,Arial,sans-serif">CONTROL PLANE</text>
-    <text x="18" y="54" fill="#eef1f6" font-size="24" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">BCC</text>
-  </g>
-
-  <g transform="translate(452 0)">
-    <rect width="210" height="74" rx="14" fill="#111722" stroke="#263147"/>
-    <text x="18" y="27" fill="#8e9aaf" font-size="13" font-family="Inter,Segoe UI,Arial,sans-serif">DELIVERY</text>
-    <text x="18" y="54" fill="#eef1f6" font-size="24" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">SIGNED</text>
-  </g>
-</g>
-
-<g transform="translate(886 82)">
-  <rect width="428" height="292" rx="20" fill="#111722" stroke="#263147" stroke-width="2"/>
-  <text x="28" y="38" fill="#eef1f6" font-size="18" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">Live topology</text>
-  <text x="334" y="38" fill="#8e9aaf" font-size="13" font-family="Inter,Segoe UI,Arial,sans-serif">HEALTHY</text>
-
-  <g transform="translate(34 82)">
-    <circle cx="36" cy="36" r="34" fill="#0b1019" stroke="#e8b54a" stroke-width="2"/>
-    <text x="36" y="42" text-anchor="middle" fill="#eef1f6" font-size="16" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">IR</text>
-    <circle cx="324" cy="36" r="34" fill="#0b1019" stroke="#e8b54a" stroke-width="2"/>
-    <text x="324" y="42" text-anchor="middle" fill="#eef1f6" font-size="16" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">EX</text>
-
-    <path d="M72 36H288" stroke="#263147" stroke-width="10" stroke-linecap="round"/>
-    <path d="M72 36H235" stroke="url(#gold)" stroke-width="4" stroke-linecap="round" filter="url(#glow)"/>
-    <circle cx="171" cy="36" r="7" fill="#e8b54a"/>
-
-    <text x="180" y="74" text-anchor="middle" fill="#8e9aaf" font-size="13" font-family="Inter,Segoe UI,Arial,sans-serif">authenticated carrier</text>
-  </g>
-
-  <g transform="translate(28 190)">
-    <rect width="112" height="62" rx="12" fill="#0b1019"/>
-    <text x="14" y="23" fill="#8e9aaf" font-size="11" font-family="Inter,Segoe UI,Arial,sans-serif">NODES</text>
-    <text x="14" y="48" fill="#eef1f6" font-size="23" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">N</text>
-
-    <g transform="translate(126 0)">
-      <rect width="112" height="62" rx="12" fill="#0b1019"/>
-      <text x="14" y="23" fill="#8e9aaf" font-size="11" font-family="Inter,Segoe UI,Arial,sans-serif">FAILOVER</text>
-      <text x="14" y="48" fill="#92f0bf" font-size="19" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">READY</text>
+  <g transform="translate(0 322)">
+    <rect width="170" height="56" rx="16" fill="url(#gold)"/>
+    <text x="86" y="36" text-anchor="middle" fill="#070707" font-size="18" font-weight="900" font-family="Vazirmatn,Tahoma,Arial,sans-serif" direction="rtl">کنترل سریع</text>
+    <g transform="translate(188 0)">
+      <rect width="204" height="56" rx="16" fill="#0b0b0c" stroke="#625025"/>
+      <text x="102" y="36" text-anchor="middle" fill="#fff6dd" font-size="17" font-weight="700" font-family="Vazirmatn,Tahoma,Arial,sans-serif" direction="rtl">مشاهده توپولوژی</text>
     </g>
+  </g>
 
-    <g transform="translate(252 0)">
-      <rect width="112" height="62" rx="12" fill="#0b1019"/>
-      <text x="14" y="23" fill="#8e9aaf" font-size="11" font-family="Inter,Segoe UI,Arial,sans-serif">AUDIT</text>
-      <text x="14" y="48" fill="#eef1f6" font-size="19" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">CHAINED</text>
+  <g transform="translate(0 458)">
+    <g>
+      <circle cx="20" cy="20" r="18" fill="#100d08" stroke="#f3bd45"/>
+      <path d="M14 21h12M20 15v12" stroke="#f3bd45" stroke-width="2" stroke-linecap="round"/>
+      <text x="52" y="26" fill="#eee6d5" font-size="15" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">N-Node Failover</text>
+    </g>
+    <g transform="translate(238 0)">
+      <circle cx="20" cy="20" r="18" fill="#100d08" stroke="#f3bd45"/>
+      <path d="M13 19l5 6 10-12" fill="none" stroke="#f3bd45" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="52" y="26" fill="#eee6d5" font-size="15" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">Signed Jobs</text>
+    </g>
+    <g transform="translate(430 0)">
+      <circle cx="20" cy="20" r="18" fill="#100d08" stroke="#f3bd45"/>
+      <path d="M20 11v18M12 17h16M12 23h16" stroke="#f3bd45" stroke-width="2" stroke-linecap="round"/>
+      <text x="52" y="26" fill="#eee6d5" font-size="15" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">Audit Chain</text>
     </g>
   </g>
 </g>
+
+<g transform="translate(760 120)" filter="url(#shadow)">
+  <rect width="660" height="470" rx="28" fill="url(#panel)" stroke="#4b3918" stroke-width="1.5"/>
+  <rect x="24" y="24" width="612" height="68" rx="18" fill="#050505" stroke="#2f2819"/>
+  <text x="50" y="59" fill="#fff8df" font-size="20" font-weight="800" font-family="Inter,Segoe UI,Arial,sans-serif">BAFT Command Center</text>
+  <text x="522" y="59" fill="#92f0bf" font-size="13" font-weight="800" letter-spacing="1.6" font-family="Inter,Segoe UI,Arial,sans-serif">HEALTHY</text>
+  <circle cx="594" cy="55" r="7" fill="#92f0bf" filter="url(#glow)"/>
+
+  <g transform="translate(44 128)">
+    <text x="0" y="0" fill="#c7bdab" font-size="14" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">LIVE TOPOLOGY</text>
+    <g transform="translate(0 42)">
+      <circle cx="54" cy="82" r="52" fill="#070707" stroke="#f3bd45" stroke-width="2"/>
+      <text x="54" y="90" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="900" font-family="Inter,Segoe UI,Arial,sans-serif">IR</text>
+      <circle cx="512" cy="82" r="52" fill="#070707" stroke="#f3bd45" stroke-width="2"/>
+      <text x="512" y="90" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="900" font-family="Inter,Segoe UI,Arial,sans-serif">EX</text>
+      <path d="M108 82C224 12 346 12 458 82" fill="none" stroke="#312715" stroke-width="16" stroke-linecap="round"/>
+      <path d="M108 82C224 12 346 12 458 82" fill="none" stroke="url(#softGold)" stroke-width="4" stroke-linecap="round" filter="url(#glow)"/>
+      <path d="M108 82C232 154 340 154 458 82" fill="none" stroke="#191919" stroke-width="16" stroke-linecap="round"/>
+      <path d="M108 82C232 154 340 154 458 82" fill="none" stroke="#f3bd45" stroke-opacity=".38" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="282" cy="32" r="12" fill="#f3bd45" filter="url(#glow)"/>
+      <text x="282" y="166" text-anchor="middle" fill="#c7bdab" font-size="14" font-family="Inter,Segoe UI,Arial,sans-serif">authenticated carrier · recovery-aware route</text>
+    </g>
+  </g>
+
+  <g transform="translate(44 352)">
+    <rect width="128" height="76" rx="18" fill="#050505" stroke="#2f2819"/>
+    <text x="18" y="29" fill="#a99b83" font-size="12" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">ROUTES</text>
+    <text x="18" y="56" fill="#ffffff" font-size="24" font-weight="900" font-family="Inter,Segoe UI,Arial,sans-serif">N</text>
+
+    <g transform="translate(148 0)">
+      <rect width="148" height="76" rx="18" fill="#050505" stroke="#2f2819"/>
+      <text x="18" y="29" fill="#a99b83" font-size="12" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">FAILOVER</text>
+      <text x="18" y="56" fill="#92f0bf" font-size="22" font-weight="900" font-family="Inter,Segoe UI,Arial,sans-serif">READY</text>
+    </g>
+
+    <g transform="translate(316 0)">
+      <rect width="132" height="76" rx="18" fill="#050505" stroke="#2f2819"/>
+      <text x="18" y="29" fill="#a99b83" font-size="12" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">JOBS</text>
+      <text x="18" y="56" fill="#ffffff" font-size="22" font-weight="900" font-family="Inter,Segoe UI,Arial,sans-serif">SIGNED</text>
+    </g>
+
+    <g transform="translate(468 0)">
+      <rect width="116" height="76" rx="18" fill="#050505" stroke="#2f2819"/>
+      <text x="18" y="29" fill="#a99b83" font-size="12" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">LOGO</text>
+      <text x="18" y="56" fill="#f3bd45" font-size="20" font-weight="900" font-family="Inter,Segoe UI,Arial,sans-serif">SAFE</text>
+    </g>
+  </g>
+</g>
+
+<rect x="0" y="668" width="1536" height="52" fill="#030303" fill-opacity=".68"/>
+<path d="M92 694H1444" stroke="#5b4319" stroke-opacity=".55"/>
+<text x="768" y="703" text-anchor="middle" fill="#c7bdab" font-size="14" font-weight="700" font-family="Inter,Segoe UI,Arial,sans-serif">RTL Safe · Gold System · Original BAFT Logo Preserved · PR #41</text>
 </svg>
