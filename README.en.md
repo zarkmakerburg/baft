@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/baft-logo.png" alt="BAFT" width="220"></p>
+
 # BAFT
 
 > **Language:** [فارسی](README.md) | English
