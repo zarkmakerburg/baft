@@ -54,7 +54,7 @@ A server keeps a root-owned `/opt/baft/release-state.json` (`$BAFT_PREFIX/releas
 - No private key is ever written to the repository. `*.key` is git-ignored; CI receives the release key only as an environment secret.
 - Nothing is published that did not verify against `release/keys/root.pub` in the same run.
 - The release is created as a draft; the owner publishes it.
-- A tag on a commit outside `main` / `release-v1-goldapp` does not produce a release.
+- A tag on a commit outside `main` (the canonical branch) does not produce a release.
 
 ## Owner setup (one time)
 

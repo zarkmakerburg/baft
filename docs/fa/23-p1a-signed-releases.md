@@ -33,7 +33,7 @@ Release فقط وقتی پذیرفته می‌شود که: گواهی با Root 
 - هیچ کلید خصوصی وارد مخزن نمی‌شود.
 - چیزی منتشر نمی‌شود که در همان اجرا با `release/keys/root.pub` verify نشده باشد.
 - Release به‌صورت draft ساخته می‌شود و انتشار با صاحب پروژه است.
-- Tag روی commitی خارج از `main` / `release-v1-goldapp` release نمی‌سازد.
+- Tag روی commitی خارج از `main` (شاخهٔ canonical) release نمی‌سازد.
 
 ## راه‌اندازی یک‌باره توسط صاحب پروژه
 
