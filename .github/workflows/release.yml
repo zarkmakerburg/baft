@@ -85,6 +85,10 @@ jobs:
             echo "::error title=Release already exists::A GitHub release for $GITHUB_REF_NAME already exists. Delete that release (keep the tag) and re-run; this workflow creates the signed draft itself."
             exit 1
           fi
+          if [ -f "release/notes/$GITHUB_REF_NAME.md" ]; then
+            notes=(--notes-file "release/notes/$GITHUB_REF_NAME.md")
+          else
+            notes=(--notes "Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub -revocations release/keys/revocations.json")
+          fi
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* \
-            --draft --verify-tag --title "BAFT $GITHUB_REF_NAME" \
-            --notes "Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub -revocations release/keys/revocations.json"
+            --draft --verify-tag --title "BAFT $GITHUB_REF_NAME" "${notes[@]}"
