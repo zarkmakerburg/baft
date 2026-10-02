@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"math/big"
 	"net/http"
 	"os"
@@ -410,10 +411,10 @@ func (s *Server) serveDashboardOrLogin(w http.ResponseWriter, r *http.Request, a
 	if sess == nil {
 		if loginError != "" {
 			w.WriteHeader(http.StatusUnauthorized)
-			fmt.Fprintf(w, loginHTML, html.EscapeString(base+"login"), loginError)
+			_, _ = io.WriteString(w, renderLogin(base+"login", loginError))
 			return
 		}
-		fmt.Fprintf(w, welcomeHTML, html.EscapeString(base+"login"))
+		_, _ = io.WriteString(w, renderWelcome(base+"login"))
 		return
 	}
 	// The dashboard script calls /api/...; route those calls through the
@@ -428,7 +429,7 @@ func (s *Server) serveDashboardOrLogin(w http.ResponseWriter, r *http.Request, a
 func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, base string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method != http.MethodPost {
-		fmt.Fprintf(w, loginHTML, html.EscapeString(base+"login"), "")
+		_, _ = io.WriteString(w, renderLogin(base+"login", ""))
 		return
 	}
 	ip := s.clientIP(r)
@@ -445,7 +446,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, bas
 		_ = s.auditLogin(r, "failure")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprintf(w, loginHTML, html.EscapeString(base+"login"), "Wrong username or password.")
+		_, _ = io.WriteString(w, renderLogin(base+"login", "Wrong username or password."))
 		return
 	}
 	s.guard.AuthSuccess(ip)
@@ -495,7 +496,7 @@ canvas{width:100%;height:100%;display:block;filter:drop-shadow(0 0 35px rgba(243
 <div class="logo-badge" aria-hidden="true"><div class="b">B</div></div>
 <h1><span class="gold">بافت؛</span> زیرساخت تاب‌آور برای مسیرهای چندگانه</h1>
 <p>مرکز فرمان BAFT آماده است. از این صفحه وارد BCC شوید، وضعیت نودها را ببینید، مسیرهای فعال را کنترل کنید و failover را از یک نقطه مدیریت کنید.</p>
-<div class="actions"><a class="btn primary" href="%s">شروع سریع ←</a><a class="btn ghost" href="#status">وضعیت نصب</a></div>
+<div class="actions"><a class="btn primary" href="{{LOGIN}}">شروع سریع ←</a><a class="btn ghost" href="#status">وضعیت نصب</a></div>
 <div class="strip" id="status"><div class="chip"><i class="dot"></i>ECRL Runtime</div><div class="chip"><i class="dot"></i>N-Node Failover</div><div class="chip"><i class="dot"></i>RTL Safe</div><div class="chip"><i class="dot"></i>Logo Preserved</div></div>
 </section><section class="stage" aria-label="Rotating BAFT command globe">
 <div class="scene"><canvas id="globe" width="900" height="900"></canvas><i class="orbit"></i><i class="orbit"></i><i class="orbit"></i></div>
@@ -529,7 +530,17 @@ form{position:relative;background:linear-gradient(180deg,rgba(17,16,13,.9),rgba(
 input,button{font:inherit;padding:13px 14px;border-radius:14px;border:1px solid #2f2819;background:#050505;color:#fff}input:focus{outline:2px solid rgba(243,189,69,.32);border-color:var(--gold)}
 button{background:linear-gradient(135deg,var(--gold),var(--gold2));color:#090909;border:0;font-weight:950;cursor:pointer}.err{min-height:18px;color:#ffabb6;font-size:13px}.safe{color:#92f0bf;font-size:12px;direction:ltr;text-align:left}
 </style></head><body>
-<form method="post" action="%s"><div class="brand">BAFT</div><b>ورود به Command Center</b><div class="sub">برای ادامه، اطلاعات دسترسی ساخته‌شده بعد از نصب را وارد کنید.</div>
+<form method="post" action="{{ACTION}}"><div class="brand">BAFT</div><b>ورود به Command Center</b><div class="sub">برای ادامه، اطلاعات دسترسی ساخته‌شده بعد از نصب را وارد کنید.</div>
 <input name="username" autocomplete="username" placeholder="username" required>
 <input name="password" type="password" autocomplete="current-password" placeholder="password" required>
-<button>ورود به BCC</button><div class="err">%s</div><div class="safe">Secret-path protected · Session guarded · No index</div></form></body></html>`
+<button>ورود به BCC</button><div class="err">{{ERROR}}</div><div class="safe">Secret-path protected · Session guarded · No index</div></form></body></html>`
+
+// The page templates contain literal % (CSS), so they are filled with named
+// placeholders, never with fmt verbs.
+func renderLogin(action, errText string) string {
+	return strings.NewReplacer("{{ACTION}}", html.EscapeString(action), "{{ERROR}}", html.EscapeString(errText)).Replace(loginHTML)
+}
+
+func renderWelcome(loginURL string) string {
+	return strings.NewReplacer("{{LOGIN}}", html.EscapeString(loginURL)).Replace(welcomeHTML)
+}
