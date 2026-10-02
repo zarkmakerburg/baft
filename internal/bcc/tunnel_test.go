@@ -276,7 +276,7 @@ func TestDashboardHasServerAndTunnelControlsWithoutStoringCredentials(t *testing
 func goodObserved(t Tunnel, role string) tunnelnode.Observed {
 	o := tunnelnode.Observed{
 		TunnelID: t.ID, Role: role, Phase: tunnelnode.PhaseCommitted, Generation: 4, PreviousGeneration: 3, NodeGeneration: 4,
-		ServiceActive: true, UnitMatches: true, ConfigSHA256: strings.Repeat("a", 64), RouteID: t.RouteID,
+		ServiceActive: true, UnitMatches: true, ConfigSHA256: strings.Repeat("a", 64), UnitSHA256: strings.Repeat("b", 64), MarkerSHA256: strings.Repeat("c", 64), RouteID: t.RouteID,
 		Managed: true, MarkerTunnelID: t.ID, MarkerGeneration: 4, MarkerConfigMatches: true, MarkerUnitMatches: true,
 	}
 	if role == tunnelnode.RoleIR {
@@ -363,6 +363,7 @@ func TestObservedStateThatDiffersFromThePlanRollsBack(t *testing.T) {
 		"node counter differs": func(o *tunnelnode.Observed) { o.NodeGeneration = 9 },
 		"another change's id":  func(o *tunnelnode.Observed) { o.TunnelID = "tun-other" },
 		"unit drifted":         func(o *tunnelnode.Observed) { o.UnitMatches = false },
+		"digests missing":      func(o *tunnelnode.Observed) { o.UnitSHA256 = "" },
 		"not managed":          func(o *tunnelnode.Observed) { o.Managed = false },
 		"marker of another":    func(o *tunnelnode.Observed) { o.MarkerTunnelID = "tun-other" },
 		"config edited":        func(o *tunnelnode.Observed) { o.MarkerConfigMatches = false },

@@ -95,6 +95,16 @@ wait_tunnel() { # id, seconds, accepted phases...
   done
   echo "$phase"; return 1
 }
+drift_check() { # id -> prints the drift state once both nodes answered
+  local id="$1" i out
+  api -X POST "$BCC/api/tunnels/drift?id=$id" >/dev/null
+  for ((i = 0; i < 60; i++)); do
+    out="$(api "$BCC/api/tunnels?id=$id" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d.get("drift_jobs",[])),(d.get("drift") or {}).get("state",""))')"
+    [[ "${out%% *}" == 0 ]] && { echo "${out#* }"; return 0; }
+    sleep 2
+  done
+  echo "$out"; return 1
+}
 traffic() { # retry: the dialer reconnects within a few seconds of a restart
   local i
   for i in $(seq 1 15); do
@@ -133,6 +143,28 @@ assert all('"generation":1' in e["detail"] for e in ev if e["step"] == "observe"
 PY
 traffic || fail "no traffic through tunnel 1"
 log "traffic passes through tunnel 1"
+log "drift detection: in sync, then a hand edit, then fixed"
+[[ "$(drift_check "$T1")" == "IN_SYNC" ]] || fail "a fresh tunnel is not IN_SYNC"
+cp /etc/baft-ex/baft.yaml "$WORK/ex.yaml.keep"
+printf '\n# edited by hand\n' >> /etc/baft-ex/baft.yaml
+[[ "$(drift_check "$T1")" == "DRIFTED" ]] || fail "a hand-edited config was not reported as DRIFTED"
+cat "$WORK/ex.yaml.keep" > /etc/baft-ex/baft.yaml
+# Coupled tamper: edit the config AND rewrite the marker's hash to match. Every
+# node-side comparison passes; BCC's own verified digest must still catch it.
+cp /etc/baft-ex/baft.managed.json "$WORK/ex.marker.keep"
+printf '\n# edited by hand, marker rewritten\n' >> /etc/baft-ex/baft.yaml
+python3 - <<'PY'
+import json, hashlib
+p = "/etc/baft-ex/baft.managed.json"
+m = json.load(open(p))
+m["config_sha256"] = hashlib.sha256(open("/etc/baft-ex/baft.yaml", "rb").read()).hexdigest()
+json.dump(m, open(p, "w"))
+PY
+[[ "$(drift_check "$T1")" == "DRIFTED" ]] || fail "a config edit with a matching marker rewrite was not reported as DRIFTED"
+cat "$WORK/ex.yaml.keep" > /etc/baft-ex/baft.yaml
+cat "$WORK/ex.marker.keep" > /etc/baft-ex/baft.managed.json
+[[ "$(drift_check "$T1")" == "IN_SYNC" ]] || fail "the restored config is not IN_SYNC"
+
 EX_CFG_SUM="$(sha256sum /etc/baft-ex/baft.yaml | cut -d' ' -f1)"
 IR_CFG_SUM="$(sha256sum /etc/baft-ir/baft.yaml | cut -d' ' -f1)"
 EX_MARK_SUM="$(sha256sum /etc/baft-ex/baft.managed.json | cut -d' ' -f1)"

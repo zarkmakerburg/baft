@@ -166,6 +166,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/tunnels",s.tunnels)
 	m.HandleFunc("/api/tunnels/cancel",s.tunnelCancel)
 	m.HandleFunc("/api/tunnels/plan",s.tunnelPlan)
+	m.HandleFunc("/api/tunnels/drift",s.tunnelDrift)
 	m.HandleFunc("/api/bootstrap/hostkey",s.bootstrapHostKey)
 	m.HandleFunc("/api/deploy",s.deploy)
 	m.HandleFunc("/api/agent/jobs",s.agentJobs)

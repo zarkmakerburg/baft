@@ -49,6 +49,7 @@ const (
 	ActionTunnelCommitIR  = "tunnel_commit_ir"
 	ActionTunnelHealth    = "tunnel_health"
 	ActionTunnelObserve   = "tunnel_observe"
+	ActionTunnelInspect   = "tunnel_inspect"
 	ActionTunnelFinalize  = "tunnel_finalize"
 	ActionTunnelRollback  = "tunnel_rollback"
 )
@@ -81,6 +82,7 @@ var paramRules = map[string]map[string]*regexp.Regexp{
 	ActionTunnelCommitIR:  {"tunnel_id": tunnelIDRe},
 	ActionTunnelHealth:    {"tunnel_id": tunnelIDRe},
 	ActionTunnelObserve:   {"tunnel_id": tunnelIDRe},
+	ActionTunnelInspect:   {},
 	ActionTunnelFinalize:  {"tunnel_id": tunnelIDRe},
 	ActionTunnelRollback:  {"tunnel_id": tunnelIDRe},
 }
