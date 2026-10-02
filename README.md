@@ -1,5 +1,7 @@
 <div dir="rtl" align="right" lang="fa">
 
+<p align="center"><img src="docs/assets/baft-logo.png" alt="BAFT" width="220"></p>
+
 # BAFT — بافت
 
 > **زبان:** فارسی | [English](README.en.md)
