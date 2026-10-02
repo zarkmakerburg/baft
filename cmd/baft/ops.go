@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/config"
@@ -36,6 +38,10 @@ type opsEnv struct {
 	dial     func(addr string, timeout time.Duration) error
 	fetch    func(url string) (string, error)
 	procRoot string
+	// ownerUID is the uid owning a file; serviceUID the uid the systemd
+	// service runs as. Doctor uses them to decide whether a chmod is safe.
+	ownerUID   func(path string) (uint32, error)
+	serviceUID func(service string) (uint32, error)
 }
 
 var hostOps = opsEnv{
@@ -69,6 +75,33 @@ var hostOps = opsEnv{
 		return string(b), err
 	},
 	procRoot: "/proc",
+	ownerUID: func(path string) (uint32, error) {
+		st, err := os.Stat(path)
+		if err != nil {
+			return 0, err
+		}
+		sys, ok := st.Sys().(*syscall.Stat_t)
+		if !ok {
+			return 0, errors.New("file owner is not available on this platform")
+		}
+		return sys.Uid, nil
+	},
+	serviceUID: func(service string) (uint32, error) {
+		out, err := exec.Command("systemctl", "show", "-p", "User", "--value", service).Output()
+		if err != nil {
+			return 0, err
+		}
+		name := strings.TrimSpace(string(out))
+		if name == "" {
+			return 0, nil // no User= means the service runs as root
+		}
+		u, err := user.Lookup(name)
+		if err != nil {
+			return 0, err
+		}
+		n, err := strconv.ParseUint(u.Uid, 10, 32)
+		return uint32(n), err
+	},
 }
 
 type opsFlags struct {
@@ -286,29 +319,57 @@ const (
 	checkFail = "fail"
 )
 
+// check is one finding. Detail is the evidence and Hint the fix; the other
+// fields explain a non-ok finding (Problem, Impact, where it sits in the
+// layer model, which failure domain it belongs to) and, where there is one,
+// the exact command that would fix it. Nothing here is ever executed.
 type check struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Detail string `json:"detail"`
 	Hint   string `json:"hint,omitempty"`
+
+	Layer      string `json:"layer,omitempty"`
+	Domain     string `json:"domain,omitempty"`
+	Problem    string `json:"problem,omitempty"`
+	Impact     string `json:"impact,omitempty"`
+	FixCommand string `json:"fix_command,omitempty"`
+	FixSafety  string `json:"fix_safety,omitempty"`
 }
 
+// Fix safety classes for a suggested command.
+const (
+	fixSafe   = "safe"   // does not interrupt traffic or access; easily undone
+	fixReview = "review" // can change behaviour for traffic or other software
+)
+
 type doctor struct {
-	env    opsEnv
-	checks []check
+	env     opsEnv
+	service string
+	checks  []check
 }
 
 func (d *doctor) add(name, status, detail, hint string) {
 	d.checks = append(d.checks, check{Name: name, Status: status, Detail: detail, Hint: hint})
 }
 
+// fixWith records the command that would fix the last finding. The doctor
+// only ever shows it (--preview-fixes); it never runs it.
+func (d *doctor) fixWith(command, safety string) {
+	c := &d.checks[len(d.checks)-1]
+	c.FixCommand, c.FixSafety = command, safety
+}
+
 func runDoctor(args []string, stdout, stderr io.Writer, env opsEnv) int {
-	f, ok := parseOpsFlags("doctor", args, stderr, nil)
+	var preview bool
+	f, ok := parseOpsFlags("doctor", args, stderr, func(fs *flag.FlagSet) {
+		fs.BoolVar(&preview, "preview-fixes", false, "show the commands that would fix the findings (never runs them)")
+	})
 	if !ok {
-		fmt.Fprintln(stderr, "usage: baft doctor [--file baft.yaml] [--service baft] [--release-state path] [--json]")
+		fmt.Fprintln(stderr, "usage: baft doctor [--file baft.yaml] [--service baft] [--release-state path] [--json] [--preview-fixes]")
 		return 2
 	}
-	d := &doctor{env: env}
+	d := &doctor{env: env, service: f.service}
 	cfg, err := config.LoadFile(f.file)
 	if err != nil {
 		d.add("config", checkFail, f.file+": "+err.Error(), "fix the file, then run: baft config validate --file "+f.file)
@@ -325,24 +386,24 @@ func runDoctor(args []string, stdout, stderr io.Writer, env opsEnv) int {
 	}
 	d.checkNetwork()
 
-	failed := false
-	for _, c := range d.checks {
-		failed = failed || c.Status == checkFail
+	for i := range d.checks {
+		annotate(&d.checks[i])
 	}
-	if f.json {
+	sum := summarize(d.checks)
+	failed := sum.Verdict == verdictFailing
+	switch {
+	case f.json:
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(struct {
-			OK     bool    `json:"ok"`
-			Checks []check `json:"checks"`
-		}{!failed, d.checks})
-	} else {
-		for _, c := range d.checks {
-			fmt.Fprintf(stdout, "%-5s %-22s %s\n", strings.ToUpper(c.Status), c.Name, c.Detail)
-			if c.Hint != "" {
-				fmt.Fprintf(stdout, "      %-22s -> %s\n", "", c.Hint)
-			}
-		}
+			OK      bool    `json:"ok"`
+			Summary summary `json:"summary"`
+			Checks  []check `json:"checks"`
+		}{!failed, sum, d.checks})
+	case preview:
+		printFixPreview(stdout, d.checks)
+	default:
+		printReport(stdout, sum, d.checks)
 	}
 	if failed {
 		return 1
@@ -376,7 +437,9 @@ func (d *doctor) checkKeys(cfg config.Config) {
 		case err != nil:
 			d.add("private key", checkFail, err.Error(), "")
 		case st.Mode().Perm()&0o077 != 0:
-			d.add("private key", checkFail, fmt.Sprintf("%s has mode %04o", k, st.Mode().Perm()), "chmod 0600 "+k+" (owned by the service user)")
+			q := shellQuote(k)
+			d.add("private key", checkFail, fmt.Sprintf("%s has mode %04o", k, st.Mode().Perm()), "chmod 0600 "+q+" (owned by the service user)")
+			d.fixKeyMode(k, q)
 		default:
 			d.add("private key", checkOK, k+" is owner-only", "")
 		}
@@ -428,6 +491,50 @@ func (d *doctor) checkMetrics(cfg config.Config) {
 	d.add("metrics", checkOK, fmt.Sprintf("%d active flows", int64(m["baft_active_flows"])), "")
 	if v := int64(m["baft_conservation_invariant_violations"]); v != 0 {
 		d.add("integrity", checkFail, fmt.Sprintf("%d conservation invariant violations", v), "collect `baft logs` and report it")
+	} else if _, ok := m["baft_conservation_invariant_violations"]; ok {
+		d.add("integrity", checkOK, "0 conservation invariant violations", "")
+	}
+}
+
+// shellQuote makes a config-derived string safe to paste into a shell. Plain
+// paths stay readable; anything else is single-quoted.
+func shellQuote(s string) string {
+	safe := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r)) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// fixKeyMode attaches the fix for an over-open key. chmod 0600 is SAFE only
+// when the file is already owned by the user the service runs as; otherwise
+// it could lock the service out of its own key on the next restart, so it is
+// REVIEW and says what to check first.
+func (d *doctor) fixKeyMode(path, quoted string) {
+	owner, oerr := uint32(0), errors.New("owner check unavailable")
+	svc, serr := uint32(0), errors.New("service user check unavailable")
+	if d.env.ownerUID != nil {
+		owner, oerr = d.env.ownerUID(path)
+	}
+	if d.env.serviceUID != nil {
+		svc, serr = d.env.serviceUID(d.service)
+	}
+	cmd := "chmod 0600 " + quoted
+	switch {
+	case oerr == nil && serr == nil && owner == svc:
+		d.fixWith(cmd, fixSafe)
+	case oerr == nil && serr == nil:
+		d.fixWith(cmd, fixReview)
+		d.checks[len(d.checks)-1].Hint += fmt.Sprintf("; REVIEW first: the key is owned by uid %d but the service runs as uid %d, so chmod 0600 alone would lock the service out. Fix the owner, then the mode", owner, svc)
+	default:
+		d.fixWith(cmd, fixReview)
+		d.checks[len(d.checks)-1].Hint += "; REVIEW first: could not confirm the key is owned by the service user, and chmod 0600 on a differently owned key locks the service out"
 	}
 }
 
@@ -495,6 +602,7 @@ func (d *doctor) checkNetwork() {
 			d.add("tcp congestion", checkOK, "bbr", "")
 		} else {
 			d.add("tcp congestion", checkInfo, cc+" (bbr usually does better on long, lossy paths)", "sysctl -w net.ipv4.tcp_congestion_control=bbr")
+			d.fixWith("sysctl -w net.ipv4.tcp_congestion_control=bbr", fixReview)
 		}
 	}
 	if q, ok := d.sysctl("net.core.default_qdisc"); ok {
@@ -502,6 +610,7 @@ func (d *doctor) checkNetwork() {
 			d.add("qdisc", checkOK, "fq", "")
 		} else {
 			d.add("qdisc", checkInfo, q+" (fq pairs with bbr pacing)", "sysctl -w net.core.default_qdisc=fq")
+			d.fixWith("sysctl -w net.core.default_qdisc=fq", fixReview)
 		}
 	}
 	const wantBuf = 4 << 20
@@ -514,6 +623,7 @@ func (d *doctor) checkNetwork() {
 		if err == nil && n < wantBuf {
 			d.add(name, checkInfo, fmt.Sprintf("%d bytes (high-latency paths need larger socket buffers)", n),
 				fmt.Sprintf("sysctl -w %s=%d", name, wantBuf))
+			d.fixWith(fmt.Sprintf("sysctl -w %s=%d", name, wantBuf), fixReview)
 		} else if err == nil {
 			d.add(name, checkOK, fmt.Sprintf("%d bytes", n), "")
 		}

@@ -199,7 +199,7 @@ sudo bash install.sh --role ir --pairing-code BAFTPAIR1:...
 
 ```bash
 sudo baft status            # version, installed release, role and peer, routes, service state, flows, recovery counters
-sudo baft doctor            # checks with OK / INFO / WARN / FAIL and a hint for each problem; exit 1 on any FAIL
+sudo baft doctor            # verdict, layers, and Problem / Evidence / Impact / Fix for each finding; exit 1 on FAIL
 sudo baft logs -n 200 -f    # journalctl for the service
 ```
 
@@ -209,7 +209,15 @@ sudo baft logs -n 200 -f    # journalctl for the service
 
 `doctor` این‌ها را بررسی می‌کند: config و فایل revocation درست load شوند؛ کلیدهای خصوصی فقط برای مالک قابل دسترس باشند؛ سرویس فعال باشد (اگر restart شده باشد WARN)؛ باینری با release امضاشدهٔ نصب‌شده بخواند (برای نصب از سورس WARN)؛ endpoint متریک جواب بدهد و هیچ نقض invariant گزارش نکند؛ IR به EX برسد و route محلی‌اش گوش بدهد، یا listener روی EX اتصال بپذیرد و مقصد routeها جواب بدهد. چند تنظیم شبکه را هم فقط می‌خواند (congestion control، qdisc پیش‌فرض، سقف بافر socket) و `sysctl` پیشنهادی را به‌صورت INFO چاپ می‌کند. تنظیم خودکار برای P2 است.
 
-## Support bundle
+### گزارش doctor
+
+`doctor` با یک verdict شروع می‌کند (`HEALTHY`؛ `DEGRADED` وقتی فقط هشدار هست؛ `FAILING` با هر FAIL)، محتمل‌ترین حوزهٔ خرابی همراه با confidence و یک اقدام بعدی. یک حوزهٔ خراب با confidence `high` گزارش می‌شود؛ اگر چند حوزه خراب باشد پایین‌ترین حوزه (اول config/میزبان، بعد L0 به بالا) به‌عنوان بهترین حدس ریشهٔ مشکل با confidence `medium` می‌آید. بعد لایه‌ها: L0 process زنده است (وضعیت سرویس و endpoint متریک)، L1 مسیر carrier (دسترسی TCP به peer یا listener محلی، نه احراز هویت)، L2 احراز هویت peer (**ارزیابی نمی‌شود**؛ doctor نشست احراز هویت‌شده باز نمی‌کند، از سلامت و telemetry در BCC استفاده کنید)، L3 درستی نشست (شمارندهٔ conservation invariant)، L4 route در دسترس (listener محلی route)، L5 مقصد در دسترس (مقصد ثابت route ورودی)، L6 ترافیک برنامه (**ارزیابی نمی‌شود**؛ به probe سرتاسری نیاز دارد). لایه‌ای که چیزی از آن مشاهده نشده `NOT_ASSESSED` است، نه `PASS`.
+
+هر یافتهٔ غیر OK به این ترتیب **problem**، **evidence**، **impact** و **fix** را چاپ می‌کند. `--json` همین‌ها را دارد (`summary` و برای هر check فیلدهای `layer`، `domain`، `problem`، `impact`، `fix_command`، `fix_safety`؛ `detail` همان evidence و `hint` همان fix است).
+
+`baft doctor --preview-fixes` دستورهایی را که یافته‌ها را رفع می‌کنند فهرست می‌کند، هر کدام با برچسب `SAFE` (ترافیک و دسترسی را قطع نمی‌کند و به‌راحتی قابل برگشت است؛ `chmod 0600` روی کلید فقط وقتی SAFE است که کلید از قبل مال کاربری باشد که سرویس با آن اجرا می‌شود، وگرنه `REVIEW` است و یافته می‌گوید اول مالک را درست کنید، چون کلید با مالک متفاوت بعد از restart سرویس را قفل می‌کند) یا `REVIEW` (می‌تواند رفتار ترافیک یا نرم‌افزار دیگر را عوض کند، مثل `sysctl -w`). هر مسیرِ برگرفته از config در دستور پیشنهادی shell-quote می‌شود. **doctor هیچ‌وقت fix را اجرا نمی‌کند**؛ پیش‌نمایش برای این است که اپراتور دستور دقیق را اول بازبینی کند.
+
+
 
 <div dir="ltr" align="left">
 
