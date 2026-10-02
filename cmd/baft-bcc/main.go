@@ -64,6 +64,10 @@ func main(){
 	adminToken:=strings.TrimSpace(string(raw))
 	if adminToken==""{fmt.Fprintln(os.Stderr,"admin token is empty");os.Exit(1)}
 
+	// One BCC per state file; also what lets restore-preview know BCC is stopped.
+	releaseState,err:=bcc.LockState(*stateFile)
+	if err!=nil{fmt.Fprintln(os.Stderr,"BCC state lock:",err);os.Exit(1)}
+	defer releaseState()
 	store,err:=bcc.OpenStore(*stateFile)
 	if err!=nil{fmt.Fprintln(os.Stderr,"BCC state:",err);os.Exit(1)}
 	// Active tunnels are checked for drift this often; 0 turns the automatic check off.

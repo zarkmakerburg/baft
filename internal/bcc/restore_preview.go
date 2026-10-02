@@ -2,10 +2,10 @@ package bcc
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -138,11 +138,24 @@ func buildRestorePreview(payload backupPayload, header BackupHeader, current sta
 }
 
 // PreviewRestore reports what RestoreFromFile(path, key) would do to the
-// running server. It changes nothing.
+// running server. It changes nothing. It takes the same locks in the same
+// order as the real restore (backupMu, then mutationMu) and verifies the
+// current audit before reading, so the state and the audit it compares come
+// from one instant at which no mutation is in progress, exactly the boundary
+// at which RestoreFromFile decides.
 func (s *Server) PreviewRestore(path string, key []byte) (RestorePreview, error) {
+	s.backupMu.Lock()
+	defer s.backupMu.Unlock()
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+
 	payload, header, err := readBackupFile(path, key)
 	if err != nil {
 		return RestorePreview{Problem: err.Error()}, nil
+	}
+	var auditProblem string
+	if err := s.audit.Verify(); err != nil {
+		auditProblem = "current audit verification failed: " + err.Error()
 	}
 	current, err := s.store.snapshotState()
 	if err != nil {
@@ -152,76 +165,79 @@ func (s *Server) PreviewRestore(path string, key []byte) (RestorePreview, error)
 	if err != nil {
 		return RestorePreview{}, err
 	}
-	return buildRestorePreview(payload, header, current, audit, s.now().UTC())
+	p, err := buildRestorePreview(payload, header, current, audit, s.now().UTC())
+	if err == nil && auditProblem != "" {
+		p.WouldRefuse = auditProblem
+	}
+	return p, err
 }
 
-// PreviewRestoreFiles does the same for a BCC that is not running (or is, but
-// must not be touched): it reads COPIES of the state file and the audit log, so
-// it never writes, migrates or recovers anything in the live directory.
+// PreviewRestoreFiles does the same for state files on disk, for a BCC that is
+// NOT running. State and audit live in two files that a running BCC changes at
+// different moments, and another process cannot share its in-process lock, so
+// a running BCC cannot be previewed this way: the function takes the state
+// file's process lock (which BCC holds for its whole life) and fails if it
+// cannot, so it is never run against a live BCC and nothing can start writing
+// while it reads. It also refuses when an interrupted write or restore is
+// pending (start BCC once to let it recover). It reads into memory and a
+// private temp directory and never writes anything in the live directory. To
+// preview against a running BCC use Server.PreviewRestore, which shares the
+// restore's own locks.
 func PreviewRestoreFiles(stateFile, backupPath string, key []byte, now time.Time) (RestorePreview, error) {
 	payload, header, err := readBackupFile(backupPath, key)
 	if err != nil {
 		return RestorePreview{Problem: err.Error()}, nil
 	}
-	tmp, err := os.MkdirTemp("", "baft-restore-preview-")
+	release, err := LockState(stateFile)
 	if err != nil {
+		return RestorePreview{}, fmt.Errorf("stop BCC before previewing from files: %w", err)
+	}
+	defer release()
+	for _, pending := range []string{stateFile + "-journal", restoreJournalPath(stateFile)} {
+		if _, err := os.Stat(pending); err == nil {
+			return RestorePreview{}, fmt.Errorf("%s exists: an interrupted write or restore is pending; start BCC once so it can recover, stop it, then preview", filepath.Base(pending))
+		}
+	}
+	stateBytes, err := os.ReadFile(stateFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return RestorePreview{}, err
 	}
-	defer os.RemoveAll(tmp)
+	auditBytes, err := os.ReadFile(stateFile + ".audit.jsonl")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return RestorePreview{}, err
+	}
 	var current state
 	normalizeState(&current)
-	if _, err := os.Stat(stateFile); err == nil {
-		copyPath := filepath.Join(tmp, "state")
-		if err := copyFile(stateFile, copyPath); err != nil {
-			return RestorePreview{}, err
-		}
-		b, err := os.ReadFile(copyPath)
-		if err != nil {
-			return RestorePreview{}, err
-		}
-		if isSQLiteFile(b) {
+	if len(stateBytes) > 0 {
+		if !isSQLiteFile(stateBytes) {
+			if len(strings.TrimSpace(string(stateBytes))) > 0 {
+				return RestorePreview{}, errors.New("current state is a legacy JSON file; start BCC once to migrate it, then preview")
+			}
+		} else {
+			tmp, err := os.MkdirTemp("", "baft-restore-preview-")
+			if err != nil {
+				return RestorePreview{}, err
+			}
+			defer os.RemoveAll(tmp)
+			copyPath := filepath.Join(tmp, "state")
+			if err := os.WriteFile(copyPath, stateBytes, 0o600); err != nil {
+				return RestorePreview{}, err
+			}
 			if current, err = readStateDB(copyPath); err != nil {
 				return RestorePreview{}, fmt.Errorf("read current state: %w", err)
 			}
-		} else if len(strings.TrimSpace(string(b))) > 0 {
-			return RestorePreview{}, errors.New("current state is a legacy JSON file; start BCC once to migrate it, then preview")
 		}
 	}
-	audit, err := readAuditFile(stateFile + ".audit.jsonl")
+	audit, err := parseAuditBytes(auditBytes)
 	if err != nil {
 		return RestorePreview{}, err
 	}
 	return buildRestorePreview(payload, header, current, audit, now.UTC())
 }
 
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
-}
-
-func readAuditFile(path string) ([]AuditEntry, error) {
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
+func parseAuditBytes(b []byte) ([]AuditEntry, error) {
 	var out []AuditEntry
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(b))
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
 	for sc.Scan() {
 		var e AuditEntry

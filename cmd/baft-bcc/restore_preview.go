@@ -14,8 +14,10 @@ import (
 // runRestorePreview: baft-bcc restore-preview --backup FILE [--state-file F] [--json]
 //
 // Read-only. It decrypts and verifies the backup (key from BAFT_BCC_BACKUP_KEY),
-// then shows what restoring it would do to the BCC state in --state-file,
-// working on copies, so it is safe next to a running BCC.
+// then shows what restoring it would do to the BCC state in --state-file.
+// BCC must be stopped: the state and the audit log are two files that a running
+// BCC changes at different moments, so only a stopped BCC gives one coherent
+// snapshot. This is enforced with the state-file lock BCC holds while running.
 func runRestorePreview(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("restore-preview", flag.ContinueOnError)
 	fs.SetOutput(stderr)

@@ -47,6 +47,15 @@ func TestRestorePreviewCommand(t *testing.T) {
 	if code, out := run(good, "--backup", backup, "--state-file", state, "--json"); code != 0 || !strings.Contains(out, `"verified": true`) {
 		t.Fatalf("json: %d\n%s", code, out)
 	}
+	// BCC running (it holds the state lock) cannot be previewed from files.
+	release, err := bcc.LockState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, out := run(good, "--backup", backup, "--state-file", state); code != 1 || !strings.Contains(out, "stop BCC") {
+		t.Fatalf("preview while the state is locked: %d\n%s", code, out)
+	}
+	release()
 	wrong := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32))
 	if code, out := run(wrong, "--backup", backup, "--state-file", state); code != 1 || !strings.Contains(out, "NOT VERIFIED") {
 		t.Fatalf("wrong key: %d\n%s", code, out)
