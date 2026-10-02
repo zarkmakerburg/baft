@@ -35,6 +35,8 @@ func main(){
 	tlsCert:=flag.String("tls-cert","","TLS certificate file (PEM); re-read when it changes")
 	tlsKey:=flag.String("tls-key","","TLS private key file (PEM)")
 	jobKeyFile:=flag.String("job-key-file","","job-signing key (default <state-file>.job-key; created on first start)")
+	installScript:=flag.String("install-script","","install.sh to push to new servers over SSH (enables /api/bootstrap together with --public-url)")
+	publicURL:=flag.String("public-url","","URL agents use to reach this BCC, e.g. https://bcc.example.com (needed for /api/bootstrap)")
 	allowInsecureHTTP:=flag.Bool("allow-insecure-http",false,"serve plain HTTP on a non-loopback address (not recommended)")
 	flag.Parse()
 	if flag.NArg()!=0||*adminTokenFile==""{
@@ -73,6 +75,15 @@ func main(){
 	jobKey,created,err:=bcc.LoadOrCreateJobKey(*jobKeyFile)
 	if err!=nil{fmt.Fprintln(os.Stderr,"job signing key:",err);os.Exit(1)}
 	app.ConfigureJobSigning(jobKey)
+	if *installScript!=""||*publicURL!=""{
+		if *installScript==""||*publicURL==""{fmt.Fprintln(os.Stderr,"--install-script and --public-url go together");os.Exit(2)}
+		if !strings.HasPrefix(*publicURL,"https://")&&!(*allowInsecureHTTP&&strings.HasPrefix(*publicURL,"http://")){
+			fmt.Fprintln(os.Stderr,"--public-url must be https:// (http:// only with --allow-insecure-http)");os.Exit(2)
+		}
+		script,err:=os.ReadFile(*installScript)
+		if err!=nil||len(script)==0{fmt.Fprintln(os.Stderr,"install script:",err);os.Exit(1)}
+		app.ConfigureBootstrap(bcc.BootstrapConfig{InstallScript:script,PublicURL:*publicURL,AllowHTTP:*allowInsecureHTTP})
+	}
 	if created{fmt.Printf("created job signing key %s; agents pin its public key: %s\n",*jobKeyFile,app.JobPublicKey())}
 	if err:=app.ConfigureAccess(*accessFile,useTLS);err!=nil{
 		fmt.Fprintf(os.Stderr,"BCC access: %v\ncreate it on this host with: baft-bcc access init --access-file %s\n",err,*accessFile);os.Exit(2)

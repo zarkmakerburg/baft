@@ -59,6 +59,7 @@ type Server struct {
 	restoreFault func(string) error
 	access *accessGate
 	jobKey ed25519.PrivateKey
+	boot *bootstrapState
 	now func() time.Time
 }
 
@@ -158,6 +159,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/nodes",s.nodes)
 	m.HandleFunc("/api/jobs",s.jobs)
 	m.HandleFunc("/api/enroll",s.enroll)
+	m.HandleFunc("/api/bootstrap",s.bootstrap)
+	m.HandleFunc("/api/bootstrap/hostkey",s.bootstrapHostKey)
 	m.HandleFunc("/api/deploy",s.deploy)
 	m.HandleFunc("/api/agent/jobs",s.agentJobs)
 	m.HandleFunc("/api/agent/ack",s.agentAck)

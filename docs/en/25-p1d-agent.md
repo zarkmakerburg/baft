@@ -1,6 +1,6 @@
 # 25 — P1-D: secure agent jobs
 
-Launch-1 step P1-D from [22-launch-1-roadmap.md](22-launch-1-roadmap.md): BCC signs every job, the rules an agent applies before running one (`internal/agentjob`), and the agent itself (`baft-agent`). Server inventory and SSH bootstrap follow.
+Launch-1 step P1-D from [22-launch-1-roadmap.md](22-launch-1-roadmap.md): BCC signs every job, the rules an agent applies before running one (`internal/agentjob`), and the agent itself (`baft-agent`). Server inventory and SSH bootstrap: [26-p1d-ssh-bootstrap.md](26-p1d-ssh-bootstrap.md).
 
 ## Trust
 
