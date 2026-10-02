@@ -1,6 +1,7 @@
 package bcc
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,7 +9,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -166,36 +166,36 @@ func OpenStore(path string) (*Store, error) {
 	if err:=recoverRestoreTransaction(path);err!=nil{return nil,fmt.Errorf("recover interrupted restore: %w",err)}
 	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
 	b,err:=os.ReadFile(path)
-	if err==nil {
+	switch {
+	case err==nil&&isSQLiteFile(b):
+		st,err:=readStateDB(path)
+		if err!=nil{return nil,fmt.Errorf("open BCC state database: %w",err)}
+		s.st=st
+	case err==nil&&len(bytes.TrimSpace(b))>0:
+		// A JSON state file from before the SQLite store: load it, then
+		// convert it in place (the original is kept as <path>.json.bak).
 		if err:=json.Unmarshal(b,&s.st);err!=nil{return nil,fmt.Errorf("decode BCC state: %w",err)}
-		if s.st.Nodes==nil{s.st.Nodes=map[string]Node{}}
-		if s.st.Jobs==nil{s.st.Jobs=map[string]Job{}}
-		if s.st.Finance==nil{s.st.Finance=map[string]NodeFinance{}}
-		if s.st.Policies==nil{s.st.Policies=map[string]FinancePolicy{}}
-		if s.st.RateHistory==nil{s.st.RateHistory=map[string][]FinancePolicy{}}
-		if s.st.Telemetry==nil{s.st.Telemetry=map[string]TelemetryCursor{}}
-		if s.st.History==nil{s.st.History=map[string][]HistoryPoint{}}
-		if s.st.ActiveAlerts==nil{s.st.ActiveAlerts=map[string]Alert{}}
-		if s.st.RetiredBootIDs==nil{s.st.RetiredBootIDs=map[string]map[string]bool{}}
-		if s.st.NextJob==0{s.st.NextJob=1}
-		if s.st.NextRateVersion==0{s.st.NextRateVersion=1}
-		if s.st.NextTelemetryIngestID==0{
-			var maxIngest uint64
-			for _,cur:=range s.st.Telemetry{if cur.IngestID>maxIngest{maxIngest=cur.IngestID}}
-			s.st.NextTelemetryIngestID=maxIngest+1
-			if s.st.NextTelemetryIngestID==0{s.st.NextTelemetryIngestID=1}
-		}
-		for id,p:=range s.st.Policies{
-			if len(s.st.RateHistory[id])!=0{continue}
-			if p.Currency==""{p.Currency="IRR"}
-			if p.EffectiveFrom.IsZero(){p.EffectiveFrom=time.Unix(0,0).UTC()}
-			if p.Version==0{p.Version=s.st.NextRateVersion;s.st.NextRateVersion++}
-			s.st.RateHistory[id]=[]FinancePolicy{p}
-		}
-	} else if !errors.Is(err,os.ErrNotExist) {
+		upgradeLoadedState(&s.st)
+		if err:=migrateJSONState(path,b,s.st);err!=nil{return nil,fmt.Errorf("migrate BCC state to SQLite: %w",err)}
+	case err==nil:
+		// empty file: fresh state
+	case !errors.Is(err,os.ErrNotExist):
 		return nil,err
 	}
 	return s,nil
+}
+
+// upgradeLoadedState fills defaults and backfills rate history for state
+// written by older builds.
+func upgradeLoadedState(st *state){
+	normalizeState(st)
+	for id,p:=range st.Policies{
+		if len(st.RateHistory[id])!=0{continue}
+		if p.Currency==""{p.Currency="IRR"}
+		if p.EffectiveFrom.IsZero(){p.EffectiveFrom=time.Unix(0,0).UTC()}
+		if p.Version==0{p.Version=st.NextRateVersion;st.NextRateVersion++}
+		st.RateHistory[id]=[]FinancePolicy{p}
+	}
 }
 
 func tokenHash(v string) string {
@@ -204,11 +204,7 @@ func tokenHash(v string) string {
 }
 
 func (s *Store) saveLocked() error {
-	if err:=os.MkdirAll(filepath.Dir(s.path),0700);err!=nil{return err}
-	b,err:=json.MarshalIndent(s.st,"","  ");if err!=nil{return err}
-	tmp:=s.path+".tmp"
-	if err:=os.WriteFile(tmp,b,0600);err!=nil{return err}
-	return os.Rename(tmp,s.path)
+	return writeStateDB(s.path,s.st)
 }
 
 func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
