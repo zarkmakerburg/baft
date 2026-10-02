@@ -1,13 +1,17 @@
 <div dir="rtl" align="right" lang="fa">
 
 <p align="center">
-  <img src="docs/assets/baft-logo-transparent.png" alt="BAFT" width="170">
+  <img src="docs/assets/baft-logo-transparent.png" alt="BAFT" width="190">
+</p>
+
+<p align="center">
+  <img src="docs/assets/baft-readme-hero.svg" alt="BAFT — زیرساخت تاب‌آور برای مسیرهای چندگانه">
 </p>
 
 <h1 align="center">BAFT — بافت</h1>
 
 <p align="center">
-  لایهٔ انتقال امن، احرازشده و کنترل‌پذیر میان نودهای تحت مدیریت یک اپراتور
+  زیرساخت تاب‌آور برای مسیرهای چندگانه، بازیابی پایدار و کنترل متمرکز مسیرها
 </p>
 
 <p align="center" dir="ltr">
@@ -18,7 +22,9 @@
   <a href="https://github.com/zarkmakerburg/baft/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/zarkmakerburg/baft?style=flat-square&label=release"></a>
   <a href="https://github.com/zarkmakerburg/baft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zarkmakerburg/baft/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.27.1-00ADD8?style=flat-square&logo=go&logoColor=white">
-  <img alt="Signed Release" src="https://img.shields.io/badge/release-signed-2ea44f?style=flat-square">
+  <img alt="ECRL" src="https://img.shields.io/badge/ECRL-Runtime-f3bd45?style=flat-square&labelColor=050505">
+  <img alt="RTL Safe" src="https://img.shields.io/badge/RTL-Safe-f3bd45?style=flat-square&labelColor=050505">
+  <img alt="Logo Preserved" src="https://img.shields.io/badge/Logo-Preserved-f3bd45?style=flat-square&labelColor=050505">
   <img alt="License" src="https://img.shields.io/badge/license-proprietary-8a6a22?style=flat-square">
 </p>
 
