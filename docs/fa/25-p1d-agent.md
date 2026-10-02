@@ -29,4 +29,24 @@
 
 تست‌ها با یک BCC واقعی و release امضاشدهٔ محلی: نصب موفق، rollback وقتی سرویس بالا نمی‌آید، بی‌اثر بودن release دستکاری‌شده یا قدیمی‌تر، رد job با کلید pin‌نشده، و actionهای restart/reload/health.
 
+## ثبت سرور (`install.sh --agent-only`)
+
+اول سرور، بعد تونل: سرور جدید فقط باینری‌های BAFT و agent را می‌گیرد و هنوز config تونل ندارد.
+
+<div dir="ltr" align="left">
+
+```bash
+sudo BAFT_BCC_JOB_KEY="$(baft-bcc jobkey show)" BAFT_AGENT_TOKEN_FILE=/root/agent-token \
+  bash install.sh --agent-only --bcc-url https://bcc.example.com --node-id ex-1
+```
+
+</div>
+
+- `baft`، `baft-pair` و `baft-agent` را از release امضاشده نصب و verify می‌کند.
+- توکن agent (فقط root، 0600)، کلید pin‌شدهٔ BCC و کلید Root release را در `/etc/baft-agent/` می‌نویسد و `baft-agent.service` را با محدودیت‌های systemd (فقط مسیر باینری‌ها، `$BAFT_PREFIX` و state agent قابل نوشتن) راه می‌اندازد.
+- آدرس BCC باید `https://` باشد.
+- job CI به نام `e2e-agent-enroll` این مسیر را با یک BCC واقعی روی runner دارای systemd اجرا می‌کند.
+
+راه‌اندازی با SSH از BCC (قدم بعد) دقیقاً همین فرمان را روی سرور جدید اجرا می‌کند.
+
 </div>

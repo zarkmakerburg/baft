@@ -43,6 +43,12 @@ NONINTERACTIVE="${BAFT_NONINTERACTIVE:-0}"
 RECORD_SHAPING=0
 STEALTH_PRO=0
 VERIFY_ONLY_DIR=""
+AGENT_ONLY=0
+BAFT_BCC_URL="${BAFT_BCC_URL:-}"
+BAFT_NODE_ID="${BAFT_NODE_ID:-}"
+BAFT_AGENT_BIN="${BAFT_AGENT_BIN:-/usr/local/bin/baft-agent}"
+BAFT_AGENT_DIR="${BAFT_AGENT_DIR:-/etc/baft-agent}"
+BAFT_AGENT_STATE_DIR="${BAFT_AGENT_STATE_DIR:-/var/lib/baft-agent}"
 CLEANUP=()
 cleanup(){ if ((${#CLEANUP[@]})); then rm -rf -- "${CLEANUP[@]}"; fi; }
 trap cleanup EXIT
@@ -93,6 +99,10 @@ Usage:
   sudo bash install.sh --role ir [--pairing-code BAFTPAIR1:...]
   sudo bash install.sh --role ex --stealth-pro  # existing pinned Noise config
   sudo bash install.sh --role ir --stealth-pro  # enable on BOTH peers
+  sudo bash install.sh --agent-only --bcc-url https://bcc.example.com --node-id ex-1
+      # server enrollment: binaries + baft-agent only, no tunnel yet; the agent
+      # token comes from BAFT_AGENT_TOKEN_FILE (or BAFT_AGENT_TOKEN) and the
+      # pinned BCC job key from BAFT_BCC_JOB_KEY
 
 Options:
   --version vX.Y.Z    install this signed release (default: the latest)
@@ -138,6 +148,9 @@ while [[ $# -gt 0 ]]; do
     --allow-downgrade) BAFT_ALLOW_DOWNGRADE=1; shift ;;
     --from-source) BAFT_INSTALL_FROM=source; shift ;;
     --verify-release) VERIFY_ONLY_DIR="${2:-}"; shift 2 ;;
+    --agent-only) AGENT_ONLY=1; shift ;;
+    --bcc-url) BAFT_BCC_URL="${2:-}"; shift 2 ;;
+    --node-id) BAFT_NODE_ID="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -441,7 +454,15 @@ if [[ -n "$VERIFY_ONLY_DIR" ]]; then
   exit
 fi
 
-[[ "$ROLE" == "ex" || "$ROLE" == "ir" ]] || die "--role must be ex or ir"
+if [[ "$AGENT_ONLY" == "1" ]]; then
+  [[ -z "$ROLE" ]] || die "--agent-only does not take --role; the tunnel is set up later from BCC"
+  [[ "$BAFT_BCC_URL" == https://* || ( "$BAFT_BCC_URL" == http://* && "${BAFT_AGENT_ALLOW_HTTP:-0}" == "1" ) ]] || die "--bcc-url must be https://"
+  [[ "$BAFT_NODE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || die "--node-id is missing or malformed"
+  [[ -n "${BAFT_BCC_JOB_KEY:-}" ]] || die "BAFT_BCC_JOB_KEY (baft-bcc jobkey show) is required"
+  [[ -n "${BAFT_AGENT_TOKEN_FILE:-}" || -n "${BAFT_AGENT_TOKEN:-}" ]] || die "BAFT_AGENT_TOKEN_FILE or BAFT_AGENT_TOKEN is required"
+else
+  [[ "$ROLE" == "ex" || "$ROLE" == "ir" ]] || die "--role must be ex or ir"
+fi
 show_logo
 [[ "$BAFT_INSTALL_FROM" == "release" || "$BAFT_INSTALL_FROM" == "source" ]] || die "BAFT_INSTALL_FROM must be release or source"
 if [[ "$BAFT_INSTALL_FROM" == "release" && -z "$BAFT_ROOT_PUB" ]]; then
@@ -508,6 +529,7 @@ install -d -m 0755 -o root -g root "$BAFT_PREFIX"
 REL_DIR=""
 REL_REV=""
 REL_ARTIFACTS=("baft-linux-$GOARCH" "baft-pair-linux-$GOARCH")
+if [[ "$AGENT_ONLY" == "1" ]]; then REL_ARTIFACTS+=("baft-agent-linux-$GOARCH"); fi
 fetch_release() {
   local url="$BAFT_RELEASE_URL" f
   if [[ -z "$url" ]]; then
@@ -529,6 +551,7 @@ fetch_release() {
   log "verified signed release $got"
   install -m 0755 "$REL_DIR/baft-linux-$GOARCH" "$BAFT_BIN.new"
   install -m 0755 "$REL_DIR/baft-pair-linux-$GOARCH" "$BAFT_PAIR_BIN.new"
+  if [[ "$AGENT_ONLY" == "1" ]]; then install -m 0755 "$REL_DIR/baft-agent-linux-$GOARCH" "$BAFT_AGENT_BIN.new"; fi
 }
 
 build_from_source() {
@@ -551,6 +574,7 @@ build_from_source() {
     fi
     go build -trimpath -ldflags="-s -w -X main.version=${BAFT_REF}" -o "$BAFT_BIN.new" ./cmd/baft
     go build -trimpath -ldflags="-s -w" -o "$BAFT_PAIR_BIN.new" ./cmd/baft-pair
+    if [[ "$AGENT_ONLY" == "1" ]]; then go build -trimpath -ldflags="-s -w" -o "$BAFT_AGENT_BIN.new" ./cmd/baft-agent; fi
   )
 }
 
@@ -577,10 +601,64 @@ if [[ "$STEALTH_PRO" == "1" ]]; then
 fi
 install -m 0755 -o root -g root "$BAFT_BIN.new" "$BAFT_BIN"
 install -m 0755 -o root -g root "$BAFT_PAIR_BIN.new" "$BAFT_PAIR_BIN"
-rm -f "$BAFT_BIN.new" "$BAFT_PAIR_BIN.new"
+if [[ "$AGENT_ONLY" == "1" ]]; then install -m 0755 -o root -g root "$BAFT_AGENT_BIN.new" "$BAFT_AGENT_BIN"; fi
+rm -f "$BAFT_BIN.new" "$BAFT_PAIR_BIN.new" "$BAFT_AGENT_BIN.new"
 if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
   # Record the release only once its binaries are in place.
   verify_release "$REL_DIR" "$REL_REV" 1 "${REL_ARTIFACTS[@]}" >/dev/null || die "could not record the installed release"
+fi
+
+# Server enrollment: the agent runs as root (it restarts services and swaps
+# binaries) with the rest of the system read-only. It holds the agent token,
+# the pinned BCC job key and the pinned release root; no tunnel config yet.
+install_agent() {
+  install -d -m 0700 -o root -g root "$BAFT_AGENT_DIR" "$BAFT_AGENT_STATE_DIR"
+  if [[ -n "${BAFT_AGENT_TOKEN_FILE:-}" ]]; then
+    install -m 0600 -o root -g root "$BAFT_AGENT_TOKEN_FILE" "$BAFT_AGENT_DIR/token"
+  else
+    ( umask 077; printf '%s\n' "$BAFT_AGENT_TOKEN" >"$BAFT_AGENT_DIR/token" )
+  fi
+  printf '%s\n' "$BAFT_BCC_JOB_KEY" >"$BAFT_AGENT_DIR/bcc-job.pub"
+  local root_flag="" http_flag="" bindir
+  if [[ -n "$BAFT_ROOT_PUB" ]]; then
+    printf '%s\n' "$BAFT_ROOT_PUB" >"$BAFT_AGENT_DIR/release-root.pub"
+    root_flag="--release-root $BAFT_AGENT_DIR/release-root.pub"
+  fi
+  if [[ "$BAFT_BCC_URL" == http://* ]]; then http_flag="--allow-insecure-http"; fi
+  # Where the agent fetches releases for update jobs (defaults: GitHub).
+  if [[ -n "${BAFT_AGENT_RELEASE_BASE_URL:-}" ]]; then http_flag+=" --release-base-url $BAFT_AGENT_RELEASE_BASE_URL"; fi
+  if [[ -n "${BAFT_AGENT_REVOCATIONS_URL:-}" ]]; then http_flag+=" --revocations-url $BAFT_AGENT_REVOCATIONS_URL"; fi
+  bindir="$(dirname "$BAFT_BIN")"
+  cat >/etc/systemd/system/baft-agent.service <<UNIT
+[Unit]
+Description=BAFT agent (signed BCC jobs)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=$BAFT_AGENT_BIN --bcc-url $BAFT_BCC_URL --node-id $BAFT_NODE_ID --token-file $BAFT_AGENT_DIR/token --bcc-job-key $BAFT_AGENT_DIR/bcc-job.pub $root_flag --state-dir $BAFT_AGENT_STATE_DIR --release-state $BAFT_RELEASE_STATE --bin-dir $bindir --service $BAFT_SERVICE $http_flag
+Restart=always
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$bindir $BAFT_PREFIX $BAFT_AGENT_STATE_DIR
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable baft-agent.service
+  systemctl restart baft-agent.service
+  log "baft-agent enrolled as $BAFT_NODE_ID with $BAFT_BCC_URL; add tunnels from BCC"
+}
+if [[ "$AGENT_ONLY" == "1" ]]; then
+  install_agent
+  exit 0
 fi
 
 if [[ "$STEALTH_PRO" == "1" ]]; then
