@@ -18,6 +18,7 @@ import (
 
 func main(){
 	if len(os.Args)>1&&os.Args[1]=="access"{os.Exit(runAccess(os.Args[2:]))}
+	if len(os.Args)>1&&os.Args[1]=="jobkey"{os.Exit(runJobKey(os.Args[2:]))}
 	listen:=flag.String("listen","127.0.0.1:8080","BCC HTTP listen address")
 	stateFile:=flag.String("state-file","./bcc-state.json","persistent BCC state file")
 	adminTokenFile:=flag.String("admin-token-file","","file containing BCC admin bearer token")
@@ -33,6 +34,7 @@ func main(){
 	accessFile:=flag.String("access-file","","web access file (default <state-file>.access.json); create it with: baft-bcc access init")
 	tlsCert:=flag.String("tls-cert","","TLS certificate file (PEM); re-read when it changes")
 	tlsKey:=flag.String("tls-key","","TLS private key file (PEM)")
+	jobKeyFile:=flag.String("job-key-file","","job-signing key (default <state-file>.job-key; created on first start)")
 	allowInsecureHTTP:=flag.Bool("allow-insecure-http",false,"serve plain HTTP on a non-loopback address (not recommended)")
 	flag.Parse()
 	if flag.NArg()!=0||*adminTokenFile==""{
@@ -52,6 +54,7 @@ func main(){
 		fmt.Fprintln(os.Stderr,"BCC listen: a non-loopback address needs --tls-cert/--tls-key (or --allow-insecure-http)");os.Exit(2)
 	}
 	if *accessFile==""{*accessFile=*stateFile+".access.json"}
+	if *jobKeyFile==""{*jobKeyFile=*stateFile+".job-key"}
 
 	raw,err:=os.ReadFile(*adminTokenFile)
 	if err!=nil{fmt.Fprintln(os.Stderr,"admin token:",err);os.Exit(1)}
@@ -67,6 +70,10 @@ func main(){
 		if v:=strings.TrimSpace(part);v!=""{trustedProxies=append(trustedProxies,v)}
 	}
 	if err:=app.ConfigureTrustedProxies(trustedProxies);err!=nil{fmt.Fprintln(os.Stderr,"trusted proxies:",err);os.Exit(2)}
+	jobKey,created,err:=bcc.LoadOrCreateJobKey(*jobKeyFile)
+	if err!=nil{fmt.Fprintln(os.Stderr,"job signing key:",err);os.Exit(1)}
+	app.ConfigureJobSigning(jobKey)
+	if created{fmt.Printf("created job signing key %s; agents pin its public key: %s\n",*jobKeyFile,app.JobPublicKey())}
 	if err:=app.ConfigureAccess(*accessFile,useTLS);err!=nil{
 		fmt.Fprintf(os.Stderr,"BCC access: %v\ncreate it on this host with: baft-bcc access init --access-file %s\n",err,*accessFile);os.Exit(2)
 	}

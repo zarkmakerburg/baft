@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/bcc"
+	"github.com/zarkmakerburg/baft/internal/release"
 )
 
 const defaultAccessFile = "./bcc-state.json.access.json"
@@ -89,4 +91,22 @@ func (c *reloadingCert) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		c.certMod, c.keyMod = cs.ModTime(), ks.ModTime()
 	}
 	return c.cert, nil
+}
+
+// runJobKey prints the public half of BCC's job-signing key, which every
+// agent pins at enrollment.
+func runJobKey(args []string) int {
+	fs := flag.NewFlagSet("jobkey", flag.ContinueOnError)
+	file := fs.String("job-key-file", "./bcc-state.json.job-key", "job-signing key")
+	if len(args) == 0 || args[0] != "show" || fs.Parse(args[1:]) != nil || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: baft-bcc jobkey show [--job-key-file <state-file>.job-key]")
+		return 2
+	}
+	key, _, err := bcc.LoadOrCreateJobKey(*file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "baft-bcc jobkey:", err)
+		return 1
+	}
+	fmt.Println(release.EncodePublic(key.Public().(ed25519.PublicKey)))
+	return 0
 }

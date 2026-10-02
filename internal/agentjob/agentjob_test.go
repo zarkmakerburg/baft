@@ -1,0 +1,100 @@
+package agentjob
+
+import (
+	"encoding/base64"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/zarkmakerburg/baft/internal/release"
+)
+
+var now = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+
+func job(action string, params map[string]string) Job {
+	return Job{JobID: "job-00000001", NodeID: "ex-1", Action: action, Params: params, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+}
+
+func setup(t *testing.T) (Verifier, func(Job) release.Envelope) {
+	pub, priv, _ := release.GenerateKey()
+	v := Verifier{BCCKey: pub, NodeID: "ex-1"}
+	return v, func(j Job) release.Envelope {
+		env, err := Sign(priv, j)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return env
+	}
+}
+
+func wantErr(t *testing.T, err error, substr string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), substr) {
+		t.Fatalf("error = %v, want %q", err, substr)
+	}
+}
+
+func TestAgentRunsOnlyValidSignedJobs(t *testing.T) {
+	v, sign := setup(t)
+	got, err := v.Verify(sign(job(ActionUpdateBAFT, map[string]string{"version": "v1.2.0"})), now.Add(time.Minute))
+	if err != nil || got.Action != ActionUpdateBAFT || got.Params["version"] != "v1.2.0" {
+		t.Fatalf("valid job refused: %+v %v", got, err)
+	}
+	for _, a := range Actions() {
+		if _, ok := paramRules[a]; !ok {
+			t.Fatal("Actions and rules disagree")
+		}
+	}
+}
+
+func TestSignRefusesWhatAgentsWouldRefuse(t *testing.T) {
+	_, priv, _ := release.GenerateKey()
+	for name, j := range map[string]Job{
+		"shell action":    job("exec", map[string]string{"cmd": "rm -rf /"}),
+		"missing param":   job(ActionUpdateBAFT, nil),
+		"extra param":     job(ActionRestart, map[string]string{"x": "y"}),
+		"bad version":     job(ActionUpdateBAFT, map[string]string{"version": "latest; curl evil"}),
+		"too long":        {JobID: "j", NodeID: "ex-1", Action: ActionHealth, IssuedAt: now, ExpiresAt: now.Add(MaxLifetime + time.Second)},
+		"bad node":        {JobID: "j", NodeID: "../etc", Action: ActionHealth, IssuedAt: now, ExpiresAt: now.Add(time.Hour)},
+		"inverted window": {JobID: "j", NodeID: "ex-1", Action: ActionHealth, IssuedAt: now, ExpiresAt: now},
+	} {
+		if _, err := Sign(priv, j); err == nil {
+			t.Errorf("%s: signed", name)
+		}
+	}
+}
+
+func TestAgentRefusesForgedMisdirectedStaleAndReplayedJobs(t *testing.T) {
+	v, sign := setup(t)
+	env := sign(job(ActionRestart, nil))
+
+	other, _, _ := release.GenerateKey()
+	_, err := Verifier{BCCKey: other, NodeID: "ex-1"}.Verify(env, now)
+	wantErr(t, err, "job signature")
+
+	_, err = Verifier{BCCKey: v.BCCKey, NodeID: "ex-2"}.Verify(env, now)
+	wantErr(t, err, "not this node")
+
+	_, err = v.Verify(env, now.Add(2*time.Hour))
+	wantErr(t, err, "expired")
+
+	_, err = v.Verify(env, now.Add(-ClockSkew-time.Minute))
+	wantErr(t, err, "future")
+
+	seen := v
+	seen.Seen = func(id string) bool { return id == "job-00000001" }
+	_, err = seen.Verify(env, now)
+	wantErr(t, err, "already run")
+
+	// Tampering with the payload breaks the signature.
+	payload, _ := base64.StdEncoding.DecodeString(env.Payload)
+	env.Payload = base64.StdEncoding.EncodeToString([]byte(strings.Replace(string(payload), "restart", "reload", 1)))
+	_, err = v.Verify(env, now)
+	wantErr(t, err, "job signature")
+
+	// A release manifest signed by the pinned key is not a job.
+	pub, priv, _ := release.GenerateKey()
+	confused := release.Sign(release.PayloadTypeManifest, []byte(`{}`), priv)
+	_, err = Verifier{BCCKey: pub, NodeID: "ex-1"}.Verify(confused, now)
+	wantErr(t, err, "payload type")
+}

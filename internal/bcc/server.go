@@ -2,6 +2,7 @@ package bcc
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/subtle"
 	"context"
 	"encoding/json"
@@ -57,6 +58,7 @@ type Server struct {
 	backupMu sync.Mutex
 	restoreFault func(string) error
 	access *accessGate
+	jobKey ed25519.PrivateKey
 	now func() time.Time
 }
 
@@ -250,7 +252,9 @@ func (s *Server) agentJobs(w http.ResponseWriter,r *http.Request){
 	jobs,err:=s.store.PullJobs(nodeID,bearer(r))
 	s.agentAuthResult(r,err)
 	if err!=nil{http.Error(w,err.Error(),http.StatusUnauthorized);return}
-	writeJSON(w,http.StatusOK,jobs)
+	signed,err:=s.signAgentJobs(jobs)
+	if err!=nil{http.Error(w,"job signing failed",http.StatusInternalServerError);return}
+	writeJSON(w,http.StatusOK,signed)
 }
 
 func (s *Server) agentAck(w http.ResponseWriter,r *http.Request){
