@@ -44,8 +44,8 @@ func TestAgentsReceiveSignedJobs(t *testing.T) {
 	if rr := do(authReq(http.MethodPost, "/api/deploy", "admin", map[string]any{"node_ids": []string{"ex-1"}, "version": "v1.2.0"})); rr.Code != http.StatusAccepted {
 		t.Fatalf("deploy = %d %s", rr.Code, rr.Body.String())
 	}
-	if rr := do(authReq(http.MethodPost, "/api/enroll", "admin", map[string]string{"worker_id": "w-1", "public_key": "workerpublickey000"})); rr.Code != http.StatusAccepted {
-		t.Fatalf("enroll = %d %s", rr.Code, rr.Body.String())
+	if rr := do(authReq(http.MethodPost, "/api/deploy", "admin", map[string]any{"node_ids": []string{"ex-1"}, "version": "v1.3.0"})); rr.Code != http.StatusAccepted {
+		t.Fatalf("second deploy = %d %s", rr.Code, rr.Body.String())
 	}
 	rr := do(authReq(http.MethodGet, "/api/agent/jobs?node_id=ex-1", "tok-ex-1", nil))
 	if rr.Code != 200 {
@@ -72,9 +72,9 @@ func TestAgentsReceiveSignedJobs(t *testing.T) {
 		if got.JobID != j.ID {
 			t.Fatalf("signed job id %s for record %s", got.JobID, j.ID)
 		}
-		actions[got.Action] = got
+		actions[got.Params["version"]] = got
 	}
-	if actions[agentjob.ActionUpdateBAFT].Params["version"] != "v1.2.0" || actions[agentjob.ActionEnrollPeer].Params["worker_id"] != "w-1" {
+	if actions["v1.2.0"].Action != agentjob.ActionUpdateBAFT || actions["v1.3.0"].Action != agentjob.ActionUpdateBAFT {
 		t.Fatalf("unexpected signed actions %+v", actions)
 	}
 	if _, err := v.Verify(*jobs[0].Signed, now.Add(jobValidity+time.Second)); err == nil {

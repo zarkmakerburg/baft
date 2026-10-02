@@ -1,0 +1,29 @@
+name: vulncheck
+
+# Known-vulnerability scan of the code paths this repository actually calls.
+# Kept out of the required PR checks so a newly published advisory in the
+# standard library cannot block unrelated work; it runs weekly, on dependency
+# changes and on demand, and its failures are the signal to update.
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths: ['go.mod', 'go.sum', '.github/workflows/vulncheck.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

@@ -227,17 +227,11 @@ func (s *Server) jobs(w http.ResponseWriter,r *http.Request){
 	writeJSON(w,http.StatusOK,jobs)
 }
 
+// enroll was replaced by the tunnel builder; the route stays so old tools get
+// a clear answer instead of a 404.
 func (s *Server) enroll(w http.ResponseWriter,r *http.Request){
-	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
 	if !s.admin(w,r){return}
-	s.mutationMu.Lock();defer s.mutationMu.Unlock()
-	var in struct{WorkerID string `json:"worker_id"`; PublicKey string `json:"public_key"`}
-	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
-	details:=map[string]any{"worker_id":in.WorkerID,"public_key":in.PublicKey}
-	jobs,err:=s.store.CreateEnrollmentJobs(in.WorkerID,in.PublicKey)
-	if err!=nil{s.auditFailure(w,r,"enrollment.create",in.WorkerID,details,err,http.StatusBadRequest);return}
-	if err:=s.auditAdmin(r,"enrollment.create",in.WorkerID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
-	writeJSON(w,http.StatusAccepted,jobs)
+	http.Error(w,"retired: build tunnels with POST /api/tunnels",http.StatusGone)
 }
 
 func (s *Server) deploy(w http.ResponseWriter,r *http.Request){
