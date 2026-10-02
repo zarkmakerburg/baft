@@ -2,23 +2,18 @@
 
 <div dir="rtl" align="center" lang="fa">
 
-<img src="docs/assets/baft-logo-transparent.png" alt="BAFT" width="190">
-
-# BAFT — بافت
-
-### لایهٔ انتقال امن، احرازشده و کنترل‌پذیر میان نودهای تحت مدیریت یک اپراتور
-
-<p dir="ltr"><strong>Signed Releases · Secure Agent · BCC Control Plane · Native Tunnel Builder · Recovery-aware Data Plane</strong></p>
+<img src="docs/assets/baft-bcc-hero.svg" alt="BAFT — BCC visual identity" width="100%">
 
 <p dir="ltr">
-  <a href="https://github.com/zarkmakerburg/baft/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/zarkmakerburg/baft?style=for-the-badge&label=release"></a>
+  <a href="https://github.com/zarkmakerburg/baft/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/zarkmakerburg/baft?style=flat-square&label=release&labelColor=111722&color=e8b54a"></a>
   <a href="https://github.com/zarkmakerburg/baft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zarkmakerburg/baft/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.27.1-00ADD8?style=for-the-badge&logo=go&logoColor=white">
-  <img alt="Signed Release" src="https://img.shields.io/badge/release-signed-2ea44f?style=for-the-badge">
-  <img alt="License" src="https://img.shields.io/badge/license-All%20Rights%20Reserved-8a6a22?style=for-the-badge">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.27.1-182238?style=flat-square&labelColor=111722&logo=go&logoColor=eef1f6">
+  <img alt="Signed Release" src="https://img.shields.io/badge/release-signed-123e2c?style=flat-square&labelColor=111722">
+  <img alt="BCC Theme" src="https://img.shields.io/badge/theme-BCC-e8b54a?style=flat-square&labelColor=111722">
+  <img alt="License" src="https://img.shields.io/badge/license-proprietary-263147?style=flat-square&labelColor=111722">
 </p>
 
-[فارسی](README.md) · [English](README.en.md) · [آخرین Release](https://github.com/zarkmakerburg/baft/releases/latest) · [وضعیت پروژه](STATUS.md) · [مستندات](docs/fa/README.md)
+[فارسی](README.md) · [English](README.en.md) · [آخرین Release](https://github.com/zarkmakerburg/baft/releases/latest) · [وضعیت پروژه](STATUS.md) · [مستندات](docs/fa/README.md) · [تم BCC](docs/fa/28-bcc-visual-system.md)
 
 </div>
 
