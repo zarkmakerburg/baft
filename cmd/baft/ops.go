@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/config"
@@ -36,6 +38,10 @@ type opsEnv struct {
 	dial     func(addr string, timeout time.Duration) error
 	fetch    func(url string) (string, error)
 	procRoot string
+	// ownerUID is the uid owning a file; serviceUID the uid the systemd
+	// service runs as. Doctor uses them to decide whether a chmod is safe.
+	ownerUID   func(path string) (uint32, error)
+	serviceUID func(service string) (uint32, error)
 }
 
 var hostOps = opsEnv{
@@ -69,6 +75,33 @@ var hostOps = opsEnv{
 		return string(b), err
 	},
 	procRoot: "/proc",
+	ownerUID: func(path string) (uint32, error) {
+		st, err := os.Stat(path)
+		if err != nil {
+			return 0, err
+		}
+		sys, ok := st.Sys().(*syscall.Stat_t)
+		if !ok {
+			return 0, errors.New("file owner is not available on this platform")
+		}
+		return sys.Uid, nil
+	},
+	serviceUID: func(service string) (uint32, error) {
+		out, err := exec.Command("systemctl", "show", "-p", "User", "--value", service).Output()
+		if err != nil {
+			return 0, err
+		}
+		name := strings.TrimSpace(string(out))
+		if name == "" {
+			return 0, nil // no User= means the service runs as root
+		}
+		u, err := user.Lookup(name)
+		if err != nil {
+			return 0, err
+		}
+		n, err := strconv.ParseUint(u.Uid, 10, 32)
+		return uint32(n), err
+	},
 }
 
 type opsFlags struct {
@@ -311,8 +344,9 @@ const (
 )
 
 type doctor struct {
-	env    opsEnv
-	checks []check
+	env     opsEnv
+	service string
+	checks  []check
 }
 
 func (d *doctor) add(name, status, detail, hint string) {
@@ -335,7 +369,7 @@ func runDoctor(args []string, stdout, stderr io.Writer, env opsEnv) int {
 		fmt.Fprintln(stderr, "usage: baft doctor [--file baft.yaml] [--service baft] [--release-state path] [--json] [--preview-fixes]")
 		return 2
 	}
-	d := &doctor{env: env}
+	d := &doctor{env: env, service: f.service}
 	cfg, err := config.LoadFile(f.file)
 	if err != nil {
 		d.add("config", checkFail, f.file+": "+err.Error(), "fix the file, then run: baft config validate --file "+f.file)
@@ -403,8 +437,9 @@ func (d *doctor) checkKeys(cfg config.Config) {
 		case err != nil:
 			d.add("private key", checkFail, err.Error(), "")
 		case st.Mode().Perm()&0o077 != 0:
-			d.add("private key", checkFail, fmt.Sprintf("%s has mode %04o", k, st.Mode().Perm()), "chmod 0600 "+k+" (owned by the service user)")
-			d.fixWith("chmod 0600 "+k, fixSafe)
+			q := shellQuote(k)
+			d.add("private key", checkFail, fmt.Sprintf("%s has mode %04o", k, st.Mode().Perm()), "chmod 0600 "+q+" (owned by the service user)")
+			d.fixKeyMode(k, q)
 		default:
 			d.add("private key", checkOK, k+" is owner-only", "")
 		}
@@ -458,6 +493,48 @@ func (d *doctor) checkMetrics(cfg config.Config) {
 		d.add("integrity", checkFail, fmt.Sprintf("%d conservation invariant violations", v), "collect `baft logs` and report it")
 	} else if _, ok := m["baft_conservation_invariant_violations"]; ok {
 		d.add("integrity", checkOK, "0 conservation invariant violations", "")
+	}
+}
+
+// shellQuote makes a config-derived string safe to paste into a shell. Plain
+// paths stay readable; anything else is single-quoted.
+func shellQuote(s string) string {
+	safe := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r)) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// fixKeyMode attaches the fix for an over-open key. chmod 0600 is SAFE only
+// when the file is already owned by the user the service runs as; otherwise
+// it could lock the service out of its own key on the next restart, so it is
+// REVIEW and says what to check first.
+func (d *doctor) fixKeyMode(path, quoted string) {
+	owner, oerr := uint32(0), errors.New("owner check unavailable")
+	svc, serr := uint32(0), errors.New("service user check unavailable")
+	if d.env.ownerUID != nil {
+		owner, oerr = d.env.ownerUID(path)
+	}
+	if d.env.serviceUID != nil {
+		svc, serr = d.env.serviceUID(d.service)
+	}
+	cmd := "chmod 0600 " + quoted
+	switch {
+	case oerr == nil && serr == nil && owner == svc:
+		d.fixWith(cmd, fixSafe)
+	case oerr == nil && serr == nil:
+		d.fixWith(cmd, fixReview)
+		d.checks[len(d.checks)-1].Hint += fmt.Sprintf("; REVIEW first: the key is owned by uid %d but the service runs as uid %d, so chmod 0600 alone would lock the service out. Fix the owner, then the mode", owner, svc)
+	default:
+		d.fixWith(cmd, fixReview)
+		d.checks[len(d.checks)-1].Hint += "; REVIEW first: could not confirm the key is owned by the service user, and chmod 0600 on a differently owned key locks the service out"
 	}
 }
 

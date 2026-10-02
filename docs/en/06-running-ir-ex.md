@@ -88,7 +88,7 @@ All three take `--service` (default `baft`); `status` and `doctor` also take `--
 
 A layer nothing observed reads `NOT_ASSESSED`, never `PASS`. Every non-OK finding then prints, in this order, **problem**, **evidence**, **impact** and **fix**. `--json` carries the same (`summary`, and per check `layer`, `domain`, `problem`, `impact`, `fix_command`, `fix_safety`; `detail` is the evidence and `hint` the fix).
 
-`baft doctor --preview-fixes` lists the commands that would fix findings, each marked `SAFE` (does not interrupt traffic or access, easily undone, e.g. `chmod 0600` on a key) or `REVIEW` (can change behaviour for traffic or other software, e.g. `sysctl -w`). **Doctor never runs a fix**; the preview exists so an operator can review the exact command first.
+`baft doctor --preview-fixes` lists the commands that would fix findings, each marked `SAFE` (does not interrupt traffic or access and is easily undone; `chmod 0600` on a key counts only when the key is already owned by the user the service runs as, otherwise it is `REVIEW` and the finding says to fix the owner first, because a differently owned key would lock the service out on restart) or `REVIEW` (can change behaviour for traffic or other software, e.g. `sysctl -w`). Every config-derived path in a suggested command is shell-quoted. **Doctor never runs a fix**; the preview exists so an operator can review the exact command first.
 
 ## Support bundle
 
