@@ -50,4 +50,4 @@ Agents poll every 30 s by default, so a build takes a few minutes. The pairing c
 
 ## Not yet
 
-A dashboard form (use the API), real-systemd runs of a two-server build in CI and the full end-to-end on one release candidate (P1-F), and traffic-level checks beyond "service up and listening".
+BCC itself does not check traffic beyond "service up and listening"; `tests/e2e/launch1.sh` (CI job `e2e-launch1`) pushes real traffic through a built tunnel. The dashboard has the controls (Tunnels card).
