@@ -46,6 +46,14 @@ A command exiting successfully is never taken as proof. After health, each node 
 
 Every health result and observation is stored with the tunnel as **evidence** (`GET /api/tunnels?id=…`): step, node, time, OK, the raw report and any problems. The dashboard shows it under each tunnel.
 
+## Ownership markers
+
+Everything a change installs is labelled as BAFT's: `baft.service` starts with `# baft-managed: true`, `# baft-tunnel: <id>`, `# baft-generation: <n>`, and `<config-dir>/baft.managed.json` records `managed_by`, `tunnel_id`, `generation`, `role` and the SHA-256 of the config and the unit BAFT wrote. (The marker is a separate file because the config is strictly decoded and cannot carry comments.) Consequences:
+
+- `tunnel_observe` reports whether the node is managed, whose marker it is, and whether the live config and unit still match the marker. BCC requires the marker to name this tunnel and the verified generation, and both hashes to match; otherwise the change is rolled back.
+- **Rollback never overwrites what BAFT did not write.** If the live config, unit or marker was edited by hand after the commit, rollback is refused with "nothing was changed", the transaction stays committed, and the operator decides. Restoring the BAFT-written content (or reverting to the backup) lets the rollback proceed.
+- Rollback restores the previous marker, or removes it when there was none.
+
 ## Security
 
 - Jobs are signed by BCC and limited to the actions above; every parameter has a strict pattern (fixed-IP target, loopback route listen, no free text), checked again by the agent.

@@ -277,6 +277,7 @@ func goodObserved(t Tunnel, role string) tunnelnode.Observed {
 	o := tunnelnode.Observed{
 		TunnelID: t.ID, Role: role, Phase: tunnelnode.PhaseCommitted, Generation: 4, PreviousGeneration: 3, NodeGeneration: 4,
 		ServiceActive: true, UnitMatches: true, ConfigSHA256: strings.Repeat("a", 64), RouteID: t.RouteID,
+		Managed: true, MarkerTunnelID: t.ID, MarkerGeneration: 4, MarkerConfigMatches: true, MarkerUnitMatches: true,
 	}
 	if role == tunnelnode.RoleIR {
 		o.ConfigRole, o.RouteListen, o.PeerAddress = "dialer", t.RouteListen, fmt.Sprintf("%s:%d", t.PublicAddress, t.Port)
@@ -358,10 +359,14 @@ func TestObservedStateThatDiffersFromThePlanRollsBack(t *testing.T) {
 		"service not active":   func(o *tunnelnode.Observed) { o.ServiceActive = false },
 		"wrong route listener": func(o *tunnelnode.Observed) { o.RouteListen = "127.0.0.1:9" },
 		"wrong peer":           func(o *tunnelnode.Observed) { o.PeerAddress = "198.51.100.1:8443" },
-		"generation skipped":   func(o *tunnelnode.Observed) { o.Generation = 6 },
+		"generation skipped":   func(o *tunnelnode.Observed) { o.Generation, o.MarkerGeneration = 6, 6 },
 		"node counter differs": func(o *tunnelnode.Observed) { o.NodeGeneration = 9 },
 		"another change's id":  func(o *tunnelnode.Observed) { o.TunnelID = "tun-other" },
 		"unit drifted":         func(o *tunnelnode.Observed) { o.UnitMatches = false },
+		"not managed":          func(o *tunnelnode.Observed) { o.Managed = false },
+		"marker of another":    func(o *tunnelnode.Observed) { o.MarkerTunnelID = "tun-other" },
+		"config edited":        func(o *tunnelnode.Observed) { o.MarkerConfigMatches = false },
+		"unit edited":          func(o *tunnelnode.Observed) { o.MarkerUnitMatches = false },
 		"wrong config role":    func(o *tunnelnode.Observed) { o.ConfigRole = "listener" },
 		"not committed":        func(o *tunnelnode.Observed) { o.Phase = tunnelnode.PhasePrepared },
 	}
@@ -460,7 +465,7 @@ func TestReviewedGenerationIsEnforcedAtObservation(t *testing.T) {
 		t.Fatalf("tunnel did not keep the reviewed generation: %+v", tn.ExpectedGen)
 	}
 	o := goodObserved(tn, tunnelnode.RoleIR)
-	o.PreviousGeneration, o.Generation, o.NodeGeneration = 99, 100, 100 // locally consistent
+	o.PreviousGeneration, o.Generation, o.NodeGeneration = 99, 100, 100 // locally consistent; o.MarkerGeneration = o.Generation
 	ackObserved(t, s, "ir-1", o, now)
 	got, _ := s.GetTunnel(tn.ID)
 	if got.Phase != TunnelRollingBack || !strings.Contains(got.Error, "reviewed plan promised 4 -> 5") {
@@ -478,6 +483,7 @@ func TestReviewedGenerationIsEnforcedAtObservation(t *testing.T) {
 	for _, node := range []struct{ id, role string }{{"ir-1", tunnelnode.RoleIR}, {"ex-1", tunnelnode.RoleEX}} {
 		o := goodObserved(tn2, node.role)
 		o.PreviousGeneration, o.Generation, o.NodeGeneration = 4, 5, 5
+		o.MarkerGeneration = o.Generation
 		ackObserved(t, s2, node.id, o, now)
 	}
 	for _, node := range []string{"ir-1", "ex-1"} {
@@ -508,6 +514,7 @@ func TestBootstrapNodeNeedsOnlyLocalConsistency(t *testing.T) {
 	}
 	o := goodObserved(tn, tunnelnode.RoleIR)
 	o.PreviousGeneration, o.Generation, o.NodeGeneration = 7, 8, 8
+	o.MarkerGeneration = o.Generation
 	ackObserved(t, s, "ir-1", o, now)
 	if got, _ := s.GetTunnel(tn.ID); got.Phase != TunnelObservingEX || got.ObservedGen["ir-1"] != 8 {
 		t.Fatalf("bootstrap 7 -> 8: %s %q %v", got.Phase, got.Error, got.ObservedGen)
@@ -517,6 +524,7 @@ func TestBootstrapNodeNeedsOnlyLocalConsistency(t *testing.T) {
 	tn2 := driveToObserve(t, s2, now)
 	o2 := goodObserved(tn2, tunnelnode.RoleIR)
 	o2.PreviousGeneration, o2.Generation, o2.NodeGeneration = 7, 9, 9
+	o2.MarkerGeneration = o2.Generation
 	ackObserved(t, s2, "ir-1", o2, now)
 	if got, _ := s2.GetTunnel(tn2.ID); got.Phase != TunnelRollingBack {
 		t.Fatalf("7 -> 9 on a bootstrap node: %s", got.Phase)

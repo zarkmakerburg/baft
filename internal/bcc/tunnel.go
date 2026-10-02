@@ -750,6 +750,19 @@ func verifyObserved(t Tunnel, node, role string, o tunnelnode.Observed) []string
 	if len(o.ConfigSHA256) != 64 {
 		bad("config digest missing")
 	}
+	if !o.Managed {
+		bad("the node has no BAFT ownership marker for this configuration")
+	} else {
+		if o.MarkerTunnelID != t.ID || o.MarkerGeneration != o.Generation {
+			bad("ownership marker is for %q generation %d, want %q generation %d", o.MarkerTunnelID, o.MarkerGeneration, t.ID, o.Generation)
+		}
+		if !o.MarkerConfigMatches {
+			bad("the config differs from the one BAFT installed")
+		}
+		if !o.MarkerUnitMatches {
+			bad("the unit differs from the one BAFT installed")
+		}
+	}
 	if o.RouteID != t.RouteID {
 		bad("route id is %q, want %q", o.RouteID, t.RouteID)
 	}

@@ -425,7 +425,7 @@ func TestUnitMatchesInstallScript(t *testing.T) {
 		var out []string
 		for _, l := range strings.Split(text, "\n") {
 			l = strings.TrimSpace(l)
-			if l == "" || strings.Contains(l, "$") || skip(l) {
+			if l == "" || strings.Contains(l, "$") || strings.HasPrefix(l, "# baft-") || skip(l) {
 				continue
 			}
 			out = append(out, l)
@@ -500,5 +500,121 @@ func TestGenerationAndObservedStateAreEvidenceNotExitStatus(t *testing.T) {
 	}
 	if _, err := p.ex.Observe(ctx, "never"); err == nil {
 		t.Fatal("observing an unknown change succeeded")
+	}
+}
+
+func readMarker(t *testing.T, n *node) (Marker, bool) {
+	t.Helper()
+	var mk Marker
+	if err := readJSON(n.markerPath(), &mk); err != nil {
+		return Marker{}, false
+	}
+	return mk, true
+}
+
+func TestOwnershipMarkersAreWrittenAndRestored(t *testing.T) {
+	p := newPair(t)
+	listen(t, p.exPort)
+	listen(t, mustPort(p.irListen))
+	ctx := context.Background()
+	if _, ok := readMarker(t, p.ex); ok {
+		t.Fatal("marker exists before any change")
+	}
+	p.build(t, "m1")
+	for name, n := range map[string]*node{"ex": p.ex, "ir": p.ir} {
+		mk, ok := readMarker(t, n)
+		if !ok || mk.ManagedBy != "baft" || mk.TunnelID != "m1" || mk.Generation != 1 {
+			t.Fatalf("%s marker %+v ok=%v", name, mk, ok)
+		}
+		cfg, _ := os.ReadFile(n.liveConfig())
+		unit, _ := os.ReadFile(n.unitPath())
+		if mk.ConfigSHA256 != shaHex(cfg) || mk.UnitSHA256 != shaHex(unit) {
+			t.Fatalf("%s marker hashes do not match the files", name)
+		}
+		for _, want := range []string{"# baft-managed: true", "# baft-tunnel: m1", "# baft-generation: 1"} {
+			if !strings.Contains(string(unit), want) {
+				t.Fatalf("%s unit lacks %q", name, want)
+			}
+		}
+		o, err := n.Observe(ctx, "m1")
+		if err != nil || !o.Managed || o.MarkerTunnelID != "m1" || o.MarkerGeneration != 1 || !o.MarkerConfigMatches || !o.MarkerUnitMatches {
+			t.Fatalf("%s observed %+v err=%v", name, o, err)
+		}
+		if _, err := n.Finalize(ctx, "m1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, _ := readMarker(t, p.ex)
+
+	// A second change replaces the marker; rolling it back restores the first.
+	p.exp.Port = freePort(t)
+	p.build(t, "m2")
+	if mk, _ := readMarker(t, p.ex); mk.TunnelID != "m2" || mk.Generation != 2 {
+		t.Fatalf("marker after second change %+v", mk)
+	}
+	for _, n := range []*node{p.ex, p.ir} {
+		if _, err := n.Rollback(ctx, "m2"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mk, _ := readMarker(t, p.ex); mk != first {
+		t.Fatalf("marker after rollback %+v, want %+v", mk, first)
+	}
+}
+
+func TestRollbackOfAFreshChangeRemovesTheMarker(t *testing.T) {
+	p := newPair(t)
+	p.build(t, "only")
+	for _, n := range []*node{p.ex, p.ir} {
+		if _, err := n.Rollback(context.Background(), "only"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(n.markerPath()); !os.IsNotExist(err) {
+			t.Fatalf("marker left behind: %v", err)
+		}
+		if _, err := os.Stat(n.unitPath()); !os.IsNotExist(err) {
+			t.Fatalf("unit left behind: %v", err)
+		}
+	}
+}
+
+func TestRollbackRefusesToOverwriteExternalEdits(t *testing.T) {
+	p := newPair(t)
+	listen(t, p.exPort)
+	listen(t, mustPort(p.irListen))
+	ctx := context.Background()
+	p.build(t, "e1")
+	for _, n := range []*node{p.ex, p.ir} {
+		n.Finalize(ctx, "e1")
+	}
+	p.exp.Port = freePort(t)
+	p.build(t, "e2")
+
+	cfgBefore, _ := os.ReadFile(p.ex.liveConfig())
+	edited := append(append([]byte{}, cfgBefore...), []byte("\n# hand edit\n")...)
+	if err := os.WriteFile(p.ex.liveConfig(), edited, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	o, _ := p.ex.Observe(ctx, "e2")
+	if o.MarkerConfigMatches {
+		t.Fatal("observe does not notice the external edit")
+	}
+	msg, err := p.ex.Rollback(ctx, "e2")
+	if err == nil || !strings.Contains(err.Error(), "rollback refused") {
+		t.Fatalf("rollback over an external edit: %q %v", msg, err)
+	}
+	if now, _ := os.ReadFile(p.ex.liveConfig()); string(now) != string(edited) {
+		t.Fatal("refused rollback still changed the config")
+	}
+	if tx, _ := p.ex.readTxn("e2"); tx.Phase != PhaseCommitted {
+		t.Fatalf("phase moved to %s", tx.Phase)
+	}
+
+	// Restoring the BAFT-written content lets the rollback proceed.
+	if err := os.WriteFile(p.ex.liveConfig(), cfgBefore, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if msg, err := p.ex.Rollback(ctx, "e2"); err != nil || msg != "rolled back" {
+		t.Fatalf("rollback after restore: %q %v", msg, err)
 	}
 }
