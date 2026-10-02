@@ -79,6 +79,23 @@ Also sign the initial (empty) revocation list:
 2. In GitHub, create the environment `release`, restrict it to tags `v*`, and add the secrets `BAFT_RELEASE_SIGNING_KEY` (contents of `release.key`) and `BAFT_RELEASE_KEY_CERT` (contents of `release-key.cert.json`).
 3. Delete `release.key` from the offline machine once the secret is stored.
 
+## Offline installation bundle
+
+For servers with no internet access each release also carries `baft-offline-<version>.tar.gz` (and `.sha256`). It contains `release/` (the signed release files for amd64 and arm64, including the agent), `revocations.json` and `install.sh`.
+
+```bash
+sha256sum -c baft-offline-v0.1.1.tar.gz.sha256
+tar -xzf baft-offline-v0.1.1.tar.gz && cd baft-offline-v0.1.1
+sudo bash install.sh --offline . --role ex --public-address HOST_OR_IP
+sudo bash install.sh --offline . --agent-only --bcc-url ... --node-id ...
+```
+
+- `--offline` uses no network and no `apt`; `python3`, `openssl` and `sha256sum` must already be on the host (the installer stops and names the missing one).
+- The archive itself is **not** a trust anchor. The installer verifies `release/` against the root key pinned in `install.sh` and the bundled revocation list, with the same downgrade and re-tag protection as an online install; a repacked or tampered bundle is refused before anything is installed. `release/` can also be checked on its own with `baft-release verify -dir release ...`.
+- The revocation list expires; a bundle older than that is refused, so use a fresh one.
+- As with `curl | bash`, trust in the `install.sh` you run comes from where you got it: compare it with the file at the release tag, or take the whole bundle from the official release.
+- The archive is deterministic (sorted, fixed owner/mtime): `scripts/release/offline_bundle.sh` rebuilds the same bytes from the release assets, so anyone can compare. CI (`e2e-install-offline`) builds one, rejects a tampered copy and installs EX and IR from it with every download address pointed at a dead port.
+
 ## Rotation and revocation
 
 - Rotation: generate a new release key, certify it with the root, replace both secrets. Servers need no change.

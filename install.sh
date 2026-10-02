@@ -19,6 +19,9 @@ BAFT_REVOCATIONS_URL="${BAFT_REVOCATIONS_URL:-https://raw.githubusercontent.com/
 BAFT_PINNED_ROOT_PUB="NJq0LmZ503x67pdXSuNGmSOqaiNJDpYf9nDE8Bwa-JI"
 BAFT_ROOT_PUB="${BAFT_ROOT_PUB:-$BAFT_PINNED_ROOT_PUB}"
 BAFT_ALLOW_DOWNGRADE="${BAFT_ALLOW_DOWNGRADE:-0}"
+# Offline install: a directory unpacked from baft-offline-<version>.tar.gz. No
+# network is used; the release is still verified against the pinned root key.
+BAFT_OFFLINE_DIR="${BAFT_OFFLINE_DIR:-}"
 BAFT_GO_VERSION="${BAFT_GO_VERSION:-1.27.1}"
 BAFT_PREFIX="${BAFT_PREFIX:-/opt/baft}"
 BAFT_CONFIG_DIR="${BAFT_CONFIG_DIR:-/etc/baft}"
@@ -111,6 +114,9 @@ Options:
   --version vX.Y.Z    install this signed release (default: the latest)
   --allow-downgrade   accept a release older than the one installed
   --from-source       build from BAFT_REPO_URL at BAFT_REF (development only)
+  --offline DIR       install from an unpacked baft-offline-<version>.tar.gz: no
+                      network, no apt; python3 and openssl must already be installed.
+                      The release is verified exactly as for an online install.
 
 By default the installer downloads the signed release for this architecture,
 verifies it against the pinned root key and the current revocation list, and
@@ -119,7 +125,7 @@ refuses a downgrade or a re-tagged version (state in BAFT_RELEASE_STATE).
 Environment:
   BAFT_INSTALL_FROM (release|source) BAFT_VERSION BAFT_RELEASE_URL
   BAFT_GITHUB_REPO BAFT_REVOCATIONS_URL BAFT_ROOT_PUB BAFT_RELEASE_STATE
-  BAFT_ALLOW_DOWNGRADE
+  BAFT_ALLOW_DOWNGRADE BAFT_OFFLINE_DIR
   BAFT_REPO_URL BAFT_MIRROR_URL BAFT_REF BAFT_GO_VERSION (source installs)
   BAFT_PREFIX BAFT_CONFIG_DIR BAFT_STATE_DIR BAFT_PORT BAFT_SERVICE
   BAFT_TARGET (EX: fixed IP:port traffic exits to, default 127.0.0.1:2443)
@@ -150,6 +156,7 @@ while [[ $# -gt 0 ]]; do
     --version) BAFT_VERSION="${2:-}"; shift 2 ;;
     --allow-downgrade) BAFT_ALLOW_DOWNGRADE=1; shift ;;
     --from-source) BAFT_INSTALL_FROM=source; shift ;;
+    --offline) BAFT_OFFLINE_DIR="${2:-}"; shift 2 ;;
     --verify-release) VERIFY_ONLY_DIR="${2:-}"; shift 2 ;;
     --agent-only) AGENT_ONLY=1; shift ;;
     --bcc-url) BAFT_BCC_URL="${2:-}"; shift 2 ;;
@@ -489,11 +496,20 @@ case "$(dpkg --print-architecture)" in
 esac
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
-  apt-get install -y --no-install-recommends ca-certificates curl openssl python3
+if [[ -n "$BAFT_OFFLINE_DIR" ]]; then
+  [[ "$BAFT_INSTALL_FROM" == "release" ]] || die "--offline installs a signed release; it cannot be combined with --from-source"
+  [[ -d "$BAFT_OFFLINE_DIR" ]] || die "offline directory $BAFT_OFFLINE_DIR does not exist"
+  for c in python3 openssl sha256sum; do
+    command -v "$c" >/dev/null 2>&1 || die "offline install needs $c, which is not installed (install it from your OS media or mirror first)"
+  done
+  log "offline install from $BAFT_OFFLINE_DIR (no network, no apt)"
 else
-  apt-get install -y --no-install-recommends ca-certificates curl git jq python3 build-essential
+  apt-get update
+  if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
+    apt-get install -y --no-install-recommends ca-certificates curl openssl python3
+  else
+    apt-get install -y --no-install-recommends ca-certificates curl git jq python3 build-essential
+  fi
 fi
 
 install_go() {
@@ -535,20 +551,29 @@ REL_ARTIFACTS=("baft-linux-$GOARCH" "baft-pair-linux-$GOARCH")
 if [[ "$AGENT_ONLY" == "1" ]]; then REL_ARTIFACTS+=("baft-agent-linux-$GOARCH"); fi
 fetch_release() {
   local url="$BAFT_RELEASE_URL" f
-  if [[ -z "$url" ]]; then
-    if [[ -n "$BAFT_VERSION" ]]; then
-      url="https://github.com/${BAFT_GITHUB_REPO}/releases/download/${BAFT_VERSION}"
-    else
-      url="https://github.com/${BAFT_GITHUB_REPO}/releases/latest/download"
-    fi
-  fi
   REL_DIR="$(mktemp -d)"
   REL_REV="$(mktemp)"
   CLEANUP+=("$REL_DIR" "$REL_REV")
-  for f in manifest.json release-key.cert.json SHA256SUMS "${REL_ARTIFACTS[@]}"; do
-    curl -fsSL --retry 3 --retry-all-errors -o "$REL_DIR/$f" "$url/$f" || die "cannot download $f from $url"
-  done
-  curl -fsSL --retry 3 --retry-all-errors -o "$REL_REV" "$BAFT_REVOCATIONS_URL" || die "cannot download the revocation list from $BAFT_REVOCATIONS_URL"
+  if [[ -n "$BAFT_OFFLINE_DIR" ]]; then
+    for f in manifest.json release-key.cert.json SHA256SUMS "${REL_ARTIFACTS[@]}"; do
+      [[ -f "$BAFT_OFFLINE_DIR/release/$f" ]] || die "release/$f is missing from the offline bundle $BAFT_OFFLINE_DIR"
+      cp "$BAFT_OFFLINE_DIR/release/$f" "$REL_DIR/$f"
+    done
+    [[ -f "$BAFT_OFFLINE_DIR/revocations.json" ]] || die "revocations.json is missing from the offline bundle"
+    cp "$BAFT_OFFLINE_DIR/revocations.json" "$REL_REV"
+  else
+    if [[ -z "$url" ]]; then
+      if [[ -n "$BAFT_VERSION" ]]; then
+        url="https://github.com/${BAFT_GITHUB_REPO}/releases/download/${BAFT_VERSION}"
+      else
+        url="https://github.com/${BAFT_GITHUB_REPO}/releases/latest/download"
+      fi
+    fi
+    for f in manifest.json release-key.cert.json SHA256SUMS "${REL_ARTIFACTS[@]}"; do
+      curl -fsSL --retry 3 --retry-all-errors -o "$REL_DIR/$f" "$url/$f" || die "cannot download $f from $url"
+    done
+    curl -fsSL --retry 3 --retry-all-errors -o "$REL_REV" "$BAFT_REVOCATIONS_URL" || die "cannot download the revocation list from $BAFT_REVOCATIONS_URL"
+  fi
   local got
   got="$(verify_release "$REL_DIR" "$REL_REV" 0 "${REL_ARTIFACTS[@]}")" || die "the downloaded release did not verify; nothing was installed"
   log "verified signed release $got"
