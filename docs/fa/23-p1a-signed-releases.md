@@ -43,12 +43,16 @@ Release فقط وقتی پذیرفته می‌شود که: گواهی با Root 
 
 برای سرورهای بدون اینترنت هر release یک فایل `baft-offline-<version>.tar.gz` (و `.sha256`) هم دارد. داخلش `release/` (فایل‌های امضاشدهٔ amd64 و arm64 همراه agent)، `revocations.json` و `install.sh` است.
 
+<div dir="ltr" align="left">
+
 ```bash
 sha256sum -c baft-offline-v0.1.1.tar.gz.sha256
 tar -xzf baft-offline-v0.1.1.tar.gz && cd baft-offline-v0.1.1
 sudo bash install.sh --offline . --role ex --public-address HOST_OR_IP
 sudo bash install.sh --offline . --agent-only --bcc-url ... --node-id ...
 ```
+
+</div>
 
 - `--offline` هیچ شبکه و `apt` استفاده نمی‌کند؛ `python3`، `openssl` و `sha256sum` باید از قبل روی سرور باشد (نصب‌کننده می‌ایستد و مورد کم را نام می‌برد).
 - خود آرشیو **مرجع اعتماد نیست**. نصب‌کننده `release/` را با کلید ریشهٔ pinشده در `install.sh` و فهرست ابطال داخل بسته verify می‌کند، با همان محافظت downgrade و re-tag نصب آنلاین؛ بستهٔ دستکاری یا دوباره‌بسته‌شده قبل از هر نصبی رد می‌شود. `release/` را می‌شود جدا هم با `baft-release verify -dir release ...` بررسی کرد.
