@@ -124,9 +124,11 @@ func (g *IPGuard) AuthSuccess(ip string){
 	if st:=g.clients[ip];st!=nil{st.failures=0;st.failureStart=time.Time{}}
 }
 
-func (g *IPGuard) middleware(now func()time.Time,resolveIP func(*http.Request)string,next http.Handler) http.Handler {
+// middleware rate-limits /api/ requests, or every request when allPaths is
+// set (secret-path access, where probing for the path must be limited too).
+func (g *IPGuard) middleware(now func()time.Time,resolveIP func(*http.Request)string,allPaths bool,next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-		if !strings.HasPrefix(r.URL.Path,"/api/"){next.ServeHTTP(w,r);return}
+		if !allPaths&&!strings.HasPrefix(r.URL.Path,"/api/"){next.ServeHTTP(w,r);return}
 		ok,retry:=g.Allow(resolveIP(r),now())
 		if !ok{
 			w.Header().Set("Retry-After",strconv.Itoa(int((retry+time.Second-1)/time.Second)))

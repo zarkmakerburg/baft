@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +17,7 @@ import (
 )
 
 func main(){
+	if len(os.Args)>1&&os.Args[1]=="access"{os.Exit(runAccess(os.Args[2:]))}
 	listen:=flag.String("listen","127.0.0.1:8080","BCC HTTP listen address")
 	stateFile:=flag.String("state-file","./bcc-state.json","persistent BCC state file")
 	adminTokenFile:=flag.String("admin-token-file","","file containing BCC admin bearer token")
@@ -27,6 +30,10 @@ func main(){
 	backupInterval:=flag.Duration("backup-interval",24*time.Hour,"encrypted backup interval")
 	backupDailyRetention:=flag.Int("backup-daily-retention",7,"daily backup retention count")
 	backupWeeklyRetention:=flag.Int("backup-weekly-retention",4,"weekly backup retention count")
+	accessFile:=flag.String("access-file","","web access file (default <state-file>.access.json); create it with: baft-bcc access init")
+	tlsCert:=flag.String("tls-cert","","TLS certificate file (PEM); re-read when it changes")
+	tlsKey:=flag.String("tls-key","","TLS private key file (PEM)")
+	allowInsecureHTTP:=flag.Bool("allow-insecure-http",false,"serve plain HTTP on a non-loopback address (not recommended)")
 	flag.Parse()
 	if flag.NArg()!=0||*adminTokenFile==""{
 		fmt.Fprintln(os.Stderr,"usage: baft-bcc --admin-token-file <file> [--listen 127.0.0.1:8080] [--state-file bcc-state.json]")
@@ -39,6 +46,12 @@ func main(){
 	if err:=bcc.ValidateListenAddress(*listen,allowedIPs);err!=nil{
 		fmt.Fprintln(os.Stderr,"BCC listen:",err);os.Exit(2)
 	}
+	useTLS:=*tlsCert!=""||*tlsKey!=""
+	if useTLS&&(*tlsCert==""||*tlsKey==""){fmt.Fprintln(os.Stderr,"--tls-cert and --tls-key go together");os.Exit(2)}
+	if !useTLS&&!isLoopbackListen(*listen)&&!*allowInsecureHTTP{
+		fmt.Fprintln(os.Stderr,"BCC listen: a non-loopback address needs --tls-cert/--tls-key (or --allow-insecure-http)");os.Exit(2)
+	}
+	if *accessFile==""{*accessFile=*stateFile+".access.json"}
 
 	raw,err:=os.ReadFile(*adminTokenFile)
 	if err!=nil{fmt.Fprintln(os.Stderr,"admin token:",err);os.Exit(1)}
@@ -54,6 +67,9 @@ func main(){
 		if v:=strings.TrimSpace(part);v!=""{trustedProxies=append(trustedProxies,v)}
 	}
 	if err:=app.ConfigureTrustedProxies(trustedProxies);err!=nil{fmt.Fprintln(os.Stderr,"trusted proxies:",err);os.Exit(2)}
+	if err:=app.ConfigureAccess(*accessFile,useTLS);err!=nil{
+		fmt.Fprintf(os.Stderr,"BCC access: %v\ncreate it on this host with: baft-bcc access init --access-file %s\n",err,*accessFile);os.Exit(2)
+	}
 	if err:=app.ConfigureAuditAnchoring(strings.TrimSpace(os.Getenv("BAFT_BCC_AUDIT_ANCHOR_WEBHOOK_URL")),*auditAnchorInterval);err!=nil{
 		fmt.Fprintln(os.Stderr,"audit anchor:",err);os.Exit(2)
 	}
@@ -78,8 +94,16 @@ func main(){
 
 	srv:=&http.Server{Addr:*listen,Handler:app.Handler(),ReadHeaderTimeout:5*time.Second}
 	done:=make(chan error,1)
-	go func(){done<-srv.ListenAndServe()}()
-	fmt.Printf("BAFT Command Center listening on http://%s\n",*listen)
+	if useTLS{
+		certs:=&reloadingCert{certFile:*tlsCert,keyFile:*tlsKey}
+		if _,err:=certs.get(nil);err!=nil{fmt.Fprintln(os.Stderr,"TLS:",err);os.Exit(2)}
+		srv.TLSConfig=&tls.Config{MinVersion:tls.VersionTLS12,GetCertificate:certs.get}
+		go func(){done<-srv.ListenAndServeTLS("","")}()
+		fmt.Printf("BAFT Command Center listening on https://%s (dashboard under its secret path; see: baft-bcc access show)\n",*listen)
+	}else{
+		go func(){done<-srv.ListenAndServe()}()
+		fmt.Printf("BAFT Command Center listening on http://%s (dashboard under its secret path; see: baft-bcc access show)\n",*listen)
+	}
 
 	select{
 	case <-ctx.Done():
@@ -88,4 +112,12 @@ func main(){
 	case err:=<-done:
 		if err!=nil&&err!=http.ErrServerClosed{fmt.Fprintln(os.Stderr,"BCC stopped:",err);os.Exit(1)}
 	}
+}
+
+func isLoopbackListen(addr string) bool {
+	host,_,err:=net.SplitHostPort(addr)
+	if err!=nil{return false}
+	if host=="localhost"{return true}
+	ip:=net.ParseIP(host)
+	return ip!=nil&&ip.IsLoopback()
 }

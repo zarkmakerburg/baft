@@ -56,6 +56,7 @@ type Server struct {
 	mutationMu sync.Mutex
 	backupMu sync.Mutex
 	restoreFault func(string) error
+	access *accessGate
 	now func() time.Time
 }
 
@@ -87,6 +88,7 @@ func bearer(r *http.Request) string {
 }
 
 func (s *Server) admin(w http.ResponseWriter,r *http.Request) bool {
+	if s.sessionAdmin(r){return true}
 	got:=bearer(r)
 	ok:=len(got)==len(s.adminToken)&&subtle.ConstantTimeCompare([]byte(got),[]byte(s.adminToken))==1
 	if !ok{
@@ -165,7 +167,10 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/audit",s.auditEntries)
 	m.HandleFunc("/api/nodes/revoke",s.revokeNode)
 	m.HandleFunc("/api/nodes/rotate-token",s.rotateNodeToken)
-	return s.guard.middleware(s.now,s.clientIP,m)
+	if s.access!=nil{
+		return s.guard.middleware(s.now,s.clientIP,true,s.accessHandler(m))
+	}
+	return s.guard.middleware(s.now,s.clientIP,false,m)
 }
 
 func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
