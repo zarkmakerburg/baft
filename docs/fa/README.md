@@ -48,4 +48,7 @@
 
 15D. [ECRL — prior-art، مدل تهدید و invariant رسمی](15-stage-d-ecrl.md)
 
+
+28. [28 — سیستم بصری BCC](28-bcc-visual-system.md)
+
 </div>
