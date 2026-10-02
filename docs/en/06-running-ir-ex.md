@@ -71,3 +71,13 @@ sudo baft logs -n 200 -f    # journalctl for the service
 All three take `--service` (default `baft`); `status` and `doctor` also take `--file` (default `/etc/baft/baft.yaml`), `--release-state` (default `/opt/baft/release-state.json`) and `--json`.
 
 `doctor` checks: the config and revocation file load; private keys are owner-only; the service is active (WARN if it has restarted); the binary matches the installed signed release (WARN for a source install); the metrics endpoint answers and reports no conservation invariant violation; the IR reaches its EX and its local route listens, or the EX listener accepts and its route targets answer. It also reads (never writes) a few network settings — congestion control, default qdisc, socket buffer limits — and prints the `sysctl` it would recommend as INFO. Automatic tuning is P2.
+
+## Support bundle
+
+```bash
+sudo baft support-bundle [--file /etc/baft/baft.yaml] [--service baft] [--out report.tar.gz] [-n 500]
+```
+
+Writes one owner-only (`0600`) archive for a bug report; it refuses to overwrite an existing file and only reads the host. Contents: `status.json`, `doctor.json`, the configuration, the installer's release state, the service unit and `systemctl show` summary, the last `-n` journal lines, `system.txt` (`uname`, `/etc/os-release`) and a `manifest.json` listing each file's size and SHA-256, the redaction counts and anything that could not be collected.
+
+Never collected: Noise or TLS private-key files, pairing and PSK files, agent or admin tokens, user payload. Every text file is redacted before it is stored: PEM private keys, `BAFTPAIR1:` / `BAFTREPLY1:` codes, `Bearer` tokens and `token` / `password` / `passphrase` / `secret` / `private_key` assignments. Addresses, hostnames and node identities are **not** redacted, so review the bundle before sharing it. CI checks on a running node that no byte of its key files appears in the bundle (`tests/e2e/launch1.sh`).
