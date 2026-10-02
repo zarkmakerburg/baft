@@ -76,7 +76,7 @@ RAW OBSERVATIONS -> LAYER SAMPLING -> HYSTERESIS -> EFFECTIVE HEALTH -> alerts, 
 | RECOVERING، UNKNOWN | همان‌طور که هست نگه داشته می‌شود: نه چیز تازه‌ای، نه resolve |
 | UP | resolve می‌شود |
 
-نگاشت: L0 به `telemetry_stale`، L2 به `handshake_error_rate`، L4 به `route_down` (برای هر routeی که probe آن down است یک alert، تا وقتی L4 تأییدشده بد است؛ alert باز route تا UP شدن L4 می‌ماند). لایه‌های NOT_ASSESSED alert ندارند و NONE (بدون evidence) نه alert باز می‌کند نه می‌بندد. با سیاست پیش‌فرض و نمونه‌گیری ۱۰ ثانیه‌ای، `warning` با دومین نمونهٔ بد پیاپی (حدود ۲۰ ثانیه) و `critical` با پنجمین نمونه در دست‌کم ۳۰ ثانیه می‌آید؛ بازگشت از DEGRADED با ۳ نمونهٔ OK و از DOWN با ۵ نمونهٔ OK در دست‌کم ۳۰ ثانیه alert را می‌بندد.
+نگاشت: L0 به `telemetry_stale`، L1 به `node_unreachable` (فقط **DOWN** تأییدشده؛ L1 در DEGRADED فقط در داشبورد و تاریخچه می‌ماند)، L2 به `handshake_error_rate`، L4 به `route_down` (برای هر routeی که probe آن down است یک alert، تا وقتی L4 تأییدشده بد است؛ alert باز route تا UP شدن L4 می‌ماند). لایه‌های NOT_ASSESSED alert ندارند و NONE (بدون evidence) نه alert باز می‌کند نه می‌بندد. با سیاست پیش‌فرض و نمونه‌گیری ۱۰ ثانیه‌ای، `warning` با دومین نمونهٔ بد پیاپی (حدود ۲۰ ثانیه) و `critical` با پنجمین نمونه در دست‌کم ۳۰ ثانیه می‌آید؛ بازگشت از DEGRADED با ۳ نمونهٔ OK و از DOWN با ۵ نمونهٔ OK در دست‌کم ۳۰ ثانیه alert را می‌بندد.
 
 - یک probe شکست‌خورده، یک packet loss یا سیگنال نوسانی هیچ alertی باز نمی‌کند و alert storm نمی‌سازد.
 - payload وب‌هوک سه فیلد `severity`، `health` (وضعیت لایه پشت آن) و `evidence` (مشاهدهٔ خام، فقط به‌عنوان evidence) می‌گیرد. `status` همان `firing` یا `resolved` می‌ماند؛ ارتقا یک رویداد `firing` دیگر با `severity: critical` است. تا وقتی alert باز است شدت هرگز پایین‌تر نمی‌آید.
@@ -84,8 +84,16 @@ RAW OBSERVATIONS -> LAYER SAMPLING -> HYSTERESIS -> EFFECTIVE HEALTH -> alerts, 
 - alertها همراه state ذخیره می‌شوند، پس restart نه alert باز را تکرار می‌کند نه فراموشش. تحویل at-least-once است: اگر فراخوانی وب‌هوک شکست بخورد برای آن alert چیزی ثبت نمی‌شود و در ارزیابی بعد دوباره تلاش می‌شود. alertی که build قدیمی (بدون شدت) باز کرده بود بدون اعلان تازه پذیرفته می‌شود.
 - نمونه‌بردار سلامت (`ProbeOnce`) تنها نویسندهٔ وضعیت لایه است؛ موتور alert فقط می‌خواند، پس ارزیابی مکرر alert نمی‌تواند یک نمونه را دو بار بشمارد. وضعیت لحظه‌ای داشبورد (`/api/monitoring`) تغییر نکرده است.
 
+## node_unreachable
+
+probe خام TCP، بعد hysteresis لایهٔ L1، بعد **DOWN تأییدشدهٔ L1** است که `node_unreachable` را باز می‌کند. probe شکست‌خورده، probe نوسانی، L1 در DEGRADED، UNKNOWN و NOT_ASSESSED هرگز آن را باز نمی‌کنند؛ RECOVERING و UNKNOWN بازش نگه می‌دارند؛ UP شدن L1 آن را resolve می‌کند. کلید `node_unreachable:<node-id>` است، پس یک نود هرگز دو تا ندارد. `evidence_fields` آن: `node_id`، `address`، `previous_state`، `current_state`، `failure_started` (وقتی L1 تأییدشده DEGRADED شد) و `failure_duration`، `last_successful_reachability` (آخرین نمونهٔ OK، یا "never observed")، `transition_reason` و `event_id` (شناسهٔ ورودی audit با نام `health.transition` که L1 را DOWN کرد و در ورودی audit خود alert هم تکرار می‌شود). رویداد resolved مدت کل خرابی را دارد.
+
+## یک incident، یک اعلان
+
+تا وقتی `node_unreachable` برای یک نود باز است، alertهای دیگر همان نود (`telemetry_stale`، `route_down`، `handshake_error_rate`) جزو همان incident‌اند. هرکدام evidence لایهٔ خودش را نگه می‌دارد، ثبت می‌شود (`unnotified: true` و `correlated_with: node_unreachable:<node>`) و در audit می‌آید (`alert.correlated`، یا `alert.escalated` با `note`)، ولی برایش اعلانی فرستاده نمی‌شود: نه هنگام باز شدن، نه هنگام ارتقا، و نه هنگام resolve اگر هرگز اعلام نشده بود. alert ریشه فهرست آنچه را می‌پوشاند دارد (`correlated_alerts`). alertی که قبل از شروع incident اعلام شده بود اعلان قبلی‌اش می‌ماند و اگر بهبود یابد resolveاش فرستاده می‌شود. اگر incident دسترس‌ناپذیری تمام شود و alert پوشش‌داده‌شده هنوز بد باشد، همان موقع اعلام می‌شود (`alert.firing` با note «announced after incident ... ended»)، پس چیز واقعی ساکت نمی‌ماند.
+
 ## چه چیزی عوض نشده
 
-BCC هنوز alertی برای نودی که صرفاً در دسترس نیست (L1 در DOWN) ندارد؛ آن یک نوع alert جدید است و جزو این هم‌ترازسازی نیست. L3 و L5 و L6 تا وقتی BCC سیگنالی برایشان نگیرد NOT_ASSESSED می‌مانند.
+L3 و L5 و L6 تا وقتی BCC سیگنالی برایشان نگیرد NOT_ASSESSED می‌مانند.
 
 </div>

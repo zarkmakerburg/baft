@@ -41,6 +41,16 @@ type Alert struct {
 	Severity string `json:"severity,omitempty"`
 	Health   string `json:"health,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
+	// EvidenceFields is the structured evidence (node_unreachable carries the
+	// address, previous and current state, failure duration, last successful
+	// reachability, transition reason and event id).
+	EvidenceFields map[string]string `json:"evidence_fields,omitempty"`
+	// Unnotified: the alert is recorded but its notification was withheld
+	// because it belongs to a larger incident (CorrelatedWith names it).
+	// CorrelatedAlerts, on the root alert, lists what it covers.
+	Unnotified       bool     `json:"unnotified,omitempty"`
+	CorrelatedWith   string   `json:"correlated_with,omitempty"`
+	CorrelatedAlerts []string `json:"correlated_alerts,omitempty"`
 }
 
 type Server struct {

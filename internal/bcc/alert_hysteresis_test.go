@@ -78,11 +78,16 @@ type tickSpec struct {
 	silent    bool  // no new telemetry this tick
 	noTelem   bool  // the node never reports
 	probeDown bool
+	// staleProbe: the probe result is not refreshed (no new evidence for L1).
+	staleProbe bool
 }
 
 func (r *alertRig) tick(node string, s tickSpec) {
 	r.t.Helper()
 	setNode(r.t, r.store, node, func(n *Node) {
+		if s.staleProbe {
+			return
+		}
 		n.Health, n.LastChecked, n.LatencyMS = "up", r.now, 3
 		if s.probeDown {
 			n.Health = "down"
@@ -397,4 +402,265 @@ func TestAlertEngineIsRaceSafe(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+// ---- node_unreachable (L1) and correlation ----
+
+var unreachable = tickSpec{probeDown: true}
+
+func (r *alertRig) kinds(prefix string) []string {
+	var out []string
+	for _, e := range r.events() {
+		if strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (r *alertRig) active(key string) (Alert, bool) {
+	r.app.alertMu.Lock()
+	defer r.app.alertMu.Unlock()
+	a, ok := r.app.activeAlerts[key]
+	return a, ok
+}
+
+func TestNodeUnreachableNeedsConfirmedL1DownNotARawProbeFailure(t *testing.T) {
+	r := newAlertRig(t)
+	r.ticks(8, "n1", warm)
+	r.tick("n1", unreachable) // one failed probe
+	r.ticks(8, "n1", warm)
+	for i := 0; i < 40; i++ { // flapping probe
+		r.tick("n1", tickSpec{probeDown: i%2 == 0})
+	}
+	// Confirmed DEGRADED only (dashboard and history, not an alert): four bad
+	// samples are DEGRADED, five over thirty seconds would be DOWN.
+	r.ticks(8, "n1", warm)
+	r.ticks(3, "n1", unreachable)
+	if got := layerOf(r.store, "n1", LayerL1); got != HealthDegraded {
+		t.Fatalf("setup: L1 is %s, want DEGRADED", got)
+	}
+	r.ticks(4, "n1", warm)
+	if ev := r.events(); len(ev) != 0 {
+		t.Fatalf("raw failures or DEGRADED alerted: %v", ev)
+	}
+}
+
+func TestNodeUnreachableOpensOnceKeepsOneKeyAndResolvesAfterSustainedRecovery(t *testing.T) {
+	r := newAlertRig(t)
+	r.ticks(8, "n1", warm)
+	r.ticks(4, "n1", unreachable)
+	if len(r.events()) != 0 {
+		t.Fatalf("alerted before L1 was confirmed DOWN: %v", r.events())
+	}
+	r.tick("n1", unreachable) // fifth BAD over 40 s: confirmed DOWN
+	if !reflect.DeepEqual(r.events(), []string{"node_unreachable/firing/critical"}) {
+		t.Fatalf("at confirmed DOWN: %v", r.events())
+	}
+	r.ticks(30, "n1", unreachable)
+	if len(r.events()) != 1 {
+		t.Fatalf("duplicate alerts for one node: %v", r.events())
+	}
+	r.app.alertMu.Lock()
+	n := 0
+	for k := range r.app.activeAlerts {
+		if strings.HasPrefix(k, "node_unreachable:") {
+			n++
+		}
+	}
+	r.app.alertMu.Unlock()
+	if _, ok := r.active("node_unreachable:n1"); !ok || n != 1 {
+		t.Fatalf("expected exactly one node_unreachable:n1, have %d", n)
+	}
+
+	// RECOVERING keeps it open; sustained recovery (UP) resolves it, once.
+	r.ticks(4, "n1", warm)
+	if got := layerOf(r.store, "n1", LayerL1); got != HealthRecovering {
+		t.Fatalf("L1 is %s, want RECOVERING", got)
+	}
+	if len(r.events()) != 1 {
+		t.Fatalf("resolved while RECOVERING: %v", r.events())
+	}
+	r.ticks(3, "n1", warm)
+	if !reflect.DeepEqual(r.events(), []string{"node_unreachable/firing/critical", "node_unreachable/resolved/critical"}) {
+		t.Fatalf("after recovery: %v", r.events())
+	}
+	r.ticks(20, "n1", warm)
+	if len(r.events()) != 2 {
+		t.Fatalf("extra events: %v", r.events())
+	}
+}
+
+func TestNodeUnreachableCarriesTheRequiredEvidence(t *testing.T) {
+	r := newAlertRig(t)
+	r.ticks(8, "n1", warm)
+	lastOK := r.now.Add(-10 * time.Second) // the last warm tick
+	r.ticks(5, "n1", unreachable)
+	r.mu.Lock()
+	a := r.got[0]
+	r.mu.Unlock()
+	f := a.EvidenceFields
+	if a.Type != kindUnreachable || a.Severity != "critical" || a.Health != HealthDown {
+		t.Fatalf("alert: %+v", a)
+	}
+	for _, k := range []string{"node_id", "address", "previous_state", "current_state", "failure_duration", "last_successful_reachability", "transition_reason", "event_id"} {
+		if f[k] == "" {
+			t.Errorf("evidence lacks %s: %v", k, f)
+		}
+	}
+	if f["node_id"] != "n1" || f["address"] != "127.0.0.1:1" || f["previous_state"] != HealthDegraded || f["current_state"] != HealthDown {
+		t.Errorf("evidence: %v", f)
+	}
+	if f["last_successful_reachability"] != lastOK.UTC().Format(time.RFC3339) {
+		t.Errorf("last successful reachability %s, want %s", f["last_successful_reachability"], lastOK.UTC().Format(time.RFC3339))
+	}
+	if !strings.Contains(f["transition_reason"], "BAD samples") || !strings.Contains(a.Evidence, "L1 DEGRADED -> DOWN") {
+		t.Errorf("reason/evidence: %q / %q", f["transition_reason"], a.Evidence)
+	}
+	// The event id ties the alert to the health transition in the audit log.
+	entries, _ := r.app.audit.List(0)
+	found := false
+	for _, e := range entries {
+		if e.Action == "health.transition" && e.Details["event_id"] == f["event_id"] && e.Details["to"] == HealthDown && e.Details["layer"] == LayerL1 {
+			found = true
+		}
+		if e.Action == "alert.firing" && e.Details["event_id"] != f["event_id"] && e.Details["type"] == kindUnreachable {
+			t.Errorf("alert audit entry lacks the event id: %v", e.Details)
+		}
+	}
+	if !found {
+		t.Fatalf("no health.transition audit entry with event id %s", f["event_id"])
+	}
+}
+
+func TestUnknownReachabilityIsNotAFailureAndDoesNotResolve(t *testing.T) {
+	// Never probed: nothing to alert about.
+	r := newAlertRig(t)
+	r.ticks(60, "n1", tickSpec{staleProbe: true})
+	if ev := r.events(); len(ev) != 0 {
+		t.Fatalf("UNKNOWN reachability alerted: %v", ev)
+	}
+	// An open alert is held, not resolved, when evidence disappears.
+	r = newAlertRig(t)
+	r.ticks(8, "n1", warm)
+	r.ticks(8, "n1", unreachable)
+	r.ticks(40, "n1", tickSpec{staleProbe: true})
+	if got := layerOf(r.store, "n1", LayerL1); got != HealthUnknown {
+		t.Fatalf("L1 is %s, want UNKNOWN", got)
+	}
+	if _, ok := r.active("node_unreachable:n1"); !ok {
+		t.Fatal("UNKNOWN resolved the alert")
+	}
+	if got := r.kinds("node_unreachable"); !reflect.DeepEqual(got, []string{"node_unreachable/firing/critical"}) {
+		t.Fatalf("UNKNOWN produced events: %v", got)
+	}
+}
+
+func TestSimultaneousL0AndL1FailureIsOneIncidentNotAFlood(t *testing.T) {
+	r := newAlertRig(t)
+	r.ticks(8, "n1", warm)
+	// The node vanishes: the probe fails and telemetry stops.
+	r.ticks(60, "n1", tickSpec{probeDown: true, silent: true})
+	if got := r.events(); !reflect.DeepEqual(got, []string{"node_unreachable/firing/critical"}) {
+		t.Fatalf("notifications for one incident: %v", got)
+	}
+	// The layer evidence is kept: telemetry_stale is recorded, marked correlated,
+	// and audited, just not notified.
+	a, ok := r.active("telemetry_stale:n1")
+	if !ok || !a.Unnotified || a.CorrelatedWith != "node_unreachable:n1" {
+		t.Fatalf("telemetry_stale not recorded as correlated: %+v ok=%v", a, ok)
+	}
+	root, _ := r.active("node_unreachable:n1")
+	if !reflect.DeepEqual(root.CorrelatedAlerts, []string{"telemetry_stale:n1"}) {
+		t.Fatalf("the root alert does not list what it covers: %v", root.CorrelatedAlerts)
+	}
+	if au := r.auditActions(); !reflect.DeepEqual(au, []string{"alert.firing:node_unreachable:critical", "alert.correlated:telemetry_stale:warning", "alert.escalated:telemetry_stale:critical"}) {
+		t.Fatalf("audit: %v", au)
+	}
+	// Everything recovers: the root is resolved and announced; the covered alert
+	// was never announced, so it closes silently.
+	r.ticks(12, "n1", warm)
+	if got := r.events(); !reflect.DeepEqual(got, []string{"node_unreachable/firing/critical", "node_unreachable/resolved/critical"}) {
+		t.Fatalf("after recovery: %v", got)
+	}
+	r.app.alertMu.Lock()
+	left := len(r.app.activeAlerts)
+	r.app.alertMu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d alerts left open", left)
+	}
+}
+
+func TestCoveredAlertIsAnnouncedWhenTheIncidentEndsButItIsStillBad(t *testing.T) {
+	r := newAlertRig(t)
+	r.ticks(8, "n1", warm)
+	r.ticks(60, "n1", tickSpec{probeDown: true, silent: true})
+	if got := r.events(); len(got) != 1 {
+		t.Fatalf("setup: %v", got)
+	}
+	// The probe works again but the node's telemetry is still silent.
+	r.ticks(12, "n1", tickSpec{silent: true})
+	got := r.events()
+	want := []string{"node_unreachable/firing/critical", "node_unreachable/resolved/critical"}
+	if !reflect.DeepEqual(got[:2], want) || len(got) != 3 || !strings.HasPrefix(got[2], "telemetry_stale/firing") {
+		t.Fatalf("the still-bad covered alert was not announced after the incident: %v", got)
+	}
+	if a, ok := r.active("telemetry_stale:n1"); !ok || a.Unnotified || a.CorrelatedWith != "" {
+		t.Fatalf("alert state after announcement: %+v", a)
+	}
+}
+
+func TestEarlierL0AlertIsNotEscalatedLoudlyOnceTheNodeIsUnreachable(t *testing.T) {
+	r := newAlertRig(t)
+	r.ticks(8, "n1", warm)
+	// Telemetry goes quiet and, a moment later, the node stops answering
+	// probes. The L0 warning (silent tick 19) is announced first; the probe
+	// failure is confirmed DOWN at silent tick 21; L0 would escalate at tick 22.
+	r.ticks(16, "n1", tickSpec{silent: true})
+	r.ticks(40, "n1", tickSpec{silent: true, probeDown: true})
+	if got := r.kinds("telemetry_stale"); !reflect.DeepEqual(got, []string{"telemetry_stale/firing/warning"}) {
+		t.Fatalf("telemetry_stale notifications: %v (the correlated escalation must not be sent)", got)
+	}
+	if got := r.kinds("node_unreachable"); !reflect.DeepEqual(got, []string{"node_unreachable/firing/critical"}) {
+		t.Fatalf("node_unreachable: %v", got)
+	}
+	a, ok := r.active("telemetry_stale:n1")
+	if !ok || a.Severity != "critical" {
+		t.Fatalf("the escalation was not recorded: %+v ok=%v", a, ok)
+	}
+}
+
+func TestUnreachableIncidentIsDeterministicAndRestartSafe(t *testing.T) {
+	scenario := func(restartAt int) ([]string, []string) {
+		r := newAlertRig(t)
+		for i := 0; i < 120; i++ {
+			if i == restartAt {
+				r.open()
+			}
+			switch {
+			case i < 8:
+				r.tick("n1", warm)
+			case i < 60:
+				r.tick("n1", tickSpec{probeDown: true, silent: true})
+			case i < 70:
+				r.tick("n1", tickSpec{silent: true})
+			default:
+				r.tick("n1", warm)
+			}
+		}
+		return r.events(), r.auditActions()
+	}
+	control, controlAudit := scenario(-1)
+	if len(control) < 3 {
+		t.Fatalf("control: %v", control)
+	}
+	if again, _ := scenario(-1); !reflect.DeepEqual(again, control) {
+		t.Fatalf("not deterministic: %v vs %v", again, control)
+	}
+	for _, at := range []int{5, 10, 13, 14, 25, 45, 59, 61, 66, 72, 80, 110} {
+		ev, au := scenario(at)
+		if !reflect.DeepEqual(ev, control) || !reflect.DeepEqual(au, controlAudit) {
+			t.Fatalf("restart at tick %d changed the outcome\n got %v / %v\nwant %v / %v", at, ev, au, control, controlAudit)
+		}
+	}
 }
