@@ -638,14 +638,15 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=$BAFT_AGENT_BIN --bcc-url $BAFT_BCC_URL --node-id $BAFT_NODE_ID --token-file $BAFT_AGENT_DIR/token --bcc-job-key $BAFT_AGENT_DIR/bcc-job.pub $root_flag --state-dir $BAFT_AGENT_STATE_DIR --release-state $BAFT_RELEASE_STATE --bin-dir $bindir --service $BAFT_SERVICE $http_flag
+ExecStart=$BAFT_AGENT_BIN --bcc-url $BAFT_BCC_URL --node-id $BAFT_NODE_ID --token-file $BAFT_AGENT_DIR/token --bcc-job-key $BAFT_AGENT_DIR/bcc-job.pub $root_flag --state-dir $BAFT_AGENT_STATE_DIR --release-state $BAFT_RELEASE_STATE --bin-dir $bindir --service $BAFT_SERVICE --config-dir $BAFT_CONFIG_DIR --baft-state-dir $BAFT_STATE_DIR --service-user $BAFT_USER $http_flag
 Restart=always
 RestartSec=10s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$bindir $BAFT_PREFIX $BAFT_AGENT_STATE_DIR
+# Tunnel jobs write the BAFT config, keys and unit.
+ReadWritePaths=$bindir $BAFT_PREFIX $BAFT_AGENT_STATE_DIR $BAFT_CONFIG_DIR $BAFT_STATE_DIR /etc/systemd/system
 UMask=0077
 
 [Install]

@@ -43,11 +43,13 @@ var stateMigrations = []string{
 	 CREATE TABLE active_alerts (key TEXT PRIMARY KEY, doc TEXT NOT NULL);
 	 CREATE TABLE retired_boot_ids (node_id TEXT NOT NULL, boot_id TEXT NOT NULL, PRIMARY KEY (node_id, boot_id));
 	 CREATE TABLE counters (name TEXT PRIMARY KEY, value TEXT NOT NULL);`,
+	// 2: tunnel changes (P1-E).
+	`CREATE TABLE tunnels (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -62,7 +64,7 @@ func openStateDB(path string) (*sql.DB, error) {
 	} else {
 		f.Close()
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(DELETE)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)&_txlock=immediate")
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(DELETE)&_pragma=synchronous(FULL)&_pragma=secure_delete(ON)&_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +172,11 @@ func writeStateTx(tx *sql.Tx, st state) error {
 	}
 	for id, v := range st.Jobs {
 		if err := put(`INSERT INTO jobs VALUES (?, ?)`, id, v); err != nil {
+			return err
+		}
+	}
+	for id, v := range st.Tunnels {
+		if err := put(`INSERT INTO tunnels VALUES (?, ?)`, id, v); err != nil {
 			return err
 		}
 	}
@@ -322,6 +329,12 @@ func readStateDB(path string) (state, error) {
 			var v Job
 			err := decode("jobs", d, &v)
 			st.Jobs[k] = v
+			return err
+		}},
+		{`SELECT id, 0, doc FROM tunnels`, func(k string, _ int64, d []byte) error {
+			var v Tunnel
+			err := decode("tunnels", d, &v)
+			st.Tunnels[k] = v
 			return err
 		}},
 		{`SELECT node_id, 0, doc FROM finance`, func(k string, _ int64, d []byte) error {
