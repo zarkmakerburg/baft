@@ -49,6 +49,9 @@ BAFT_NODE_ID="${BAFT_NODE_ID:-}"
 BAFT_AGENT_BIN="${BAFT_AGENT_BIN:-/usr/local/bin/baft-agent}"
 BAFT_AGENT_DIR="${BAFT_AGENT_DIR:-/etc/baft-agent}"
 BAFT_AGENT_STATE_DIR="${BAFT_AGENT_STATE_DIR:-/var/lib/baft-agent}"
+# systemd unit name and poll interval of the agent (tests run two on one host).
+BAFT_AGENT_UNIT="${BAFT_AGENT_UNIT:-baft-agent}"
+BAFT_AGENT_INTERVAL="${BAFT_AGENT_INTERVAL:-30s}"
 CLEANUP=()
 cleanup(){ if ((${#CLEANUP[@]})); then rm -rf -- "${CLEANUP[@]}"; fi; }
 trap cleanup EXIT
@@ -629,7 +632,7 @@ install_agent() {
   if [[ -n "${BAFT_AGENT_RELEASE_BASE_URL:-}" ]]; then http_flag+=" --release-base-url $BAFT_AGENT_RELEASE_BASE_URL"; fi
   if [[ -n "${BAFT_AGENT_REVOCATIONS_URL:-}" ]]; then http_flag+=" --revocations-url $BAFT_AGENT_REVOCATIONS_URL"; fi
   bindir="$(dirname "$BAFT_BIN")"
-  cat >/etc/systemd/system/baft-agent.service <<UNIT
+  cat >"/etc/systemd/system/$BAFT_AGENT_UNIT.service" <<UNIT
 [Unit]
 Description=BAFT agent (signed BCC jobs)
 After=network-online.target
@@ -638,7 +641,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=$BAFT_AGENT_BIN --bcc-url $BAFT_BCC_URL --node-id $BAFT_NODE_ID --token-file $BAFT_AGENT_DIR/token --bcc-job-key $BAFT_AGENT_DIR/bcc-job.pub $root_flag --state-dir $BAFT_AGENT_STATE_DIR --release-state $BAFT_RELEASE_STATE --bin-dir $bindir --service $BAFT_SERVICE --config-dir $BAFT_CONFIG_DIR --baft-state-dir $BAFT_STATE_DIR --service-user $BAFT_USER $http_flag
+ExecStart=$BAFT_AGENT_BIN --bcc-url $BAFT_BCC_URL --node-id $BAFT_NODE_ID --token-file $BAFT_AGENT_DIR/token --bcc-job-key $BAFT_AGENT_DIR/bcc-job.pub $root_flag --state-dir $BAFT_AGENT_STATE_DIR --release-state $BAFT_RELEASE_STATE --bin-dir $bindir --service $BAFT_SERVICE --config-dir $BAFT_CONFIG_DIR --baft-state-dir $BAFT_STATE_DIR --service-user $BAFT_USER --metrics-listen $BAFT_METRICS_LISTEN --interval $BAFT_AGENT_INTERVAL $http_flag
 Restart=always
 RestartSec=10s
 NoNewPrivileges=true
@@ -653,8 +656,8 @@ UMask=0077
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
-  systemctl enable baft-agent.service
-  systemctl restart baft-agent.service
+  systemctl enable "$BAFT_AGENT_UNIT.service"
+  systemctl restart "$BAFT_AGENT_UNIT.service"
   log "baft-agent enrolled as $BAFT_NODE_ID with $BAFT_BCC_URL; add tunnels from BCC"
 }
 if [[ "$AGENT_ONLY" == "1" ]]; then

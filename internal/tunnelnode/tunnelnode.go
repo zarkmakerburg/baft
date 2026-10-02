@@ -56,8 +56,11 @@ type Env struct {
 	// Settle is how long the service must stay up before a commit or health
 	// check counts.
 	Settle time.Duration
-	System System
-	Now    func() time.Time
+	// MetricsListen is the loopback metrics address written into configs
+	// (default 127.0.0.1:9191).
+	MetricsListen string
+	System        System
+	Now           func() time.Time
 }
 
 const (
@@ -110,6 +113,9 @@ func New(env Env) (*Manager, error) {
 	}
 	if env.Service == "" {
 		env.Service = "baft"
+	}
+	if env.MetricsListen == "" {
+		env.MetricsListen = "127.0.0.1:9191"
 	}
 	if env.Settle == 0 {
 		env.Settle = 5 * time.Second
@@ -258,7 +264,7 @@ func (m *Manager) PrepareEX(ctx context.Context, id string, p ExParams) (string,
 		return "", err
 	}
 	if p.MetricsListen == "" {
-		p.MetricsListen = "127.0.0.1:9191"
+		p.MetricsListen = m.MetricsListen
 	}
 	t, err := m.begin(id, RoleEX)
 	if err != nil {
@@ -309,7 +315,7 @@ func (m *Manager) PrepareIR(ctx context.Context, id, code string, p IRParams) (s
 		return "", err
 	}
 	if p.MetricsListen == "" {
-		p.MetricsListen = "127.0.0.1:9191"
+		p.MetricsListen = m.MetricsListen
 	}
 	t, err := m.begin(id, RoleIR)
 	if err != nil {
@@ -704,21 +710,35 @@ func (m *Manager) writeConfig(b []byte) error {
 	return os.Rename(tmp, m.liveConfig())
 }
 
+// waitActive requires the service to be active, and to stay active without a
+// restart, for the whole settle window. A service that crash-loops is
+// reported as failed even if a sample happens to catch it running.
 func (m *Manager) waitActive(ctx context.Context) error {
-	deadline := m.Now().Add(m.Settle)
+	start := m.Now()
 	step := m.Settle / 10
 	if step < 5*time.Millisecond {
 		step = 5 * time.Millisecond
 	}
+	var since time.Time
 	for {
 		state, _ := m.System.Systemctl(ctx, "is-active", m.Service)
-		if state == "active" && !m.Now().Before(deadline) {
-			return nil
-		}
-		if state == "failed" || (state != "active" && state != "activating" && state != "reloading") {
+		now := m.Now()
+		switch {
+		case state == "active":
+			if since.IsZero() {
+				since = now
+			}
+			if now.Sub(since) >= m.Settle {
+				return nil
+			}
+		case since.IsZero() && (state == "activating" || state == "reloading"):
+			// still starting
+		case since.IsZero():
 			return fmt.Errorf("%s is %q after the change", m.Service, state)
+		default:
+			return fmt.Errorf("%s went %q after starting: it is restarting", m.Service, state)
 		}
-		if m.Now().After(deadline.Add(m.Settle * 3)) {
+		if since.IsZero() && now.Sub(start) > 4*m.Settle {
 			return fmt.Errorf("%s is still %q", m.Service, state)
 		}
 		select {
