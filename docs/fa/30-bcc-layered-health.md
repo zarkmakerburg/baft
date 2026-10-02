@@ -57,8 +57,35 @@ RECOVERING --(2 consecutive BAD)--> DOWN
 - audit: هر transition یک ورودی `health.transition` با target `<node>/<layer>` است، outcome برابر `failure` برای رفتن به DEGRADED یا DOWN، و جزئیات `layer`، `from`، `to`، `node_from`، `node_to`، `reason`، `evidence`.
 - state: رکوردها بخشی از پایگاه state در BCC (migration شمارهٔ ۳، جدول `node_health`) و پشتیبان‌های رمزشدهٔ آن هستند.
 
+## alertها از سلامت تأییدشده پیروی می‌کنند
+
+<div dir="ltr" align="left">
+
+```
+RAW OBSERVATIONS -> LAYER SAMPLING -> HYSTERESIS -> EFFECTIVE HEALTH -> alerts, webhook, API, dashboard
+```
+
+</div>
+
+موتور alert و webhook دیگر سیگنال لحظه‌ای را نمی‌خوانند. از وضعیت مؤثر یک لایه پیروی می‌کنند:
+
+| وضعیت لایه | alert |
+|---|---|
+| DEGRADED (تأییدشده) | با شدت `warning` باز می‌شود |
+| DOWN (تأییدشده) | با شدت `critical` باز می‌شود، یا از `warning` با یک رویداد دیگر ارتقا می‌یابد |
+| RECOVERING، UNKNOWN | همان‌طور که هست نگه داشته می‌شود: نه چیز تازه‌ای، نه resolve |
+| UP | resolve می‌شود |
+
+نگاشت: L0 به `telemetry_stale`، L2 به `handshake_error_rate`، L4 به `route_down` (برای هر routeی که probe آن down است یک alert، تا وقتی L4 تأییدشده بد است؛ alert باز route تا UP شدن L4 می‌ماند). لایه‌های NOT_ASSESSED alert ندارند و NONE (بدون evidence) نه alert باز می‌کند نه می‌بندد. با سیاست پیش‌فرض و نمونه‌گیری ۱۰ ثانیه‌ای، `warning` با دومین نمونهٔ بد پیاپی (حدود ۲۰ ثانیه) و `critical` با پنجمین نمونه در دست‌کم ۳۰ ثانیه می‌آید؛ بازگشت از DEGRADED با ۳ نمونهٔ OK و از DOWN با ۵ نمونهٔ OK در دست‌کم ۳۰ ثانیه alert را می‌بندد.
+
+- یک probe شکست‌خورده، یک packet loss یا سیگنال نوسانی هیچ alertی باز نمی‌کند و alert storm نمی‌سازد.
+- payload وب‌هوک سه فیلد `severity`، `health` (وضعیت لایه پشت آن) و `evidence` (مشاهدهٔ خام، فقط به‌عنوان evidence) می‌گیرد. `status` همان `firing` یا `resolved` می‌ماند؛ ارتقا یک رویداد `firing` دیگر با `severity: critical` است. تا وقتی alert باز است شدت هرگز پایین‌تر نمی‌آید.
+- هر transition alert یک ورودی audit هم هست (`alert.firing`، `alert.escalated`، `alert.resolved`) با نوع، route، شدت، وضعیت سلامت و evidence.
+- alertها همراه state ذخیره می‌شوند، پس restart نه alert باز را تکرار می‌کند نه فراموشش. تحویل at-least-once است: اگر فراخوانی وب‌هوک شکست بخورد برای آن alert چیزی ثبت نمی‌شود و در ارزیابی بعد دوباره تلاش می‌شود. alertی که build قدیمی (بدون شدت) باز کرده بود بدون اعلان تازه پذیرفته می‌شود.
+- نمونه‌بردار سلامت (`ProbeOnce`) تنها نویسندهٔ وضعیت لایه است؛ موتور alert فقط می‌خواند، پس ارزیابی مکرر alert نمی‌تواند یک نمونه را دو بار بشمارد. وضعیت لحظه‌ای داشبورد (`/api/monitoring`) تغییر نکرده است.
+
 ## چه چیزی عوض نشده
 
-قواعد alert (`telemetry_stale`، `route_down`، `handshake_error_rate`) و webhook هنوز از مقدارهای لحظه‌ای استفاده می‌کنند؛ سوار کردنشان روی این hysteresis تغییر جداست. L3 و L5 و L6 تا وقتی BCC سیگنالی برایشان نگیرد NOT_ASSESSED می‌مانند.
+BCC هنوز alertی برای نودی که صرفاً در دسترس نیست (L1 در DOWN) ندارد؛ آن یک نوع alert جدید است و جزو این هم‌ترازسازی نیست. L3 و L5 و L6 تا وقتی BCC سیگنالی برایشان نگیرد NOT_ASSESSED می‌مانند.
 
 </div>

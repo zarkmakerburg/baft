@@ -51,6 +51,29 @@ So healthy sessions (L2) cannot make a silent process (L0) look healthy, and a g
 - Audit log: every transition is an entry `health.transition` with target `<node>/<layer>`, outcome `failure` for a move to DEGRADED or DOWN, and details `layer`, `from`, `to`, `node_from`, `node_to`, `reason`, `evidence`.
 - State: the records are part of the BCC state database (schema migration 3, table `node_health`) and of its encrypted backups.
 
+## Alerts follow confirmed health
+
+```
+RAW OBSERVATIONS -> LAYER SAMPLING -> HYSTERESIS -> EFFECTIVE HEALTH -> alerts, webhook, API, dashboard
+```
+
+The alert engine and the webhook no longer read an instantaneous signal. They follow the effective state of a layer:
+
+| Layer state | Alert |
+|---|---|
+| DEGRADED (confirmed) | opened as `warning` |
+| DOWN (confirmed) | opened as `critical`, or escalated from `warning` with one more event |
+| RECOVERING, UNKNOWN | held as it is: nothing new, nothing resolved |
+| UP | resolved |
+
+Mapping: L0 -> `telemetry_stale`, L2 -> `handshake_error_rate`, L4 -> `route_down` (one alert per route whose probe is down while L4 is confirmed bad; an open route alert stays until L4 is UP). NOT_ASSESSED layers have no alert, and NONE (no evidence) can neither open nor close one. With the default policy and a 10 s sample interval, a `warning` follows at the second consecutive bad sample (about 20 s) and `critical` at the fifth over at least 30 s; a recovery closes after 3 OK samples from DEGRADED, or after 5 OK over at least 30 s from DOWN.
+
+- A single failed probe, a lost packet or a flapping signal opens nothing and cannot cause an alert storm.
+- The webhook payload gains `severity`, `health` (the layer state behind it) and `evidence` (the raw observation, kept only as evidence). `status` stays `firing` or `resolved`; an escalation is another `firing` event with `severity: critical`. A severity is never lowered while an alert is open.
+- Every alert transition is also an audit entry (`alert.firing`, `alert.escalated`, `alert.resolved`) with the type, route, severity, health state and evidence.
+- Alerts are persisted with the state, so a restart neither repeats an open alert nor forgets it. Delivery is at-least-once: if a webhook call fails, nothing is recorded for that alert and it is retried on the next evaluation. An alert opened by an older build (no severity) is adopted without a new notification.
+- The health sampler (`ProbeOnce`) is the only writer of layer state; the alert engine only reads it, so evaluating alerts more often cannot count a sample twice. The instantaneous dashboard status (`/api/monitoring`) is unchanged.
+
 ## What is not changed
 
-The alert rules (`telemetry_stale`, `route_down`, `handshake_error_rate`) and the webhook still use the instantaneous values; moving them onto this hysteresis is a separate change. L3, L5 and L6 stay NOT_ASSESSED until BCC receives a signal for them.
+BCC has no alert for a node that is merely unreachable (L1 DOWN) yet; that is a new alert type and not part of this alignment. L3, L5 and L6 stay NOT_ASSESSED until BCC receives a signal for them.
