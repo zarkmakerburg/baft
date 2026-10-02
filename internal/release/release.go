@@ -708,6 +708,9 @@ type VerifyInput struct {
 	// are refused, and so are older releases unless AllowDowngrade is set.
 	State          *TrustState
 	AllowDowngrade bool
+	// Only, when set, verifies a partial download: exactly these artifacts
+	// must be present (with signed hashes); other files are still refused.
+	Only []string
 }
 
 // Verified is a release that passed VerifyDir, with the revocation list it
@@ -827,7 +830,19 @@ func VerifyDir(in VerifyInput) (Verified, error) {
 		}
 		seen++
 	}
-	if seen != len(want) {
+	if len(in.Only) > 0 {
+		for _, name := range in.Only {
+			if _, ok := want[name]; !ok {
+				return v, fmt.Errorf("%s: not in the signed release", name)
+			}
+			if _, err := os.Stat(filepath.Join(in.Dir, name)); err != nil {
+				return v, fmt.Errorf("%s: missing", name)
+			}
+		}
+		if seen != len(in.Only) {
+			return v, errors.New("unexpected artifacts in a partial release download")
+		}
+	} else if seen != len(want) {
 		return v, fmt.Errorf("%d signed artifact(s) missing", len(want)-seen)
 	}
 	if in.State != nil && in.State.Version != "" {
