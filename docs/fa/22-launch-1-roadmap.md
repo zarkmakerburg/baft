@@ -4,6 +4,10 @@
 
 وضعیت: دامنه در ۲۰۲۶-۱۰-۰۱ پس از بررسی HQ روی Roadmap مشورتی، توسط صاحب پروژه تأیید شد. هر قدم زیر یک Mission جدا می‌شود (Scope، Non-scope، invariantها، تست، Exit Criteria، Rollback) و قبل از شروع جداگانه تأیید می‌شود.
 
+## شاخهٔ canonical
+
+تصمیم صاحب پروژه (۲۰۲۶-۱۰-۰۲): **`main` شاخهٔ canonical توسعه و release است.** توسعه، پذیرش (acceptance)، شاهد CI، tag و artifactهای release همه به یک SHA روی `main` اشاره می‌کنند. `release-v1-goldapp` شاخهٔ تاریخی است (۱۰۷ commit از `main` عقب است و commit مستقل ندارد)، دیگر برای کار استفاده نمی‌شود و recovery soak (`step57-recovery-soak`) حالا روی `main` اجرا می‌شود. اشاره‌های زیر به آن تاریخی است. بایگانی یا محافظت شاخهٔ قدیمی تصمیم تنظیمات مخزن و با صاحب پروژه است.
+
 ## مبنا
 
 - Freeze Candidate: کامیت `e38dd6a` روی `release-v1-goldapp`. Push CI، PR CI، Stage-C soak و recovery soak (همراه گیت churn) همه روی همین SHA پاس شدند. اعلام Core Freeze تصمیم صاحب پروژه است.
