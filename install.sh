@@ -14,9 +14,9 @@ BAFT_GITHUB_REPO="${BAFT_GITHUB_REPO:-zarkmakerburg/baft}"
 BAFT_VERSION="${BAFT_VERSION:-}"
 BAFT_RELEASE_URL="${BAFT_RELEASE_URL:-}"
 BAFT_REVOCATIONS_URL="${BAFT_REVOCATIONS_URL:-https://raw.githubusercontent.com/${BAFT_GITHUB_REPO}/main/release/keys/revocations.json}"
-# The offline release root public key (release/keys/root.pub). Empty until the
-# owner's key ceremony; release installs are refused until it is pinned here.
-BAFT_PINNED_ROOT_PUB=""
+# The offline release root public key (release/keys/root.pub). tests/docs
+# keeps it equal to that file.
+BAFT_PINNED_ROOT_PUB="NJq0LmZ503x67pdXSuNGmSOqaiNJDpYf9nDE8Bwa-JI"
 BAFT_ROOT_PUB="${BAFT_ROOT_PUB:-$BAFT_PINNED_ROOT_PUB}"
 BAFT_ALLOW_DOWNGRADE="${BAFT_ALLOW_DOWNGRADE:-0}"
 BAFT_GO_VERSION="${BAFT_GO_VERSION:-1.27.1}"
