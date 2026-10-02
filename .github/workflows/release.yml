@@ -61,6 +61,12 @@ jobs:
           BAFT_RELEASE_KEY_CERT: ${{ secrets.BAFT_RELEASE_KEY_CERT }}
         run: |
           set -euo pipefail
+          for v in BAFT_RELEASE_SIGNING_KEY BAFT_RELEASE_KEY_CERT; do
+            if [ -z "${!v}" ]; then
+              echo "::error title=Missing release secret::$v is empty. Add it to the 'release' environment (Settings > Environments > release > secrets) and re-run."
+              exit 1
+            fi
+          done
           printf '%s\n' "$BAFT_RELEASE_KEY_CERT" > "$RUNNER_TEMP/release-key.cert.json"
           go run ./cmd/baft-release sign -dir "$RUNNER_TEMP/dist" \
             -version "$GITHUB_REF_NAME" -commit "$GITHUB_SHA" \
@@ -75,6 +81,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error title=Release already exists::A GitHub release for $GITHUB_REF_NAME already exists. Delete that release (keep the tag) and re-run; this workflow creates the signed draft itself."
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* \
             --draft --verify-tag --title "BAFT $GITHUB_REF_NAME" \
             --notes "Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub -revocations release/keys/revocations.json"
