@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -273,10 +274,11 @@ func (s *Store) CreateEnrollmentJobs(workerID,publicKey string) ([]Job,error) {
 	return out,s.saveLocked()
 }
 
+// Deploys name a signed release tag, the only thing an agent will install.
+var deployVersionRe=regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
+
 func validVersion(v string) bool {
-	if v==""||len(v)>64{return false}
-	for _,r:=range v{if !(r>='a'&&r<='z'||r>='A'&&r<='Z'||r>='0'&&r<='9'||r=='.'||r=='_'||r=='-'){return false}}
-	return true
+	return len(v)<=64&&deployVersionRe.MatchString(v)
 }
 
 func (s *Store) CreateDeployJobs(nodeIDs []string,version string) ([]Job,error) {
