@@ -61,3 +61,19 @@ baft-agent --bcc-url https://bcc.example.com --node-id ex-1 \
 - `baft-agent` is now one of the signed release artifacts (`scripts/release/build.sh`).
 
 Tests (`internal/agent`, against a real `bcc.Server` and a locally signed release): a deploy job installs the verified release, keeps `.prev`, restarts the service, records the trust state, marks the BCC job succeeded and survives an agent restart without replay; a service that does not come up is rolled back and nothing is recorded; a tampered or older release changes nothing; jobs signed by an unpinned key are refused without touching the host; restart, reload and health call the right commands and a down service fails the job.
+
+## Enrolling a server (`install.sh --agent-only`)
+
+Servers first, tunnels second: a new server gets the BAFT binaries and the agent, and no tunnel config.
+
+```bash
+sudo BAFT_BCC_JOB_KEY="$(baft-bcc jobkey show)" BAFT_AGENT_TOKEN_FILE=/root/agent-token \
+  bash install.sh --agent-only --bcc-url https://bcc.example.com --node-id ex-1
+```
+
+- Installs `baft`, `baft-pair` and `baft-agent` from the signed release (verified as in [06-running-ir-ex.md](06-running-ir-ex.md)), and records the release in the trust state.
+- Writes `/etc/baft-agent/token` (root, 0600), `bcc-job.pub` (the pinned BCC job key) and `release-root.pub` (the pinned release root), and starts `baft-agent.service`: root, `NoNewPrivileges`, `ProtectSystem=strict` with write access only to the binary directory, `$BAFT_PREFIX` and the agent state directory.
+- The BCC URL must be `https://` (plain HTTP only with `BAFT_AGENT_ALLOW_HTTP=1`, for tests). `BAFT_AGENT_RELEASE_BASE_URL` and `BAFT_AGENT_REVOCATIONS_URL` override where the agent fetches updates.
+- CI job `e2e-agent-enroll` runs this against a real BCC on a systemd runner and checks that the agent pulls, verifies and acts on a signed deploy job.
+
+The SSH bootstrap from BCC (next) runs exactly this command on the new server.

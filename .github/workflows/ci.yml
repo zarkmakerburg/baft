@@ -173,6 +173,23 @@ jobs:
           sudo env GITHUB_ACTIONS=true BAFT_RUN_TESTS=0 BAFT_INSTALL_FROM=source \
             BAFT_REPO_URL="file://$GITHUB_WORKSPACE" BAFT_REF="$GITHUB_SHA" tests/e2e/install_two_roles.sh
 
+  e2e-agent-enroll:
+    # Server enrollment as SSH bootstrap will do it: install.sh --agent-only
+    # from a signed release, then a real BCC deploy job the systemd agent runs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Build a signed release with throwaway keys
+        run: scripts/release/local_release.sh "$RUNNER_TEMP/rel" v0.0.1-ci
+      - name: Enroll this host and run a signed job
+        run: sudo env GITHUB_ACTIONS=true PATH="$PATH" tests/e2e/agent_enroll.sh "$RUNNER_TEMP/rel"
+
   e2e-install-release:
     # The production path: install.sh downloads a signed release (built here
     # with throwaway keys), verifies it, and installs without Go or git.
