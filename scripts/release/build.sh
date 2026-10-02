@@ -11,7 +11,7 @@ set -euo pipefail
 version=${1:?usage: build.sh <version> <out-dir>}
 out=${2:?usage: build.sh <version> <out-dir>}
 
-binaries=(baft baft-pair baft-bcc)
+binaries=(baft baft-pair baft-bcc baft-agent)
 arches=(amd64 arm64)
 
 mkdir -p "$out"
