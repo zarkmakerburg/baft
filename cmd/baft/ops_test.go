@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,7 +62,9 @@ func newFakeHost(t *testing.T) *fakeHost {
 			}
 			return fakeMetrics, nil
 		},
-		procRoot: t.TempDir(),
+		procRoot:   t.TempDir(),
+		ownerUID:   func(string) (uint32, error) { return 1000, nil },
+		serviceUID: func(string) (uint32, error) { return 1000, nil },
 	}
 	return h
 }
@@ -78,7 +81,13 @@ func (h *fakeHost) sysctl(t *testing.T, name, value string) {
 
 // writeDialerConfig writes an IR config whose Noise key has the given mode.
 func writeDialerConfig(t *testing.T, keyMode os.FileMode) (cfgPath, keyPath string) {
-	dir := t.TempDir()
+	return writeDialerConfigIn(t, t.TempDir(), keyMode)
+}
+
+func writeDialerConfigIn(t *testing.T, dir string, keyMode os.FileMode) (cfgPath, keyPath string) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	keyPath = filepath.Join(dir, "noise-key.json")
 	if err := os.WriteFile(keyPath, []byte("{}"), keyMode); err != nil {
 		t.Fatal(err)
@@ -252,6 +261,180 @@ func TestLoopbackMapsWildcards(t *testing.T) {
 	for in, want := range map[string]string{"0.0.0.0:8443": "127.0.0.1:8443", ":8443": "127.0.0.1:8443", "[::]:8443": "[::1]:8443", "10.0.0.1:443": "10.0.0.1:443"} {
 		if got := loopback(in); got != want {
 			t.Errorf("loopback(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func doctorJSON(t *testing.T, h *fakeHost, args ...string) summary {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	runDoctor(append(args, "--json"), &out, &errOut, h.env)
+	var res struct {
+		Summary summary `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out.String())
+	}
+	return res.Summary
+}
+
+func layerStates(s summary) map[string]string {
+	m := map[string]string{}
+	for _, l := range s.Layers {
+		m[l.Layer] = l.State
+	}
+	return m
+}
+
+func TestDoctorVerdictNamesTheFailureDomainAndNeverCallsUnobservedLayersHealthy(t *testing.T) {
+	cfg, _ := writeDialerConfig(t, 0o600)
+	rel := writeReleaseState(t, "v"+version)
+
+	h := newFakeHost(t)
+	s := doctorJSON(t, h, "--file", cfg, "--release-state", rel)
+	if s.Verdict != verdictHealthy {
+		t.Fatalf("healthy node: %+v", s)
+	}
+	st := layerStates(s)
+	if st["L0"] != "PASS" || st["L1"] != "PASS" || st["L3"] != "PASS" || st["L4"] != "PASS" {
+		t.Fatalf("observed layers: %v", st)
+	}
+	for _, id := range []string{"L2", "L6"} {
+		if st[id] != "NOT_ASSESSED" {
+			t.Errorf("%s is %s: a layer doctor cannot observe must not read as PASS", id, st[id])
+		}
+	}
+
+	h = newFakeHost(t)
+	h.down["203.0.113.7:8443"] = true
+	s = doctorJSON(t, h, "--file", cfg, "--release-state", rel)
+	if s.Verdict != verdictFailing || s.LikelyDomain != "network path to the peer" || s.Confidence != "high" || s.NextAction == "" {
+		t.Fatalf("peer down: %+v", s)
+	}
+	if st := layerStates(s); st["L1"] != "FAIL" || st["L0"] != "PASS" {
+		t.Fatalf("layers with the peer down: %v", st)
+	}
+}
+
+func TestDoctorSeveralDomainsPicksTheLowestAndSaysItIsLessSure(t *testing.T) {
+	cfg, _ := writeDialerConfig(t, 0o644) // exposed key
+	h := newFakeHost(t)
+	h.down["203.0.113.7:8443"] = true
+	s := doctorJSON(t, h, "--file", cfg, "--release-state", writeReleaseState(t, "v"+version))
+	if s.LikelyDomain != "host security" || s.Confidence != "medium" {
+		t.Fatalf("two failing domains: %+v", s)
+	}
+}
+
+func TestDoctorTextHasProblemEvidenceImpactFixAndPreviewRunsNothing(t *testing.T) {
+	cfg, key := writeDialerConfig(t, 0o644)
+	h := newFakeHost(t)
+	h.sysctl(t, "net.core.default_qdisc", "pfifo_fast")
+	var out, errOut bytes.Buffer
+	runDoctor([]string{"--file", cfg, "--release-state", writeReleaseState(t, "v"+version)}, &out, &errOut, h.env)
+	for _, want := range []string{"BAFT doctor: FAILING", "likely failure domain: host security", "problem:", "evidence: ", "impact:", "fix:      chmod 0600 " + key, "L2", "NOT_ASSESSED"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("report lacks %q:\n%s", want, out.String())
+		}
+	}
+	calls := len(h.streamed)
+	out.Reset()
+	runDoctor([]string{"--file", cfg, "--release-state", writeReleaseState(t, "v"+version), "--preview-fixes"}, &out, &errOut, h.env)
+	p := out.String()
+	for _, want := range []string{"Preview only", "SAFE", "chmod 0600 " + key, "REVIEW", "sysctl -w net.core.default_qdisc=fq"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("preview lacks %q:\n%s", want, p)
+		}
+	}
+	if st, err := os.Stat(key); err != nil || st.Mode().Perm() != 0o644 {
+		t.Fatalf("preview changed the key's mode: %v %v", st, err)
+	}
+	if len(h.streamed) != calls {
+		t.Fatal("preview ran a command")
+	}
+}
+
+func keyCheck(t *testing.T, h *fakeHost, cfg string) check {
+	t.Helper()
+	_, c := doctorResult(t, h, "--file", cfg, "--release-state", writeReleaseState(t, "v"+version))
+	return c["private key"]
+}
+
+func TestKeyChmodIsSafeOnlyWhenTheServiceUserOwnsTheKey(t *testing.T) {
+	cfg, key := writeDialerConfig(t, 0o644)
+
+	h := newFakeHost(t) // owner 1000, service 1000
+	if c := keyCheck(t, h, cfg); c.FixSafety != fixSafe || c.FixCommand != "chmod 0600 "+key {
+		t.Fatalf("owned by the service user: %+v", c)
+	}
+
+	// A root-owned key under a service running as uid 1000: chmod 0600 would
+	// leave the service unable to read it after a restart.
+	h = newFakeHost(t)
+	h.env.ownerUID = func(string) (uint32, error) { return 0, nil }
+	c := keyCheck(t, h, cfg)
+	if c.FixSafety != fixReview || !strings.Contains(c.Hint, "lock the service out") || !strings.Contains(c.Hint, "uid 0") {
+		t.Fatalf("non-service-owned key: %+v", c)
+	}
+
+	// If ownership or the service user cannot be established, it is not SAFE.
+	h = newFakeHost(t)
+	h.env.serviceUID = func(string) (uint32, error) { return 0, errors.New("no systemd") }
+	if c := keyCheck(t, h, cfg); c.FixSafety != fixReview || !strings.Contains(c.Hint, "could not confirm") {
+		t.Fatalf("unknown service user: %+v", c)
+	}
+	h = newFakeHost(t)
+	h.env.ownerUID = nil
+	h.env.serviceUID = nil
+	if c := keyCheck(t, h, cfg); c.FixSafety != fixReview {
+		t.Fatalf("no owner information: %+v", c)
+	}
+}
+
+func TestFixCommandsQuoteEveryConfigDerivedPath(t *testing.T) {
+	// A valid path with spaces, a semicolon, $() and an apostrophe.
+	dir := filepath.Join(t.TempDir(), "my keys; $(touch PWNED) it's")
+	cfg, key := writeDialerConfigIn(t, dir, 0o644)
+	h := newFakeHost(t)
+	c := keyCheck(t, h, cfg)
+	if c.FixCommand == "" || c.FixCommand == "chmod 0600 "+key {
+		t.Fatalf("the path went into the command unquoted: %q", c.FixCommand)
+	}
+	if !strings.Contains(c.Hint, c.FixCommand) {
+		t.Errorf("hint does not carry the quoted command: %q", c.Hint)
+	}
+	// Run the suggested command for real, in the temp dir: it must change the
+	// mode of exactly that file and execute nothing else.
+	cmd := exec.Command("sh", "-c", c.FixCommand)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the suggested command failed: %v\n%s", err, out)
+	}
+	if st, _ := os.Stat(key); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode after the fix: %v", st.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "PWNED")); err == nil {
+		t.Fatal("the suggested command executed text taken from the config path")
+	}
+	// The preview prints the same quoted command (open the key up again first).
+	os.Chmod(key, 0o644)
+	var out, errOut bytes.Buffer
+	runDoctor([]string{"--file", cfg, "--release-state", writeReleaseState(t, "v"+version), "--preview-fixes"}, &out, &errOut, h.env)
+	if !strings.Contains(out.String(), c.FixCommand) {
+		t.Fatalf("preview lacks the quoted command:\n%s", out.String())
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		"/etc/baft/noise-key.json": "/etc/baft/noise-key.json",
+		"a b":                      "'a b'",
+		"it's":                     `'it'\''s'`,
+		"$(x)":                     "'$(x)'",
+		"":                         "''",
+	} {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

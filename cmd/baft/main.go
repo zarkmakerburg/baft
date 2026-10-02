@@ -169,7 +169,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  baft config stealth-pro --file <config.yaml> [padding/jitter flags]")
 	fmt.Fprintln(w, "  baft run --file <config.yaml>")
 	fmt.Fprintln(w, "  baft status [--file /etc/baft/baft.yaml] [--service baft] [--json]")
-	fmt.Fprintln(w, "  baft doctor [--file /etc/baft/baft.yaml] [--service baft] [--json]")
+	fmt.Fprintln(w, "  baft doctor [--file /etc/baft/baft.yaml] [--service baft] [--json] [--preview-fixes]")
 	fmt.Fprintln(w, "  baft logs [--service baft] [-n 100] [-f]")
 	fmt.Fprintln(w, "  baft support-bundle [--out file.tar.gz] [-n 500]   # secret-safe diagnostics archive")
 }
