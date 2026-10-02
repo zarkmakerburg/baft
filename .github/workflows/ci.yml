@@ -190,6 +190,24 @@ jobs:
       - name: Enroll this host and run a signed job
         run: sudo env GITHUB_ACTIONS=true PATH="$PATH" tests/e2e/agent_enroll.sh "$RUNNER_TEMP/rel"
 
+  e2e-ssh-bootstrap:
+    # SSH bootstrap against a real sshd: host-key pinning, a wrong fingerprint
+    # refused before anything runs, install.sh --agent-only over SSH, and the
+    # enrolled agent running a signed job.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Build a signed release with throwaway keys
+        run: scripts/release/local_release.sh "$RUNNER_TEMP/rel" v0.0.3-ci
+      - name: Bootstrap this host over SSH
+        run: sudo env GITHUB_ACTIONS=true PATH="$PATH" tests/e2e/ssh_bootstrap.sh "$RUNNER_TEMP/rel"
+
   e2e-launch1:
     # Launch-1 end to end on this exact commit: signed release, BCC, two
     # servers enrolled with install.sh --agent-only, a tunnel built by BCC with
