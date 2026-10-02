@@ -125,9 +125,14 @@ func TestOnlyTheSecretPathServesTheDashboard(t *testing.T) {
 			t.Errorf("GET %s = %d, want 404", p, rr.Code)
 		}
 	}
+	// Without a session the secret path shows a static welcome page that links to
+	// the sign-in form; no dashboard content and no data.
 	rr := r.do(httptest.NewRequest(http.MethodGet, r.base(), nil))
-	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `name="password"`) || strings.Contains(rr.Body.String(), "Recent Jobs") {
-		t.Fatalf("secret path without a session should show only the login: %d", rr.Code)
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `href="`+r.base()+`login"`) || strings.Contains(rr.Body.String(), "Recent Jobs") || strings.Contains(rr.Body.String(), "/api/") {
+		t.Fatalf("secret path without a session should show only the welcome page: %d", rr.Code)
+	}
+	if login := r.do(httptest.NewRequest(http.MethodGet, r.base()+"login", nil)); login.Code != 200 || !strings.Contains(login.Body.String(), `name="password"`) || strings.Contains(login.Body.String(), "Recent Jobs") {
+		t.Fatalf("sign-in page: %d", login.Code)
 	}
 	if rr.Header().Get("Cache-Control") != "no-store" || rr.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatal("missing security headers")
@@ -259,5 +264,27 @@ func TestRepeatedLoginFailuresAreBlocked(t *testing.T) {
 	}
 	if rr := r.login(r.creds.Username, r.creds.Password); rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("login after 5 failures = %d, want 429", rr.Code)
+	}
+}
+
+func TestLoginAndWelcomePagesRenderWithoutFormatArtifacts(t *testing.T) {
+	// The templates are full of literal % (CSS); a fmt verb would corrupt them.
+	for name, page := range map[string]string{
+		"welcome":      renderWelcome("/secret/login"),
+		"login":        renderLogin("/secret/login", `bad <b>"input"</b>`),
+		"login-no-err": renderLogin("/secret/login", ""),
+	} {
+		if strings.Contains(page, "%!") || strings.Contains(page, "{{") {
+			t.Errorf("%s page has format artifacts or unfilled placeholders", name)
+		}
+		if !strings.Contains(page, "%") {
+			t.Errorf("%s page lost its CSS percentages", name)
+		}
+	}
+	if !strings.Contains(renderWelcome("/s/login"), `href="/s/login"`) || !strings.Contains(renderLogin("/s/login", ""), `action="/s/login"`) {
+		t.Error("login URL not filled in")
+	}
+	if page := renderLogin("/s/login", `<script>x</script>`); strings.Contains(page, "<script>x") {
+		t.Error("error text is not escaped")
 	}
 }
