@@ -49,4 +49,4 @@ The install script that runs on the server is the file given by `--install-scrip
 
 ## Not yet
 
-A dashboard form (use the API for now), and a full end-to-end run against a real SSH server in CI (P1-F).
+Traffic-level checks beyond "the agent runs a signed job". The dashboard has the form (Add a server over SSH); the real-sshd run is `tests/e2e/ssh_bootstrap.sh`.

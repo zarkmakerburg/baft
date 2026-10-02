@@ -36,6 +36,27 @@ canvas{width:100%;height:240px;background:#0b1019;border-radius:12px;margin-top:
 <input id="pub" placeholder="public key"><input id="agentEnv" placeholder="agent token env name"><button onclick="saveNode()">Save Node</button>
 </div></div>
 
+<div class="card"><b>Add a server over SSH</b>
+<div class="muted" style="margin-top:6px">1) read the host key and compare its fingerprint with your provider's panel, 2) confirm, 3) install the agent. The SSH password or key is sent once over this connection and is never stored or logged.</div>
+<div class="grid" style="margin-top:12px">
+<input id="bsId" placeholder="node id (e.g. ex-1)"><input id="bsAlias" placeholder="alias"><select id="bsRole"><option value="foreign">foreign (EX)</option><option value="worker">worker (IR)</option><option value="master">master (IR)</option></select><span></span>
+<input id="bsHost" placeholder="host or IP"><input id="bsPort" placeholder="ssh port" value="22"><input id="bsUser" placeholder="ssh user" value="root"><button class="alt" onclick="bsScan()">1. Read host key</button>
+</div>
+<div id="bsFp" class="muted" style="margin-top:10px;font-family:monospace;word-break:break-all">—</div>
+<label style="display:block;margin-top:8px"><input type="checkbox" id="bsOk" onchange="bsGate()"> I compared this fingerprint with the server's real one</label>
+<div class="grid" style="margin-top:12px;grid-template-columns:1fr 2fr 1fr">
+<input id="bsPass" type="password" autocomplete="off" placeholder="ssh password"><textarea id="bsKey" rows="3" autocomplete="off" spellcheck="false" placeholder="or paste an SSH private key (PEM)" style="background:#0b1019;border:1px solid #2a3650;color:#fff;border-radius:10px;padding:10px"></textarea><input id="bsPhrase" type="password" autocomplete="off" placeholder="key passphrase (if any)">
+</div>
+<div class="actions"><button id="bsGo" onclick="bsRun()" disabled>2. Install agent</button></div>
+<pre id="bsOut" class="muted" style="white-space:pre-wrap;margin-top:10px"></pre></div>
+
+<div class="card"><div class="top"><b>Tunnels</b><button class="alt" onclick="loadTunnels()">Refresh</button></div>
+<div class="grid" style="margin-top:12px">
+<select id="tnEx"></select><select id="tnIr"></select><input id="tnPort" placeholder="EX port" value="8443"><button onclick="tnBuild()">Build tunnel</button>
+</div>
+<div class="muted" style="margin-top:8px">BCC prepares both ends, installs them, checks health and rolls both back if anything fails. Other settings take the defaults of the API.</div>
+<div class="tablewrap"><table><thead><tr><th>ID</th><th>EX</th><th>IR</th><th>Phase</th><th>Detail</th><th></th></tr></thead><tbody id="tnRows"></tbody></table></div></div>
+
 <div class="card"><div class="top"><b>Cluster Nodes</b><span id="count" class="muted"></span></div>
 <div class="tablewrap"><table><thead><tr><th></th><th>Alias</th><th>ID</th><th>Address</th><th>Role</th><th>Health Check</th><th>Last Check</th><th>Security</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="actions"><button onclick="deploy()">One-Click Deploy Selected</button><button class="alt" onclick="loadAll()">Refresh</button></div></div>
@@ -84,6 +105,13 @@ function reportURL(format){let p=q('#reportPeriod').value,f=q('#reportFrom').val
 async function loadFinanceReport(){if(!token())return;let r=await fetch(reportURL(''),{headers:ah()});if(!r.ok){alert(await r.text());return}let data=await r.json();q('#reportRows').innerHTML=data.rows.map(x=>'<tr><td>'+esc(x.period)+'</td><td>'+esc(x.scope)+'</td><td>'+esc(x.node_id||'ALL')+'</td><td>'+esc(x.ingress_bytes)+'</td><td>'+esc(x.egress_bytes)+'</td><td>'+esc(x.cost_micros)+'</td><td>'+esc(x.revenue_micros)+'</td><td>'+esc(x.profit_micros)+'</td><td>'+esc(x.currency)+'</td></tr>').join('')}
 async function downloadFinanceCSV(){if(!token())return;let r=await fetch(reportURL('csv'),{headers:ah()});if(!r.ok){alert(await r.text());return}let blob=await r.blob(),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='baft-finance-'+q('#reportPeriod').value+'.csv';a.click();URL.revokeObjectURL(u)}
 function initReportDates(){let d=new Date(),to=d.toISOString().slice(0,10),first=new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),1)).toISOString().slice(0,10);q('#reportFrom').value=first;q('#reportTo').value=to}
-async function loadAll(){await loadNodes();await Promise.all([loadMonitoring(),loadJobs(),loadFinance(),loadAudit()])}
-initReportDates();loadAll();setInterval(()=>{loadMonitoring();loadFinance()},5000);
+function bsGate(){q('#bsGo').disabled=!q('#bsOk').checked||!q('#bsFp').dataset.fp}
+async function bsScan(){q('#bsOk').checked=false;q('#bsFp').dataset.fp='';bsGate();let r=await fetch('/api/bootstrap/hostkey',{method:'POST',headers:ah(),body:JSON.stringify({host:q('#bsHost').value.trim(),port:Number(q('#bsPort').value)||22})});let t=await r.text();if(!r.ok){q('#bsFp').textContent=t;return}let d=JSON.parse(t);q('#bsFp').dataset.fp=d.fingerprint;q('#bsFp').textContent=d.key_type+'  '+d.fingerprint}
+async function bsRun(){let fp=q('#bsFp').dataset.fp;if(!fp||!q('#bsOk').checked)return;let body={node_id:q('#bsId').value.trim(),alias:q('#bsAlias').value.trim(),role:q('#bsRole').value,host:q('#bsHost').value.trim(),port:Number(q('#bsPort').value)||22,user:q('#bsUser').value.trim(),host_key_fingerprint:fp,password:q('#bsPass').value,private_key:q('#bsKey').value,passphrase:q('#bsPhrase').value};if(body.private_key)body.password='';q('#bsGo').disabled=true;q('#bsOut').textContent='Installing… this can take a few minutes.';let r=await fetch('/api/bootstrap',{method:'POST',headers:ah(),body:JSON.stringify(body)});let t=await r.text();body.password=body.private_key=body.passphrase='';q('#bsPass').value=q('#bsKey').value=q('#bsPhrase').value='';q('#bsOk').checked=false;q('#bsFp').dataset.fp='';bsGate();if(r.ok){try{t=JSON.parse(t).output||'Installed.'}catch(e){}}q('#bsOut').textContent=(r.ok?'OK\n':'FAILED\n')+t;loadAll()}
+function tnFill(){let opt=(role)=>nodes.filter(n=>role.includes(n.role)&&!n.revoked).map(n=>'<option value="'+esc(n.id)+'">'+esc(n.alias||n.id)+' ('+esc(n.id)+')</option>').join('');let ex=q('#tnEx'),ir=q('#tnIr'),a=ex.value,b=ir.value;ex.innerHTML='<option value="">EX node…</option>'+opt(['foreign']);ir.innerHTML='<option value="">IR node…</option>'+opt(['worker','master']);ex.value=a;ir.value=b}
+async function tnBuild(){let body={ex_node:q('#tnEx').value,ir_node:q('#tnIr').value,port:Number(q('#tnPort').value)||8443};if(!body.ex_node||!body.ir_node){alert('Choose the EX and IR nodes');return}let r=await fetch('/api/tunnels',{method:'POST',headers:ah(),body:JSON.stringify(body)});if(!r.ok)alert(await r.text());loadTunnels();loadAudit()}
+async function tnCancel(id){let reason=prompt('Cancel and roll back tunnel '+id+'. Reason (optional)','');if(reason===null)return;let r=await fetch('/api/tunnels/cancel',{method:'POST',headers:ah(),body:JSON.stringify({id,reason})});if(!r.ok)alert(await r.text());loadTunnels();loadAudit()}
+async function loadTunnels(){if(!token())return;let r=await fetch('/api/tunnels',{headers:ah()});if(!r.ok)return;let ts=await r.json();tnFill();q('#tnRows').innerHTML=ts.map(t=>{let final=['active','superseded','rolled_back'].includes(t.phase);let cls=t.phase==='active'?'up':(t.phase==='rolled_back'||t.phase==='rollback_failed'?'down':'unknown');return '<tr><td>'+esc(t.id)+'</td><td>'+esc(t.ex_node)+'</td><td>'+esc(t.ir_node)+'</td><td><span class="badge '+cls+'">'+esc(t.phase)+'</span></td><td>'+esc(t.error||'')+'</td><td>'+(final?'':'<button class="alt" data-id="'+esc(t.id)+'" onclick="tnCancel(this.dataset.id)">Cancel</button>')+'</td></tr>'}).join('')}
+async function loadAll(){await loadNodes();await Promise.all([loadMonitoring(),loadJobs(),loadFinance(),loadAudit(),loadTunnels()])}
+initReportDates();loadAll();setInterval(()=>{loadMonitoring();loadFinance();loadTunnels()},5000);
 </script></body></html>`
