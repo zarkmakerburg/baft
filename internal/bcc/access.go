@@ -30,11 +30,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
 const (
 	accessSchemaVersion = 1
-	pbkdf2Iterations    = 600_000
+	pbkdf2Iterations    = 600_000 // legacy hashes only; new ones are Argon2id
+	argonTime           = 3
+	argonMemoryKiB      = 64 * 1024
+	argonThreads        = 4
 	sessionCookie       = "baft_bcc_session"
 	sessionIdleTimeout  = 30 * time.Minute
 	sessionMaxLifetime  = 12 * time.Hour
@@ -76,22 +81,70 @@ func randomString(alphabet string, n int) (string, error) {
 	return string(b), nil
 }
 
+// hashPassword returns an Argon2id hash: 64 MiB, 3 passes, 4 lanes, random
+// 16-byte salt, 32-byte output.
 func hashPassword(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key, err := pbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, 32)
-	if err != nil {
-		return "", err
-	}
+	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemoryKiB, argonThreads, 32)
 	enc := base64.RawStdEncoding
-	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", pbkdf2Iterations, enc.EncodeToString(salt), enc.EncodeToString(key)), nil
+	return fmt.Sprintf("argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, argonMemoryKiB, argonTime, argonThreads, enc.EncodeToString(salt), enc.EncodeToString(key)), nil
 }
 
+// verifyPassword checks an Argon2id hash, or a PBKDF2 hash written by an
+// earlier version until the access file is regenerated. Parameters read from
+// the file are bounded so a damaged file cannot demand unbounded work.
 func verifyPassword(encoded, password string) bool {
+	switch {
+	case strings.HasPrefix(encoded, "argon2id$"):
+		return verifyArgon2id(encoded, password)
+	case strings.HasPrefix(encoded, "pbkdf2-sha256$"):
+		return verifyLegacyPBKDF2(encoded, password)
+	}
+	return false
+}
+
+func verifyArgon2id(encoded, password string) bool {
 	parts := strings.Split(encoded, "$")
-	if len(parts) != 4 || parts[0] != "pbkdf2-sha256" {
+	if len(parts) != 5 || parts[1] != "v="+strconv.Itoa(argon2.Version) {
+		return false
+	}
+	var m, t, p int
+	for _, kv := range strings.Split(parts[2], ",") {
+		k, v, ok := strings.Cut(kv, "=")
+		n, err := strconv.Atoi(v)
+		if !ok || err != nil {
+			return false
+		}
+		switch k {
+		case "m":
+			m = n
+		case "t":
+			t = n
+		case "p":
+			p = n
+		default:
+			return false
+		}
+	}
+	if m < 8*1024 || m > 256*1024 || t < 1 || t > 10 || p < 1 || p > 16 {
+		return false
+	}
+	enc := base64.RawStdEncoding
+	salt, err1 := enc.DecodeString(parts[3])
+	want, err2 := enc.DecodeString(parts[4])
+	if err1 != nil || err2 != nil || len(salt) < 8 || len(want) != 32 {
+		return false
+	}
+	got := argon2.IDKey([]byte(password), salt, uint32(t), uint32(m), uint8(p), 32)
+	return subtle.ConstantTimeCompare(got, want) == 1
+}
+
+func verifyLegacyPBKDF2(encoded, password string) bool {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 4 {
 		return false
 	}
 	iter, err := strconv.Atoi(parts[1])
@@ -115,7 +168,7 @@ func (a AccessFile) validate() error {
 	if a.Generation == 0 || len(a.SecretPath) < 24 || strings.ContainsAny(a.SecretPath, "/?#%") || a.Username == "" {
 		return errors.New("access file is incomplete")
 	}
-	if !strings.HasPrefix(a.PasswordHash, "pbkdf2-sha256$") {
+	if !strings.HasPrefix(a.PasswordHash, "argon2id$") && !strings.HasPrefix(a.PasswordHash, "pbkdf2-sha256$") {
 		return errors.New("access file has no password hash")
 	}
 	return nil
@@ -439,16 +492,33 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, bas
 		return
 	}
 	user, pass := r.PostForm.Get("username"), r.PostForm.Get("password")
+	now := s.now()
+	// Limits first, before any hashing: a blocked username or a global burst of
+	// failures costs nothing to answer.
+	if blocked, wait := s.loginLim.check(user, now); blocked {
+		_ = s.auditLogin(r, "blocked")
+		w.Header().Set("Retry-After", retryAfter(wait))
+		http.Error(w, "too many failed sign-ins, try again later", http.StatusTooManyRequests)
+		return
+	}
+	if !s.hashing.acquire(2 * time.Second) {
+		w.Header().Set("Retry-After", "2")
+		http.Error(w, "busy, try again", http.StatusServiceUnavailable)
+		return
+	}
 	userOK := len(user) == len(a.Username) && subtle.ConstantTimeCompare([]byte(user), []byte(a.Username)) == 1
 	passOK := verifyPassword(a.PasswordHash, pass) // always run: same cost for a wrong username
+	s.hashing.release()
 	if !userOK || !passOK {
-		s.guard.AuthFailure(ip, s.now())
+		s.guard.AuthFailure(ip, now)
+		s.loginLim.failed(user, now)
 		_ = s.auditLogin(r, "failure")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, renderLogin(base+"login", "Wrong username or password."))
 		return
 	}
+	s.loginLim.succeeded(user)
 	s.guard.AuthSuccess(ip)
 	token, _, err := s.access.newSession(s.now(), a.Generation)
 	if err != nil {
@@ -466,7 +536,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, bas
 func (s *Server) auditLogin(r *http.Request, outcome string) error {
 	_, err := s.audit.Append(AuditEntry{
 		Timestamp: s.now().UTC(), Actor: "web", RemoteIP: s.clientIP(r),
-		Action: "access.login", Outcome: outcome,
+		Action: "access.login", Outcome: outcome, Details: withRequest(r, nil),
 	})
 	return err
 }
