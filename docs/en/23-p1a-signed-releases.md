@@ -96,6 +96,10 @@ sudo bash install.sh --offline . --agent-only --bcc-url ... --node-id ...
 - As with `curl | bash`, trust in the `install.sh` you run comes from where you got it: compare it with the file at the release tag, or take the whole bundle from the official release.
 - The archive is deterministic (sorted, fixed owner/mtime): `scripts/release/offline_bundle.sh` rebuilds the same bytes from the release assets, so anyone can compare. CI (`e2e-install-offline`) builds one, rejects a tampered copy and installs EX and IR from it with every download address pointed at a dead port.
 
+## Release acceptance
+
+CI passing on a PR head is not release acceptance. `scripts/release/accept.sh <tag>` (needs `gh`, `go`, `git`) ties the evidence to the exact commit the tag points at and prints one PASS/FAIL line per check: the commit is on `main`; every required CI check concluded success on **that** commit (`r3` only if it ran, since it is path-filtered; `e2e-install-offline` when the release carries a bundle); the signed manifest of the published release names the same commit; the published assets verify against the root key and revocation list committed at that commit; and the offline bundle, if any, is byte-identical to a rebuild from the assets. It exits non-zero on any failure. It uses the REST API only. Run on `v0.1.1` it reports ACCEPTED.
+
 ## Rotation and revocation
 
 - Rotation: generate a new release key, certify it with the root, replace both secrets. Servers need no change.
