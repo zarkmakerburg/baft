@@ -45,19 +45,43 @@ type Plan struct {
 	Rollback []string      `json:"rollback"`
 }
 
+// GenExpect is the generation change a reviewed plan promises for one node.
+// Bootstrap is true when BCC has no verified generation for the node yet
+// (AppliedGeneration == 0): then only the node's own consistency can be
+// checked (its generation is one ahead of its previous one) and the values it
+// reports are recorded; once BCC has verified a generation, the next change
+// must start exactly from it.
+type GenExpect struct {
+	From      int  `json:"from"`
+	To        int  `json:"to"`
+	Bootstrap bool `json:"bootstrap,omitempty"`
+}
+
+func expectedGeneration(n Node) GenExpect {
+	if n.AppliedGeneration > 0 {
+		return GenExpect{From: n.AppliedGeneration, To: n.AppliedGeneration + 1}
+	}
+	return GenExpect{From: 0, To: 1, Bootstrap: true}
+}
+
 // BuildPlan describes the change; it never writes.
 func (s *Store) BuildPlan(req TunnelRequest, now time.Time) (Plan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.buildPlanLocked(req, now)
+}
+
+func (s *Store) buildPlanLocked(req TunnelRequest, now time.Time) (Plan, error) {
 	t, ex, ir, err := s.resolveTunnelLocked(req, now)
 	if err != nil {
 		return Plan{}, err
 	}
 	gen := func(n Node) (from, to int, note string) {
-		if n.AppliedGeneration > 0 {
-			return n.AppliedGeneration, n.AppliedGeneration + 1, ""
+		g := expectedGeneration(n)
+		if g.Bootstrap {
+			return g.From, g.To, "bootstrap: BCC has not verified a generation for this node yet; the node's own counter must be one step ahead and is recorded"
 		}
-		return 0, 1, "no generation verified by BCC yet; the node reports its own counter after commit"
+		return g.From, g.To, ""
 	}
 	exFrom, exTo, exNote := gen(ex)
 	irFrom, irTo, irNote := gen(ir)
@@ -87,7 +111,7 @@ func (s *Store) BuildPlan(req TunnelRequest, now time.Time) (Plan, error) {
 			"service active and not restarting for a settle window",
 			"EX listener and IR local route accept connections",
 			"observed role, route, listener/peer/target and unit equal this plan",
-			"each node's generation advanced by exactly one and equals its own counter",
+			"each node's generation equals the reviewed plan (previous = from, current = to; bootstrap nodes: one step ahead of their own previous) and its own counter",
 			"change id on each node equals this deployment",
 		},
 		Rollback: []string{

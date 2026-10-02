@@ -2,11 +2,13 @@ package bcc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -423,6 +425,175 @@ func TestPlanDoesNotWriteAndGatesFollowAgentContact(t *testing.T) {
 		_, cerr := s.CreateTunnel(bad, now)
 		if perr == nil || cerr == nil || perr.Error() != cerr.Error() {
 			t.Errorf("plan/create disagree for %+v: %v vs %v", bad, perr, cerr)
+		}
+	}
+}
+
+func setApplied(s *Store, id string, gen int) {
+	s.mu.Lock()
+	n := s.st.Nodes[id]
+	n.AppliedGeneration = gen
+	s.st.Nodes[id] = n
+	s.mu.Unlock()
+}
+
+// withContact makes both agents "fresh" so plans pass their gates.
+func withContact(t *testing.T, s *Store) {
+	t.Helper()
+	pullAll(t, s, "ex-1")
+	pullAll(t, s, "ir-1")
+}
+
+func TestReviewedGenerationIsEnforcedAtObservation(t *testing.T) {
+	// A node that moved one step, but from somewhere other than the reviewed
+	// generation, did not run the reviewed plan.
+	s := tunnelStore(t)
+	now := time.Now()
+	setApplied(s, "ex-1", 4)
+	setApplied(s, "ir-1", 4)
+	plan, err := s.BuildPlan(TunnelRequest{EXNode: "ex-1", IRNode: "ir-1"}, now)
+	if err != nil || plan.Nodes[0].GenerationFrom != 4 || plan.Nodes[0].GenerationTo != 5 {
+		t.Fatalf("plan: %+v %v", plan.Nodes, err)
+	}
+	tn := driveToObserve(t, s, now)
+	if exp := tn.ExpectedGen["ir-1"]; exp.From != 4 || exp.To != 5 || exp.Bootstrap {
+		t.Fatalf("tunnel did not keep the reviewed generation: %+v", tn.ExpectedGen)
+	}
+	o := goodObserved(tn, tunnelnode.RoleIR)
+	o.PreviousGeneration, o.Generation, o.NodeGeneration = 99, 100, 100 // locally consistent
+	ackObserved(t, s, "ir-1", o, now)
+	got, _ := s.GetTunnel(tn.ID)
+	if got.Phase != TunnelRollingBack || !strings.Contains(got.Error, "reviewed plan promised 4 -> 5") {
+		t.Fatalf("99 -> 100 against a reviewed 4 -> 5: %s %q", got.Phase, got.Error)
+	}
+	if n, _ := s.GetNode("ir-1"); n.AppliedGeneration != 4 {
+		t.Fatalf("a rejected report moved the applied generation to %d", n.AppliedGeneration)
+	}
+
+	// Exactly the reviewed 4 -> 5 is accepted and recorded.
+	s2 := tunnelStore(t)
+	setApplied(s2, "ex-1", 4)
+	setApplied(s2, "ir-1", 4)
+	tn2 := driveToObserve(t, s2, now)
+	for _, node := range []struct{ id, role string }{{"ir-1", tunnelnode.RoleIR}, {"ex-1", tunnelnode.RoleEX}} {
+		o := goodObserved(tn2, node.role)
+		o.PreviousGeneration, o.Generation, o.NodeGeneration = 4, 5, 5
+		ackObserved(t, s2, node.id, o, now)
+	}
+	for _, node := range []string{"ir-1", "ex-1"} {
+		j := pullAll(t, s2, node)
+		s2.AckJob(node, "tok-"+node, j[0].ID, "succeeded", "finalized")
+		s2.AdvanceTunnels(now)
+	}
+	if got, _ := s2.GetTunnel(tn2.ID); got.Phase != TunnelActive {
+		t.Fatalf("reviewed generation not accepted: %s %q", got.Phase, got.Error)
+	}
+	if n, _ := s2.GetNode("ir-1"); n.AppliedGeneration != 5 {
+		t.Fatalf("applied generation %d, want 5", n.AppliedGeneration)
+	}
+}
+
+func TestBootstrapNodeNeedsOnlyLocalConsistency(t *testing.T) {
+	now := time.Now()
+	// No verified generation yet: a node whose own counter is 7 -> 8 is
+	// accepted (and that is what BCC records)...
+	s := tunnelStore(t)
+	plan, _ := s.BuildPlan(TunnelRequest{EXNode: "ex-1", IRNode: "ir-1"}, now)
+	if !strings.Contains(plan.Nodes[0].GenerationNote, "bootstrap") {
+		t.Fatalf("the plan does not say it is a bootstrap: %+v", plan.Nodes[0])
+	}
+	tn := driveToObserve(t, s, now)
+	if !tn.ExpectedGen["ir-1"].Bootstrap {
+		t.Fatalf("expected bootstrap: %+v", tn.ExpectedGen)
+	}
+	o := goodObserved(tn, tunnelnode.RoleIR)
+	o.PreviousGeneration, o.Generation, o.NodeGeneration = 7, 8, 8
+	ackObserved(t, s, "ir-1", o, now)
+	if got, _ := s.GetTunnel(tn.ID); got.Phase != TunnelObservingEX || got.ObservedGen["ir-1"] != 8 {
+		t.Fatalf("bootstrap 7 -> 8: %s %q %v", got.Phase, got.Error, got.ObservedGen)
+	}
+	// ...but a jump (7 -> 9) is not consistent even for a bootstrap node.
+	s2 := tunnelStore(t)
+	tn2 := driveToObserve(t, s2, now)
+	o2 := goodObserved(tn2, tunnelnode.RoleIR)
+	o2.PreviousGeneration, o2.Generation, o2.NodeGeneration = 7, 9, 9
+	ackObserved(t, s2, "ir-1", o2, now)
+	if got, _ := s2.GetTunnel(tn2.ID); got.Phase != TunnelRollingBack {
+		t.Fatalf("7 -> 9 on a bootstrap node: %s", got.Phase)
+	}
+}
+
+func TestStaleReviewedPlanCreatesNothing(t *testing.T) {
+	now := time.Now()
+	mutations := map[string]func(*Store){
+		"generation moved": func(s *Store) { setApplied(s, "ex-1", 7) },
+		"node revoked":     func(s *Store) { s.RevokeNode("ir-1", "test", now) },
+		"agent went quiet": func(s *Store) {
+			s.mu.Lock()
+			n := s.st.Nodes["ex-1"]
+			n.AgentSeen = now.Add(-time.Hour)
+			s.st.Nodes["ex-1"] = n
+			s.mu.Unlock()
+		},
+		"another tunnel is building": func(s *Store) {
+			s.mu.Lock()
+			if s.st.Tunnels == nil {
+				s.st.Tunnels = map[string]Tunnel{}
+			}
+			s.st.Tunnels["tun-other"] = Tunnel{ID: "tun-other", EXNode: "ex-1", IRNode: "ir-1", Phase: TunnelPreparingEX}
+			s.mu.Unlock()
+		},
+	}
+	for name, mutate := range mutations {
+		s := tunnelStore(t)
+		withContact(t, s)
+		req := TunnelRequest{EXNode: "ex-1", IRNode: "ir-1"}
+		plan, err := s.BuildPlan(req, time.Now())
+		if err != nil || !plan.OK {
+			t.Fatalf("%s: plan %v ok=%v", name, err, plan.OK)
+		}
+		mutate(s)
+		tunnelsBefore := len(s.ListTunnels())
+		_, cur, err := s.CreateTunnelFromPlan(req, plan.Hash, time.Now())
+		var stale ErrStalePlan
+		if err == nil || (!errors.As(err, &stale) && !strings.Contains(err.Error(), "revoked") && !strings.Contains(err.Error(), "being built")) {
+			t.Errorf("%s: a stale plan was accepted or failed oddly: %v", name, err)
+		}
+		if len(s.ListJobs()) != 0 || len(s.ListTunnels()) != tunnelsBefore {
+			t.Errorf("%s: a stale plan created state (jobs=%d tunnels=%d)", name, len(s.ListJobs()), len(s.ListTunnels()))
+		}
+		if errors.As(err, &stale) && (cur.Hash == plan.Hash || cur.Hash == "") {
+			t.Errorf("%s: the refusal does not carry a fresh plan", name)
+		}
+	}
+}
+
+func TestPlanCheckAndCreationAreOneAtomicStep(t *testing.T) {
+	// The reviewed state may change at any moment. Whatever interleaving
+	// happens, a tunnel is only ever created with the generation the plan
+	// that was reviewed promised.
+	now := time.Now()
+	for i := 0; i < 200; i++ {
+		s := tunnelStore(t)
+		withContact(t, s)
+		req := TunnelRequest{EXNode: "ex-1", IRNode: "ir-1"}
+		plan, _ := s.BuildPlan(req, time.Now())
+		var wg sync.WaitGroup
+		var created Tunnel
+		var cerr error
+		wg.Add(2)
+		go func() { defer wg.Done(); setApplied(s, "ex-1", 7) }()
+		go func() { defer wg.Done(); created, _, cerr = s.CreateTunnelFromPlan(req, plan.Hash, now) }()
+		wg.Wait()
+		if cerr != nil {
+			if len(s.ListTunnels()) != 0 || len(s.ListJobs()) != 0 {
+				t.Fatal("a refused creation left state behind")
+			}
+			continue
+		}
+		// Created: it must be against the reviewed state (ex-1 not yet at 7).
+		if exp := created.ExpectedGen["ex-1"]; exp.From != plan.Nodes[0].GenerationFrom || exp.To != plan.Nodes[0].GenerationTo {
+			t.Fatalf("created with generation %+v although the reviewed plan said %d -> %d", exp, plan.Nodes[0].GenerationFrom, plan.Nodes[0].GenerationTo)
 		}
 	}
 }

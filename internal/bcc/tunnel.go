@@ -79,6 +79,9 @@ type Tunnel struct {
 
 	PlanHash string           `json:"plan_hash,omitempty"`
 	Evidence []TunnelEvidence `json:"evidence,omitempty"`
+	// ExpectedGen is the generation change the reviewed plan promised each
+	// node; observation must match it.
+	ExpectedGen map[string]GenExpect `json:"expected_generation,omitempty"`
 	// ObservedGen is the generation each node proved it runs, applied to the
 	// node records only when the tunnel becomes active.
 	ObservedGen map[string]int `json:"observed_generation,omitempty"`
@@ -186,7 +189,6 @@ func touch(t *Tunnel, node string) {
 	t.Touched = append(t.Touched, node)
 }
 
-// CreateTunnel validates a request and queues the first step.
 // resolveTunnelLocked validates a request against the current state, applies
 // the defaults and returns the tunnel it describes with both end nodes. It
 // changes nothing: the plan and the real creation share it, so a plan can
@@ -261,15 +263,42 @@ func (s *Store) resolveTunnelLocked(req TunnelRequest, now time.Time) (Tunnel, N
 	return t, ex, ir, nil
 }
 
+// ErrStalePlan is returned with the current plan when a reviewed plan hash no
+// longer matches, or the plan no longer passes its gates.
+type ErrStalePlan struct{ Current Plan }
+
+func (ErrStalePlan) Error() string {
+	return "the plan is stale or no longer passes its gates; review the new plan"
+}
+
 // CreateTunnel validates a request and queues the first step.
 func (s *Store) CreateTunnel(req TunnelRequest, now time.Time) (Tunnel, error) {
+	t, _, err := s.CreateTunnelFromPlan(req, "", now)
+	return t, err
+}
+
+// CreateTunnelFromPlan checks the reviewed plan hash (when given) and creates
+// the tunnel under one lock, so the state that was reviewed is the state it is
+// created against. On a mismatch it creates nothing and returns ErrStalePlan
+// carrying the fresh plan.
+func (s *Store) CreateTunnelFromPlan(req TunnelRequest, planHash string, now time.Time) (Tunnel, Plan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, _, _, err := s.resolveTunnelLocked(req, now)
-	if err != nil {
-		return Tunnel{}, err
+	if planHash != "" {
+		cur, err := s.buildPlanLocked(req, now)
+		if err != nil {
+			return Tunnel{}, Plan{}, err
+		}
+		if !cur.OK || cur.Hash != planHash {
+			return Tunnel{}, cur, ErrStalePlan{Current: cur}
+		}
 	}
-	t.PlanHash = req.PlanHash
+	t, ex, ir, err := s.resolveTunnelLocked(req, now)
+	if err != nil {
+		return Tunnel{}, Plan{}, err
+	}
+	t.PlanHash = planHash
+	t.ExpectedGen = map[string]GenExpect{ex.ID: expectedGeneration(ex), ir.ID: expectedGeneration(ir)}
 	exParams := t.prepareEXParams()
 	t.Phase = TunnelPreparingEX
 	touch(&t, t.EXNode)
@@ -278,7 +307,7 @@ func (s *Store) CreateTunnel(req TunnelRequest, now time.Time) (Tunnel, error) {
 		s.st.Tunnels = map[string]Tunnel{}
 	}
 	s.st.Tunnels[t.ID] = t
-	return t, s.saveLocked()
+	return t, Plan{}, s.saveLocked()
 }
 
 func (t Tunnel) prepareEXParams() map[string]string {
@@ -491,7 +520,7 @@ func (s *Store) advanceLocked(t *Tunnel, now time.Time) *TunnelEvent {
 		if err := json.Unmarshal([]byte(j.Message), &o); err != nil {
 			problems = []string{"the node's observed state is unreadable"}
 		} else {
-			problems = verifyObserved(*t, role, o)
+			problems = verifyObserved(*t, j.NodeID, role, o)
 		}
 		t.Evidence = append(t.Evidence, TunnelEvidence{Step: "observe", Node: j.NodeID, At: now, OK: len(problems) == 0, Detail: j.Message, Problems: problems})
 		if len(problems) > 0 {
@@ -632,23 +661,17 @@ func (s *Server) tunnels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		details := map[string]any{"ex_node": in.EXNode, "ir_node": in.IRNode, "port": in.Port, "target": in.Target, "route_listen": in.RouteListen}
+		t, _, err := s.store.CreateTunnelFromPlan(in, in.PlanHash, s.now())
 		if in.PlanHash != "" {
-			// Deploy exactly the plan that was reviewed: recompute it now and
-			// refuse if it is no longer OK or no longer the same.
-			cur, perr := s.store.BuildPlan(in, s.now())
-			if perr != nil {
-				s.auditFailure(w, r, "tunnel.create", in.EXNode+"->"+in.IRNode, details, perr, 400)
-				return
-			}
-			if !cur.OK || cur.Hash != in.PlanHash {
-				details["plan_hash"], details["current_plan_hash"] = in.PlanHash, cur.Hash
-				_ = s.auditAdmin(r, "tunnel.create", in.EXNode+"->"+in.IRNode, "failure", details)
-				writeJSON(w, http.StatusConflict, map[string]any{"error": "the plan is stale or no longer passes its gates; review the new plan", "plan": cur})
-				return
-			}
 			details["plan_hash"] = in.PlanHash
 		}
-		t, err := s.store.CreateTunnel(in, s.now())
+		var stale ErrStalePlan
+		if errors.As(err, &stale) {
+			details["current_plan_hash"] = stale.Current.Hash
+			_ = s.auditAdmin(r, "tunnel.create", in.EXNode+"->"+in.IRNode, "failure", details)
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "plan": stale.Current})
+			return
+		}
 		if err != nil {
 			s.auditFailure(w, r, "tunnel.create", in.EXNode+"->"+in.IRNode, details, err, 400)
 			return
@@ -697,7 +720,7 @@ func (s *Server) tunnelCancel(w http.ResponseWriter, r *http.Request) {
 
 // verifyObserved compares what a node reports with what the tunnel asked for.
 // It returns every difference, so the evidence shows all of them at once.
-func verifyObserved(t Tunnel, role string, o tunnelnode.Observed) []string {
+func verifyObserved(t Tunnel, node, role string, o tunnelnode.Observed) []string {
 	var p []string
 	bad := func(format string, a ...any) { p = append(p, fmt.Sprintf(format, a...)) }
 	if o.TunnelID != t.ID {
@@ -711,6 +734,12 @@ func verifyObserved(t Tunnel, role string, o tunnelnode.Observed) []string {
 	}
 	if o.Generation != o.PreviousGeneration+1 || o.NodeGeneration != o.Generation {
 		bad("generation %d (previous %d, node %d) is not one step ahead", o.Generation, o.PreviousGeneration, o.NodeGeneration)
+	}
+	// The reviewed plan promised a specific generation change. A node that
+	// moved by one step from somewhere else did not run the plan that was
+	// reviewed (bootstrap nodes have no verified generation to compare to).
+	if exp, ok := t.ExpectedGen[node]; ok && !exp.Bootstrap && (o.PreviousGeneration != exp.From || o.Generation != exp.To) {
+		bad("generation %d -> %d, but the reviewed plan promised %d -> %d", o.PreviousGeneration, o.Generation, exp.From, exp.To)
 	}
 	if !o.ServiceActive {
 		bad("service is not active")
