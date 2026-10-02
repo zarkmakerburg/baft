@@ -62,7 +62,15 @@ sudo bash install.sh --offline . --agent-only --bcc-url ... --node-id ...
 
 ## پذیرش (acceptance) release
 
-سبز بودن CI روی head یک PR معادل پذیرش release نیست. `scripts/release/accept.sh <tag>` (نیاز به `gh`، `go` و `git`) شواهد را به همان commitی که tag به آن اشاره می‌کند وصل می‌کند و برای هر بررسی یک خط PASS/FAIL چاپ می‌کند: commit روی `main` است؛ هر چک CI لازم روی **همان** commit موفق شده (`r3` فقط اگر اجرا شده، چون path-filtered است؛ `e2e-install-offline` وقتی release بسته دارد)؛ manifest امضاشدهٔ release منتشرشده همان commit را نام می‌برد؛ فایل‌های منتشرشده با کلید ریشه و فهرست ابطالِ commit شده در همان commit verify می‌شوند؛ و بستهٔ آفلاین، اگر باشد، با بازسازی از فایل‌ها بایت‌به‌بایت یکی است. با هر شکست کد خروج غیرصفر می‌دهد و فقط از REST API استفاده می‌کند. روی `v0.1.1` نتیجه ACCEPTED است.
+سبز بودن CI روی head یک PR معادل پذیرش release نیست. `scripts/release/accept.sh <tag>` (نیاز به `gh`، `go` و `git`) شواهد را به همان commitی وصل می‌کند که tag **فعلیِ** مخزن به آن اشاره می‌کند و برای هر بررسی یک خط PASS/FAIL چاپ می‌کند:
+
+۱. **اتصال به tag.** tag و `main` تازه در refهای خصوصی (`refs/accept/...`، اجباری، با بررسی نتیجه) fetch می‌شوند و SHA فقط از همان‌ها خوانده می‌شود. tag محلیِ قدیمی با همان نام هیچ‌وقت خوانده نمی‌شود و شکست fetch یعنی FAIL، نه fallback. commit باید روی همان `main` تازه باشد.
+۲. **شاهد CI از workflow مورد نظر.** نام check-run را هر GitHub App نصب‌شده‌ای می‌تواند بسازد، پس اعتماد نمی‌شود. شاهد، *workflow runهای* Actions برای همان SHA است که با مسیر فایل workflow شناخته می‌شوند: jobهای لازم (`test`، `release-dry-run`، `e2e-binaries`، `e2e-install`، `e2e-install-release`، `e2e-agent-enroll`، `e2e-ssh-bootstrap`، `e2e-launch1` و وقتی release بسته دارد `e2e-install-offline`) باید در `ci.yml` موفق شده باشند؛ `r3` (در `r2-noise.yml`، path-filtered) فقط اگر آن workflow اجرا شده باشد. **قاعدهٔ اجرای دوباره:** برای هر فایل workflow، runی که برای آن SHA بیشترین `run_number` را دارد تصمیم می‌گیرد؛ پس re-run موفقِ بعدی شکست قبلی را و run شکست‌خوردهٔ بعدی موفقیت قبلی را کنار می‌زند؛ داخل آن run، آخرین attempt مربوط به job باید `completed/success` باشد. runهای commitهای دیگر، runهای تمام‌نشده و نام‌های مشابه در فایل‌های workflow دیگر حساب نمی‌شوند.
+۳. manifest امضاشدهٔ release منتشرشده همان commit را نام می‌برد.
+۴. فایل‌های منتشرشده با کلید ریشه و فهرست ابطالِ commit شده در همان commit verify می‌شوند.
+۵. بستهٔ آفلاین، اگر باشد، با بازسازی از فایل‌ها بایت‌به‌بایت یکی است.
+
+با هر شکست کد خروج غیرصفر می‌دهد و فقط از REST API استفاده می‌کند. `tests/release` تست‌های falsification دارد (tag محلی قدیمی، remote در دسترس‌نبودن، workflow جعلی، ترتیب re-run، run مربوط به commit دیگر، run تمام‌نشده) با یک `gh` ساختگی؛ اگر اسکریپت را جوری عوض کنیم که tag محلی را بخواند، مسیر workflow را نادیده بگیرد یا قدیمی‌ترین run را بردارد، این تست‌ها شکست می‌خورند. روی `v0.1.1` نتیجه ACCEPTED است.
 
 ## چرخش و ابطال
 
