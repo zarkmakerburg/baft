@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -53,6 +54,13 @@ func (a *Agent) tunnel(ctx context.Context, j agentjob.Job) (string, string, err
 	case agentjob.ActionTunnelHealth:
 		d, err := t.Health(ctx, id)
 		return d, "", err
+	case agentjob.ActionTunnelObserve:
+		o, err := t.Observe(ctx, id)
+		if err != nil {
+			return "", "", err
+		}
+		b, err := json.Marshal(o)
+		return string(b), "", err
 	case agentjob.ActionTunnelFinalize:
 		d, err := t.Finalize(ctx, id)
 		return d, "", err

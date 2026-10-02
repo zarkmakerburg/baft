@@ -48,6 +48,7 @@ const (
 	ActionTunnelCommitEX  = "tunnel_commit_ex"
 	ActionTunnelCommitIR  = "tunnel_commit_ir"
 	ActionTunnelHealth    = "tunnel_health"
+	ActionTunnelObserve   = "tunnel_observe"
 	ActionTunnelFinalize  = "tunnel_finalize"
 	ActionTunnelRollback  = "tunnel_rollback"
 )
@@ -79,6 +80,7 @@ var paramRules = map[string]map[string]*regexp.Regexp{
 	ActionTunnelCommitEX:  {"tunnel_id": tunnelIDRe, "reply": replyCodeRe},
 	ActionTunnelCommitIR:  {"tunnel_id": tunnelIDRe},
 	ActionTunnelHealth:    {"tunnel_id": tunnelIDRe},
+	ActionTunnelObserve:   {"tunnel_id": tunnelIDRe},
 	ActionTunnelFinalize:  {"tunnel_id": tunnelIDRe},
 	ActionTunnelRollback:  {"tunnel_id": tunnelIDRe},
 }

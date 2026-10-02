@@ -5,7 +5,8 @@ BCC builds an IR/EX tunnel between two enrolled servers and rolls both back if a
 ## Use it
 
 ```
-POST /api/tunnels         {"ex_node":"ex-1","ir_node":"ir-1"}
+POST /api/tunnels/plan    {"ex_node":"ex-1","ir_node":"ir-1"}      → plan with a hash
+POST /api/tunnels         {"ex_node":"ex-1","ir_node":"ir-1","plan_hash":"…"}
 GET  /api/tunnels[?id=…]
 POST /api/tunnels/cancel  {"id":"tun-…","reason":"…"}
 ```
@@ -13,6 +14,12 @@ POST /api/tunnels/cancel  {"id":"tun-…","reason":"…"}
 Optional fields and their defaults: `public_address` (the EX node's address), `port` 8443, `target` `127.0.0.1:2443` (a fixed IP:port the EX exits to), `route_listen` `127.0.0.1:1443` (loopback address clients use on the IR), `route_id` `service-main`, `record_shaping` false.
 
 The EX must be a `foreign` node and the IR a `worker` or `master`. A plan is refused, before any job exists, if it breaks the rules agents apply (for example a hostname target or a non-loopback `route_listen`), or if either node is part of a change that is still running.
+
+## Plan, then deploy by hash
+
+`POST /api/tunnels/plan` changes nothing. It returns a deterministic **plan** from the same validation creation uses: per node the changes and the configuration generation (`from → to`), the readiness gates, the steps, what is verified and how a failure rolls back. Gates: agent contact within 5 minutes for both nodes (`FAIL` otherwise), roles and revocation, no unfinished change or failed rollback on either node, parameters valid under the agents' own rules, and a `WARN` when the change will supersede an active tunnel.
+
+The plan carries a `hash` over everything it depends on (not over times). Sending `plan_hash` to `POST /api/tunnels` deploys exactly that plan: BCC recomputes the plan and creates the tunnel in **one store operation** (one lock), so the state that was reviewed is the state it is created against; if the plan no longer passes its gates or its hash differs (a node's generation moved, a tunnel appeared, an agent went quiet, a different request) it answers `409` with the new plan and queues nothing. Without `plan_hash` the API behaves as before, for automation; the dashboard always uses the plan. Both `tunnel.plan` and the deployment record the hash in the audit log, and the tunnel keeps it as `plan_hash`.
 
 ## Steps
 
@@ -23,6 +30,7 @@ The EX must be a `foreign` node and the IR a `worker` or `master`. A plan is ref
 | `committing_ex` | `tunnel_commit_ex` | the reply is verified, the listener config is installed (previous one backed up), the service restarts and must stay active. |
 | `committing_ir` | `tunnel_commit_ir` | same for the dialer. |
 | `health_ir`, `health_ex` | `tunnel_health` | service active and not restarting across a settle window, and the listener (EX) or local route (IR) accepts connections. Retried up to 5 times. |
+| `observing_ir`, `observing_ex` | `tunnel_observe` | the node reports its own state (read-only) and BCC compares it with the plan: change id and phase, role, service active, unit equal to the expected one, route id, listener / peer / target, and generation: previous and current must equal the **reviewed** `from` and `to`, and the current one must equal the node's own counter. Any difference is listed and rolls the change back. |
 | `finalizing_ir`, `finalizing_ex` | `tunnel_finalize` | backups and one-time secrets are deleted. |
 | `active` | | done; an earlier `active` tunnel on the same nodes becomes `superseded`. |
 
@@ -31,6 +39,12 @@ Any failure, step timeout (20 minutes) or operator cancel moves to `rolling_back
 An `active` tunnel is final. To change it, build a new one: it replaces the old one and the old one is restored if the new one fails.
 
 Agents poll every 30 s by default, so a build takes a few minutes. The pairing code lives 15 minutes; a build that stalls longer than that fails and rolls back.
+
+## Observed state, generation and evidence
+
+A command exiting successfully is never taken as proof. After health, each node is asked what it actually runs (`tunnel_observe`: the live configuration is loaded and digested, the service state and unit are read) and the answer must equal the plan. Each node keeps a **generation** counter, +1 per committed change and restored by rollback. The tunnel created from a plan stores the generation change that plan promised (`expected_generation`); a node that advanced by one step from some other generation (say 99 → 100 against a reviewed 4 → 5) is rejected and the change rolled back. **Bootstrap exception:** while BCC has no verified generation for a node (`applied_generation` is 0, e.g. a node never built through this version), only the node's own consistency is checked (current = previous + 1 = its own counter), the plan says "bootstrap", and the reported value is what BCC records; from then on the next change must start exactly from it. BCC records the generation it verified as the node's `applied_generation`, and the next plan starts from it.
+
+Every health result and observation is stored with the tunnel as **evidence** (`GET /api/tunnels?id=…`): step, node, time, OK, the raw report and any problems. The dashboard shows it under each tunnel.
 
 ## Security
 

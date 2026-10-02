@@ -444,3 +444,61 @@ func TestUnitMatchesInstallScript(t *testing.T) {
 		t.Fatal("privileged-port capability handling is wrong")
 	}
 }
+
+func TestGenerationAndObservedStateAreEvidenceNotExitStatus(t *testing.T) {
+	p := newPair(t)
+	listen(t, p.exPort)
+	listen(t, mustPort(p.irListen))
+	ctx := context.Background()
+	if g := p.ex.readGeneration(); g != 0 {
+		t.Fatalf("fresh node generation %d", g)
+	}
+	p.build(t, "g1")
+	for name, n := range map[string]*node{"ex": p.ex, "ir": p.ir} {
+		o, err := n.Observe(ctx, "g1")
+		if err != nil {
+			t.Fatalf("%s observe: %v", name, err)
+		}
+		if o.Phase != PhaseCommitted || o.Generation != 1 || o.PreviousGeneration != 0 || o.NodeGeneration != 1 || !o.ServiceActive || !o.UnitMatches || len(o.ConfigSHA256) != 64 {
+			t.Fatalf("%s observed %+v", name, o)
+		}
+	}
+	ex, _ := p.ex.Observe(ctx, "g1")
+	ir, _ := p.ir.Observe(ctx, "g1")
+	if ex.ConfigRole != "listener" || ex.Listen != "0.0.0.0:"+strconv.Itoa(p.exPort) || ex.Target != p.exp.Target || ex.RouteID != "service-main" {
+		t.Fatalf("EX observed %+v", ex)
+	}
+	if ir.ConfigRole != "dialer" || ir.RouteListen != p.irListen || ir.PeerAddress != "127.0.0.1:"+strconv.Itoa(p.exPort) {
+		t.Fatalf("IR observed %+v", ir)
+	}
+	// The report follows reality: a service that stopped is reported as not active.
+	p.ex.host.mu.Lock()
+	p.ex.host.active = false
+	p.ex.host.mu.Unlock()
+	if o, _ := p.ex.Observe(ctx, "g1"); o.ServiceActive {
+		t.Fatal("observed state claims a stopped service is active")
+	}
+	p.ex.host.mu.Lock()
+	p.ex.host.active = true
+	p.ex.host.mu.Unlock()
+	for _, n := range []*node{p.ex, p.ir} {
+		n.Finalize(ctx, "g1")
+	}
+	// A second change moves the generation on; rolling it back restores it.
+	p.exp.Port = freePort(t)
+	p.build(t, "g2")
+	if o, _ := p.ex.Observe(ctx, "g2"); o.Generation != 2 || o.PreviousGeneration != 1 {
+		t.Fatalf("second change %+v", o)
+	}
+	for _, n := range []*node{p.ex, p.ir} {
+		if _, err := n.Rollback(ctx, "g2"); err != nil {
+			t.Fatal(err)
+		}
+		if g := n.readGeneration(); g != 1 {
+			t.Fatalf("generation after rollback = %d, want 1", g)
+		}
+	}
+	if _, err := p.ex.Observe(ctx, "never"); err == nil {
+		t.Fatal("observing an unknown change succeeded")
+	}
+}
