@@ -1,5 +1,7 @@
 <p align="center"><img src="docs/assets/baft-logo.png" alt="BAFT" width="220"></p>
 
+> © 2026 BAFT Project. All rights reserved. This repository is public for review only; no license is granted. See [COPYRIGHT](COPYRIGHT).
+
 # BAFT
 
 > **Language:** [فارسی](README.md) | English

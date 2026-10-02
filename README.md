@@ -2,6 +2,8 @@
 
 <p align="center"><img src="docs/assets/baft-logo.png" alt="BAFT" width="220"></p>
 
+> © 2026 BAFT Project. همهٔ حقوق محفوظ است. این مخزن فقط برای مشاهده عمومی است و هیچ مجوز استفاده‌ای داده نشده است؛ [COPYRIGHT](COPYRIGHT) را ببینید.
+
 # BAFT — بافت
 
 > **زبان:** فارسی | [English](README.en.md)
