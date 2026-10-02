@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 <div align="center">
 
 <img src="docs/assets/baft-logo-transparent.png" alt="BAFT" width="190">
@@ -19,8 +21,6 @@
 [فارسی](README.md) · [English](README.en.md) · [آخرین Release](https://github.com/zarkmakerburg/baft/releases/latest) · [وضعیت پروژه](STATUS.md) · [مستندات](docs/fa/README.md)
 
 </div>
-
-<div dir="rtl" align="right" lang="fa">
 
 > [!IMPORTANT]
 > **BAFT هنوز به‌عنوان نرم‌افزار production-ready اعلام نشده است.** این مخزن یک پروژهٔ مهندسی/پژوهشی فعال است. هر ادعای عملکرد، بازیابی یا امنیت فقط در محدوده‌ای معتبر است که کد، تست و شواهد CI آن را پشتیبانی کنند.
