@@ -75,6 +75,7 @@ func normalizeState(st *state){
 	if st.Nodes==nil{st.Nodes=map[string]Node{}}
 	if st.Jobs==nil{st.Jobs=map[string]Job{}}
 	if st.Tunnels==nil{st.Tunnels=map[string]Tunnel{}}
+	if st.Health==nil{st.Health=map[string]NodeHealthRecord{}}
 	if st.Finance==nil{st.Finance=map[string]NodeFinance{}}
 	if st.Policies==nil{st.Policies=map[string]FinancePolicy{}}
 	if st.RateHistory==nil{st.RateHistory=map[string][]FinancePolicy{}}

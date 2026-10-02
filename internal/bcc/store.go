@@ -162,6 +162,8 @@ type state struct {
 	ActiveAlerts    map[string]Alert             `json:"active_alerts,omitempty"`
 	RetiredBootIDs  map[string]map[string]bool   `json:"retired_boot_ids,omitempty"`
 	Tunnels         map[string]Tunnel            `json:"tunnels,omitempty"`
+	// Health is the layered health of each node (state machines + history).
+	Health          map[string]NodeHealthRecord  `json:"health,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`

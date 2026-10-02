@@ -45,11 +45,13 @@ var stateMigrations = []string{
 	 CREATE TABLE counters (name TEXT PRIMARY KEY, value TEXT NOT NULL);`,
 	// 2: tunnel changes (P1-E).
 	`CREATE TABLE tunnels (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
+	// 3: layered node health with hysteresis (state machines and history).
+	`CREATE TABLE node_health (node_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -177,6 +179,11 @@ func writeStateTx(tx *sql.Tx, st state) error {
 	}
 	for id, v := range st.Tunnels {
 		if err := put(`INSERT INTO tunnels VALUES (?, ?)`, id, v); err != nil {
+			return err
+		}
+	}
+	for id, v := range st.Health {
+		if err := put(`INSERT INTO node_health VALUES (?, ?)`, id, v); err != nil {
 			return err
 		}
 	}
@@ -335,6 +342,12 @@ func readStateDB(path string) (state, error) {
 			var v Tunnel
 			err := decode("tunnels", d, &v)
 			st.Tunnels[k] = v
+			return err
+		}},
+		{`SELECT node_id, 0, doc FROM node_health`, func(k string, _ int64, d []byte) error {
+			var v NodeHealthRecord
+			err := decode("node_health", d, &v)
+			st.Health[k] = v
 			return err
 		}},
 		{`SELECT node_id, 0, doc FROM finance`, func(k string, _ int64, d []byte) error {
