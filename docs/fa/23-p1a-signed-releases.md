@@ -60,6 +60,18 @@ sudo bash install.sh --offline . --agent-only --bcc-url ... --node-id ...
 - مثل `curl | bash`، اعتماد به `install.sh`ای که اجرا می‌کنید از منبعی می‌آید که گرفته‌اید: با فایل همان tag مقایسه کنید یا کل بسته را از release رسمی بگیرید.
 - آرشیو قطعی (deterministic) است: `scripts/release/offline_bundle.sh` از روی فایل‌های release همان بایت‌ها را دوباره می‌سازد تا هر کس بتواند مقایسه کند. CI (`e2e-install-offline`) یکی می‌سازد، نسخهٔ دستکاری‌شده را رد می‌کند و EX و IR را از آن نصب می‌کند در حالی‌که همهٔ آدرس‌های دانلود به یک پورت مرده اشاره می‌کنند.
 
+## پذیرش (acceptance) release
+
+سبز بودن CI روی head یک PR معادل پذیرش release نیست. `scripts/release/accept.sh <tag>` (نیاز به `gh`، `go` و `git`) شواهد را به همان commitی وصل می‌کند که tag **فعلیِ** مخزن به آن اشاره می‌کند و برای هر بررسی یک خط PASS/FAIL چاپ می‌کند:
+
+۱. **اتصال به tag.** tag و `main` تازه در refهای خصوصی (`refs/accept/...`، اجباری، با بررسی نتیجه) fetch می‌شوند و SHA فقط از همان‌ها خوانده می‌شود. tag محلیِ قدیمی با همان نام هیچ‌وقت خوانده نمی‌شود و شکست fetch یعنی FAIL، نه fallback. commit باید روی همان `main` تازه باشد.
+۲. **شاهد CI از workflow مورد نظر.** نام check-run را هر GitHub App نصب‌شده‌ای می‌تواند بسازد، پس اعتماد نمی‌شود. شاهد، *workflow runهای* Actions برای همان SHA است که با مسیر فایل workflow شناخته می‌شوند: jobهای لازم (`test`، `release-dry-run`، `e2e-binaries`، `e2e-install`، `e2e-install-release`، `e2e-agent-enroll`، `e2e-ssh-bootstrap`، `e2e-launch1` و وقتی release بسته دارد `e2e-install-offline`) باید در `ci.yml` موفق شده باشند؛ `r3` (در `r2-noise.yml`، path-filtered) فقط اگر آن workflow اجرا شده باشد. **قاعدهٔ اجرای دوباره:** برای هر فایل workflow، runی که برای آن SHA بیشترین `run_number` را دارد تصمیم می‌گیرد؛ پس re-run موفقِ بعدی شکست قبلی را و run شکست‌خوردهٔ بعدی موفقیت قبلی را کنار می‌زند؛ داخل آن run، آخرین attempt مربوط به job باید `completed/success` باشد. runهای commitهای دیگر، runهای تمام‌نشده و نام‌های مشابه در فایل‌های workflow دیگر حساب نمی‌شوند.
+۳. manifest امضاشدهٔ release منتشرشده همان commit را نام می‌برد.
+۴. فایل‌های منتشرشده با کلید ریشه و فهرست ابطالِ commit شده در همان commit verify می‌شوند.
+۵. بستهٔ آفلاین، اگر باشد، با بازسازی از فایل‌ها بایت‌به‌بایت یکی است.
+
+با هر شکست کد خروج غیرصفر می‌دهد و فقط از REST API استفاده می‌کند. `tests/release` تست‌های falsification دارد (tag محلی قدیمی، remote در دسترس‌نبودن، workflow جعلی، ترتیب re-run، run مربوط به commit دیگر، run تمام‌نشده) با یک `gh` ساختگی؛ اگر اسکریپت را جوری عوض کنیم که tag محلی را بخواند، مسیر workflow را نادیده بگیرد یا قدیمی‌ترین run را بردارد، این تست‌ها شکست می‌خورند. روی `v0.1.1` نتیجه ACCEPTED است.
+
 ## چرخش و ابطال
 
 - چرخش: کلید release جدید، گواهی با Root، جایگزینی secretها. سرورها تغییری لازم ندارند.

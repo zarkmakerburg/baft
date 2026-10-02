@@ -96,6 +96,18 @@ sudo bash install.sh --offline . --agent-only --bcc-url ... --node-id ...
 - As with `curl | bash`, trust in the `install.sh` you run comes from where you got it: compare it with the file at the release tag, or take the whole bundle from the official release.
 - The archive is deterministic (sorted, fixed owner/mtime): `scripts/release/offline_bundle.sh` rebuilds the same bytes from the release assets, so anyone can compare. CI (`e2e-install-offline`) builds one, rejects a tampered copy and installs EX and IR from it with every download address pointed at a dead port.
 
+## Release acceptance
+
+CI passing on a PR head is not release acceptance. `scripts/release/accept.sh <tag>` (needs `gh`, `go`, `git`) ties the evidence to the exact commit the repository's **current** tag points at and prints one PASS/FAIL line per check:
+
+1. **Tag binding.** The tag and `main` are fetched fresh into private refs (`refs/accept/...`, forced, result checked) and the SHA is resolved only from them. A stale local tag of the same name is never consulted and a failed fetch is a FAIL, not a fallback. The commit must be on that fresh `main`.
+2. **CI evidence from the intended workflow.** Check-run names alone can be produced by any installed GitHub App, so they are not trusted. The evidence is the Actions *workflow runs* for the exact SHA, identified by workflow file path: the required jobs (`test`, `release-dry-run`, `e2e-binaries`, `e2e-install`, `e2e-install-release`, `e2e-agent-enroll`, `e2e-ssh-bootstrap`, `e2e-launch1`, and `e2e-install-offline` when the release has a bundle) must have succeeded in `ci.yml`; `r3` (in `r2-noise.yml`, path-filtered) only if that workflow ran. **Re-run rule:** for each workflow file the run with the highest `run_number` for that SHA decides, so a later successful re-run supersedes an earlier failure and a later failed run supersedes an earlier success; inside it the latest attempt of the job must be `completed/success`. Runs of other commits, unfinished runs and look-alike names in other workflow files do not count.
+3. The signed manifest of the published release names the same commit.
+4. The published assets verify against the root key and revocation list committed at that commit.
+5. The offline bundle, if any, is byte-identical to a rebuild from the assets.
+
+It exits non-zero on any failure and uses the REST API only. `tests/release` holds falsification tests (a stale local tag, an unreachable remote, a spoofed workflow, re-run ordering, another commit's run, an unfinished run) with a stub `gh`; mutating the script to resolve the local tag, ignore the workflow path or take the oldest run makes them fail. Run on `v0.1.1` it reports ACCEPTED.
+
 ## Rotation and revocation
 
 - Rotation: generate a new release key, certify it with the root, replace both secrets. Servers need no change.
