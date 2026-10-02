@@ -417,3 +417,28 @@ func TestKeyEncodingRoundTrip(t *testing.T) {
 		t.Fatal("malformed private key accepted")
 	}
 }
+
+func TestPartialDownloadVerifiesOnlyNamedArtifacts(t *testing.T) {
+	f := newFixture(t)
+	f.sign(t)
+	os.Remove(filepath.Join(f.dir, "baft-linux-arm64"))
+	os.Remove(filepath.Join(f.dir, "baft-bcc-linux-arm64"))
+	in := f.input(nil)
+	if _, err := VerifyDir(in); err == nil {
+		t.Fatal("partial download accepted without Only")
+	}
+	in.Only = []string{"baft-linux-amd64", "baft-pair-linux-amd64"}
+	if _, err := VerifyDir(in); err != nil {
+		t.Fatalf("partial download refused: %v", err)
+	}
+	in.Only = []string{"baft-linux-amd64"}
+	_, err := VerifyDir(in)
+	wantErr(t, err, "unexpected artifacts")
+	in.Only = []string{"baft-linux-amd64", "baft-pair-linux-amd64", "baft-linux-arm64"}
+	_, err = VerifyDir(in)
+	wantErr(t, err, "missing")
+	in.Only = []string{"baft-linux-amd64", "baft-pair-linux-amd64"}
+	os.WriteFile(filepath.Join(f.dir, "baft-pair-linux-amd64"), []byte("evil"), 0755)
+	_, err = VerifyDir(in)
+	wantErr(t, err, "does not match the signed manifest")
+}
