@@ -47,3 +47,4 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 15D. [ECRL — prior art, threat model, and formal invariants](15-stage-d-ecrl.md)
 
 28. [28 — BCC visual system](28-bcc-visual-system.md)
+29. [29 — BCC backups and restore preview](29-bcc-backup-restore-preview.md)
