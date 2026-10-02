@@ -296,8 +296,6 @@ func (a *Agent) execute(ctx context.Context, j agentjob.Job) (string, error) {
 		return a.waitActive(ctx)
 	case agentjob.ActionUpdateBAFT:
 		return a.update(ctx, j.Params["version"])
-	case agentjob.ActionEnrollPeer:
-		return "", errors.New("enroll_peer is not implemented by this agent yet")
 	}
 	return "", fmt.Errorf("action %s has no handler", j.Action)
 }

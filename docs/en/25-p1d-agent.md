@@ -23,7 +23,7 @@ An agent runs a job only if all of these hold:
    | `restart` | — |
    | `reload` | — |
    | `update_baft` | `version`: a release tag `vX.Y.Z[-pre]` |
-   | `enroll_peer` | `worker_id`, `public_key` |
+   | `tunnel_*` | see [27-p1e-tunnel-builder.md](27-p1e-tunnel-builder.md) |
 
    There is no shell or free-form command action.
 5. `issued_at` is not more than 5 minutes in the future, `expires_at` has not passed, and the window is at most 24 hours (BCC issues 1 hour at dispatch).
@@ -57,7 +57,7 @@ baft-agent --bcc-url https://bcc.example.com --node-id ex-1 \
   3. refuses if the signed version is not the one asked for;
   4. keeps the current binaries as `.prev`, swaps in the new ones, restarts the service;
   5. if the service is not active after the settle time, restores `.prev`, restarts again and reports the failure; otherwise records the release in the trust state.
-- `enroll_peer` is acknowledged as not implemented yet.
+- `enroll_peer` is retired: tunnels are built with `/api/tunnels` ([27](27-p1e-tunnel-builder.md)). `/api/enroll` answers `410 Gone`, and old queued `enroll_peer` jobs are failed instead of served.
 - `baft-agent` is now one of the signed release artifacts (`scripts/release/build.sh`).
 
 Tests (`internal/agent`, against a real `bcc.Server` and a locally signed release): a deploy job installs the verified release, keeps `.prev`, restarts the service, records the trust state, marks the BCC job succeeded and survives an agent restart without replay; a service that does not come up is rolled back and nothing is recorded; a tampered or older release changes nothing; jobs signed by an unpinned key are refused without touching the host; restart, reload and health call the right commands and a down service fails the job.

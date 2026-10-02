@@ -15,7 +15,7 @@
   - BCC با monitoring، finance، audit، backup، revocation و چرخش توکن.
 - آنچه هنوز نیست:
   - ورود BCC فقط یک توکن ثابت admin است؛ کاربر، session و مسیر مخفی ندارد.
-  - BCC jobهای `deploy_baft` و `enroll_peer` را می‌سازد و `/api/agent/jobs` را ارائه می‌کند، ولی هیچ Agentی در ریپو آن‌ها را اجرا نمی‌کند.
+  - BCC jobهای `deploy_baft` را می‌سازد و `/api/agent/jobs` را ارائه می‌کند؛ agent (P1-D) آن‌ها را اجرا می‌کند.
   - Release امضاشده هم وجود ندارد.
 
 ## قدم‌های Launch-1

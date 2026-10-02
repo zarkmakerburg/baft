@@ -231,3 +231,17 @@ func TestTunnelsSurviveARestartAndBackup(t *testing.T) {
 		t.Fatalf("schema version %d %v", v, err)
 	}
 }
+
+func TestRetiredEnrollJobsAreFailedNotServed(t *testing.T) {
+	s := tunnelStore(t)
+	s.mu.Lock()
+	s.newJobLocked(Job{Type: jobEnrollPeerLegacy, NodeID: "ex-1"})
+	s.mu.Unlock()
+	if jobs := pullAll(t, s, "ex-1"); len(jobs) != 0 {
+		t.Fatalf("a retired job type was served: %+v", jobs)
+	}
+	j, _ := s.jobByID("job-00000001")
+	if j.Status != "failed" || !strings.Contains(j.Message, "retired") {
+		t.Fatalf("retired job: %+v", j)
+	}
+}

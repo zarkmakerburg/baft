@@ -8,7 +8,7 @@ Status: scope approved by the project owner on 2026-10-01, from the HQ review of
 - What exists today: BAFT binaries, `install.sh` (builds from source), pairing that writes `baft.yaml` for both roles, systemd units, real-traffic E2E in CI, and a BCC with monitoring, finance, audit, backup, revocation and token rotation.
 - What does not exist yet:
   - BCC sign-in is a single static admin bearer token; there are no users, sessions or secret path.
-  - BCC creates `deploy_baft` / `enroll_peer` jobs and serves `/api/agent/jobs`, but no agent in the repository executes them.
+  - BCC creates `deploy_baft` jobs and serves `/api/agent/jobs`; the agent (P1-D) executes them.
   - There are no signed release artifacts.
 
 ## Launch-1 steps

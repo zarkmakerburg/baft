@@ -40,7 +40,6 @@ const (
 	ActionRestart    = "restart"
 	ActionReload     = "reload"
 	ActionUpdateBAFT = "update_baft"
-	ActionEnrollPeer = "enroll_peer"
 
 	// Tunnel changes (P1-E). prepare stages, commit installs, health checks,
 	// finalize makes permanent, rollback restores the previous state.
@@ -56,7 +55,6 @@ const (
 var (
 	idRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 	versionRe = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
-	pubKeyRe  = regexp.MustCompile(`^[A-Za-z0-9+/=_-]{16,256}$`)
 
 	tunnelIDRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 	addressRe       = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$`)
@@ -75,7 +73,6 @@ var paramRules = map[string]map[string]*regexp.Regexp{
 	ActionRestart:    {},
 	ActionReload:     {},
 	ActionUpdateBAFT: {"version": versionRe},
-	ActionEnrollPeer: {"worker_id": idRe, "public_key": pubKeyRe},
 
 	ActionTunnelPrepareEX: {"tunnel_id": tunnelIDRe, "public_address": addressRe, "port": portRe, "target": fixedTargetR, "route_id": tunnelIDRe, "record_shaping": boolRe},
 	ActionTunnelPrepareIR: {"tunnel_id": tunnelIDRe, "code": pairCodeRe, "route_listen": loopbackListenR, "route_id": tunnelIDRe},

@@ -58,8 +58,6 @@ func agentAction(j Job) (string, map[string]string, error) {
 	switch j.Type {
 	case JobDeployBAFT:
 		return agentjob.ActionUpdateBAFT, map[string]string{"version": j.Version}, nil
-	case JobEnrollPeer:
-		return agentjob.ActionEnrollPeer, map[string]string{"worker_id": j.WorkerID, "public_key": j.PublicKey}, nil
 	case JobTunnelPrepareEX, JobTunnelPrepareIR, JobTunnelCommitEX, JobTunnelCommitIR, JobTunnelHealth, JobTunnelFinalize, JobTunnelRollback:
 		params := make(map[string]string, len(j.Params))
 		for k, v := range j.Params {

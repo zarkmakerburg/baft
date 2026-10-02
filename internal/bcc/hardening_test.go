@@ -28,14 +28,13 @@ func TestAuditLogAdminTransactionsAndTamperDetection(t *testing.T){
 	}
 	do(authReq(http.MethodPost,"/api/nodes","admin",map[string]any{"ID":"ex1","Alias":"EX1","Address":"127.0.0.1:28001","Role":"foreign","AgentTokenEnv":"NODE_A"}),http.StatusCreated)
 	do(authReq(http.MethodPost,"/api/nodes","admin",map[string]any{"ID":"worker1","Alias":"Worker","Address":"127.0.0.1:28002","Role":"worker","PublicKey":"worker-pub","AgentTokenEnv":"NODE_B"}),http.StatusCreated)
-	do(authReq(http.MethodPost,"/api/enroll","admin",map[string]any{"worker_id":"worker1","public_key":"worker-pub"}),http.StatusAccepted)
 	do(authReq(http.MethodPost,"/api/deploy","admin",map[string]any{"node_ids":[]string{"ex1"},"version":"v0.4.0"}),http.StatusAccepted)
 	do(authReq(http.MethodPost,"/api/finance","admin",map[string]any{"node_id":"ex1","cost_micros_per_gib":100,"revenue_micros_per_gib":300,"currency":"IRR","effective_from":"2026-09-28T00:00:00Z"}),http.StatusOK)
 	do(authReq(http.MethodPost,"/api/nodes/rotate-token","admin",map[string]any{"node_id":"ex1","agent_token_env":"NODE_A_NEW","grace_seconds":60}),http.StatusOK)
 	do(authReq(http.MethodPost,"/api/nodes/revoke","admin",map[string]any{"node_id":"ex1","reason":"incident"}),http.StatusOK)
 
 	entries,err:=app.audit.List(100);if err!=nil{t.Fatal(err)}
-	want:=map[string]bool{"node.upsert":false,"enrollment.create":false,"deploy.create":false,"finance.rate.change":false,"node.token.rotate":false,"node.revoke":false}
+	want:=map[string]bool{"node.upsert":false,"deploy.create":false,"finance.rate.change":false,"node.token.rotate":false,"node.revoke":false}
 	for _,e:=range entries{if _,ok:=want[e.Action];ok&&e.Outcome=="success"{want[e.Action]=true}}
 	for action,ok:=range want{if !ok{t.Fatalf("missing audit action %s entries=%+v",action,entries)}}
 	if err:=app.audit.Verify();err!=nil{t.Fatal(err)}
