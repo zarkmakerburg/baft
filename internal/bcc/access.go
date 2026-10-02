@@ -410,8 +410,10 @@ func (s *Server) serveDashboardOrLogin(w http.ResponseWriter, r *http.Request, a
 	if sess == nil {
 		if loginError != "" {
 			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintf(w, loginHTML, html.EscapeString(base+"login"), loginError)
+			return
 		}
-		fmt.Fprintf(w, loginHTML, html.EscapeString(base+"login"), loginError)
+		fmt.Fprintf(w, welcomeHTML, html.EscapeString(base+"login"))
 		return
 	}
 	// The dashboard script calls /api/...; route those calls through the
