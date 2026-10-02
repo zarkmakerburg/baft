@@ -1,0 +1,10 @@
+{
+  "payloadType": "application/vnd.baft.release-revocations+json",
+  "payload": "eyJzY2hlbWFfdmVyc2lvbiI6Miwic2VxdWVuY2UiOjEsImlzc3VlZF9hdCI6IjIwMjYtMTAtMDJUMDU6MDg6NDhaIiwiZXhwaXJlc19hdCI6IjIwMjctMDMtMzFUMDU6MDg6NDhaIiwicmV2b2tlZF9rZXlfaWRzIjpbXX0=",
+  "signatures": [
+    {
+      "keyid": "98741d81da746d2e435302f90569911d",
+      "sig": "Kq12/3Ov6wDL5Q9GBNlamnlm4ywfl0cxumKdld1XhzgqK2I0buYrpq/3PoW8qzjczE9bqCa+ZoMusbdxy9TCDQ=="
+    }
+  ]
+}
