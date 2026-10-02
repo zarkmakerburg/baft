@@ -120,6 +120,28 @@ Current examples:
 
 See [Innovation methodology](docs/en/12-innovation-method.md).
 
+## Install on a server (one line)
+
+Each command downloads `install.sh`, which then downloads the **signed release**, verifies it against the root key pinned inside the script and the current revocation list, and refuses anything that does not verify. It needs only `curl`, `openssl` and `python3`. Run as a user with `sudo`.
+
+```bash
+# EX (the server outside): prints a one-time pairing code
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh)" baft --role ex --public-address EX_IP_OR_HOST
+
+# IR (the server inside): paste the pairing code, then give the printed reply code back to the EX
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh)" baft --role ir
+```
+
+To enroll a server for BCC instead (BCC then builds tunnels itself), install the agent only:
+
+```bash
+sudo env BAFT_BCC_JOB_KEY="$(baft-bcc jobkey show)" BAFT_AGENT_TOKEN=NODE_TOKEN \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh)" baft \
+  --agent-only --bcc-url https://bcc.example.com --node-id ex-1
+```
+
+(`BAFT_BCC_JOB_KEY` is the value printed by `baft-bcc jobkey show` on the BCC host; or add the server from the BCC dashboard, which does this over SSH.) To install an exact version, put the tag in the URL and add `--version v0.1.1`. The script is piped through `bash -c`, not `| bash`, so the installer can still ask you for the codes on the terminal. Details: [06-running-ir-ex.md](docs/en/06-running-ir-ex.md).
+
 ## Developer quick start
 
 ```bash

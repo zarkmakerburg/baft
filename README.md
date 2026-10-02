@@ -142,6 +142,36 @@ HELLO → HELLO_ACK → READY
 
 شرح کامل قواعد: [روش‌شناسی نوآوری](docs/fa/12-innovation-method.md).
 
+## نصب روی سرور (یک خط)
+
+هر دستور `install.sh` را دانلود می‌کند و آن، **نسخهٔ امضاشده** را می‌گیرد، با کلید root که داخل خود اسکریپت pin شده و با فهرست ابطال تأیید می‌کند و هر چیزی را که تأیید نشود رد می‌کند. فقط `curl`، `openssl` و `python3` لازم است. با کاربری که `sudo` دارد اجرا کن.
+
+<div dir="ltr" align="left">
+
+```bash
+# EX (سرور بیرون): یک کد جفت‌سازی یک‌بارمصرف چاپ می‌کند
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh)" baft --role ex --public-address EX_IP_OR_HOST
+
+# IR (سرور داخل): کد جفت‌سازی را بچسبان، بعد کد پاسخ چاپ‌شده را به EX بده
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh)" baft --role ir
+```
+
+</div>
+
+برای ثبت سرور در BCC (و ساخت تونل توسط خود BCC) فقط agent نصب می‌شود:
+
+<div dir="ltr" align="left">
+
+```bash
+sudo env BAFT_BCC_JOB_KEY="$(baft-bcc jobkey show)" BAFT_AGENT_TOKEN=NODE_TOKEN \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh)" baft \
+  --agent-only --bcc-url https://bcc.example.com --node-id ex-1
+```
+
+</div>
+
+(`BAFT_BCC_JOB_KEY` همان مقداری است که `baft-bcc jobkey show` روی سرور BCC چاپ می‌کند؛ یا سرور را از داشبورد BCC اضافه کن که همین کار را با SSH می‌کند.) برای نسخهٔ مشخص، تگ را در آدرس بگذار و `--version v0.1.1` اضافه کن. اسکریپت با `bash -c` اجرا می‌شود، نه `| bash`، تا نصب‌کننده بتواند کدها را از ترمینال بپرسد. جزئیات: [06-running-ir-ex.md](docs/fa/06-running-ir-ex.md).
+
 ## شروع سریع برای توسعه
 
 ### 1. پیش‌نیاز
