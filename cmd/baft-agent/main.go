@@ -17,12 +17,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/agent"
 	"github.com/zarkmakerburg/baft/internal/release"
+	"github.com/zarkmakerburg/baft/internal/tunnelnode"
 )
 
 type hostSystem struct{}
@@ -76,6 +78,10 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	releaseState := fs.String("release-state", "/opt/baft/release-state.json", "installer release trust state")
 	binDir := fs.String("bin-dir", "/usr/local/bin", "where baft and baft-pair are installed")
 	service := fs.String("service", "baft", "BAFT systemd unit")
+	configDir := fs.String("config-dir", "/etc/baft", "BAFT config directory (tunnel jobs write baft.yaml, keys and PKI here)")
+	baftState := fs.String("baft-state-dir", "/var/lib/baft", "BAFT service state directory")
+	unitDir := fs.String("unit-dir", "/etc/systemd/system", "where the BAFT unit file lives")
+	serviceUser := fs.String("service-user", "baft", "user the BAFT service runs as")
 	interval := fs.Duration("interval", 30*time.Second, "poll interval")
 	once := fs.Bool("once", false, "handle pending jobs once and exit")
 	allowHTTP := fs.Bool("allow-insecure-http", false, "allow a plain-HTTP BCC URL (testing only)")
@@ -105,6 +111,15 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 		Service: *service, ReleaseBaseURL: *releaseBase, RevocationsURL: *revocations,
 		ReleaseState: *releaseState, BinDir: *binDir, System: hostSystem{},
 	}
+	tn, err := tunnelnode.New(tunnelnode.Env{
+		ConfigDir: *configDir, StateDir: *baftState, UnitDir: *unitDir, Service: *service, User: *serviceUser,
+		BaftBin: filepath.Join(*binDir, "baft"), PairBin: filepath.Join(*binDir, "baft-pair"), System: hostSystem{},
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, "baft-agent:", err)
+		return 1
+	}
+	cfg.Tunnel = tn
 	if root, err := release.ReadPublic(*rootFile); err == nil {
 		cfg.ReleaseRoot = root
 	} else if !errors.Is(err, os.ErrNotExist) {

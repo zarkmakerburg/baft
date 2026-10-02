@@ -103,6 +103,7 @@ func main(){
 	defer stop()
 	go app.StartHealthLoop(ctx,*healthInterval)
 	go app.StartAlertLoop(ctx)
+	app.StartTunnelLoop(ctx,2*time.Second)
 	go app.StartAuditAnchorLoop(ctx)
 	if strings.TrimSpace(os.Getenv("BAFT_BCC_BACKUP_KEY"))!=""{
 		backupKey,err:=bcc.BackupKeyFromEnv()

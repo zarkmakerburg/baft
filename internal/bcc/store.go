@@ -50,6 +50,10 @@ type Job struct {
 	WorkerID  string    `json:"worker_id,omitempty"`
 	PublicKey string    `json:"public_key,omitempty"`
 	Version   string    `json:"version,omitempty"`
+	// Params carries a tunnel job's parameters; Output is a secret the agent
+	// returned (a pairing code) until BCC hands it to the next step.
+	Params    map[string]string `json:"params,omitempty"`
+	Output    string    `json:"output,omitempty"`
 	Status    string    `json:"status"`
 	Message   string    `json:"message,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
@@ -151,6 +155,7 @@ type state struct {
 	History         map[string][]HistoryPoint    `json:"history,omitempty"`
 	ActiveAlerts    map[string]Alert             `json:"active_alerts,omitempty"`
 	RetiredBootIDs  map[string]map[string]bool   `json:"retired_boot_ids,omitempty"`
+	Tunnels         map[string]Tunnel            `json:"tunnels,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`
@@ -244,6 +249,9 @@ func (s *Store) ListNodes() []Node {
 	sort.Slice(out,func(i,j int)bool{return out[i].Alias<out[j].Alias})
 	return out
 }
+
+// Path is where the state database lives.
+func (s *Store) Path() string { return s.path }
 
 func (s *Store) ListJobs() []Job {
 	s.mu.Lock();defer s.mu.Unlock()
@@ -360,12 +368,24 @@ func (s *Store) PullJobs(nodeID,token string) ([]Job,error) {
 }
 
 func (s *Store) AckJob(nodeID,token,jobID,status,message string) error {
+	return s.AckJobOutput(nodeID,token,jobID,status,message,"")
+}
+
+// maxJobOutput bounds the secret output an agent can attach to an ack.
+const maxJobOutput=16<<10
+
+// AckJobOutput is AckJob plus the output a tunnel job returns.
+func (s *Store) AckJobOutput(nodeID,token,jobID,status,message,output string) error {
 	if status!="succeeded"&&status!="failed"{return errors.New("invalid job status")}
+	if len(output)>maxJobOutput{return errors.New("job output too large")}
 	s.mu.Lock();defer s.mu.Unlock()
 	if !s.authorizedLocked(nodeID,token){return ErrAgentAuthentication}
 	j,ok:=s.st.Jobs[jobID];if !ok||j.NodeID!=nodeID{return errors.New("job not found")}
 	if j.Status!="dispatched"&&j.Status!="queued"{return errors.New("job already completed")}
-	j.Status=status;j.Message=message;j.UpdatedAt=time.Now().UTC();s.st.Jobs[jobID]=j
+	j.Status=status;j.Message=message;j.UpdatedAt=time.Now().UTC()
+	if status=="succeeded"{j.Output=output}
+	wipeSecretParams(&j)
+	s.st.Jobs[jobID]=j
 	return s.saveLocked()
 }
 

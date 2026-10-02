@@ -160,6 +160,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/jobs",s.jobs)
 	m.HandleFunc("/api/enroll",s.enroll)
 	m.HandleFunc("/api/bootstrap",s.bootstrap)
+	m.HandleFunc("/api/tunnels",s.tunnels)
+	m.HandleFunc("/api/tunnels/cancel",s.tunnelCancel)
 	m.HandleFunc("/api/bootstrap/hostkey",s.bootstrapHostKey)
 	m.HandleFunc("/api/deploy",s.deploy)
 	m.HandleFunc("/api/agent/jobs",s.agentJobs)
@@ -220,7 +222,9 @@ func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 func (s *Server) jobs(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
 	if !s.admin(w,r){return}
-	writeJSON(w,http.StatusOK,s.store.ListJobs())
+	jobs:=s.store.ListJobs()
+	for i:=range jobs{jobs[i]=publicJob(jobs[i])}
+	writeJSON(w,http.StatusOK,jobs)
 }
 
 func (s *Server) enroll(w http.ResponseWriter,r *http.Request){
@@ -262,15 +266,16 @@ func (s *Server) agentJobs(w http.ResponseWriter,r *http.Request){
 
 func (s *Server) agentAck(w http.ResponseWriter,r *http.Request){
 	if r.Method!=http.MethodPost{http.Error(w,"method not allowed",405);return}
-	var in struct{NodeID,JobID,Status,Message string}
+	var in struct{NodeID,JobID,Status,Message,Output string}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
-	err:=s.store.AckJob(in.NodeID,bearer(r),in.JobID,in.Status,in.Message)
+	err:=s.store.AckJobOutput(in.NodeID,bearer(r),in.JobID,in.Status,in.Message,in.Output)
 	s.agentAuthResult(r,err)
 	if err!=nil{
 		status:=http.StatusBadRequest
 		if errors.Is(err,ErrAgentAuthentication){status=http.StatusUnauthorized}
 		http.Error(w,err.Error(),status);return
 	}
+	s.AdvanceTunnels()
 	writeJSON(w,http.StatusOK,map[string]bool{"ok":true})
 }
 

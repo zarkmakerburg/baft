@@ -30,6 +30,8 @@ const (
 	MaxLifetime = 24 * time.Hour
 	// ClockSkew tolerates an agent clock slightly behind BCC's.
 	ClockSkew = 5 * time.Minute
+	// maxParamLen bounds any one parameter (pairing codes are the largest).
+	maxParamLen = 8192
 )
 
 // Actions an agent can run. Anything else is refused.
@@ -39,12 +41,31 @@ const (
 	ActionReload     = "reload"
 	ActionUpdateBAFT = "update_baft"
 	ActionEnrollPeer = "enroll_peer"
+
+	// Tunnel changes (P1-E). prepare stages, commit installs, health checks,
+	// finalize makes permanent, rollback restores the previous state.
+	ActionTunnelPrepareEX = "tunnel_prepare_ex"
+	ActionTunnelPrepareIR = "tunnel_prepare_ir"
+	ActionTunnelCommitEX  = "tunnel_commit_ex"
+	ActionTunnelCommitIR  = "tunnel_commit_ir"
+	ActionTunnelHealth    = "tunnel_health"
+	ActionTunnelFinalize  = "tunnel_finalize"
+	ActionTunnelRollback  = "tunnel_rollback"
 )
 
 var (
 	idRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 	versionRe = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 	pubKeyRe  = regexp.MustCompile(`^[A-Za-z0-9+/=_-]{16,256}$`)
+
+	tunnelIDRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	addressRe       = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$`)
+	portRe          = regexp.MustCompile(`^[0-9]{1,5}$`)
+	fixedTargetR    = regexp.MustCompile(`^(([0-9]{1,3}\.){3}[0-9]{1,3}|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}$`)
+	loopbackListenR = regexp.MustCompile(`^(127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|\[::1\]):[0-9]{1,5}$`)
+	boolRe          = regexp.MustCompile(`^(true|false)$`)
+	pairCodeRe      = regexp.MustCompile(`^BAFTPAIR1:[A-Za-z0-9_-]{16,}$`)
+	replyCodeRe     = regexp.MustCompile(`^BAFTREPLY1:[A-Za-z0-9_-]{16,}$`)
 )
 
 // paramRules lists, per action, the parameters it takes and how each is
@@ -55,6 +76,14 @@ var paramRules = map[string]map[string]*regexp.Regexp{
 	ActionReload:     {},
 	ActionUpdateBAFT: {"version": versionRe},
 	ActionEnrollPeer: {"worker_id": idRe, "public_key": pubKeyRe},
+
+	ActionTunnelPrepareEX: {"tunnel_id": tunnelIDRe, "public_address": addressRe, "port": portRe, "target": fixedTargetR, "route_id": tunnelIDRe, "record_shaping": boolRe},
+	ActionTunnelPrepareIR: {"tunnel_id": tunnelIDRe, "code": pairCodeRe, "route_listen": loopbackListenR, "route_id": tunnelIDRe},
+	ActionTunnelCommitEX:  {"tunnel_id": tunnelIDRe, "reply": replyCodeRe},
+	ActionTunnelCommitIR:  {"tunnel_id": tunnelIDRe},
+	ActionTunnelHealth:    {"tunnel_id": tunnelIDRe},
+	ActionTunnelFinalize:  {"tunnel_id": tunnelIDRe},
+	ActionTunnelRollback:  {"tunnel_id": tunnelIDRe},
 }
 
 // Actions returns the allowlist, sorted.
@@ -95,7 +124,7 @@ func (j Job) Validate() error {
 		if !ok {
 			return fmt.Errorf("action %s does not take parameter %q", j.Action, k)
 		}
-		if !re.MatchString(v) {
+		if len(v) > maxParamLen || !re.MatchString(v) {
 			return fmt.Errorf("parameter %s is malformed", k)
 		}
 	}

@@ -26,6 +26,7 @@ import (
 
 	"github.com/zarkmakerburg/baft/internal/agentjob"
 	"github.com/zarkmakerburg/baft/internal/release"
+	"github.com/zarkmakerburg/baft/internal/tunnelnode"
 )
 
 // System is how the agent touches the host; tests replace it.
@@ -53,6 +54,9 @@ type Config struct {
 	Arch           string // defaults to runtime.GOARCH
 	// SettleTime is how long the service must stay active after an update.
 	SettleTime time.Duration
+
+	// Tunnel runs tunnel_* jobs; nil refuses them.
+	Tunnel *tunnelnode.Manager
 
 	HTTP   *http.Client
 	System System
@@ -179,13 +183,19 @@ func (a *Agent) pull(ctx context.Context) ([]pulledJob, error) {
 	return jobs, err
 }
 
-func (a *Agent) ack(ctx context.Context, jobID, status, message string) error {
+func (a *Agent) ack(ctx context.Context, jobID, status, message, output string) error {
 	if len(message) > 2000 {
 		message = message[:2000]
 	}
-	resp, err := a.request(ctx, http.MethodPost, "/api/agent/ack", map[string]string{
-		"NodeID": a.cfg.NodeID, "JobID": jobID, "Status": status, "Message": message,
-	})
+	if len(output) > maxOutput {
+		output = ""
+		status, message = "failed", "job output too large"
+	}
+	body := map[string]string{"NodeID": a.cfg.NodeID, "JobID": jobID, "Status": status, "Message": message}
+	if output != "" {
+		body["Output"] = output
+	}
+	resp, err := a.request(ctx, http.MethodPost, "/api/agent/ack", body)
 	if err != nil {
 		return err
 	}
@@ -217,7 +227,7 @@ func (a *Agent) RunOnce(ctx context.Context) ([]Result, error) {
 		if pj.Signed == nil {
 			r.Status, r.Detail = "refused", "unsigned job"
 			out = append(out, r)
-			_ = a.ack(ctx, pj.ID, "failed", "refused by agent: unsigned job")
+			_ = a.ack(ctx, pj.ID, "failed", "refused by agent: unsigned job", "")
 			continue
 		}
 		job, err := v.Verify(*pj.Signed, a.cfg.Now())
@@ -226,7 +236,7 @@ func (a *Agent) RunOnce(ctx context.Context) ([]Result, error) {
 			out = append(out, r)
 			// Only acknowledge a job ID the signed payload agrees with.
 			if job.JobID == pj.ID && job.NodeID == a.cfg.NodeID {
-				_ = a.ack(ctx, pj.ID, "failed", "refused by agent: "+err.Error())
+				_ = a.ack(ctx, pj.ID, "failed", "refused by agent: "+err.Error(), "")
 			}
 			continue
 		}
@@ -236,12 +246,12 @@ func (a *Agent) RunOnce(ctx context.Context) ([]Result, error) {
 			out = append(out, r)
 			continue
 		}
-		detail, err := a.execute(ctx, job)
+		detail, output, err := a.executeFull(ctx, job)
 		r.Status, r.Detail = "succeeded", detail
 		if err != nil {
-			r.Status, r.Detail = "failed", err.Error()
+			r.Status, r.Detail, output = "failed", err.Error(), ""
 		}
-		if aerr := a.ack(ctx, job.JobID, r.Status, r.Detail); aerr != nil && err == nil {
+		if aerr := a.ack(ctx, job.JobID, r.Status, r.Detail, output); aerr != nil && err == nil {
 			r.Detail += " (ack failed: " + aerr.Error() + ")"
 		}
 		out = append(out, r)
