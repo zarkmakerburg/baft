@@ -19,7 +19,9 @@ import (
 )
 
 const (
-	JobEnrollPeer = "enroll_peer"
+	// jobEnrollPeerLegacy was retired by the tunnel builder; old queued jobs of
+	// this type are failed instead of served.
+	jobEnrollPeerLegacy = "enroll_peer"
 	JobDeployBAFT  = "deploy_baft"
 )
 
@@ -268,20 +270,6 @@ func (s *Store) newJobLocked(j Job) Job {
 	return j
 }
 
-func (s *Store) CreateEnrollmentJobs(workerID,publicKey string) ([]Job,error) {
-	if workerID==""||publicKey==""{return nil,errors.New("worker id and public key are required")}
-	s.mu.Lock();defer s.mu.Unlock()
-	w,ok:=s.st.Nodes[workerID]
-	if !ok||w.Role!="worker"{return nil,errors.New("worker must be registered first")}
-	var out []Job
-	for _,n:=range s.st.Nodes{
-		if n.Role!="foreign"{continue}
-		out=append(out,s.newJobLocked(Job{Type:JobEnrollPeer,NodeID:n.ID,WorkerID:workerID,PublicKey:publicKey}))
-	}
-	if len(out)==0{return nil,errors.New("no foreign nodes registered")}
-	return out,s.saveLocked()
-}
-
 // Deploys name a signed release tag, the only thing an agent will install.
 var deployVersionRe=regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 
@@ -360,6 +348,7 @@ func (s *Store) PullJobs(nodeID,token string) ([]Job,error) {
 	var out []Job
 	for id,j:=range s.st.Jobs{
 		if j.NodeID!=nodeID||j.Status!="queued"{continue}
+		if j.Type==jobEnrollPeerLegacy{j.Status="failed";j.Message="retired job type: build tunnels with /api/tunnels";j.UpdatedAt=time.Now().UTC();s.st.Jobs[id]=j;continue}
 		j.Status="dispatched";j.UpdatedAt=time.Now().UTC();s.st.Jobs[id]=j;out=append(out,j)
 	}
 	sort.Slice(out,func(i,j int)bool{return out[i].CreatedAt.Before(out[j].CreatedAt)})

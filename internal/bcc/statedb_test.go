@@ -26,7 +26,7 @@ func populatedState(t *testing.T, path string) *Store {
 	if _, err := store.UpsertNode(Node{ID: "w-1", Alias: "worker", Address: "127.0.0.1:2", Role: "worker", PublicKey: "pk"}, "tok-w"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateEnrollmentJobs("w-1", "pk"); err != nil {
+	if _, err := store.CreateDeployJobs([]string{"ex-1", "ex-2"}, "v1.0.0"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetFinancePolicyAt("ex-1", 1000, 3000, "IRR", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {

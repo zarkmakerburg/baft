@@ -56,14 +56,19 @@ func TestDynamicRegistryAndEnrollmentJobs(t *testing.T){
 
 	rr=httptest.NewRecorder()
 	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/enroll","admin-secret",map[string]string{"worker_id":"worker-1","public_key":"worker-public"}))
-	if rr.Code!=http.StatusAccepted{t.Fatalf("enroll status=%d body=%s",rr.Code,rr.Body.String())}
+	if rr.Code!=http.StatusGone{t.Fatalf("retired enroll status=%d",rr.Code)}
+	var ids []string
+	for _,n:=range nodes{if n.Role=="foreign"{ids=append(ids,n.ID)}}
+	rr=httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr,authReq(http.MethodPost,"/api/deploy","admin-secret",map[string]any{"node_ids":ids,"version":"v0.1.0"}))
+	if rr.Code!=http.StatusAccepted{t.Fatalf("deploy status=%d body=%s",rr.Code,rr.Body.String())}
 	var jobs []Job
 	if err:=json.Unmarshal(rr.Body.Bytes(),&jobs);err!=nil{t.Fatal(err)}
 	if len(jobs)!=50{t.Fatalf("enrollment jobs=%d",len(jobs))}
 
 	pulled,err:=store.PullJobs("ex-01","agent-ex-01")
 	if err!=nil{t.Fatal(err)}
-	if len(pulled)!=1||pulled[0].Type!=JobEnrollPeer{t.Fatalf("pulled=%+v",pulled)}
+	if len(pulled)!=1||pulled[0].Type!=JobDeployBAFT{t.Fatalf("pulled=%+v",pulled)}
 	if err:=store.AckJob("ex-01","agent-ex-01",pulled[0].ID,"succeeded","peer staged");err!=nil{t.Fatal(err)}
 
 	reopened,err:=OpenStore(path);if err!=nil{t.Fatal(err)}
