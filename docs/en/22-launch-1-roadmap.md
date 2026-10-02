@@ -2,6 +2,10 @@
 
 Status: scope approved by the project owner on 2026-10-01, from the HQ review of the advisory master roadmap. Each step below becomes its own mission (scope, non-scope, invariants, tests, exit criteria, rollback) and is approved separately before work starts.
 
+## Canonical branch
+
+Decision of the project owner (2026-10-02): **`main` is the canonical development and release branch.** Development, acceptance, CI evidence, tags and release artifacts all refer to a SHA on `main`. `release-v1-goldapp` is a historical branch (it is 107 commits behind `main` and has none of its own); it is no longer used for work, and the recovery soak (`step57-recovery-soak`) now runs on `main`. References to it below are historical. Archiving or protecting the old branch is a repository-settings decision of the owner.
+
 ## Baseline
 
 - Freeze candidate: `e38dd6a` on `release-v1-goldapp`. Push CI, PR CI, Stage-C soak and the recovery soak (including the Flow-churn gate) all passed on this exact SHA. Declaring the Core Freeze is the owner's decision.

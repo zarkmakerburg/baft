@@ -3,7 +3,7 @@ name: step57-recovery-soak
 on:
   workflow_dispatch:
   push:
-    branches: [release-v1-goldapp]
+    branches: [main]
     paths:
       - 'internal/session/**'
       - 'internal/node/**'
