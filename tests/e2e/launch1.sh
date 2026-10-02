@@ -135,6 +135,14 @@ traffic || fail "no traffic through tunnel 1"
 log "traffic passes through tunnel 1"
 EX_CFG_SUM="$(sha256sum /etc/baft-ex/baft.yaml | cut -d' ' -f1)"
 IR_CFG_SUM="$(sha256sum /etc/baft-ir/baft.yaml | cut -d' ' -f1)"
+EX_MARK_SUM="$(sha256sum /etc/baft-ex/baft.managed.json | cut -d' ' -f1)"
+python3 - "$T1" <<'PY' || fail "ownership marker of tunnel 1 is wrong"
+import json, hashlib, sys
+for d in ("/etc/baft-ex", "/etc/baft-ir"):
+    m = json.load(open(d + "/baft.managed.json"))
+    assert m["managed_by"] == "baft" and m["tunnel_id"] == sys.argv[1] and m["generation"] == 1, m
+    assert m["config_sha256"] == hashlib.sha256(open(d + "/baft.yaml", "rb").read()).hexdigest(), "config sha"
+PY
 
 log "a bad change (EX port taken by BCC) must roll back on both sides"
 T2="$(api -d '{"ex_node":"ex-e2e","ir_node":"ir-e2e","public_address":"127.0.0.1","port":18200}' "$BCC/api/tunnels" | jfield '["id"]')"
@@ -143,6 +151,7 @@ phase="$(wait_tunnel "$T2" 300 active rolled_back rollback_failed)" || true
 [[ "$(sha256sum /etc/baft-ex/baft.yaml | cut -d' ' -f1)" == "$EX_CFG_SUM" ]] || fail "EX config was not restored"
 [[ "$(sha256sum /etc/baft-ir/baft.yaml | cut -d' ' -f1)" == "$IR_CFG_SUM" ]] || fail "IR config was not restored"
 [[ "$(api "$BCC/api/tunnels?id=$T1" | jfield '["phase"]')" == "active" ]] || fail "tunnel 1 lost its state"
+[[ "$(sha256sum /etc/baft-ex/baft.managed.json | cut -d' ' -f1)" == "$EX_MARK_SUM" ]] || fail "EX ownership marker was not restored"
 systemctl is-active baft-ex baft-ir >/dev/null || fail "tunnel services are not running after the rollback"
 traffic || fail "tunnel 1 no longer carries traffic after the rollback"
 log "tunnel 1 still carries traffic after the rolled-back change"

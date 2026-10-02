@@ -104,6 +104,13 @@ type Txn struct {
 	PKIReplaced   bool `json:"pki_replaced"`
 	ConfigWritten bool `json:"config_written"`
 
+	// Ownership: what this change installed, so rollback only ever restores or
+	// deletes files that are still exactly the ones BAFT wrote.
+	HadMarker          bool   `json:"had_marker"`
+	InstalledConfigSHA string `json:"installed_config_sha,omitempty"`
+	InstalledUnitSHA   string `json:"installed_unit_sha,omitempty"`
+	InstalledMarkerSHA string `json:"installed_marker_sha,omitempty"`
+
 	// Generation counts committed configuration changes on this node.
 	Generation         int `json:"generation,omitempty"`
 	PreviousGeneration int `json:"previous_generation,omitempty"`
@@ -192,6 +199,7 @@ func (p IRParams) validate() error {
 func (m *Manager) stage(id string) string        { return filepath.Join(m.StateDir, "tunnels", id) }
 func (m *Manager) txnPath(id string) string      { return filepath.Join(m.stage(id), "txn.json") }
 func (m *Manager) activePath() string            { return filepath.Join(m.StateDir, "tunnels", "active") }
+func (m *Manager) markerPath() string            { return filepath.Join(m.ConfigDir, "baft.managed.json") }
 func (m *Manager) liveConfig() string            { return filepath.Join(m.ConfigDir, "baft.yaml") }
 func (m *Manager) noiseKey() string              { return filepath.Join(m.ConfigDir, "noise-key.json") }
 func (m *Manager) pkiDir() string                { return filepath.Join(m.ConfigDir, "pki") }
@@ -443,28 +451,50 @@ func (m *Manager) install(ctx context.Context, t Txn, port int) (string, error) 
 	if en, _ := m.System.Systemctl(ctx, "is-enabled", m.Service); en == "enabled" {
 		t.WasEnabled = true
 	}
-	want := m.Unit(port)
-	if old, err := os.ReadFile(m.unitPath()); err != nil || string(old) != want {
-		if err := writeFile(m.unitPath(), []byte(want), 0o644); err != nil {
-			return "", err
-		}
-		t.UnitChanged = true
-	}
-	t.Phase = PhaseCommitted
-	t.ConfigWritten = true
 	t.PreviousGeneration = m.readGeneration()
 	t.Generation = t.PreviousGeneration + 1
+	if b, err := os.ReadFile(m.markerPath()); err == nil {
+		t.HadMarker = true
+		if err := writeFile(m.backup(t.ID, "marker.json"), b, 0o600); err != nil {
+			return "", err
+		}
+	}
+	staged2, err := os.ReadFile(staged)
+	if err != nil {
+		return "", err
+	}
+	want := m.ManagedUnit(port, t.ID, t.Generation)
+	t.InstalledUnitSHA = shaHex([]byte(want))
+	t.InstalledConfigSHA = shaHex(staged2)
+	t.Phase = PhaseCommitted
+	t.ConfigWritten = true
+	t.UnitChanged = true
 	if err := m.writeTxn(t); err != nil {
 		return "", err
 	}
 	if err := m.writeGeneration(t.Generation); err != nil {
 		return "", err
 	}
-	staged2, err := os.ReadFile(staged)
-	if err != nil {
+	if err := writeFile(m.unitPath(), []byte(want), 0o644); err != nil {
+		_, _ = m.rollbackTxn(ctx, t)
 		return "", err
 	}
 	if err := m.writeConfig(staged2); err != nil {
+		_, _ = m.rollbackTxn(ctx, t)
+		return "", err
+	}
+	markerBytes, err := json.MarshalIndent(Marker{
+		ManagedBy: "baft", Version: 1, TunnelID: t.ID, Generation: t.Generation, Role: t.Role,
+		ConfigSHA256: t.InstalledConfigSHA, UnitSHA256: t.InstalledUnitSHA, Updated: m.Now().UTC(),
+	}, "", "  ")
+	if err == nil {
+		markerBytes = append(markerBytes, '\n')
+		t.InstalledMarkerSHA = shaHex(markerBytes)
+		if err = m.writeTxn(t); err == nil {
+			err = writeFile(m.markerPath(), markerBytes, 0o644)
+		}
+	}
+	if err != nil {
 		_, _ = m.rollbackTxn(ctx, t)
 		return "", err
 	}
@@ -602,6 +632,14 @@ func (m *Manager) rollbackTxn(ctx context.Context, t Txn) (string, error) {
 		}
 	}
 	if t.ConfigWritten {
+		// Only touch what is still exactly what BAFT wrote. If an operator or
+		// another tool changed the config, unit or marker since the commit,
+		// leave everything as it is and say so: restoring would destroy
+		// their change.
+		if v := m.ownershipViolations(t); len(v) > 0 {
+			msg := "rollback refused: " + strings.Join(v, "; ") + "; nothing was changed"
+			return msg, errors.New(msg)
+		}
 		note(m.writeGeneration(t.PreviousGeneration))
 		if t.HadConfig {
 			b, err := os.ReadFile(m.backup(t.ID, "baft.yaml"))
@@ -623,6 +661,15 @@ func (m *Manager) rollbackTxn(ctx context.Context, t Txn) (string, error) {
 			} else {
 				note(removeIfExists(m.unitPath()))
 			}
+		}
+		if t.HadMarker {
+			if b, err := os.ReadFile(m.backup(t.ID, "marker.json")); err == nil {
+				note(writeFile(m.markerPath(), b, 0o644))
+			} else {
+				note(err)
+			}
+		} else {
+			note(removeIfExists(m.markerPath()))
 		}
 		_, _ = m.System.Systemctl(ctx, "daemon-reload")
 		if t.HadConfig && t.WasActive {
@@ -964,6 +1011,13 @@ type Observed struct {
 	Target             string `json:"target,omitempty"`
 	PeerAddress        string `json:"peer_address,omitempty"`
 	UnitMatches        bool   `json:"unit_matches"`
+
+	// Ownership marker as found on the node.
+	Managed             bool   `json:"managed"`
+	MarkerTunnelID      string `json:"marker_tunnel_id,omitempty"`
+	MarkerGeneration    int    `json:"marker_generation,omitempty"`
+	MarkerConfigMatches bool   `json:"marker_config_matches"`
+	MarkerUnitMatches   bool   `json:"marker_unit_matches"`
 }
 
 // Observe reads the live state of this node for change id. It only reads.
@@ -1001,12 +1055,75 @@ func (m *Manager) Observe(ctx context.Context, id string) (Observed, error) {
 	state, _ := m.System.Systemctl(ctx, "is-active", m.Service)
 	o.ServiceActive = state == "active"
 	o.Restarts, _ = m.System.Systemctl(ctx, "show", "-p", "NRestarts", "--value", m.Service)
+	var unitSHA string
 	if unit, err := os.ReadFile(m.unitPath()); err == nil {
 		port := t.Port
 		if t.Role == RoleIR {
 			port = 0
 		}
-		o.UnitMatches = string(unit) == m.Unit(port)
+		o.UnitMatches = string(unit) == m.ManagedUnit(port, t.ID, t.Generation)
+		unitSHA = shaHex(unit)
+	}
+	if mb, err := os.ReadFile(m.markerPath()); err == nil {
+		var mk Marker
+		if json.Unmarshal(mb, &mk) == nil && mk.ManagedBy == "baft" {
+			o.Managed = true
+			o.MarkerTunnelID, o.MarkerGeneration = mk.TunnelID, mk.Generation
+			o.MarkerConfigMatches = mk.ConfigSHA256 == o.ConfigSHA256
+			o.MarkerUnitMatches = unitSHA != "" && mk.UnitSHA256 == unitSHA
+		}
 	}
 	return o, nil
+}
+
+// Marker is the ownership record next to the configuration (the YAML/JSON
+// config itself is strictly decoded and cannot carry comments).
+type Marker struct {
+	ManagedBy    string    `json:"managed_by"`
+	Version      int       `json:"version"`
+	TunnelID     string    `json:"tunnel_id"`
+	Generation   int       `json:"generation"`
+	Role         string    `json:"role"`
+	ConfigSHA256 string    `json:"config_sha256"`
+	UnitSHA256   string    `json:"unit_sha256"`
+	Updated      time.Time `json:"updated"`
+}
+
+func shaHex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// ManagedUnit is the unit with ownership markers in its header.
+func (m *Manager) ManagedUnit(port int, tunnelID string, generation int) string {
+	return fmt.Sprintf("# baft-managed: true\n# baft-tunnel: %s\n# baft-generation: %d\n", tunnelID, generation) + m.Unit(port)
+}
+
+// ownershipViolations lists files this change installed that are no longer
+// byte-for-byte what it wrote (and are not simply the original again).
+func (m *Manager) ownershipViolations(t Txn) []string {
+	var v []string
+	check := func(label, live, installed, backup string, had bool) {
+		if installed == "" {
+			return // change recorded before ownership tracking: nothing to compare
+		}
+		b, err := os.ReadFile(live)
+		if err != nil {
+			return // absent: nothing of ours to protect
+		}
+		sum := shaHex(b)
+		if sum == installed {
+			return
+		}
+		if had {
+			if bb, err := os.ReadFile(backup); err == nil && shaHex(bb) == sum {
+				return // already back to the original
+			}
+		}
+		v = append(v, label+" "+live+" was changed outside BAFT after the commit")
+	}
+	check("config", m.liveConfig(), t.InstalledConfigSHA, m.backup(t.ID, "baft.yaml"), t.HadConfig)
+	check("unit", m.unitPath(), t.InstalledUnitSHA, m.backup(t.ID, "unit"), t.HadUnit)
+	check("marker", m.markerPath(), t.InstalledMarkerSHA, m.backup(t.ID, "marker.json"), t.HadMarker)
+	return v
 }
