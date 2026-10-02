@@ -60,6 +60,8 @@ type Server struct {
 	access *accessGate
 	jobKey ed25519.PrivateKey
 	boot *bootstrapState
+	loginLim *loginLimiter
+	hashing hashSlots
 	now func() time.Time
 }
 
@@ -80,6 +82,7 @@ func NewServer(store *Store,adminToken string) (*Server,error) {
 		activeAlerts:initialAlerts,httpClient:&http.Client{Timeout:5*time.Second},
 		auditAnchorRetryBase:time.Second,auditAnchorRetryMax:time.Minute,anchorOutbox:outbox,anchorWake:make(chan struct{},1),
 		now:func() time.Time{return time.Now().UTC()},
+		loginLim:newLoginLimiter(),hashing:newHashSlots(2),
 	},nil
 }
 
@@ -121,7 +124,7 @@ func (s *Server) clientIP(r *http.Request) string {
 func (s *Server) auditAdmin(r *http.Request,action,target,outcome string,details map[string]any) error {
 	_,err:=s.audit.Append(AuditEntry{
 		Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:s.clientIP(r),
-		Action:action,Target:target,Outcome:outcome,Details:details,
+		Action:action,Target:target,Outcome:outcome,Details:withRequest(r,details),
 	})
 	return err
 }
@@ -175,9 +178,9 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/nodes/revoke",s.revokeNode)
 	m.HandleFunc("/api/nodes/rotate-token",s.rotateNodeToken)
 	if s.access!=nil{
-		return s.guard.middleware(s.now,s.clientIP,true,s.accessHandler(m))
+		return s.harden(s.guard.middleware(s.now,s.clientIP,true,s.accessHandler(m)))
 	}
-	return s.guard.middleware(s.now,s.clientIP,false,m)
+	return s.harden(s.guard.middleware(s.now,s.clientIP,false,m))
 }
 
 func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
@@ -243,6 +246,8 @@ func (s *Server) deploy(w http.ResponseWriter,r *http.Request){
 	details:=map[string]any{"node_ids":append([]string(nil),in.NodeIDs...),"version":in.Version}
 	jobs,err:=s.store.CreateDeployJobs(in.NodeIDs,in.Version)
 	if err!=nil{s.auditFailure(w,r,"deploy.create","cluster",details,err,http.StatusBadRequest);return}
+	jobIDs:=make([]string,0,len(jobs));for _,j:=range jobs{jobIDs=append(jobIDs,j.ID)}
+	details["job_ids"]=jobIDs
 	if err:=s.auditAdmin(r,"deploy.create","cluster","success",details);err!=nil{http.Error(w,"audit log failure",500);return}
 	writeJSON(w,http.StatusAccepted,jobs)
 }

@@ -553,6 +553,7 @@ func (s *Server) tunnels(w http.ResponseWriter, r *http.Request) {
 			s.auditFailure(w, r, "tunnel.create", in.EXNode+"->"+in.IRNode, details, err, 400)
 			return
 		}
+		details["tunnel_id"], details["job_id"] = t.ID, t.JobID
 		if err := s.auditAdmin(r, "tunnel.create", t.ID, "success", details); err != nil {
 			http.Error(w, "audit log failure", 500)
 			return
