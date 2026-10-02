@@ -8,151 +8,120 @@
 
 > **زبان:** فارسی | [English](README.en.md)
 
-BAFT یک نرم‌افزار پژوهشی برای انتقال امن و احرازشده‌ی جریان‌های TCP بین دو عامل تحت کنترل همان اپراتور است. در معماری پایه، عامل **IR** اتصال Carrier را به عامل **EX** برقرار می‌کند، اما داده‌ی سرویس در هر دو جهت قابل عبور است. BAFT جای سرویس مقصد، Xray یا برنامه‌ی کاربردی را نمی‌گیرد؛ فقط جریان بایت TCP را میان Routeهای ازپیش‌تعریف‌شده و مجاز جابه‌جا می‌کند.
+[![ci](https://github.com/zarkmakerburg/baft/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zarkmakerburg/baft/actions/workflows/ci.yml)
+[![stagec-soak](https://github.com/zarkmakerburg/baft/actions/workflows/stagec-soak.yml/badge.svg?branch=main)](https://github.com/zarkmakerburg/baft/actions/workflows/stagec-soak.yml)
+[![vulncheck](https://github.com/zarkmakerburg/baft/actions/workflows/vulncheck.yml/badge.svg)](https://github.com/zarkmakerburg/baft/actions/workflows/vulncheck.yml)
 
-این مخزن بر پایه‌ی Blueprint محتوایی نسخه 1.4 و Implementation Master Prompt نسخه 1.2 مورخ 2026-09-27 توسعه داده می‌شود. نام تاریخی فایل Blueprint شامل `v1.0` است، اما **نسخه محتوایی مرجع 1.4** است.
+BAFT جریان‌های TCP احرازشده را بین دو نود تحت کنترل اپراتور، روی یک Carrier چندگانه و دارای کنترل جریان (HTTP/2 روی TLS 1.3) منتقل می‌کند. یک سرویس محلی روی نود **IR** به یک سرویس ثابت و از پیش مجاز پشت نود **EX** نگاشت می‌شود و peer هرگز مقصد را تعیین نمی‌کند. یک صفحهٔ کنترل (**BCC**) سرورها را ثبت می‌کند، تونل را روی هر دو سر می‌سازد، سلامتش را بررسی می‌کند و در صورت خطا هر دو سر را به حالت قبل برمی‌گرداند. ریلیزها قبل از نصب هر چیزی امضا و تأیید می‌شوند.
 
-## وضعیت پروژه
+**وضعیت: نرم‌افزار پژوهشی است و آمادهٔ تولید اعلام نشده.** بخش‌های [وضعیت](#وضعیت) و [محدودیت‌ها](#محدودیتها) را ببینید.
 
-BAFT هنوز نرم‌افزار پژوهشی است و برای استقرار عمومی یا تولیدی آماده اعلام نشده است.
+## فهرست
 
-- **مرحله A:** قراردادها، parser، پیکربندی، PKI آزمایشی و Carrier مبتنی بر HTTP/2 + mTLS پیاده و آزموده شده‌اند.
-- **مرحله B:** مسیر عمودی امن TCP → BAFT → TCP، احراز هویت، Route مجاز، Flow، کنترل خطا، ابطال فعال peer، CLI و آزمون COR-01 یک GiB پیاده شده است.
-- **مرحله C:** allocator حافظه، backpressure، DRR، صف کنترل محدود و آزمون چند Flow در حال تثبیت هستند.
-- **مرحله D و بعد از آن:** resume، epoch fencing، replay، tombstone، benchmark رسمی، عملیات، پژوهش و پایلوت واقعی هنوز کامل نشده‌اند.
+[وضعیت](#وضعیت) · [معماری](#معماری) · [اجزا](#اجزا) · [ویژگی‌های امنیتی](#ویژگیهای-امنیتی) · [نصب](#نصب) · [کار با BCC](#کار-با-bcc) · [ساخت و آزمون](#ساخت-و-آزمون) · [راستی‌آزمایی در CI](#راستیآزمایی-در-ci) · [ساختار مخزن](#ساختار-مخزن) · [مستندات](#مستندات) · [محدودیت‌ها](#محدودیتها) · [مجوز](#مجوز)
 
-وضعیت دقیق و لحظه‌ای را در [STATUS.md](STATUS.md)، برنامه را در [PLAN.md](PLAN.md) و محدودیت‌ها را در [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) ببینید.
+## وضعیت
 
-## BAFT دقیقاً چه مسئله‌ای را حل می‌کند؟
-
-فرض کنید روی سرور IR یک برنامه محلی باید به یک سرویس مشخص در EX دسترسی TCP داشته باشد. به‌جای اینکه peer بتواند هر مقصدی را دلخواه اعلام کند، اپراتور از قبل یک Route مانند `service-main` تعریف می‌کند:
-
-<div dir="ltr" align="left">
-
-```text
-برنامه محلی
-    │
-    ▼
-127.0.0.1:1443 روی IR
-    │
-    ▼
-BAFT IR (dialer)
-    │
-    │  HTTP/2 + TLS 1.3 + mTLS
-    │  چند Shard مستقل
-    ▼
-BAFT EX (listener)
-    │
-    ▼
-Route ثابت و مجاز: 127.0.0.1:2443
-    │
-    ▼
-سرویس مقصد
-```
-
-</div>
-
-Peer فقط `route_id` را درخواست می‌کند. مقصد نهایی از جدول Route محلی EX گرفته می‌شود و از داخل فریم شبکه مقصد دلخواه پذیرفته نمی‌شود.
-
-## مفاهیم اصلی
-
-| واژه | معنی |
+| بخش | وضعیت |
 |---|---|
-| **Node** | یک عامل BAFT با نقش `dialer` یا `listener` |
-| **IR** | عامل سمت آغازکننده Carrier در معماری پایه |
-| **EX** | عامل سمت پذیرنده Carrier در معماری پایه |
-| **Carrier** | جریان بایتی احرازشده‌ای که فریم‌های BAFT داخل آن عبور می‌کنند |
-| **Shard** | یک Carrier مستقل با مجموعه محدود Flowها و صف‌بندی مستقل |
-| **Session** | وضعیت حافظه‌ای BAFT مربوط به یک Shard |
-| **Flow** | یک اتصال TCP کاربردی دوطرفه |
-| **Route** | نگاشت نام ثابت به listener یا مقصد ازپیش‌مجاز |
-| **ACK** | تأیید پذیرش پیوسته داده در BAFT؛ نه تضمین پردازش نهایی برنامه مقصد |
-| **WINDOW / Credit** | حد مطلق offset که فرستنده اجازه دارد تا آن بایت ارسال کند |
-| **Replay** | داده‌ای که برای بازیابی یا تأیید هنوز باید در حافظه نگه داشته شود |
-| **Epoch** | نسل Carrier برای جلوگیری از فعال‌ماندن Carrier قدیمی در resume آینده |
+| صفحهٔ داده، مرحلهٔ A–B | برای دامنهٔ تعریف‌شده کامل است: قراردادهای پروتکل، parser، پیکربندی سخت‌گیرانه، Carrier روی HTTP/2 + TLS 1.3، peerهای احرازشده، Route ثابت، معنای Flow، ابطال فعال و آزمون درستی ۱ GiB دوطرفه (COR-01). |
+| صفحهٔ داده، مرحلهٔ C | allocator، backpressure، زمان‌بندی بایتی (PADL) و دفتر دریافت TWRL در مسیر داده‌اند؛ soak تکرارشدهٔ چند Flow / گیرندهٔ کند و نمونهٔ race detector آن سبز است. این نتیجهٔ درستی روی شبکهٔ CI/loopback است، نه benchmark شبکهٔ عمومی. |
+| صفحهٔ داده، مرحلهٔ D | جایگزینی Carrier در همان process با epoch fencing و replay محدود پیاده و آزموده شده است. resume بعد از restart فرایند یا ریبوت ماشین **پیاده نشده**. |
+| صفحهٔ کنترل Launch-1 | روی `main` تحویل شده: ریلیز امضاشده، نصب‌کنندهٔ تأییدکنندهٔ ریلیز و `baft status/doctor/logs`، دسترسی BCC و state با SQLite، jobهای امضاشدهٔ agent، SSH bootstrap، سازندهٔ تونل با rollback و تست انتها‌به‌انتها روی systemd. [22](docs/fa/22-launch-1-roadmap.md) را ببینید. |
+| آخرین ریلیز | [`v0.1.0`](https://github.com/zarkmakerburg/baft/releases/tag/v0.1.0): امضاشده؛ شناسهٔ کلید root: `98741d81da746d2e435302f90569911d`. |
 
-فرهنگ واژگان کامل در [docs/fa/11-glossary.md](docs/fa/11-glossary.md) است.
+شواهد در [STATUS.md](STATUS.md)، [TEST-RESULTS.md](TEST-RESULTS.md)، [PLAN.md](PLAN.md) و [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) ثبت می‌شود. هر ادعا در این مخزن باید از اجرای واقعی آمده باشد.
 
-## اصول امنیتی غیرقابل‌مذاکره
-
-BAFT در مسیر پایه این قواعد را رعایت می‌کند:
-
-- TLS حداقل نسخه 1.3 و mTLS اجباری است.
-- plaintext fallback وجود ندارد.
-- بررسی chain، hostname، زمان اعتبار و EKU گواهی فعال است.
-- هویت Node از گواهی تأییدشده و URI SAN استخراج می‌شود؛ `node_id` داخل HELLO به‌تنهایی اعتماد ایجاد نمی‌کند.
-- اعتماد به CA با مجوز Route یکی نیست؛ peer و Route allowlist مستقل دارند.
-- مقصد دلخواه از peer یا API پذیرفته نمی‌شود.
-- parser قبل از تخصیص حافظه طول و نوع فریم را محدود می‌کند.
-- payload کاربر در log یا support bundle قرار نمی‌گیرد.
-- نتیجه تست و benchmark فقط از اجرای واقعی ثبت می‌شود.
-- هیچ ادعای «غیرقابل‌تشخیص بودن»، «عبور تضمینی در هر شرایط» یا «سرعت تضمینی اینترنت» مطرح نمی‌شود.
-
-جزئیات: [مدل امنیت](docs/fa/03-security-model.md).
-
-## معماری پایه
-
-Carrier پایه روی HTTP/2 واقعی قرار دارد:
+## معماری
 
 <div dir="ltr" align="left">
 
 ```text
-IR Node
-  ├─ Shard 0 ─ TCP/TLS ─ H2 POST ─┐
-  ├─ Shard 1 ─ TCP/TLS ─ H2 POST ─┤
-  ├─ Shard 2 ─ TCP/TLS ─ H2 POST ─┤──► EX Node
-  └─ Shard 3 ─ TCP/TLS ─ H2 POST ─┘
-
-داخل هر Carrier:
-HELLO → HELLO_ACK → READY
-                  │
-                  ├─ OPEN / OPEN_OK
-                  ├─ DATA
-                  ├─ ACK
-                  ├─ WINDOW
-                  ├─ FIN / FIN_ACK
-                  └─ RESET
+local application
+      │
+      ▼
+127.0.0.1:1443 on IR                    one Route = one fixed target
+      │                                 OPEN carries a route_id, never a host
+      ▼
+BAFT IR (dialer)
+      │   Shard 0..N: independent TCP + TLS 1.3 + HTTP/2 Carriers
+      ▼
+BAFT EX (listener)
+      │
+      ▼
+fixed authorized target, e.g. 127.0.0.1:2443
 ```
 
 </div>
 
-هر Shard در baseline مالک Transport مستقل است تا چهار Shard به‌طور تصادفی روی یک اتصال TCP واحد تجمیع نشوند.
+داخل Carrier: `HELLO → HELLO_ACK → READY`، سپس برای هر Flow این فریم‌ها: `OPEN / OPEN_OK`، `DATA`، `ACK`، `WINDOW` (اعتبار)، `FIN / FIN_ACK` و `RESET`. هر Shard انتقال مستقل خودش را دارد و Shardها بی‌صدا روی یک اتصال TCP جمع نمی‌شوند. حافظه با یک allocator سراسری و backpressure محدود می‌شود و DATA با deficit round robin بایتی همراه با aging فشار زمان‌بندی می‌شود.
 
-## روش توسعه و نوآوری
+دو حالت احراز هویت Carrier وجود دارد، هر دو روی TLS 1.3:
 
-از این مرحله به بعد، هر تصمیم مهم در BAFT با دو مسیر روشن بررسی می‌شود:
+- **mTLS** (پیش‌فرض وقتی پیکربندی بخش `noise` ندارد): زنجیرهٔ گواهی، نام میزبان، اعتبار زمانی و EKU بررسی می‌شود و هویت نود از URI SAN تأییدشده می‌آید.
+- **Noise IK با کلید pin‌شده** (آنچه جفت‌سازی `install.sh` می‌سازد): سرور TLS بیرونی با یک CA محلی اعتبارسنجی می‌شود و هر دو peer با کلیدهای ایستای Noise که pin شده‌اند و هرکدام به یک هویت مجاز نگاشت شده‌اند احراز می‌شوند ([ADR-0007](docs/adr/0007-pinned-noise-morphing.md)).
 
-1. **مسیر پایه:** کمینه‌ی امن، محدود، قابل‌آزمون و دارای rollback؛
-2. **مسیر پژوهشی:** راهکار ابداعی برای یک خلأ مشخص، همراه با فرضیه‌ی ابطال‌پذیر، prior-art review و معیار شکست.
+صفحهٔ کنترل:
 
-یک ایده فقط به‌خاطر پیچیده‌تر بودن «نوآوری» محسوب نمی‌شود. برای هر ایده باید روشن باشد چه ضعف شناخته‌شده‌ای را هدف می‌گیرد، تفاوت مفهومی آن چیست، چگونه آزمایش می‌شود و چه ریسک یا هزینه‌ای دارد.
+<div dir="ltr" align="left">
 
-قاعده‌ی ۱۰x/۱۰۰x در این پروژه **فشار طراحی** است، نه ادعای عددی. هیچ برتری عملکردی تا قبل از benchmark مستقل و تکرارپذیر اعلام نمی‌شود.
+```text
+ operator ──► BCC (secret-path web UI + API, SQLite state, audit log)
+                │  signed jobs (Ed25519), pulled over HTTPS
+                ▼
+         baft-agent on each server ──► baft, baft-pair, systemd
+```
 
-سه سطح ادعا از هم جدا نگه داشته می‌شوند:
+</div>
 
-- **فرضیه پژوهشی:** ایده و آزمایش تعریف شده‌اند؛
-- **نتیجه مهندسی پشتیبانی‌شده:** کد و CI/آزمایش واقعی از آن پشتیبانی می‌کنند؛
-- **novelty یا patentability:** فقط پس از بررسی جدی prior art و ارزیابی تخصصی حقوقی قابل طرح است.
+## اجزا
 
-نمونه‌های فعلی:
+| باینری | نقش |
+|---|---|
+| `baft` | نود صفحهٔ داده (`run`)، `config validate` و دستورهای عملیاتی `status`، `doctor` و `logs`. |
+| `baft-pair` | تولید کلید، PKI بیرونی و جفت‌سازی یک‌بارمصرف که هر دو پیکربندی را می‌نویسد (`ex-code`، `ir-apply`، `ex-accept`). |
+| `baft-bcc` | صفحهٔ کنترل: پایش، مالی، audit زنجیره‌ای، بکاپ رمزشده، چرخش توکن و ابطال، jobهای امضاشده، SSH bootstrap، سازندهٔ تونل و دسترسی وب (زیرفرمان‌های `access` و `jobkey`). |
+| `baft-agent` | روی هر سرور اجرا می‌شود؛ jobهای امضاشده را می‌گیرد، فقط actionهای مجاز را اجرا می‌کند و فقط به باینری امضاشدهٔ ریلیز به‌روز می‌شود. |
+| `baft-release` | امضا و تأیید ریلیز: `keygen`، `certify`، `revoke`، `sign` و `verify`. |
+| `baft-bcc-audit-verify` | تأیید آفلاین زنجیرهٔ audit و لنگرهای BCC. |
+| `baft-master`، `baft-worker`، `baft-cluster-keygen` | runtime قدیمی‌تر cluster/mesh و ابزار کلید آن. |
 
-- [TWRL — دفتر سه‌نشانگر دریافت](docs/fa/13-stage-c-twrl.md): نتیجه مهندسی پشتیبانی‌شده در CI؛
-- [PADL — زمان‌بندی deficit فشارمحور با aging](docs/fa/14-stage-c-padl.md): فرضیه پژوهشی در حال ارزیابی.
+## ویژگی‌های امنیتی
 
-شرح کامل قواعد: [روش‌شناسی نوآوری](docs/fa/12-innovation-method.md).
+صفحهٔ داده
 
-## نصب روی سرور (یک خط)
+- حداقل TLS 1.3 و بدون بازگشت به متن ساده؛ بررسی زنجیرهٔ گواهی، نام میزبان، اعتبار زمانی و EKU قابل خاموش شدن نیست.
+- اعتماد به CA و مجوز Route جدا هستند؛ `node_id` در HELLO به‌تنهایی اعتماد نمی‌سازد.
+- peer نمی‌تواند مقصد تعیین کند؛ اندازه و نوع فریم پیش از تخصیص حافظه اعتبارسنجی می‌شود.
+- payload کاربر هرگز در لاگ یا support bundle نوشته نمی‌شود.
 
-هر دستور `install.sh` را دانلود می‌کند و آن، **نسخهٔ امضاشده** را می‌گیرد، با کلید root که داخل خود اسکریپت pin شده و با فهرست ابطال تأیید می‌کند و هر چیزی را که تأیید نشود رد می‌کند. فقط `curl`، `openssl` و `python3` لازم است. با کاربری که `sudo` دارد اجرا کن.
+اعتماد به ریلیز ([23](docs/fa/23-p1a-signed-releases.md))
+
+- envelopeهایی به سبک DSSE. یک **کلید root آفلاین Ed25519** کلید **release** در CI را گواهی می‌کند؛ کلید عمومی root داخل `install.sh` و agent pin شده است. یک **فهرست ابطال** الزامی، دارای انقضا و امضاشده با root در هر نصب بررسی می‌شود.
+- نصب‌کننده پیش از اجرای هر چیز دانلودشده، گواهی، فهرست ابطال، امضای manifest، `SHA256SUMS` و هش هر باینری را تأیید می‌کند، downgrade و نسخهٔ دوباره‌تگ‌شده را رد می‌کند و وضعیت را در فایلی متعلق به root می‌نویسد.
+- ساخت ریلیز تکرارپذیر است (در CI بررسی می‌شود).
+
+صفحهٔ کنترل ([24](docs/fa/24-p1c-bcc-access.md)، [25](docs/fa/25-p1d-agent.md)، [26](docs/fa/26-p1d-ssh-bootstrap.md)، [27](docs/fa/27-p1e-tunnel-builder.md))
+
+- دسترسی وب BCC: مسیر مخفی تصادفی، نام کاربری و گذرواژهٔ تصادفی (فقط هش PBKDF2 ذخیره می‌شود)، نشست با محافظت CSRF، محدودیت نرخ و بازتولید فقط از کنسول که همهٔ نشست‌ها را باطل می‌کند.
+- هر job را BCC امضا می‌کند و به فهرستی مجاز با الگوی سخت‌گیرانه برای هر پارامتر محدود است که agent دوباره بررسی می‌کند؛ هیچ action برای shell یا فرمان دلخواه وجود ندارد. jobها منقضی می‌شوند (۱ ساعت) و دوبار اجرا نمی‌شوند.
+- SSH bootstrap کلید میزبان سرور را pin می‌کند (بدون اعتماد در اولین اتصال)؛ اعتبارنامهٔ SSH فقط در حافظه و فقط در مدت درخواست می‌ماند و هرگز ذخیره، لاگ یا audit نمی‌شود.
+- تغییر تونل تراکنشی است: prepare فقط staging می‌کند، commit بکاپ نگه می‌دارد و هر خطا همهٔ نودهای درگیر را برمی‌گرداند. رازهای جفت‌سازی فقط تا لازم بودن یک مرحله در jobها می‌مانند و بعد پاک می‌شوند.
+- state در BCC یک پایگاه SQLite نسخه‌دار است و کنش‌های ادمین در لاگ audit ضدتخریب ثبت می‌شود.
+
+[مدل امنیتی](docs/fa/03-security-model.md) را بخوانید.
+
+## نصب
+
+پیش‌نیاز سرور: لینوکس با systemd، `curl`، `openssl`، `python3` و کاربری با `sudo`. Go، git و کامپایلر لازم نیست: نصب‌کننده ریلیز امضاشدهٔ معماری ماشین (`amd64` یا `arm64`) را می‌گیرد، با کلید root پین‌شده و فهرست ابطال جاری تأیید می‌کند و اگر تأیید نشود چیزی نصب نمی‌کند.
 
 <div dir="ltr" align="left">
 
 ```bash
-# EX (سرور بیرون): یک کد جفت‌سازی یک‌بارمصرف چاپ می‌کند
+# EX (outside server): prints a one-time pairing code
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh)" baft --role ex --public-address EX_IP_OR_HOST
 
-# IR (سرور داخل): کد جفت‌سازی را بچسبان، بعد کد پاسخ چاپ‌شده را به EX بده
+# IR (inside server): paste the pairing code, then give the printed reply code back to the EX
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh)" baft --role ir
 ```
 
@@ -170,169 +139,107 @@ sudo env BAFT_BCC_JOB_KEY="$(baft-bcc jobkey show)" BAFT_AGENT_TOKEN=NODE_TOKEN 
 
 </div>
 
-(`BAFT_BCC_JOB_KEY` همان مقداری است که `baft-bcc jobkey show` روی سرور BCC چاپ می‌کند؛ یا سرور را از داشبورد BCC اضافه کن که همین کار را با SSH می‌کند.) برای نسخهٔ مشخص، تگ را در آدرس بگذار و `--version v0.1.1` اضافه کن. اسکریپت با `bash -c` اجرا می‌شود، نه `| bash`، تا نصب‌کننده بتواند کدها را از ترمینال بپرسد. جزئیات: [06-running-ir-ex.md](docs/fa/06-running-ir-ex.md).
+`BAFT_BCC_JOB_KEY` همان مقداری است که `baft-bcc jobkey show` روی سرور BCC چاپ می‌کند. برای نسخهٔ مشخص `--version vX.Y.Z` اضافه کن. اسکریپت با `bash -c` اجرا می‌شود، نه `| bash`، تا نصب‌کننده بتواند کدها را از ترمینال بخواند.
 
-## شروع سریع برای توسعه
-
-### 1. پیش‌نیاز
-
-نسخه Go از خود مخزن خوانده می‌شود:
+برای بررسی دستی یک ریلیز، فایل‌هایش را دانلود کن و اجرا کن:
 
 <div dir="ltr" align="left">
 
 ```bash
-cat go.mod
+baft-release verify -dir <download dir> -root-pub release/keys/root.pub -revocations release/keys/revocations.json
 ```
 
 </div>
 
-در حال حاضر پروژه روی Go 1.27.1 تنظیم شده است.
+جزئیات و متغیرهای محیطی: [06](docs/fa/06-running-ir-ex.md) و `bash install.sh --help`.
 
-### 2. دریافت و ساخت
+## کار با BCC
+
+1. `baft-bcc` را اجرا کن (HTTPS یا loopback) و دسترسی وب را با `baft-bcc access init` بساز.
+2. سرورها را در داشبورد اضافه کن (**Add a server over SSH**: خواندن کلید میزبان، تأیید اثر انگشت، نصب agent) یا با دستور agent-only بالا ثبت کن.
+3. تونل را در داشبورد (**Tunnels**) یا با `POST /api/tunnels {"ex_node":"…","ir_node":"…"}` بساز. BCC هر دو سر را آماده، نصب، بررسی سلامت و نهایی می‌کند؛ در هر خطا یا با `POST /api/tunnels/cancel` هر دو سر به حالت قبل برمی‌گردند.
+4. مرحله‌ها را در داشبورد و نتیجه‌ها را در لاگ audit دنبال کن.
+
+روی خود نود با `baft status`، `baft doctor` و `baft logs` وضعیت را ببین.
+
+## ساخت و آزمون
 
 <div dir="ltr" align="left">
 
 ```bash
 git clone https://github.com/zarkmakerburg/baft.git
 cd baft
-go build ./cmd/baft
-```
-
-</div>
-
-### 3. اجرای آزمون‌ها
-
-<div dir="ltr" align="left">
-
-```bash
+go build ./...
+go vet ./...
 go test ./...
 go test -race ./...
-go vet ./...
 ```
 
 </div>
 
-آزمون COR-01 یک GiB workflow جدا دارد و برای هر اجرای عادی محلی فعال نیست.
-
-### 4. اعتبارسنجی پیکربندی
+نسخهٔ Go همان است که در `go.mod` آمده (1.27.1). اعتبارسنجی و اجرای دستی یک نود:
 
 <div dir="ltr" align="left">
 
 ```bash
 ./baft config validate --file configs/example-ir.yaml
-./baft config validate --file configs/example-ex.yaml
+./baft run --file /etc/baft/ir.yaml     # or ex.yaml on the EX
 ```
 
 </div>
 
-این دستور فقط ساختار و قوانین پیکربندی را بررسی می‌کند؛ وجود واقعی فایل‌های گواهی برای فرمان `run` لازم است.
+## راستی‌آزمایی در CI
 
-### 5. اجرای Node
+| workflow / job | چه چیزی را ثابت می‌کند |
+|---|---|
+| `ci` · `test` | آزمون‌های واحد و یکپارچه، race detector و دروازه‌های شواهد مرحله‌ای (پایداری، یکپارچگی sync، mesh، telemetry، سخت‌سازی BCC، backup/restore، runtime ‏ECRL). |
+| `ci` · `e2e-binaries`, `e2e-install` | ترافیک واقعی IR→EX، ساخته‌شده از سورس و نصب‌شده با `install.sh` روی systemd. |
+| `ci` · `e2e-install-release`, `release-dry-run` | نصب از ریلیز امضاشده با کلیدهای یک‌بارمصرف؛ ساخت تکرارپذیر؛ دستکاری، ابطال، replay، downgrade و دوباره‌تگ رد می‌شوند. |
+| `ci` · `e2e-agent-enroll`, `e2e-ssh-bootstrap` | ثبت agent و اجرای یک job امضاشده روی systemd؛ SSH bootstrap روی `sshd` واقعی از جمله کلید میزبان اشتباه. |
+| `ci` · `e2e-launch1` | Launch-1 روی یک commit: دو سرور ثبت می‌شوند، BCC تونل را با ترافیک واقعی می‌سازد، یک تغییر خراب روی هر دو سر rollback می‌شود و هیچ رازی نمی‌ماند. |
+| `stagec-soak`, `step57-recovery-soak` | soakهای تکراری چند Flow، گیرندهٔ کند و recovery. |
+| `vulncheck` | `govulncheck` هفتگی و با تغییر وابستگی‌ها. |
 
-پس از ایجاد PKI مناسب و اصلاح آدرس‌ها:
+## ساختار مخزن
 
-روی EX:
+| مسیر | محتوا |
+|---|---|
+| `cmd/` | باینری‌های بخش [اجزا](#اجزا). |
+| `internal/protocol`, `session`, `scheduler`, `resources`, `routes`, `identity`, `config`, `carrier/h2`, `recovery`, `recordshape`, `securityinternal` | صفحهٔ داده: codec ‏BAFT/1، Session و Flow، زمان‌بندی، allocator، Route، هویت، پیکربندی، Carrier، recovery، record shaping، جفت‌سازی و Noise. |
+| `internal/bcc`, `agent`, `agentjob`, `sshboot`, `tunnelnode`, `release`, `telemetry` | صفحهٔ کنترل: BCC، agent، قالب job، SSH bootstrap، تراکنش تونل سمت نود، امضای ریلیز، telemetry. |
+| `internal/cluster`, `clustersync`, `mesh`, `failover`, `node`, `metrics` | runtime ‏cluster/mesh، failover و metrics. |
+| `install.sh`, `scripts/release/` | نصب‌کننده؛ ساخت تکرارپذیر ریلیز و تمرین‌ها. |
+| `release/keys/` | کلید عمومی root پین‌شده و فهرست ابطال امضاشدهٔ جاری. |
+| `tests/` | `integration`، `correctness` (دروازه‌های بزرگ)، `installer`، `e2e` و `docs`. |
+| `docs/en`, `docs/fa`, `docs/adr` | راهنماهای هم‌ساخت و ثبت تصمیم‌های معماری. |
 
-<div dir="ltr" align="left">
+مرزهای وابستگی عمداً رعایت می‌شود: `protocol` مقصد را dial نمی‌کند، `routes` payload سیم را parse نمی‌کند، `scheduler` معنای payload را نمی‌فهمد و `carrier` مجوز Route را تعیین نمی‌کند. [10](docs/fa/10-repository-layout.md) را ببینید.
 
-```bash
-./baft run --file /etc/baft/ex.yaml
-```
+## مستندات
 
-</div>
+معماری و پروتکل: [01 مرور](docs/fa/01-overview.md) · [02 معماری](docs/fa/02-architecture.md) · [03 مدل امنیتی](docs/fa/03-security-model.md) · [04 پروتکل BAFT/1](docs/fa/04-protocol-baft1.md) · [05 پیکربندی](docs/fa/05-configuration.md) · [11 واژه‌نامه](docs/fa/11-glossary.md)
 
-روی IR:
+عملیات و کیفیت: [06 اجرای IR/EX](docs/fa/06-running-ir-ex.md) · [07 کنترل منابع](docs/fa/07-resource-control.md) · [08 آزمون و CI](docs/fa/08-testing-and-ci.md) · [17 دروازه‌های درستی](docs/fa/17-correctness-gates.md) · [18 soak مرحلهٔ C](docs/fa/18-stage-c-soak.md) · [10 ساختار مخزن](docs/fa/10-repository-layout.md)
 
-<div dir="ltr" align="left">
+صفحهٔ کنترل Launch-1: [22 نقشهٔ راه](docs/fa/22-launch-1-roadmap.md) · [23 ریلیز امضاشده](docs/fa/23-p1a-signed-releases.md) · [24 دسترسی و state در BCC](docs/fa/24-p1c-bcc-access.md) · [25 jobهای agent](docs/fa/25-p1d-agent.md) · [26 SSH bootstrap](docs/fa/26-p1d-ssh-bootstrap.md) · [27 سازندهٔ تونل](docs/fa/27-p1e-tunnel-builder.md)
 
-```bash
-./baft run --file /etc/baft/ir.yaml
-```
+پژوهش و ثبت طراحی: [09 نقشهٔ راه، مراحل A–H](docs/fa/09-roadmap.md) · [12 روش نوآوری](docs/fa/12-innovation-method.md) · [13 TWRL](docs/fa/13-stage-c-twrl.md) · [14 PADL](docs/fa/14-stage-c-padl.md) · [15 telemetry پایستگی](docs/fa/15-conservation-telemetry.md) · [15D دروازهٔ طراحی ECRL](docs/fa/15-stage-d-ecrl.md) · [16 metricهای پایستگی](docs/fa/16-conservation-metrics.md) · [19 quarantine پایانی](docs/fa/19-terminal-quarantine.md) · [21 record shaping / morphing (آزمایشی، فقط انگلیسی)](docs/en/21-stealth-pro.md) · [ADRها](docs/adr/)
 
-</div>
+فایل‌های وضعیت: [STATUS](STATUS.md) · [PLAN](PLAN.md) · [BLOCKERS](BLOCKERS.md) · [TEST-RESULTS](TEST-RESULTS.md) · [KNOWN-LIMITATIONS](KNOWN-LIMITATIONS.md) · [قفل وابستگی‌ها](dependency-lock.md) · [ماتریس نوآوری](novelty-matrix.md)
 
-کلید خصوصی باید دسترسی محدود داشته باشد؛ Runtime فایل کلیدی که برای group/other قابل خواندن یا نوشتن باشد رد می‌کند.
+## محدودیت‌ها
 
-## نمونه Route
+- آمادهٔ تولید نیست. هیچ پایلوت واقعی IR↔EX اجرا نشده و ادعایی دربارهٔ throughput عمومی، غیرقابل‌تشخیص بودن یا اتصال تضمین‌شده نمی‌شود.
+- resume بعد از restart فرایند یا ریبوت ماشین پیاده نشده؛ recovery فقط در همان process است.
+- شنوندهٔ عمومی IR کاربر نهایی را احراز نمی‌کند؛ اگر بیرون از loopback باز شود، امنیت لایهٔ سرویس لازم است.
+- record shaping / morphing آزمایشی است و شباهت آماری به HTTPS اثبات نشده.
+- مسیرهای H3، relay و Worker خارج از مسیر پیش‌فرض هسته‌اند؛ BCC کیفیت ترافیک را فراتر از زنده بودن سرویس نمی‌سنجد.
+- BAFT یک VPN عمومی یا proxy با مقصد دلخواه نیست.
 
-IR:
+فهرست کامل: [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md).
 
-<div dir="ltr" align="left">
+## مجوز
 
-```yaml
-routes:
-  - id: service-main
-    listen: 127.0.0.1:1443
-    remote_route: service-main
-    direction: outbound
-    traffic_class: interactive
-```
-
-</div>
-
-EX:
-
-<div dir="ltr" align="left">
-
-```yaml
-routes:
-  - id: service-main
-    direction: inbound
-    target: 127.0.0.1:2443
-    allowed_peers:
-      - urn:baft:node:ir-01
-```
-
-</div>
-
-در این مثال اتصال به `127.0.0.1:1443` روی IR فقط به Route نام‌گذاری‌شده `service-main` نگاشت می‌شود و EX مقصد واقعی را از پیکربندی محلی خودش می‌خواند.
-
-## نقشه مستندات
-
-اگر اولین بار است پروژه را می‌خوانید، این ترتیب پیشنهاد می‌شود:
-
-1. [معرفی و هدف](docs/fa/01-overview.md)
-2. [معماری و جریان داده](docs/fa/02-architecture.md)
-3. [مدل امنیت و اعتماد](docs/fa/03-security-model.md)
-4. [پروتکل BAFT/1](docs/fa/04-protocol-baft1.md)
-5. [پیکربندی](docs/fa/05-configuration.md)
-6. [اجرای IR و EX](docs/fa/06-running-ir-ex.md)
-7. [کنترل منابع و زمان‌بندی](docs/fa/07-resource-control.md)
-8. [تست، CI و معیار پذیرش](docs/fa/08-testing-and-ci.md)
-9. [نقشه راه](docs/fa/09-roadmap.md)
-10. [ساختار مخزن](docs/fa/10-repository-layout.md)
-11. [فرهنگ واژگان](docs/fa/11-glossary.md)
-12. [روش‌شناسی نوآوری](docs/fa/12-innovation-method.md)
-13. [TWRL در Stage C](docs/fa/13-stage-c-twrl.md)
-14. [PADL در Stage C](docs/fa/14-stage-c-padl.md)
-
-نسخه انگلیسی همین مجموعه از [docs/en/README.md](docs/en/README.md) در دسترس است.
-
-## مرجع وضعیت و شواهد
-
-- [STATUS.md](STATUS.md): وضعیت واقعی پیاده‌سازی
-- [PLAN.md](PLAN.md): مراحل و گیت‌های باقی‌مانده
-- [TEST-RESULTS.md](TEST-RESULTS.md): شواهد آزمون و محیط اجرا
-- [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md): محدودیت‌های شناخته‌شده
-- [BLOCKERS.md](BLOCKERS.md): موانع و موارد رفع‌شده
-- [dependency-lock.md](dependency-lock.md): وابستگی‌های pin‌شده و checksum
-- [docs/adr](docs/adr): تصمیم‌های معماری
-- [docs/protocol](docs/protocol): یادداشت‌ها و بردارهای طلایی پروتکل
-
-## چیزی که BAFT نیست
-
-BAFT در وضعیت فعلی:
-
-- VPN عمومی یا سرویس چندمستاجره نیست.
-- reverse proxy مقصد-دلخواه نیست.
-- جایگزین PKI، ACL یا امنیت سرویس مقصد نیست.
-- persistence روی دیسک برای payload کاربر ندارد.
-- resume بین restart دو Process را هنوز پشتیبانی نمی‌کند.
-- H3، relay و Worker را در مسیر پایه فعال نمی‌کند.
-- هیچ تضمینی برای کیفیت یا دسترس‌پذیری شبکه عمومی ارائه نمی‌کند.
-
-## مجوز و مشارکت
-
-پیش از هر مشارکت، ابتدا Blueprint، ADRهای مرتبط و تست‌های همان بخش را بخوانید. تغییرات امنیتی، wire protocol و resource limits باید همراه با تست و توضیح تصمیم باشند. نتیجه‌ای که اجرا نشده نباید در STATUS یا TEST-RESULTS به‌عنوان موفق ثبت شود.
+همهٔ حقوق برای BAFT Project محفوظ است. مخزن فقط برای مشاهده عمومی است و هیچ مجوزی برای استفاده، کپی، تغییر، توزیع یا اجرای نرم‌افزار داده نشده است. [COPYRIGHT](COPYRIGHT) را ببینید.
 
 </div>
