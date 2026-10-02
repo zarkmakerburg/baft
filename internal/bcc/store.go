@@ -171,6 +171,9 @@ type Store struct {
 	mu   sync.Mutex
 	path string
 	st   state
+	// DriftEvery is how often active tunnels are checked for drift; zero
+	// disables the automatic check (a check can still be requested).
+	DriftEvery time.Duration
 }
 
 func OpenStore(path string) (*Store, error) {

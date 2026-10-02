@@ -36,6 +36,7 @@ const (
 	JobTunnelCommitIR  = agentjob.ActionTunnelCommitIR
 	JobTunnelHealth    = agentjob.ActionTunnelHealth
 	JobTunnelObserve   = agentjob.ActionTunnelObserve
+	JobTunnelInspect   = agentjob.ActionTunnelInspect
 	JobTunnelFinalize  = agentjob.ActionTunnelFinalize
 	JobTunnelRollback  = agentjob.ActionTunnelRollback
 )
@@ -85,6 +86,12 @@ type Tunnel struct {
 	// ObservedGen is the generation each node proved it runs, applied to the
 	// node records only when the tunnel becomes active.
 	ObservedGen map[string]int `json:"observed_generation,omitempty"`
+
+	// Drift is the result of the last drift check (active tunnels only);
+	// DriftJobs are the inspect jobs of a check in progress.
+	Drift        *DriftReport `json:"drift,omitempty"`
+	DriftJobs    []string     `json:"drift_jobs,omitempty"`
+	DriftStarted time.Time    `json:"drift_started,omitempty"`
 
 	Phase          string    `json:"phase"`
 	Error          string    `json:"error,omitempty"`
@@ -411,6 +418,25 @@ func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 	changed := false
 	ids := make([]string, 0, len(s.st.Tunnels))
 	for id, t := range s.st.Tunnels {
+		if t.Phase == TunnelActive || len(t.DriftJobs) > 0 {
+			before := len(t.DriftJobs)
+			var bd time.Time
+			if t.Drift != nil {
+				bd = t.Drift.CheckedAt
+			}
+			ev := s.advanceDriftLocked(&t, now.UTC())
+			var ad time.Time
+			if t.Drift != nil {
+				ad = t.Drift.CheckedAt
+			}
+			if len(t.DriftJobs) != before || !ad.Equal(bd) || ev != nil {
+				changed = true
+				s.st.Tunnels[id] = t
+			}
+			if ev != nil {
+				events = append(events, *ev)
+			}
+		}
 		if !terminalTunnel(t.Phase) {
 			ids = append(ids, id)
 		}
@@ -607,7 +633,7 @@ func (s *Server) AdvanceTunnels() {
 	}
 	for _, e := range events {
 		outcome := "success"
-		if e.Action != "tunnel.active" {
+		if e.Action != "tunnel.active" && e.Action != "tunnel.in_sync" {
 			outcome = "failure"
 		}
 		_, _ = s.audit.Append(AuditEntry{
@@ -788,4 +814,29 @@ func verifyObserved(t Tunnel, node, role string, o tunnelnode.Observed) []string
 		}
 	}
 	return p
+}
+
+// tunnelDrift starts a drift check of an active tunnel: both nodes report
+// what they have and the result is stored with the tunnel (`drift`).
+func (s *Server) tunnelDrift(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if !s.admin(w, r) {
+		return
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	id := r.URL.Query().Get("id")
+	t, err := s.store.StartDrift(id, s.now())
+	if err != nil {
+		s.auditFailure(w, r, "tunnel.drift_check", id, nil, err, 400)
+		return
+	}
+	if err := s.auditAdmin(r, "tunnel.drift_check", id, "success", map[string]any{"jobs": t.DriftJobs}); err != nil {
+		http.Error(w, "audit log failure", 500)
+		return
+	}
+	writeJSON(w, 202, t)
 }

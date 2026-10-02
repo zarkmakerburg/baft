@@ -1127,3 +1127,67 @@ func (m *Manager) ownershipViolations(t Txn) []string {
 	check("marker", m.markerPath(), t.InstalledMarkerSHA, m.backup(t.ID, "marker.json"), t.HadMarker)
 	return v
 }
+
+// Live is what a node actually has right now, read without a change id. It
+// is the input of drift detection: BCC compares it with the tunnel it
+// believes is active on this node.
+type Live struct {
+	ConfigPresent bool   `json:"config_present"`
+	UnitPresent   bool   `json:"unit_present"`
+	ConfigSHA256  string `json:"config_sha256,omitempty"`
+	ConfigLoads   bool   `json:"config_loads"`
+
+	MarkerPresent       bool   `json:"marker_present"`
+	MarkerManagedBy     string `json:"marker_managed_by,omitempty"`
+	MarkerTunnelID      string `json:"marker_tunnel_id,omitempty"`
+	MarkerGeneration    int    `json:"marker_generation,omitempty"`
+	MarkerConfigMatches bool   `json:"marker_config_matches"`
+	MarkerUnitMatches   bool   `json:"marker_unit_matches"`
+	NodeGeneration      int    `json:"node_generation"`
+
+	ServiceActive bool   `json:"service_active"`
+	ConfigRole    string `json:"config_role,omitempty"`
+	Listen        string `json:"listen,omitempty"`
+	PeerAddress   string `json:"peer_address,omitempty"`
+	RouteID       string `json:"route_id,omitempty"`
+	RouteListen   string `json:"route_listen,omitempty"`
+	Target        string `json:"target,omitempty"`
+}
+
+// Inspect reports the node's live state. It changes nothing and never fails
+// because something is missing: absence is the answer.
+func (m *Manager) Inspect(ctx context.Context) Live {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := Live{NodeGeneration: m.readGeneration()}
+	raw, err := os.ReadFile(m.liveConfig())
+	if err == nil {
+		l.ConfigPresent = true
+		l.ConfigSHA256 = shaHex(raw)
+		if cfg, err := config.LoadFile(m.liveConfig()); err == nil {
+			l.ConfigLoads = true
+			l.ConfigRole = cfg.Node.Role
+			if cfg.Server != nil {
+				l.Listen = cfg.Server.Listen
+			}
+			if cfg.Peer != nil {
+				l.PeerAddress = cfg.Peer.Address
+			}
+			if len(cfg.Routes) > 0 {
+				l.RouteID, l.RouteListen, l.Target = cfg.Routes[0].ID, cfg.Routes[0].Listen, cfg.Routes[0].Target
+			}
+		}
+	}
+	unit, uerr := os.ReadFile(m.unitPath())
+	l.UnitPresent = uerr == nil
+	var mk Marker
+	if err := readJSON(m.markerPath(), &mk); err == nil {
+		l.MarkerPresent = true
+		l.MarkerManagedBy, l.MarkerTunnelID, l.MarkerGeneration = mk.ManagedBy, mk.TunnelID, mk.Generation
+		l.MarkerConfigMatches = l.ConfigPresent && mk.ConfigSHA256 == l.ConfigSHA256
+		l.MarkerUnitMatches = l.UnitPresent && mk.UnitSHA256 == shaHex(unit)
+	}
+	state, _ := m.System.Systemctl(ctx, "is-active", m.Service)
+	l.ServiceActive = state == "active"
+	return l
+}

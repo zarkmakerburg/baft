@@ -65,6 +65,13 @@ func main(){
 
 	store,err:=bcc.OpenStore(*stateFile)
 	if err!=nil{fmt.Fprintln(os.Stderr,"BCC state:",err);os.Exit(1)}
+	// Active tunnels are checked for drift this often; 0 turns the automatic check off.
+	store.DriftEvery=time.Hour
+	if v:=strings.TrimSpace(os.Getenv("BAFT_BCC_DRIFT_INTERVAL"));v!=""{
+		d,err:=time.ParseDuration(v)
+		if err!=nil||d<0||(d>0&&d<time.Minute){fmt.Fprintln(os.Stderr,"BAFT_BCC_DRIFT_INTERVAL must be a duration of at least 1m, or 0");os.Exit(2)}
+		store.DriftEvery=d
+	}
 	app,err:=bcc.NewServer(store,adminToken)
 	if err!=nil{fmt.Fprintln(os.Stderr,"BCC server:",err);os.Exit(1)}
 	trustedProxies:=[]string{}

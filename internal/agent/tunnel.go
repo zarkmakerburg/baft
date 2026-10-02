@@ -61,6 +61,9 @@ func (a *Agent) tunnel(ctx context.Context, j agentjob.Job) (string, string, err
 		}
 		b, err := json.Marshal(o)
 		return string(b), "", err
+	case agentjob.ActionTunnelInspect:
+		b, err := json.Marshal(t.Inspect(ctx))
+		return string(b), "", err
 	case agentjob.ActionTunnelFinalize:
 		d, err := t.Finalize(ctx, id)
 		return d, "", err

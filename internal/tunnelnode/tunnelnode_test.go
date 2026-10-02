@@ -618,3 +618,32 @@ func TestRollbackRefusesToOverwriteExternalEdits(t *testing.T) {
 		t.Fatalf("rollback after restore: %q %v", msg, err)
 	}
 }
+
+func TestInspectSeesWhatIsReallyThere(t *testing.T) {
+	p := newPair(t)
+	listen(t, p.exPort)
+	listen(t, mustPort(p.irListen))
+	ctx := context.Background()
+	if l := p.ex.Inspect(ctx); l.ConfigPresent || l.UnitPresent || l.MarkerPresent {
+		t.Fatalf("empty node reports %+v", l)
+	}
+	p.build(t, "i1")
+	l := p.ex.Inspect(ctx)
+	if !l.ConfigPresent || !l.UnitPresent || !l.ConfigLoads || !l.MarkerPresent || l.MarkerTunnelID != "i1" || !l.MarkerConfigMatches || !l.MarkerUnitMatches || !l.ServiceActive || l.ConfigRole != "listener" {
+		t.Fatalf("fresh node reports %+v", l)
+	}
+	// Hand edit, then deleted files.
+	cfg, _ := os.ReadFile(p.ex.liveConfig())
+	os.WriteFile(p.ex.liveConfig(), append(cfg, '\n', '#'), 0o640)
+	if l := p.ex.Inspect(ctx); l.MarkerConfigMatches {
+		t.Fatal("hand-edited config still matches the marker")
+	}
+	os.Remove(p.ex.unitPath())
+	if l := p.ex.Inspect(ctx); l.UnitPresent || l.MarkerUnitMatches {
+		t.Fatalf("deleted unit reported %+v", l)
+	}
+	os.Remove(p.ex.markerPath())
+	if l := p.ex.Inspect(ctx); l.MarkerPresent {
+		t.Fatal("marker reported after deletion")
+	}
+}
