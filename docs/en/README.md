@@ -45,3 +45,5 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 20. [20 — superseded ECRL note](20-stage-d-ecrl.md)
 
 15D. [ECRL — prior art, threat model, and formal invariants](15-stage-d-ecrl.md)
+
+28. [28 — BCC visual system](28-bcc-visual-system.md)
