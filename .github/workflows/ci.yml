@@ -190,6 +190,24 @@ jobs:
       - name: Enroll this host and run a signed job
         run: sudo env GITHUB_ACTIONS=true PATH="$PATH" tests/e2e/agent_enroll.sh "$RUNNER_TEMP/rel"
 
+  e2e-launch1:
+    # Launch-1 end to end on this exact commit: signed release, BCC, two
+    # servers enrolled with install.sh --agent-only, a tunnel built by BCC with
+    # real traffic through it, and a failing change rolled back on both sides.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Build a signed release of this commit with throwaway keys
+        run: scripts/release/local_release.sh "$RUNNER_TEMP/rel" v0.0.2-ci
+      - name: Build, break and roll back a tunnel
+        run: sudo env GITHUB_ACTIONS=true PATH="$PATH" tests/e2e/launch1.sh "$RUNNER_TEMP/rel"
+
   e2e-install-release:
     # The production path: install.sh downloads a signed release (built here
     # with throwaway keys), verifies it, and installs without Go or git.

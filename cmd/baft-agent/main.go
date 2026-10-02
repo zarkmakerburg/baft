@@ -81,6 +81,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	configDir := fs.String("config-dir", "/etc/baft", "BAFT config directory (tunnel jobs write baft.yaml, keys and PKI here)")
 	baftState := fs.String("baft-state-dir", "/var/lib/baft", "BAFT service state directory")
 	unitDir := fs.String("unit-dir", "/etc/systemd/system", "where the BAFT unit file lives")
+	metricsListen := fs.String("metrics-listen", "127.0.0.1:9191", "loopback metrics address given to tunnels this agent builds")
 	serviceUser := fs.String("service-user", "baft", "user the BAFT service runs as")
 	interval := fs.Duration("interval", 30*time.Second, "poll interval")
 	once := fs.Bool("once", false, "handle pending jobs once and exit")
@@ -113,7 +114,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	tn, err := tunnelnode.New(tunnelnode.Env{
 		ConfigDir: *configDir, StateDir: *baftState, UnitDir: *unitDir, Service: *service, User: *serviceUser,
-		BaftBin: filepath.Join(*binDir, "baft"), PairBin: filepath.Join(*binDir, "baft-pair"), System: hostSystem{},
+		MetricsListen: *metricsListen, BaftBin: filepath.Join(*binDir, "baft"), PairBin: filepath.Join(*binDir, "baft-pair"), System: hostSystem{},
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "baft-agent:", err)
