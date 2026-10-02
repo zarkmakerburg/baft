@@ -1,10 +1,17 @@
 Copyright (c) 2026 BAFT Project. All rights reserved.
 
-This repository is publicly visible for review only. No license is granted:
-you may not use, copy, modify, distribute or run this software, or build
-services on it, without prior written permission from BAFT Project.
+BAFT is source-visible proprietary software.
 
-GitHub's Terms of Service allow viewing and forking this repository on
-GitHub; that does not grant any other right.
+The repository is publicly visible for review, but no general license is
+granted to use, run, copy, modify, distribute, sublicense, host, commercialize,
+or build services on BAFT.
 
-The BAFT name and logo (docs/assets/) are not licensed for any use.
+The complete default licensing terms are in LICENSE:
+BAFT Proprietary Source-Visible License v1.0.
+
+GitHub's Terms of Service may provide platform-specific rights necessary to
+view or fork a public repository on GitHub; those rights do not grant any
+additional software license from BAFT Project.
+
+The BAFT name, the name "بافت", the BAFT logo, and project branding are not
+licensed for use.
