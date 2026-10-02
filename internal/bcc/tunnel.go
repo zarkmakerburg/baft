@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/zarkmakerburg/baft/internal/agentjob"
+	"github.com/zarkmakerburg/baft/internal/tunnelnode"
 )
 
 // Tunnel job types are the agent actions of the same name.
@@ -33,6 +35,7 @@ const (
 	JobTunnelCommitEX  = agentjob.ActionTunnelCommitEX
 	JobTunnelCommitIR  = agentjob.ActionTunnelCommitIR
 	JobTunnelHealth    = agentjob.ActionTunnelHealth
+	JobTunnelObserve   = agentjob.ActionTunnelObserve
 	JobTunnelFinalize  = agentjob.ActionTunnelFinalize
 	JobTunnelRollback  = agentjob.ActionTunnelRollback
 )
@@ -45,6 +48,8 @@ const (
 	TunnelCommittingIR   = "committing_ir"
 	TunnelHealthIR       = "health_ir"
 	TunnelHealthEX       = "health_ex"
+	TunnelObservingIR    = "observing_ir"
+	TunnelObservingEX    = "observing_ex"
 	TunnelFinalizingIR   = "finalizing_ir"
 	TunnelFinalizingEX   = "finalizing_ex"
 	TunnelActive         = "active"
@@ -72,6 +77,12 @@ type Tunnel struct {
 	RouteListen   string `json:"route_listen"`
 	RecordShaping bool   `json:"record_shaping,omitempty"`
 
+	PlanHash string           `json:"plan_hash,omitempty"`
+	Evidence []TunnelEvidence `json:"evidence,omitempty"`
+	// ObservedGen is the generation each node proved it runs, applied to the
+	// node records only when the tunnel becomes active.
+	ObservedGen map[string]int `json:"observed_generation,omitempty"`
+
 	Phase          string    `json:"phase"`
 	Error          string    `json:"error,omitempty"`
 	JobID          string    `json:"job_id,omitempty"`
@@ -82,6 +93,17 @@ type Tunnel struct {
 	StepStarted    time.Time `json:"step_started"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// TunnelEvidence is one piece of proof kept with the deployment: a health
+// result or the observed state of a node and what was wrong with it.
+type TunnelEvidence struct {
+	Step     string    `json:"step"`
+	Node     string    `json:"node"`
+	At       time.Time `json:"at"`
+	OK       bool      `json:"ok"`
+	Detail   string    `json:"detail"`
+	Problems []string  `json:"problems,omitempty"`
 }
 
 // TunnelEvent is a final outcome for the audit log.
@@ -101,6 +123,8 @@ type TunnelRequest struct {
 	RouteListen   string `json:"route_listen"`
 	RouteID       string `json:"route_id"`
 	RecordShaping bool   `json:"record_shaping"`
+	// PlanHash, when set, must equal the hash of the plan BCC computes now.
+	PlanHash string `json:"plan_hash,omitempty"`
 }
 
 func terminalTunnel(p string) bool {
@@ -163,36 +187,38 @@ func touch(t *Tunnel, node string) {
 }
 
 // CreateTunnel validates a request and queues the first step.
-func (s *Store) CreateTunnel(req TunnelRequest, now time.Time) (Tunnel, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// resolveTunnelLocked validates a request against the current state, applies
+// the defaults and returns the tunnel it describes with both end nodes. It
+// changes nothing: the plan and the real creation share it, so a plan can
+// never accept what creation would refuse.
+func (s *Store) resolveTunnelLocked(req TunnelRequest, now time.Time) (Tunnel, Node, Node, error) {
 	ex, ok := s.st.Nodes[req.EXNode]
 	if !ok {
-		return Tunnel{}, fmt.Errorf("unknown EX node %q", req.EXNode)
+		return Tunnel{}, Node{}, Node{}, fmt.Errorf("unknown EX node %q", req.EXNode)
 	}
 	ir, ok := s.st.Nodes[req.IRNode]
 	if !ok {
-		return Tunnel{}, fmt.Errorf("unknown IR node %q", req.IRNode)
+		return Tunnel{}, Node{}, Node{}, fmt.Errorf("unknown IR node %q", req.IRNode)
 	}
 	if req.EXNode == req.IRNode {
-		return Tunnel{}, errors.New("EX and IR must be different nodes")
+		return Tunnel{}, Node{}, Node{}, errors.New("EX and IR must be different nodes")
 	}
 	if ex.Role != "foreign" {
-		return Tunnel{}, errors.New("the EX end must be a foreign node")
+		return Tunnel{}, Node{}, Node{}, errors.New("the EX end must be a foreign node")
 	}
 	if ir.Role != "worker" && ir.Role != "master" {
-		return Tunnel{}, errors.New("the IR end must be a worker or master node")
+		return Tunnel{}, Node{}, Node{}, errors.New("the IR end must be a worker or master node")
 	}
 	if ex.Revoked || ir.Revoked {
-		return Tunnel{}, errors.New("a revoked node cannot be part of a tunnel")
+		return Tunnel{}, Node{}, Node{}, errors.New("a revoked node cannot be part of a tunnel")
 	}
 	for _, other := range s.st.Tunnels {
 		shares := other.EXNode == req.EXNode || other.IRNode == req.IRNode || other.EXNode == req.IRNode || other.IRNode == req.EXNode
 		if shares && !terminalTunnel(other.Phase) {
-			return Tunnel{}, fmt.Errorf("tunnel %s is still being built on one of these nodes", other.ID)
+			return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s is still being built on one of these nodes", other.ID)
 		}
 		if shares && other.Phase == TunnelRollbackFailed {
-			return Tunnel{}, fmt.Errorf("tunnel %s could not be rolled back on one of these nodes; fix that first", other.ID)
+			return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s could not be rolled back on one of these nodes; fix that first", other.ID)
 		}
 	}
 	t := Tunnel{
@@ -225,13 +251,26 @@ func (s *Store) CreateTunnel(req TunnelRequest, now time.Time) (Tunnel, error) {
 	probe := agentjob.Job{SchemaVersion: agentjob.SchemaVersion, JobID: "plan", NodeID: "plan", Action: JobTunnelPrepareEX,
 		Params: exParams, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if err := probe.Validate(); err != nil {
-		return Tunnel{}, fmt.Errorf("invalid tunnel plan: %w", err)
+		return Tunnel{}, Node{}, Node{}, fmt.Errorf("invalid tunnel plan: %w", err)
 	}
 	probe.Action = JobTunnelPrepareIR
 	probe.Params = map[string]string{"tunnel_id": t.ID, "code": "BAFTPAIR1:AAAAAAAAAAAAAAAAAAAAAAAAAA", "route_listen": t.RouteListen, "route_id": t.RouteID}
 	if err := probe.Validate(); err != nil {
-		return Tunnel{}, fmt.Errorf("invalid tunnel plan: %w", err)
+		return Tunnel{}, Node{}, Node{}, fmt.Errorf("invalid tunnel plan: %w", err)
 	}
+	return t, ex, ir, nil
+}
+
+// CreateTunnel validates a request and queues the first step.
+func (s *Store) CreateTunnel(req TunnelRequest, now time.Time) (Tunnel, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, _, _, err := s.resolveTunnelLocked(req, now)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	t.PlanHash = req.PlanHash
+	exParams := t.prepareEXParams()
 	t.Phase = TunnelPreparingEX
 	touch(&t, t.EXNode)
 	s.tunnelJobLocked(&t, t.EXNode, JobTunnelPrepareEX, exParams, now)
@@ -382,6 +421,13 @@ func (s *Store) advanceLocked(t *Tunnel, now time.Time) *TunnelEvent {
 		}
 		return nil
 	case "failed":
+		if t.Phase == TunnelHealthIR || t.Phase == TunnelHealthEX || t.Phase == TunnelObservingIR || t.Phase == TunnelObservingEX {
+			step := "health"
+			if t.Phase == TunnelObservingIR || t.Phase == TunnelObservingEX {
+				step = "observe"
+			}
+			t.Evidence = append(t.Evidence, TunnelEvidence{Step: step, Node: j.NodeID, At: now, OK: false, Detail: j.Message})
+		}
 		if (t.Phase == TunnelHealthIR || t.Phase == TunnelHealthEX) && t.HealthAttempts+1 < tunnelHealthAttempts {
 			t.HealthAttempts++
 			s.tunnelJobLocked(t, j.NodeID, JobTunnelHealth, nil, now)
@@ -425,12 +471,44 @@ func (s *Store) advanceLocked(t *Tunnel, now time.Time) *TunnelEvent {
 		t.HealthAttempts = 0
 		s.tunnelJobLocked(t, t.IRNode, JobTunnelHealth, nil, now)
 	case TunnelHealthIR:
+		t.Evidence = append(t.Evidence, TunnelEvidence{Step: "health", Node: j.NodeID, At: now, OK: true, Detail: j.Message})
 		t.Phase = TunnelHealthEX
 		t.HealthAttempts = 0
 		s.tunnelJobLocked(t, t.EXNode, JobTunnelHealth, nil, now)
 	case TunnelHealthEX:
-		t.Phase = TunnelFinalizingIR
-		s.tunnelJobLocked(t, t.IRNode, JobTunnelFinalize, nil, now)
+		t.Evidence = append(t.Evidence, TunnelEvidence{Step: "health", Node: j.NodeID, At: now, OK: true, Detail: j.Message})
+		t.Phase = TunnelObservingIR
+		s.tunnelJobLocked(t, t.IRNode, JobTunnelObserve, nil, now)
+	case TunnelObservingIR, TunnelObservingEX:
+		// Desired == observed, or the change is rolled back: "the command
+		// succeeded" is not evidence, the node's own report is.
+		role := tunnelnode.RoleIR
+		if t.Phase == TunnelObservingEX {
+			role = tunnelnode.RoleEX
+		}
+		var o tunnelnode.Observed
+		var problems []string
+		if err := json.Unmarshal([]byte(j.Message), &o); err != nil {
+			problems = []string{"the node's observed state is unreadable"}
+		} else {
+			problems = verifyObserved(*t, role, o)
+		}
+		t.Evidence = append(t.Evidence, TunnelEvidence{Step: "observe", Node: j.NodeID, At: now, OK: len(problems) == 0, Detail: j.Message, Problems: problems})
+		if len(problems) > 0 {
+			s.failLocked(t, fmt.Sprintf("observed state of %s differs from the plan: %s", j.NodeID, strings.Join(problems, "; ")), now)
+			return nil
+		}
+		if t.ObservedGen == nil {
+			t.ObservedGen = map[string]int{}
+		}
+		t.ObservedGen[j.NodeID] = o.Generation
+		if t.Phase == TunnelObservingIR {
+			t.Phase = TunnelObservingEX
+			s.tunnelJobLocked(t, t.EXNode, JobTunnelObserve, nil, now)
+		} else {
+			t.Phase = TunnelFinalizingIR
+			s.tunnelJobLocked(t, t.IRNode, JobTunnelFinalize, nil, now)
+		}
 	case TunnelFinalizingIR, TunnelFinalizingEX:
 		return s.nextAfterFinalizeLocked(t, now)
 	}
@@ -444,6 +522,12 @@ func (s *Store) nextAfterFinalizeLocked(t *Tunnel, now time.Time) *TunnelEvent {
 		return nil
 	}
 	t.Phase, t.JobID, t.UpdatedAt = TunnelActive, "", now
+	for node, gen := range t.ObservedGen {
+		if n, ok := s.st.Nodes[node]; ok {
+			n.AppliedGeneration = gen
+			s.st.Nodes[node] = n
+		}
+	}
 	for id, other := range s.st.Tunnels {
 		if id != t.ID && other.Phase == TunnelActive && (other.EXNode == t.EXNode || other.IRNode == t.IRNode || other.EXNode == t.IRNode || other.IRNode == t.EXNode) {
 			other.Phase, other.UpdatedAt = TunnelSuperseded, now
@@ -548,6 +632,22 @@ func (s *Server) tunnels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		details := map[string]any{"ex_node": in.EXNode, "ir_node": in.IRNode, "port": in.Port, "target": in.Target, "route_listen": in.RouteListen}
+		if in.PlanHash != "" {
+			// Deploy exactly the plan that was reviewed: recompute it now and
+			// refuse if it is no longer OK or no longer the same.
+			cur, perr := s.store.BuildPlan(in, s.now())
+			if perr != nil {
+				s.auditFailure(w, r, "tunnel.create", in.EXNode+"->"+in.IRNode, details, perr, 400)
+				return
+			}
+			if !cur.OK || cur.Hash != in.PlanHash {
+				details["plan_hash"], details["current_plan_hash"] = in.PlanHash, cur.Hash
+				_ = s.auditAdmin(r, "tunnel.create", in.EXNode+"->"+in.IRNode, "failure", details)
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "the plan is stale or no longer passes its gates; review the new plan", "plan": cur})
+				return
+			}
+			details["plan_hash"] = in.PlanHash
+		}
 		t, err := s.store.CreateTunnel(in, s.now())
 		if err != nil {
 			s.auditFailure(w, r, "tunnel.create", in.EXNode+"->"+in.IRNode, details, err, 400)
@@ -593,4 +693,57 @@ func (s *Server) tunnelCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, t)
+}
+
+// verifyObserved compares what a node reports with what the tunnel asked for.
+// It returns every difference, so the evidence shows all of them at once.
+func verifyObserved(t Tunnel, role string, o tunnelnode.Observed) []string {
+	var p []string
+	bad := func(format string, a ...any) { p = append(p, fmt.Sprintf(format, a...)) }
+	if o.TunnelID != t.ID {
+		bad("change id is %q, want %q", o.TunnelID, t.ID)
+	}
+	if o.Role != role {
+		bad("node role is %q, want %q", o.Role, role)
+	}
+	if o.Phase != tunnelnode.PhaseCommitted {
+		bad("change phase is %q, want committed", o.Phase)
+	}
+	if o.Generation != o.PreviousGeneration+1 || o.NodeGeneration != o.Generation {
+		bad("generation %d (previous %d, node %d) is not one step ahead", o.Generation, o.PreviousGeneration, o.NodeGeneration)
+	}
+	if !o.ServiceActive {
+		bad("service is not active")
+	}
+	if !o.UnitMatches {
+		bad("service unit differs from the expected one")
+	}
+	if len(o.ConfigSHA256) != 64 {
+		bad("config digest missing")
+	}
+	if o.RouteID != t.RouteID {
+		bad("route id is %q, want %q", o.RouteID, t.RouteID)
+	}
+	if role == tunnelnode.RoleIR {
+		if o.ConfigRole != "dialer" {
+			bad("config role is %q, want dialer", o.ConfigRole)
+		}
+		if o.RouteListen != t.RouteListen {
+			bad("route listener is %q, want %q", o.RouteListen, t.RouteListen)
+		}
+		if want := net.JoinHostPort(t.PublicAddress, strconv.Itoa(t.Port)); o.PeerAddress != want {
+			bad("peer address is %q, want %q", o.PeerAddress, want)
+		}
+	} else {
+		if o.ConfigRole != "listener" {
+			bad("config role is %q, want listener", o.ConfigRole)
+		}
+		if want := "0.0.0.0:" + strconv.Itoa(t.Port); o.Listen != want {
+			bad("listener is %q, want %q", o.Listen, want)
+		}
+		if o.Target != t.Target {
+			bad("target is %q, want %q", o.Target, t.Target)
+		}
+	}
+	return p
 }

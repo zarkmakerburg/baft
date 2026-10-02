@@ -288,12 +288,38 @@ func TestBCCBuildsATunnelOnTwoServers(t *testing.T) {
 		t.Fatalf("configs are not a pair:\n%s\n%s", ex, ir)
 	}
 	f.noSecretsInBCC()
+	// The deployment keeps its evidence: two health results and two observed
+	// states, each proved by the node itself and equal to the plan.
+	ev := f.tunnel(tn.ID).Evidence
+	var health, observed int
+	for _, e := range ev {
+		if !e.OK {
+			t.Errorf("evidence %s on %s is not OK: %v", e.Step, e.Node, e.Problems)
+		}
+		switch e.Step {
+		case "health":
+			health++
+		case "observe":
+			observed++
+			if !strings.Contains(e.Detail, `"generation":1`) || !strings.Contains(e.Detail, `"config_sha256"`) {
+				t.Errorf("observed evidence is thin: %s", e.Detail)
+			}
+		}
+	}
+	if health != 2 || observed != 2 {
+		t.Fatalf("evidence: %d health, %d observe: %+v", health, observed, ev)
+	}
+	for _, id := range []string{"ex-1", "ir-1"} {
+		if n, _ := f.store.GetNode(id); n.AppliedGeneration != 1 {
+			t.Errorf("%s applied generation %d, want 1", id, n.AppliedGeneration)
+		}
+	}
 	st := f.store.ListJobs()
 	var types []string
 	for _, j := range st {
 		types = append(types, j.Type)
 	}
-	if len(types) != 8 {
+	if len(types) != 10 {
 		t.Fatalf("jobs run: %v", types)
 	}
 	entries, _ := os.ReadFile(f.store.Path() + ".audit.jsonl")
@@ -439,5 +465,88 @@ func TestTunnelEndpointsNeedAdminAndJobsStayHidden(t *testing.T) {
 	f.h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated list = %d", rr.Code)
+	}
+}
+
+func (f *flow) planOf(req bcc.TunnelRequest) (int, bcc.Plan, []byte) {
+	f.t.Helper()
+	code, body := f.api("POST", "/api/tunnels/plan", req)
+	var pl bcc.Plan
+	json.Unmarshal(body, &pl)
+	return code, pl, body
+}
+
+func TestPlanIsReviewedThenDeployedByItsHash(t *testing.T) {
+	f := newFlow(t)
+	// Agents have not contacted BCC: the plan says so and cannot be deployed.
+	code, pl, _ := f.planOf(f.plan())
+	if code != 200 || pl.OK || pl.Hash == "" {
+		t.Fatalf("plan before any agent contact: %d ok=%v", code, pl.OK)
+	}
+	var contact int
+	for _, g := range pl.Gates {
+		if strings.HasPrefix(g.Name, "agent contact") && g.Status == "FAIL" {
+			contact++
+		}
+	}
+	if contact != 2 {
+		t.Fatalf("gates: %+v", pl.Gates)
+	}
+	req := f.plan()
+	req.PlanHash = pl.Hash
+	if code, body := f.api("POST", "/api/tunnels", req); code != http.StatusConflict || !strings.Contains(string(body), "stale or no longer passes") {
+		t.Fatalf("deploying a failing plan = %d %s", code, body)
+	}
+	if len(f.store.ListJobs()) != 0 {
+		t.Fatal("a refused deploy queued jobs")
+	}
+
+	// Once both agents have contacted BCC the same request plans OK, and the
+	// plan is deterministic.
+	for _, n := range []*flowNode{f.ex, f.ir} {
+		if _, err := n.agent.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, ok1, _ := f.planOf(f.plan())
+	_, ok2, _ := f.planOf(f.plan())
+	if !ok1.OK || ok1.Hash != ok2.Hash {
+		t.Fatalf("plan not OK or not deterministic: %v %s %s", ok1.OK, ok1.Hash, ok2.Hash)
+	}
+	if ok1.Nodes[0].GenerationTo != 1 || len(ok1.Verify) == 0 || len(ok1.Rollback) == 0 || len(ok1.Steps) == 0 {
+		t.Fatalf("plan content: %+v", ok1)
+	}
+	// A different request has a different hash: a reviewed plan cannot be
+	// used to deploy something else.
+	other := f.plan()
+	other.Port = freeFlowPort(t)
+	req = other
+	req.PlanHash = ok1.Hash
+	if code, _ := f.api("POST", "/api/tunnels", req); code != http.StatusConflict {
+		t.Fatalf("a hash from another plan was accepted: %d", code)
+	}
+	// The reviewed plan deploys, and the result matches it.
+	req = f.plan()
+	req.PlanHash = ok1.Hash
+	code, body := f.api("POST", "/api/tunnels", req)
+	if code != http.StatusAccepted {
+		t.Fatalf("deploy by hash = %d %s", code, body)
+	}
+	var tn bcc.Tunnel
+	json.Unmarshal(body, &tn)
+	if tn.PlanHash != ok1.Hash {
+		t.Fatal("the deployment does not record the plan it came from")
+	}
+	if done := f.run(tn.ID); done.Phase != bcc.TunnelActive {
+		t.Fatalf("ended %s: %s", done.Phase, done.Error)
+	}
+	// The next plan starts from the generation BCC verified.
+	_, next, _ := f.planOf(f.plan())
+	if next.Nodes[0].GenerationFrom != 1 || next.Nodes[0].GenerationTo != 2 || next.Replaces != tn.ID {
+		t.Fatalf("next plan: %+v replaces=%s", next.Nodes[0], next.Replaces)
+	}
+	entries, _ := os.ReadFile(f.store.Path() + ".audit.jsonl")
+	if !strings.Contains(string(entries), "tunnel.plan") || !strings.Contains(string(entries), ok1.Hash) {
+		t.Error("planning and the plan hash are not in the audit log")
 	}
 }

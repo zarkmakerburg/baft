@@ -39,6 +39,10 @@ type Node struct {
 	Revoked                  bool      `json:"revoked,omitempty"`
 	RevokedAt                time.Time `json:"revoked_at,omitempty"`
 	RevokeReason             string    `json:"revoke_reason,omitempty"`
+	// AgentSeen is the last time the node's agent authenticated to BCC;
+	// AppliedGeneration is the configuration generation BCC last verified on it.
+	AgentSeen                time.Time `json:"agent_seen,omitempty"`
+	AppliedGeneration        int       `json:"applied_generation,omitempty"`
 	Health                   string    `json:"health"`
 	LastChecked    time.Time `json:"last_checked,omitempty"`
 	LatencyMS      int64     `json:"latency_ms"`
@@ -244,6 +248,13 @@ func publicNode(n Node) Node {
 	return n
 }
 
+// GetNode returns a node record (without its token hashes).
+func (s *Store) GetNode(id string) (Node, bool) {
+	s.mu.Lock();defer s.mu.Unlock()
+	n,ok:=s.st.Nodes[id]
+	return publicNode(n),ok
+}
+
 func (s *Store) ListNodes() []Node {
 	s.mu.Lock();defer s.mu.Unlock()
 	out:=make([]Node,0,len(s.st.Nodes))
@@ -342,9 +353,20 @@ func (s *Store) RevokeNode(nodeID,reason string,now time.Time)(Node,error){
 	return publicNode(n),nil
 }
 
+// noteAgentSeenLocked records agent contact in memory; it reaches disk with the
+// next save, or sooner when the stored value is already stale, so a polling
+// agent does not rewrite the state on every request.
+func (s *Store) noteAgentSeenLocked(nodeID string,now time.Time){
+	n,ok:=s.st.Nodes[nodeID];if !ok{return}
+	stale:=now.Sub(n.AgentSeen)>5*time.Minute
+	n.AgentSeen=now;s.st.Nodes[nodeID]=n
+	if stale{_ = s.saveLocked()}
+}
+
 func (s *Store) PullJobs(nodeID,token string) ([]Job,error) {
 	s.mu.Lock();defer s.mu.Unlock()
 	if !s.authorizedLocked(nodeID,token){return nil,ErrAgentAuthentication}
+	s.noteAgentSeenLocked(nodeID,time.Now().UTC())
 	var out []Job
 	for id,j:=range s.st.Jobs{
 		if j.NodeID!=nodeID||j.Status!="queued"{continue}

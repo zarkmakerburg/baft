@@ -21,6 +21,7 @@ package tunnelnode
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zarkmakerburg/baft/internal/config"
 )
 
 // System is how the package touches the host; tests replace it.
@@ -100,6 +103,10 @@ type Txn struct {
 	UnitChanged   bool `json:"unit_changed"`
 	PKIReplaced   bool `json:"pki_replaced"`
 	ConfigWritten bool `json:"config_written"`
+
+	// Generation counts committed configuration changes on this node.
+	Generation         int `json:"generation,omitempty"`
+	PreviousGeneration int `json:"previous_generation,omitempty"`
 }
 
 type Manager struct {
@@ -201,6 +208,26 @@ func (m *Manager) readTxn(id string) (Txn, error) {
 		return t, fmt.Errorf("corrupt state for %s: %w", id, err)
 	}
 	return t, nil
+}
+
+func (m *Manager) generationPath() string { return filepath.Join(m.StateDir, "tunnels", "generation") }
+
+// readGeneration returns the node's current configuration generation (0 on a
+// node that never committed a change).
+func (m *Manager) readGeneration() int {
+	b, err := os.ReadFile(m.generationPath())
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+func (m *Manager) writeGeneration(n int) error {
+	return writeFile(m.generationPath(), []byte(strconv.Itoa(n)+"\n"), 0o600)
 }
 
 func (m *Manager) writeTxn(t Txn) error {
@@ -425,7 +452,12 @@ func (m *Manager) install(ctx context.Context, t Txn, port int) (string, error) 
 	}
 	t.Phase = PhaseCommitted
 	t.ConfigWritten = true
+	t.PreviousGeneration = m.readGeneration()
+	t.Generation = t.PreviousGeneration + 1
 	if err := m.writeTxn(t); err != nil {
+		return "", err
+	}
+	if err := m.writeGeneration(t.Generation); err != nil {
 		return "", err
 	}
 	staged2, err := os.ReadFile(staged)
@@ -570,6 +602,7 @@ func (m *Manager) rollbackTxn(ctx context.Context, t Txn) (string, error) {
 		}
 	}
 	if t.ConfigWritten {
+		note(m.writeGeneration(t.PreviousGeneration))
 		if t.HadConfig {
 			b, err := os.ReadFile(m.backup(t.ID, "baft.yaml"))
 			if err != nil {
@@ -910,4 +943,70 @@ func redact(s string, secrets ...string) string {
 		}
 	}
 	return s
+}
+
+// Observed is what this node can prove about itself for a change. BCC compares
+// it with what it asked for; a command's exit status is never the evidence.
+type Observed struct {
+	TunnelID           string `json:"tunnel_id"`
+	Role               string `json:"role"`
+	Phase              string `json:"phase"`
+	Generation         int    `json:"generation"`
+	PreviousGeneration int    `json:"previous_generation"`
+	NodeGeneration     int    `json:"node_generation"`
+	ServiceActive      bool   `json:"service_active"`
+	Restarts           string `json:"restarts,omitempty"`
+	ConfigSHA256       string `json:"config_sha256"`
+	ConfigRole         string `json:"config_role"`
+	Listen             string `json:"listen,omitempty"`
+	RouteID            string `json:"route_id,omitempty"`
+	RouteListen        string `json:"route_listen,omitempty"`
+	Target             string `json:"target,omitempty"`
+	PeerAddress        string `json:"peer_address,omitempty"`
+	UnitMatches        bool   `json:"unit_matches"`
+}
+
+// Observe reads the live state of this node for change id. It only reads.
+func (m *Manager) Observe(ctx context.Context, id string) (Observed, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, err := m.readTxn(id)
+	if err != nil {
+		return Observed{}, fmt.Errorf("unknown tunnel change %s", id)
+	}
+	o := Observed{
+		TunnelID: t.ID, Role: t.Role, Phase: t.Phase, Generation: t.Generation,
+		PreviousGeneration: t.PreviousGeneration, NodeGeneration: m.readGeneration(),
+	}
+	raw, err := os.ReadFile(m.liveConfig())
+	if err != nil {
+		return o, fmt.Errorf("live config: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	o.ConfigSHA256 = hex.EncodeToString(sum[:])
+	cfg, err := config.LoadFile(m.liveConfig())
+	if err != nil {
+		return o, fmt.Errorf("live config does not load: %w", err)
+	}
+	o.ConfigRole = cfg.Node.Role
+	if cfg.Server != nil {
+		o.Listen = cfg.Server.Listen
+	}
+	if cfg.Peer != nil {
+		o.PeerAddress = cfg.Peer.Address
+	}
+	if len(cfg.Routes) > 0 {
+		o.RouteID, o.RouteListen, o.Target = cfg.Routes[0].ID, cfg.Routes[0].Listen, cfg.Routes[0].Target
+	}
+	state, _ := m.System.Systemctl(ctx, "is-active", m.Service)
+	o.ServiceActive = state == "active"
+	o.Restarts, _ = m.System.Systemctl(ctx, "show", "-p", "NRestarts", "--value", m.Service)
+	if unit, err := os.ReadFile(m.unitPath()); err == nil {
+		port := t.Port
+		if t.Role == RoleIR {
+			port = 0
+		}
+		o.UnitMatches = string(unit) == m.Unit(port)
+	}
+	return o, nil
 }

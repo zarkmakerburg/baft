@@ -105,11 +105,32 @@ traffic() { # retry: the dialer reconnects within a few seconds of a restart
 }
 
 log "BCC builds tunnel 1 (EX 18443 <-> IR 1443 -> target 2443)"
-T1="$(api -d '{"ex_node":"ex-e2e","ir_node":"ir-e2e","public_address":"127.0.0.1","port":18443}' "$BCC/api/tunnels" | jfield '["id"]')"
+REQ1='{"ex_node":"ex-e2e","ir_node":"ir-e2e","public_address":"127.0.0.1","port":18443}'
+# The plan is reviewed first and deployed by its hash; its gates need both
+# agents to have contacted BCC, which they do every 2 s.
+PLAN_OK=False
+for _ in $(seq 1 30); do
+  PLAN="$(api -d "$REQ1" "$BCC/api/tunnels/plan")"
+  PLAN_OK="$(printf '%s' "$PLAN" | jfield '["ok"]')"
+  [[ "$PLAN_OK" == "True" ]] && break
+  sleep 1
+done
+[[ "$PLAN_OK" == "True" ]] || fail "the deployment plan never passed its gates: $PLAN"
+HASH1="$(printf '%s' "$PLAN" | jfield '["hash"]')"
+T1="$(api -d "${REQ1%\}},\"plan_hash\":\"$HASH1\"}" "$BCC/api/tunnels" | jfield '["id"]')"
 phase="$(wait_tunnel "$T1" 240 active rolled_back rollback_failed)" || true
 [[ "$phase" == "active" ]] || fail "tunnel 1 ended as '$phase'"
 systemctl is-active baft-ex baft-ir >/dev/null || fail "tunnel services are not running"
 [[ "$(stat -c '%U:%G %a' /etc/baft-ex/baft.yaml)" == "root:baft 640" ]] || fail "EX config has wrong owner/mode"
+python3 - "$(api "$BCC/api/tunnels?id=$T1")" "$HASH1" <<'PY' || fail "tunnel 1 lacks its deployment evidence"
+import json, sys
+t = json.loads(sys.argv[1])
+ev = t.get("evidence", [])
+assert t["plan_hash"] == sys.argv[2], "plan hash not recorded"
+assert sorted(e["step"] for e in ev) == ["health", "health", "observe", "observe"], ev
+assert all(e["ok"] for e in ev), ev
+assert all('"generation":1' in e["detail"] for e in ev if e["step"] == "observe"), ev
+PY
 traffic || fail "no traffic through tunnel 1"
 log "traffic passes through tunnel 1"
 EX_CFG_SUM="$(sha256sum /etc/baft-ex/baft.yaml | cut -d' ' -f1)"
