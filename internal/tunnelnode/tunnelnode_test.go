@@ -632,8 +632,26 @@ func TestInspectSeesWhatIsReallyThere(t *testing.T) {
 	if !l.ConfigPresent || !l.UnitPresent || !l.ConfigLoads || !l.MarkerPresent || l.MarkerTunnelID != "i1" || !l.MarkerConfigMatches || !l.MarkerUnitMatches || !l.ServiceActive || l.ConfigRole != "listener" {
 		t.Fatalf("fresh node reports %+v", l)
 	}
-	// Hand edit, then deleted files.
 	cfg, _ := os.ReadFile(p.ex.liveConfig())
+	unit, _ := os.ReadFile(p.ex.unitPath())
+	mb, _ := os.ReadFile(p.ex.markerPath())
+	if l.ConfigSHA256 != shaHex(cfg) || l.UnitSHA256 != shaHex(unit) || l.MarkerSHA256 != shaHex(mb) {
+		t.Fatal("Inspect does not report the live digests of the files")
+	}
+	// A coupled tamper: edit the config and rewrite the marker to agree.
+	// The marker comparisons pass, but the live digest no longer equals the old one.
+	edited := append(append([]byte{}, cfg...), '\n', '#')
+	os.WriteFile(p.ex.liveConfig(), edited, 0o640)
+	var mk Marker
+	readJSON(p.ex.markerPath(), &mk)
+	mk.ConfigSHA256 = shaHex(edited)
+	writeJSON(p.ex.markerPath(), mk, 0o644)
+	if c := p.ex.Inspect(ctx); !c.MarkerConfigMatches || c.ConfigSHA256 == l.ConfigSHA256 || c.MarkerSHA256 == l.MarkerSHA256 {
+		t.Fatalf("coupled tamper not visible in the live digests: %+v", c)
+	}
+	os.WriteFile(p.ex.liveConfig(), cfg, 0o640)
+	os.WriteFile(p.ex.markerPath(), mb, 0o644)
+	// Hand edit, then deleted files.
 	os.WriteFile(p.ex.liveConfig(), append(cfg, '\n', '#'), 0o640)
 	if l := p.ex.Inspect(ctx); l.MarkerConfigMatches {
 		t.Fatal("hand-edited config still matches the marker")

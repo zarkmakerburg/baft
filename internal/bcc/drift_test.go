@@ -12,7 +12,7 @@ import (
 
 func goodLive(t Tunnel, role string) tunnelnode.Live {
 	l := tunnelnode.Live{
-		ConfigPresent: true, UnitPresent: true, ConfigLoads: true, ConfigSHA256: strings.Repeat("a", 64),
+		ConfigPresent: true, UnitPresent: true, ConfigLoads: true, ConfigSHA256: strings.Repeat("a", 64), UnitSHA256: strings.Repeat("b", 64), MarkerSHA256: strings.Repeat("c", 64),
 		MarkerPresent: true, MarkerManagedBy: "baft", MarkerTunnelID: t.ID, MarkerGeneration: 4,
 		MarkerConfigMatches: true, MarkerUnitMatches: true, NodeGeneration: 4, ServiceActive: true, RouteID: t.RouteID,
 	}
@@ -42,7 +42,8 @@ func activeTunnel(t *testing.T, s *Store, now time.Time) Tunnel {
 }
 
 func TestClassifyLiveStates(t *testing.T) {
-	tn := Tunnel{ID: "tun-x", RouteID: "service-main", RouteListen: "127.0.0.1:1443", PublicAddress: "203.0.113.5", Port: 8443, Target: "127.0.0.1:2443", ObservedGen: map[string]int{"ir-1": 4}}
+	tn := Tunnel{ID: "tun-x", RouteID: "service-main", RouteListen: "127.0.0.1:1443", PublicAddress: "203.0.113.5", Port: 8443, Target: "127.0.0.1:2443", ObservedGen: map[string]int{"ir-1": 4},
+		Digests: map[string]NodeDigests{"ir-1": {Config: strings.Repeat("a", 64), Unit: strings.Repeat("b", 64), Marker: strings.Repeat("c", 64)}}}
 	cases := map[string]struct {
 		mutate func(*tunnelnode.Live)
 		want   string
@@ -60,6 +61,18 @@ func TestClassifyLiveStates(t *testing.T) {
 		"node counter moved": {func(l *tunnelnode.Live) { l.NodeGeneration = 9 }, DriftDrifted},
 		"wrong peer":         {func(l *tunnelnode.Live) { l.PeerAddress = "198.51.100.1:1" }, DriftDrifted},
 		"config unloadable":  {func(l *tunnelnode.Live) { l.ConfigLoads = false }, DriftDrifted},
+		// Coupled tamper: the marker was rewritten to agree with the edit, so
+		// every marker comparison passes; only BCC's own digest can tell.
+		"config + marker coupled": {func(l *tunnelnode.Live) {
+			l.ConfigSHA256 = strings.Repeat("d", 64)
+			l.MarkerSHA256 = strings.Repeat("e", 64)
+		}, DriftDrifted},
+		"unit + marker coupled": {func(l *tunnelnode.Live) {
+			l.UnitSHA256 = strings.Repeat("d", 64)
+			l.MarkerSHA256 = strings.Repeat("e", 64)
+		}, DriftDrifted},
+		"config edited, marker untouched but matching": {func(l *tunnelnode.Live) { l.ConfigSHA256 = strings.Repeat("d", 64) }, DriftDrifted},
+		"marker metadata changed":                      {func(l *tunnelnode.Live) { l.MarkerSHA256 = strings.Repeat("e", 64) }, DriftDrifted},
 	}
 	for name, c := range cases {
 		l := goodLive(tn, tunnelnode.RoleIR)
@@ -67,6 +80,25 @@ func TestClassifyLiveStates(t *testing.T) {
 		got := classifyLive(tn, "ir-1", tunnelnode.RoleIR, l)
 		if got.State != c.want || (c.want != DriftInSync && len(got.Problems) == 0) {
 			t.Errorf("%s: %+v, want %s with a reason", name, got, c.want)
+		}
+	}
+}
+
+func TestNoVerifiedBaselineIsNeverInSync(t *testing.T) {
+	tn := Tunnel{ID: "tun-x", RouteID: "service-main", RouteListen: "127.0.0.1:1443", PublicAddress: "203.0.113.5", Port: 8443, ObservedGen: map[string]int{"ir-1": 4}}
+	got := classifyLive(tn, "ir-1", tunnelnode.RoleIR, goodLive(tn, tunnelnode.RoleIR))
+	if got.State != DriftUnknown {
+		t.Fatalf("without BCC-held digests: %+v", got)
+	}
+}
+
+func TestActivationStoresTheDigestsBCCVerified(t *testing.T) {
+	s := tunnelStore(t)
+	tn := activeTunnel(t, s, time.Now())
+	for _, node := range []string{"ir-1", "ex-1"} {
+		d := tn.Digests[node]
+		if d.Config != strings.Repeat("a", 64) || d.Unit != strings.Repeat("b", 64) || d.Marker != strings.Repeat("c", 64) {
+			t.Fatalf("%s digests %+v", node, d)
 		}
 	}
 }

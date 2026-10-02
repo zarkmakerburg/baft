@@ -86,6 +86,10 @@ type Tunnel struct {
 	// ObservedGen is the generation each node proved it runs, applied to the
 	// node records only when the tunnel becomes active.
 	ObservedGen map[string]int `json:"observed_generation,omitempty"`
+	// Digests is BCC's own reference for drift detection: the SHA-256 of the
+	// config, unit and ownership marker each node reported when BCC verified
+	// the change. Nothing a node says later is compared with a node-held hash.
+	Digests map[string]NodeDigests `json:"digests,omitempty"`
 
 	// Drift is the result of the last drift check (active tunnels only);
 	// DriftJobs are the inspect jobs of a check in progress.
@@ -557,6 +561,10 @@ func (s *Store) advanceLocked(t *Tunnel, now time.Time) *TunnelEvent {
 			t.ObservedGen = map[string]int{}
 		}
 		t.ObservedGen[j.NodeID] = o.Generation
+		if t.Digests == nil {
+			t.Digests = map[string]NodeDigests{}
+		}
+		t.Digests[j.NodeID] = NodeDigests{Config: o.ConfigSHA256, Unit: o.UnitSHA256, Marker: o.MarkerSHA256}
 		if t.Phase == TunnelObservingIR {
 			t.Phase = TunnelObservingEX
 			s.tunnelJobLocked(t, t.EXNode, JobTunnelObserve, nil, now)
@@ -772,6 +780,9 @@ func verifyObserved(t Tunnel, node, role string, o tunnelnode.Observed) []string
 	}
 	if !o.UnitMatches {
 		bad("service unit differs from the expected one")
+	}
+	if len(o.UnitSHA256) != 64 || len(o.MarkerSHA256) != 64 {
+		bad("unit or marker digest missing")
 	}
 	if len(o.ConfigSHA256) != 64 {
 		bad("config digest missing")

@@ -149,6 +149,20 @@ cp /etc/baft-ex/baft.yaml "$WORK/ex.yaml.keep"
 printf '\n# edited by hand\n' >> /etc/baft-ex/baft.yaml
 [[ "$(drift_check "$T1")" == "DRIFTED" ]] || fail "a hand-edited config was not reported as DRIFTED"
 cat "$WORK/ex.yaml.keep" > /etc/baft-ex/baft.yaml
+# Coupled tamper: edit the config AND rewrite the marker's hash to match. Every
+# node-side comparison passes; BCC's own verified digest must still catch it.
+cp /etc/baft-ex/baft.managed.json "$WORK/ex.marker.keep"
+printf '\n# edited by hand, marker rewritten\n' >> /etc/baft-ex/baft.yaml
+python3 - <<'PY'
+import json, hashlib
+p = "/etc/baft-ex/baft.managed.json"
+m = json.load(open(p))
+m["config_sha256"] = hashlib.sha256(open("/etc/baft-ex/baft.yaml", "rb").read()).hexdigest()
+json.dump(m, open(p, "w"))
+PY
+[[ "$(drift_check "$T1")" == "DRIFTED" ]] || fail "a config edit with a matching marker rewrite was not reported as DRIFTED"
+cat "$WORK/ex.yaml.keep" > /etc/baft-ex/baft.yaml
+cat "$WORK/ex.marker.keep" > /etc/baft-ex/baft.managed.json
 [[ "$(drift_check "$T1")" == "IN_SYNC" ]] || fail "the restored config is not IN_SYNC"
 
 EX_CFG_SUM="$(sha256sum /etc/baft-ex/baft.yaml | cut -d' ' -f1)"

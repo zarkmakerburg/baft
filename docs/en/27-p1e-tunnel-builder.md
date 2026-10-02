@@ -60,11 +60,13 @@ An active tunnel is checked against what the nodes really have (`tunnel_inspect`
 
 | State | Meaning |
 |---|---|
-| `IN_SYNC` | marker, hashes, generation, route facts and service state all match what BAFT installed |
+| `IN_SYNC` | the live config, unit and marker are byte-for-byte the files BCC verified when the tunnel became active, and generation, route facts and service state match |
 | `DRIFTED` | BAFT-managed but changed since: config or unit edited, service stopped, generation or route facts differ, marker for another tunnel |
 | `MISSING` | config file or unit is gone |
 | `UNMANAGED` | files exist but carry no BAFT ownership marker |
 | `UNKNOWN` | the node did not answer (failed job or 10 min timeout); nothing is claimed |
+
+**The reference is BCC's, not the node's.** When a tunnel becomes active BCC stores, per node, the SHA-256 of the config, unit and ownership marker it just verified (`digests`). Drift compares the live digests (`tunnel_inspect` reports them directly) with those, so an edit that also rewrites the node's marker is still `DRIFTED`. A tunnel built before digests were kept has no baseline and reports `UNKNOWN` ("rebuild the tunnel to create a baseline") rather than being vouched for.
 
 The tunnel's state is the worst of its nodes. `POST /api/tunnels/drift?id=<tunnel>` starts a check (admin, audited as `tunnel.drift_check`; refused unless the tunnel is active or a check is running); the dashboard has a "Check drift" button. BCC also checks every active tunnel automatically (default hourly; `BAFT_BCC_DRIFT_INTERVAL`, minimum `1m`, `0` disables) and writes `tunnel.drift` / `tunnel.in_sync` to the audit log only when the state changes. Detection never changes a node; fixing is a new, reviewed change.
 

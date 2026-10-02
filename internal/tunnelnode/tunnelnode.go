@@ -1018,6 +1018,10 @@ type Observed struct {
 	MarkerGeneration    int    `json:"marker_generation,omitempty"`
 	MarkerConfigMatches bool   `json:"marker_config_matches"`
 	MarkerUnitMatches   bool   `json:"marker_unit_matches"`
+	// Live digests of the unit and marker files themselves. BCC keeps them
+	// as its own reference; the marker's recorded hashes are not trusted.
+	UnitSHA256   string `json:"unit_sha256,omitempty"`
+	MarkerSHA256 string `json:"marker_sha256,omitempty"`
 }
 
 // Observe reads the live state of this node for change id. It only reads.
@@ -1063,8 +1067,10 @@ func (m *Manager) Observe(ctx context.Context, id string) (Observed, error) {
 		}
 		o.UnitMatches = string(unit) == m.ManagedUnit(port, t.ID, t.Generation)
 		unitSHA = shaHex(unit)
+		o.UnitSHA256 = unitSHA
 	}
 	if mb, err := os.ReadFile(m.markerPath()); err == nil {
+		o.MarkerSHA256 = shaHex(mb)
 		var mk Marker
 		if json.Unmarshal(mb, &mk) == nil && mk.ManagedBy == "baft" {
 			o.Managed = true
@@ -1143,6 +1149,10 @@ type Live struct {
 	MarkerGeneration    int    `json:"marker_generation,omitempty"`
 	MarkerConfigMatches bool   `json:"marker_config_matches"`
 	MarkerUnitMatches   bool   `json:"marker_unit_matches"`
+	// Live digests of the unit and marker files themselves. BCC keeps them
+	// as its own reference; the marker's recorded hashes are not trusted.
+	UnitSHA256   string `json:"unit_sha256,omitempty"`
+	MarkerSHA256 string `json:"marker_sha256,omitempty"`
 	NodeGeneration      int    `json:"node_generation"`
 
 	ServiceActive bool   `json:"service_active"`
@@ -1180,7 +1190,13 @@ func (m *Manager) Inspect(ctx context.Context) Live {
 	}
 	unit, uerr := os.ReadFile(m.unitPath())
 	l.UnitPresent = uerr == nil
+	if l.UnitPresent {
+		l.UnitSHA256 = shaHex(unit)
+	}
 	var mk Marker
+	if mb, err := os.ReadFile(m.markerPath()); err == nil {
+		l.MarkerSHA256 = shaHex(mb)
+	}
 	if err := readJSON(m.markerPath(), &mk); err == nil {
 		l.MarkerPresent = true
 		l.MarkerManagedBy, l.MarkerTunnelID, l.MarkerGeneration = mk.ManagedBy, mk.TunnelID, mk.Generation

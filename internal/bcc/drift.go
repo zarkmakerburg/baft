@@ -24,6 +24,13 @@ const (
 
 const driftTimeout = 10 * time.Minute
 
+// NodeDigests are the artifact digests BCC verified for a node.
+type NodeDigests struct {
+	Config string `json:"config"`
+	Unit   string `json:"unit"`
+	Marker string `json:"marker"`
+}
+
 // DriftNode is one node's result.
 type DriftNode struct {
 	State    string   `json:"state"`
@@ -82,6 +89,20 @@ func classifyLive(t Tunnel, node, role string, l tunnelnode.Live) DriftNode {
 	if !l.MarkerUnitMatches {
 		bad("service unit changed since BAFT wrote it")
 	}
+	// The reference is the digest BCC itself verified, never a hash held on
+	// the node: an edit that also rewrites the marker is still caught.
+	want, haveBaseline := t.Digests[node]
+	if haveBaseline {
+		if l.ConfigSHA256 != want.Config {
+			bad("config is not byte-for-byte what BAFT installed")
+		}
+		if l.UnitSHA256 != want.Unit {
+			bad("service unit is not byte-for-byte what BAFT installed")
+		}
+		if l.MarkerSHA256 != want.Marker {
+			bad("ownership marker is not byte-for-byte what BAFT wrote")
+		}
+	}
 	if !l.ConfigLoads {
 		bad("config does not load")
 	}
@@ -114,6 +135,11 @@ func classifyLive(t Tunnel, node, role string, l tunnelnode.Live) DriftNode {
 	}
 	if len(p) > 0 {
 		return DriftNode{State: DriftDrifted, Problems: p}
+	}
+	if !haveBaseline {
+		// Nothing BCC verified itself to compare with (a tunnel built before
+		// digests were kept): do not vouch for it.
+		return DriftNode{State: DriftUnknown, Problems: []string{"BCC holds no verified digests for this node; rebuild the tunnel to create a baseline"}}
 	}
 	return DriftNode{State: DriftInSync}
 }
