@@ -39,6 +39,27 @@ Release فقط وقتی پذیرفته می‌شود که: گواهی با Root 
 
 روی ماشین آفلاین: `keygen` برای root و release، سپس `certify` (دستورها در نسخهٔ انگلیسی). فهرست ابطال اولیه (خالی) را هم امضا کنید: `baft-release revoke -root-key root.key -valid-days 180 -out revocations.json`. بعد `root.pub` و `revocations.json` را با PR در `release/keys/` بگذارید و همان کلید Root را در `BAFT_PINNED_ROOT_PUB` داخل `install.sh` قرار دهید (اگر این دو فرق کنند `tests/docs` رد می‌شود)، در گیت‌هاب environment به نام `release` (محدود به tagهای `v*`) با secretهای `BAFT_RELEASE_SIGNING_KEY` و `BAFT_RELEASE_KEY_CERT` بسازید، و `release.key` را از ماشین آفلاین پاک کنید.
 
+## بستهٔ نصب آفلاین
+
+برای سرورهای بدون اینترنت هر release یک فایل `baft-offline-<version>.tar.gz` (و `.sha256`) هم دارد. داخلش `release/` (فایل‌های امضاشدهٔ amd64 و arm64 همراه agent)، `revocations.json` و `install.sh` است.
+
+<div dir="ltr" align="left">
+
+```bash
+sha256sum -c baft-offline-v0.1.1.tar.gz.sha256
+tar -xzf baft-offline-v0.1.1.tar.gz && cd baft-offline-v0.1.1
+sudo bash install.sh --offline . --role ex --public-address HOST_OR_IP
+sudo bash install.sh --offline . --agent-only --bcc-url ... --node-id ...
+```
+
+</div>
+
+- `--offline` هیچ شبکه و `apt` استفاده نمی‌کند؛ `python3`، `openssl` و `sha256sum` باید از قبل روی سرور باشد (نصب‌کننده می‌ایستد و مورد کم را نام می‌برد).
+- خود آرشیو **مرجع اعتماد نیست**. نصب‌کننده `release/` را با کلید ریشهٔ pinشده در `install.sh` و فهرست ابطال داخل بسته verify می‌کند، با همان محافظت downgrade و re-tag نصب آنلاین؛ بستهٔ دستکاری یا دوباره‌بسته‌شده قبل از هر نصبی رد می‌شود. `release/` را می‌شود جدا هم با `baft-release verify -dir release ...` بررسی کرد.
+- فهرست ابطال تاریخ انقضا دارد؛ بستهٔ قدیمی‌تر از آن رد می‌شود، پس بستهٔ تازه بگیرید.
+- مثل `curl | bash`، اعتماد به `install.sh`ای که اجرا می‌کنید از منبعی می‌آید که گرفته‌اید: با فایل همان tag مقایسه کنید یا کل بسته را از release رسمی بگیرید.
+- آرشیو قطعی (deterministic) است: `scripts/release/offline_bundle.sh` از روی فایل‌های release همان بایت‌ها را دوباره می‌سازد تا هر کس بتواند مقایسه کند. CI (`e2e-install-offline`) یکی می‌سازد، نسخهٔ دستکاری‌شده را رد می‌کند و EX و IR را از آن نصب می‌کند در حالی‌که همهٔ آدرس‌های دانلود به یک پورت مرده اشاره می‌کنند.
+
 ## چرخش و ابطال
 
 - چرخش: کلید release جدید، گواهی با Root، جایگزینی secretها. سرورها تغییری لازم ندارند.

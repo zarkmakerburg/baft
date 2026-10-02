@@ -77,6 +77,14 @@ jobs:
         run: |
           go run ./cmd/baft-release verify -dir "$RUNNER_TEMP/dist" -root-pub release/keys/root.pub \
             -revocations release/keys/revocations.json
+      - name: Offline bundle
+        run: |
+          set -euo pipefail
+          scripts/release/offline_bundle.sh "$RUNNER_TEMP/dist" release/keys/revocations.json install.sh "$RUNNER_TEMP/offline"
+          mkdir -p "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP"/offline/*.tar.gz -C "$RUNNER_TEMP/unpacked"
+          BAFT_REVOCATIONS_FILE=release/keys/revocations.json BAFT_VERIFY_ARTIFACTS="baft-linux-amd64 baft-pair-linux-amd64 baft-agent-linux-amd64" \
+            bash install.sh --verify-release "$(echo "$RUNNER_TEMP"/unpacked/baft-offline-*)/release"
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,5 +98,5 @@ jobs:
           else
             notes=(--notes "Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub -revocations release/keys/revocations.json")
           fi
-          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* \
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* "$RUNNER_TEMP"/offline/* \
             --draft --verify-tag --title "BAFT $GITHUB_REF_NAME" "${notes[@]}"

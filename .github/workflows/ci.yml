@@ -226,6 +226,49 @@ jobs:
       - name: Build, break and roll back a tunnel
         run: sudo env GITHUB_ACTIONS=true PATH="$PATH" tests/e2e/launch1.sh "$RUNNER_TEMP/rel"
 
+  e2e-install-offline:
+    # The offline bundle: pack a signed release with throwaway keys, refuse a
+    # tampered copy, then install EX and IR from the unpacked bundle with every
+    # download address pointed at a dead port, so any network use fails.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Build a signed release and its offline bundle
+        run: |
+          set -euo pipefail
+          scripts/release/local_release.sh "$RUNNER_TEMP/rel" v0.0.1-ci
+          scripts/release/offline_bundle.sh "$RUNNER_TEMP/rel/dist" "$RUNNER_TEMP/rel/revocations.json" install.sh "$RUNNER_TEMP/bundle"
+          scripts/release/offline_bundle.sh "$RUNNER_TEMP/rel/dist" "$RUNNER_TEMP/rel/revocations.json" install.sh "$RUNNER_TEMP/bundle2" >/dev/null
+          cmp "$RUNNER_TEMP"/bundle/*.tar.gz "$RUNNER_TEMP"/bundle2/*.tar.gz
+          (cd "$RUNNER_TEMP/bundle" && sha256sum -c ./*.sha256)
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP"/bundle/*.tar.gz -C "$RUNNER_TEMP/unpacked"
+      - name: A tampered bundle is refused
+        run: |
+          set -euo pipefail
+          d=$(echo "$RUNNER_TEMP"/unpacked/baft-offline-*)
+          cp -r "$d" "$RUNNER_TEMP/tampered"
+          printf 'x' >> "$RUNNER_TEMP/tampered/release/baft-linux-amd64"
+          if BAFT_ROOT_PUB="$(cat "$RUNNER_TEMP/rel/root.pub")" BAFT_REVOCATIONS_FILE="$RUNNER_TEMP/tampered/revocations.json" \
+               BAFT_VERIFY_ARTIFACTS="baft-linux-amd64" bash install.sh --verify-release "$RUNNER_TEMP/tampered/release"; then
+            echo "::error::a tampered offline bundle was accepted"; exit 1
+          fi
+          BAFT_ROOT_PUB="$(cat "$RUNNER_TEMP/rel/root.pub")" BAFT_REVOCATIONS_FILE="$d/revocations.json" \
+            BAFT_VERIFY_ARTIFACTS="baft-linux-amd64" bash install.sh --verify-release "$d/release"
+      - name: Install EX and IR offline, pair, pass traffic
+        run: |
+          d=$(echo "$RUNNER_TEMP"/unpacked/baft-offline-*)
+          sudo env GITHUB_ACTIONS=true BAFT_INSTALL_FROM=release BAFT_OFFLINE_DIR="$d" \
+            BAFT_RELEASE_URL="http://127.0.0.1:9" BAFT_REVOCATIONS_URL="http://127.0.0.1:9/revocations.json" \
+            BAFT_ROOT_PUB="$(cat "$RUNNER_TEMP/rel/root.pub")" \
+            tests/e2e/install_two_roles.sh
+
   e2e-install-release:
     # The production path: install.sh downloads a signed release (built here
     # with throwaway keys), verifies it, and installs without Go or git.
