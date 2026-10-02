@@ -1,8 +1,8 @@
 <div dir="rtl" align="right" lang="fa">
 
-# 24 — P1-C (بخش اول): دسترسی وب به BCC
+# 24 — P1-C: دسترسی وب به BCC و state در SQLite
 
-قدم P1-C از [22-launch-1-roadmap.md](22-launch-1-roadmap.md). این بخش دربارهٔ راه رسیدن اپراتور به داشبورد BCC است. انتقال state از فایل JSON به SQLite نسخه‌دار بخش دوم است. جزئیات کامل در [نسخهٔ انگلیسی](../en/24-p1c-bcc-access.md).
+قدم P1-C از [22-launch-1-roadmap.md](22-launch-1-roadmap.md): راه رسیدن اپراتور به داشبورد BCC، و نگه‌داری state در پایگاه دادهٔ SQLite نسخه‌دار (بخش آخر). جزئیات کامل در [نسخهٔ انگلیسی](../en/24-p1c-bcc-access.md).
 
 ## مدل
 
@@ -46,5 +46,14 @@ sudo baft-bcc access show        # path and username (the password is not stored
 ## تست‌ها
 
 `internal/bcc/access_test.go` و `cmd/baft-bcc/access_test.go`: ذخیرهٔ فقط hash، دسترسی فایل، داشبورد فقط زیر مسیر مخفی، ورود، پرچم‌های cookie، CSRF، رد session بیرون از مسیر مخفی، قطع sessionها و credentialهای قدیمی بعد از regenerate، خروج، مهلت بیکاری، مسدودسازی، audit، فرمان‌های کنسول و بارگذاری دوبارهٔ گواهی.
+
+## State در SQLite
+
+فایل state (همان `--state-file` قبلی) حالا یک پایگاه دادهٔ SQLite است (`modernc.org/sqlite` که Go خالص است، پس build همچنان static و تکرارپذیر می‌ماند؛ فقط `baft-bcc` و `baft-bcc-audit-verify` به آن وابسته‌اند).
+
+- **Schema و migration:** جدول `schema_migrations` نسخه‌های اعمال‌شده را نگه می‌دارد و migrationها هنگام باز شدن به ترتیب و داخل transaction اجرا می‌شوند. پایگاه داده‌ای که build جدیدتر ساخته رد می‌شود و هرگز downgrade نمی‌شود.
+- **نوشتن:** هر ذخیره یک transaction است؛ crash یا state قبلی را باقی می‌گذارد یا state جدید را، نه ترکیبی از هر دو. ledger مالی که فقط اضافه می‌شود، فقط ردیف‌های تازه را می‌نویسد (با ۲۰ هزار ردیف: از ۱۵۰ به ۴٫۵ میلی‌ثانیه).
+- **بین transactionها یک فایل:** اتصال برای هر عملیات باز و بسته می‌شود، پس restore رمزنگاری‌شده همچنان state را کنار فایل اصلی می‌سازد، بررسی می‌کند و جایگزین می‌کند (یا بعد از crash برمی‌گرداند).
+- **انتقال از JSON:** در اولین اجرای این نسخه، فایل JSON موجود خوانده می‌شود، در پایگاه دادهٔ جدید نوشته و دوباره خوانده و مقایسه می‌شود، و بعد جای فایل state را می‌گیرد. JSON اصلی در `<state-file>.json.bak` (0600) می‌ماند. توکن agentها، jobها، اطلاعات مالی و telemetry بدون تغییر منتقل می‌شوند.
 
 </div>

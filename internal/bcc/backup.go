@@ -304,10 +304,6 @@ func mergeAntiRollback(restored *state,current state,createdAt time.Time){
 	if current.NextTelemetryIngestID>restored.NextTelemetryIngestID{restored.NextTelemetryIngestID=current.NextTelemetryIngestID}
 }
 
-func stateBytes(st state)([]byte,error){
-	return json.MarshalIndent(st,"","  ")
-}
-
 func auditBytes(entries []AuditEntry)([]byte,error){
 	var out []byte
 	for _,e:=range entries{

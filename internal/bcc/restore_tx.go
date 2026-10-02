@@ -1,6 +1,7 @@
 package bcc
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -99,11 +100,9 @@ func buildRestoreAudit(base []AuditEntry,at time.Time,target string,header Backu
 	return out,nil
 }
 
-func validateStagedState(path string) error {
-	raw,err:=os.ReadFile(path);if err!=nil{return err}
-	var st state
-	if err:=json.Unmarshal(raw,&st);err!=nil{return err}
-	normalizeState(&st)
+func validateStagedState(path string,want state) error {
+	got,err:=readStateDB(path);if err!=nil{return err}
+	if !bytes.Equal(canonicalStateJSON(got),canonicalStateJSON(want)){return errors.New("staged state differs from the restored state")}
 	return nil
 }
 
@@ -139,7 +138,6 @@ func (s *Server) restoreTransactional(path string,key []byte) error {
 	if err!=nil{return err}
 	if err:=verifyAuditEntries(candidateAudit);err!=nil{return fmt.Errorf("candidate audit invalid: %w",err)}
 
-	stateData,err:=stateBytes(restored);if err!=nil{return err}
 	auditData,err:=auditBytes(candidateAudit);if err!=nil{return err}
 
 	stateStage:=s.store.path+".restore-state.stage"
@@ -147,8 +145,8 @@ func (s *Server) restoreTransactional(path string,key []byte) error {
 	_ = os.Remove(stateStage);_ = os.Remove(auditStage)
 
 	if err:=s.restoreFail("state_stage_write");err!=nil{return err}
-	if err:=writeAtomic(stateStage,stateData,0600);err!=nil{return err}
-	if err:=validateStagedState(stateStage);err!=nil{_ = os.Remove(stateStage);return fmt.Errorf("staged state verify: %w",err)}
+	if err:=writeStateDB(stateStage,restored);err!=nil{_ = os.Remove(stateStage);return err}
+	if err:=validateStagedState(stateStage,restored);err!=nil{_ = os.Remove(stateStage);return fmt.Errorf("staged state verify: %w",err)}
 
 	if err:=s.restoreFail("audit_stage_write");err!=nil{_ = os.Remove(stateStage);return err}
 	if err:=writeAtomic(auditStage,auditData,0600);err!=nil{_ = os.Remove(stateStage);return err}

@@ -27,6 +27,13 @@ func stateSnapshotForTest(t *testing.T,s *Store) state {
 	return st
 }
 
+// diskStateJSONForTest reads the state database itself, not the store's RAM.
+func diskStateJSONForTest(t *testing.T,s *Store) []byte {
+	t.Helper()
+	st,err:=readStateDB(s.path);if err!=nil{t.Fatal(err)}
+	return canonicalStateJSON(st)
+}
+
 func stateJSONForTest(t *testing.T,s *Store) []byte {
 	t.Helper()
 	st:=stateSnapshotForTest(t,s)
@@ -85,6 +92,9 @@ func TestEncryptedBackupFreshRestoreFullStateAndAudit(t *testing.T){
 	if err:=fresh.RestoreFromFile(backupPath,backupTestKey());err!=nil{t.Fatal(err)}
 	restoredState:=stateSnapshotForTest(t,freshStore)
 	if !reflect.DeepEqual(sourceState,restoredState){t.Fatalf("restored state differs\nsource=%+v\nrestored=%+v",sourceState,restoredState)}
+	// The committed database is what a restart would load.
+	if !bytes.Equal(diskStateJSONForTest(t,freshStore),canonicalStateJSON(restoredState)){t.Fatal("restored state database differs from the restored RAM state")}
+	if reopened,err:=OpenStore(freshStore.path);err!=nil||!bytes.Equal(canonicalStateJSON(reopened.st),canonicalStateJSON(restoredState)){t.Fatalf("restored state does not survive a restart: %v",err)}
 	fresh.alertMu.Lock()
 	if !reflect.DeepEqual(app.activeAlerts,fresh.activeAlerts){t.Fatalf("active alerts differ source=%+v restored=%+v",app.activeAlerts,fresh.activeAlerts)}
 	fresh.alertMu.Unlock()
@@ -353,6 +363,7 @@ func TestRestoreFaultInjectionLeavesStateAndAuditUnchanged(t *testing.T){
 			path:=filepath.Join(dir,"backup.baftbak")
 			if _,err:=app.BackupToFile(path,backupTestKey(),time.Now().UTC());err!=nil{t.Fatal(err)}
 			beforeState:=stateJSONForTest(t,store)
+			beforeDisk:=diskStateJSONForTest(t,store)
 			beforeAudit,err:=os.ReadFile(app.audit.path);if err!=nil{t.Fatal(err)}
 
 			app.restoreFault=func(got string) error {
@@ -365,6 +376,7 @@ func TestRestoreFaultInjectionLeavesStateAndAuditUnchanged(t *testing.T){
 			afterState:=stateJSONForTest(t,store)
 			afterAudit,err:=os.ReadFile(app.audit.path);if err!=nil{t.Fatal(err)}
 			if !bytes.Equal(beforeState,afterState){t.Fatalf("state changed after %s",stage)}
+			if !bytes.Equal(beforeDisk,diskStateJSONForTest(t,store)){t.Fatalf("state database changed after %s",stage)}
 			if !bytes.Equal(beforeAudit,afterAudit){t.Fatalf("audit changed after %s",stage)}
 			if err:=app.audit.Verify();err!=nil{t.Fatalf("audit invalid after %s: %v",stage,err)}
 
