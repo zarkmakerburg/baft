@@ -50,5 +50,6 @@
 
 
 28. [28 — سیستم بصری BCC](28-bcc-visual-system.md)
+29. [29 — پشتیبان BCC و پیش‌نمایش restore](29-bcc-backup-restore-preview.md)
 
 </div>
