@@ -255,3 +255,92 @@ func TestLoopbackMapsWildcards(t *testing.T) {
 		}
 	}
 }
+
+func doctorJSON(t *testing.T, h *fakeHost, args ...string) summary {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	runDoctor(append(args, "--json"), &out, &errOut, h.env)
+	var res struct {
+		Summary summary `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out.String())
+	}
+	return res.Summary
+}
+
+func layerStates(s summary) map[string]string {
+	m := map[string]string{}
+	for _, l := range s.Layers {
+		m[l.Layer] = l.State
+	}
+	return m
+}
+
+func TestDoctorVerdictNamesTheFailureDomainAndNeverCallsUnobservedLayersHealthy(t *testing.T) {
+	cfg, _ := writeDialerConfig(t, 0o600)
+	rel := writeReleaseState(t, "v"+version)
+
+	h := newFakeHost(t)
+	s := doctorJSON(t, h, "--file", cfg, "--release-state", rel)
+	if s.Verdict != verdictHealthy {
+		t.Fatalf("healthy node: %+v", s)
+	}
+	st := layerStates(s)
+	if st["L0"] != "PASS" || st["L1"] != "PASS" || st["L3"] != "PASS" || st["L4"] != "PASS" {
+		t.Fatalf("observed layers: %v", st)
+	}
+	for _, id := range []string{"L2", "L6"} {
+		if st[id] != "NOT_ASSESSED" {
+			t.Errorf("%s is %s: a layer doctor cannot observe must not read as PASS", id, st[id])
+		}
+	}
+
+	h = newFakeHost(t)
+	h.down["203.0.113.7:8443"] = true
+	s = doctorJSON(t, h, "--file", cfg, "--release-state", rel)
+	if s.Verdict != verdictFailing || s.LikelyDomain != "network path to the peer" || s.Confidence != "high" || s.NextAction == "" {
+		t.Fatalf("peer down: %+v", s)
+	}
+	if st := layerStates(s); st["L1"] != "FAIL" || st["L0"] != "PASS" {
+		t.Fatalf("layers with the peer down: %v", st)
+	}
+}
+
+func TestDoctorSeveralDomainsPicksTheLowestAndSaysItIsLessSure(t *testing.T) {
+	cfg, _ := writeDialerConfig(t, 0o644) // exposed key
+	h := newFakeHost(t)
+	h.down["203.0.113.7:8443"] = true
+	s := doctorJSON(t, h, "--file", cfg, "--release-state", writeReleaseState(t, "v"+version))
+	if s.LikelyDomain != "host security" || s.Confidence != "medium" {
+		t.Fatalf("two failing domains: %+v", s)
+	}
+}
+
+func TestDoctorTextHasProblemEvidenceImpactFixAndPreviewRunsNothing(t *testing.T) {
+	cfg, key := writeDialerConfig(t, 0o644)
+	h := newFakeHost(t)
+	h.sysctl(t, "net.core.default_qdisc", "pfifo_fast")
+	var out, errOut bytes.Buffer
+	runDoctor([]string{"--file", cfg, "--release-state", writeReleaseState(t, "v"+version)}, &out, &errOut, h.env)
+	for _, want := range []string{"BAFT doctor: FAILING", "likely failure domain: host security", "problem:", "evidence: ", "impact:", "fix:      chmod 0600 " + key, "L2", "NOT_ASSESSED"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("report lacks %q:\n%s", want, out.String())
+		}
+	}
+	calls := len(h.streamed)
+	out.Reset()
+	runDoctor([]string{"--file", cfg, "--release-state", writeReleaseState(t, "v"+version), "--preview-fixes"}, &out, &errOut, h.env)
+	p := out.String()
+	for _, want := range []string{"Preview only", "SAFE", "chmod 0600 " + key, "REVIEW", "sysctl -w net.core.default_qdisc=fq"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("preview lacks %q:\n%s", want, p)
+		}
+	}
+	if st, err := os.Stat(key); err != nil || st.Mode().Perm() != 0o644 {
+		t.Fatalf("preview changed the key's mode: %v %v", st, err)
+	}
+	if len(h.streamed) != calls {
+		t.Fatal("preview ran a command")
+	}
+}

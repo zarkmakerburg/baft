@@ -64,13 +64,31 @@ Three read-only commands; none of them changes the host.
 
 ```bash
 sudo baft status            # version, installed release, role and peer, routes, service state, flows, recovery counters
-sudo baft doctor            # checks with OK / INFO / WARN / FAIL and a hint for each problem; exit 1 on any FAIL
+sudo baft doctor            # verdict, layers, and Problem / Evidence / Impact / Fix for each finding; exit 1 on FAIL
 sudo baft logs -n 200 -f    # journalctl for the service
 ```
 
 All three take `--service` (default `baft`); `status` and `doctor` also take `--file` (default `/etc/baft/baft.yaml`), `--release-state` (default `/opt/baft/release-state.json`) and `--json`.
 
 `doctor` checks: the config and revocation file load; private keys are owner-only; the service is active (WARN if it has restarted); the binary matches the installed signed release (WARN for a source install); the metrics endpoint answers and reports no conservation invariant violation; the IR reaches its EX and its local route listens, or the EX listener accepts and its route targets answer. It also reads (never writes) a few network settings — congestion control, default qdisc, socket buffer limits — and prints the `sysctl` it would recommend as INFO. Automatic tuning is P2.
+
+### Doctor report
+
+`doctor` opens with a verdict (`HEALTHY`, `DEGRADED` when only warnings exist, `FAILING` on any FAIL), the most likely failure domain with a confidence, and one next action. One failing domain is reported with confidence `high`; several failing domains report the lowest one (configuration/host first, then L0 upwards) as the best guess for the root cause with confidence `medium`. Then the layers:
+
+| Layer | Meaning | How doctor knows |
+|---|---|---|
+| L0 | process alive | service state, metrics endpoint |
+| L1 | carrier path | TCP reachability of the peer / the local listener (not authentication) |
+| L2 | peer authenticated | **not assessed** (doctor opens no authenticated session; use BCC health and telemetry) |
+| L3 | session correctness | conservation invariant counter from the metrics |
+| L4 | route available | the route's local listener |
+| L5 | target reachable | the fixed target of an inbound route |
+| L6 | application traffic | **not assessed** (needs an end-to-end probe) |
+
+A layer nothing observed reads `NOT_ASSESSED`, never `PASS`. Every non-OK finding then prints, in this order, **problem**, **evidence**, **impact** and **fix**. `--json` carries the same (`summary`, and per check `layer`, `domain`, `problem`, `impact`, `fix_command`, `fix_safety`; `detail` is the evidence and `hint` the fix).
+
+`baft doctor --preview-fixes` lists the commands that would fix findings, each marked `SAFE` (does not interrupt traffic or access, easily undone, e.g. `chmod 0600` on a key) or `REVIEW` (can change behaviour for traffic or other software, e.g. `sysctl -w`). **Doctor never runs a fix**; the preview exists so an operator can review the exact command first.
 
 ## Support bundle
 
