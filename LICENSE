@@ -1,0 +1,119 @@
+BAFT PROPRIETARY SOURCE-VISIBLE LICENSE
+Version 1.0 — 2026
+
+Copyright (c) 2026 BAFT Project.
+All rights reserved.
+
+NOTICE
+
+BAFT is source-visible proprietary software. Public availability of this
+repository does not make BAFT open source and does not grant a general
+software license.
+
+1. SCOPE
+
+This license applies to the BAFT source code, binaries, documentation,
+configuration examples, scripts, tests, release artifacts, and other
+materials in this repository, except for third-party components that are
+separately identified as being under their own licenses.
+
+2. NO GENERAL LICENSE GRANT
+
+Except for rights that may be provided directly by GitHub's Terms of Service
+for viewing or forking a public repository on GitHub, no permission is
+granted to any person or entity to:
+
+- use or run the Software;
+- copy or reproduce the Software;
+- modify, adapt, translate, or create derivative works;
+- distribute, publish, sublicense, sell, rent, lease, or transfer the Software;
+- host, operate, or provide the Software as a service;
+- incorporate the Software into another product, service, appliance, image,
+  package, repository, or distribution;
+- remove or alter copyright, attribution, security, or proprietary notices;
+- use the Software for commercial, production, managed-service, OEM, resale,
+  or hosted-service purposes.
+
+Possession of source code, a fork, a clone, a release artifact, or any other
+copy does not imply permission to use it.
+
+3. REVIEW AND EVALUATION
+
+The repository may be viewed for inspection, security review, technical
+evaluation, or discussion to the extent such viewing is permitted by the
+platform on which it is published. Any activity requiring execution,
+reproduction, modification, redistribution, or other rights listed above
+requires prior written permission from BAFT Project.
+
+4. WRITTEN PERMISSION AND COMMERCIAL LICENSING
+
+Additional rights may be granted only by an explicit written agreement from
+BAFT Project. Permissions may be limited by purpose, organization, deployment,
+duration, territory, version, or other conditions.
+
+Requests for commercial, research, deployment, redistribution, integration,
+OEM, hosting, or other licensing should be directed to the project owner
+through the official BAFT repository or another contact channel designated by
+BAFT Project.
+
+5. RELEASE ARTIFACTS AND SECURITY MATERIAL
+
+Signed releases, manifests, certificates, checksums, public keys, revocation
+metadata, protocol material, and operational tooling remain subject to this
+license. Publication of cryptographic verification material does not grant a
+right to deploy, redistribute, or operate BAFT.
+
+6. TRADEMARKS AND BRAND ASSETS
+
+The names "BAFT" and "بافت", the BAFT logo, visual identity, and other project
+branding are not licensed for use. No trademark or branding rights are
+granted by this license.
+
+7. PATENTS AND OTHER RIGHTS
+
+No patent license, trademark license, database right, publicity right, or
+other intellectual-property right is granted except as expressly stated in a
+separate written agreement.
+
+8. THIRD-PARTY COMPONENTS
+
+BAFT may depend on or interact with third-party software. Third-party
+components remain subject to their respective licenses. This license does not
+replace, restrict, or expand rights granted by those third parties.
+
+9. NO WARRANTY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE SOFTWARE AND ALL RELATED MATERIALS
+ARE PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING WITHOUT LIMITATION WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, SECURITY,
+RELIABILITY, AVAILABILITY, OR FITNESS FOR PRODUCTION USE.
+
+10. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, BAFT PROJECT AND ITS CONTRIBUTORS,
+AUTHORS, MAINTAINERS, AND RIGHTS HOLDERS SHALL NOT BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, CONSEQUENTIAL, OR OTHER DAMAGES,
+OR FOR LOSS OF DATA, PROFITS, REVENUE, BUSINESS, GOODWILL, OR SERVICE
+AVAILABILITY, ARISING FROM OR RELATED TO THE SOFTWARE OR ITS USE, WHETHER IN
+CONTRACT, TORT, STRICT LIABILITY, OR OTHERWISE.
+
+11. TERMINATION
+
+Any permission separately granted for BAFT terminates automatically if its
+conditions are violated, unless the applicable written agreement states
+otherwise. Upon termination, all activities that depended on that permission
+must cease.
+
+12. SEVERABILITY
+
+If any provision of this license is found unenforceable, the remaining
+provisions remain in effect to the maximum extent permitted by law.
+
+13. ENTIRE DEFAULT TERMS
+
+This document states the default licensing terms for BAFT unless BAFT Project
+has entered into a separate written agreement that expressly grants different
+rights.
+
+SPDX-License-Identifier: LicenseRef-BAFT-Proprietary-1.0
