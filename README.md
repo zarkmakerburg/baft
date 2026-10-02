@@ -1,32 +1,29 @@
 <div dir="rtl" align="right" lang="fa">
 
-<div align="center">
+<div dir="rtl" align="center" lang="fa">
 
-<img src="docs/assets/baft-logo-transparent.png" alt="BAFT" width="190">
+<img src="docs/assets/baft-bcc-hero.svg" alt="BAFT — BCC visual identity" width="100%">
 
-# BAFT — بافت
-
-### لایهٔ انتقال امن، احرازشده و کنترل‌پذیر میان نودهای تحت مدیریت یک اپراتور
-
-**Signed Releases · Secure Agent · BCC Control Plane · Native Tunnel Builder · Recovery-aware Data Plane**
-
-<p>
-  <a href="https://github.com/zarkmakerburg/baft/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/zarkmakerburg/baft?style=for-the-badge&label=release"></a>
+<p dir="ltr">
+  <a href="https://github.com/zarkmakerburg/baft/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/zarkmakerburg/baft?style=flat-square&label=release&labelColor=111722&color=e8b54a"></a>
   <a href="https://github.com/zarkmakerburg/baft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zarkmakerburg/baft/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.27.1-00ADD8?style=for-the-badge&logo=go&logoColor=white">
-  <img alt="Signed Release" src="https://img.shields.io/badge/release-signed-2ea44f?style=for-the-badge">
-  <img alt="License" src="https://img.shields.io/badge/license-All%20Rights%20Reserved-8a6a22?style=for-the-badge">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.27.1-182238?style=flat-square&labelColor=111722&logo=go&logoColor=eef1f6">
+  <img alt="Signed Release" src="https://img.shields.io/badge/release-signed-123e2c?style=flat-square&labelColor=111722">
+  <img alt="BCC Theme" src="https://img.shields.io/badge/theme-BCC-e8b54a?style=flat-square&labelColor=111722">
+  <img alt="License" src="https://img.shields.io/badge/license-proprietary-263147?style=flat-square&labelColor=111722">
 </p>
 
-[فارسی](README.md) · [English](README.en.md) · [آخرین Release](https://github.com/zarkmakerburg/baft/releases/latest) · [وضعیت پروژه](STATUS.md) · [مستندات](docs/fa/README.md)
+[فارسی](README.md) · [English](README.en.md) · [آخرین Release](https://github.com/zarkmakerburg/baft/releases/latest) · [وضعیت پروژه](STATUS.md) · [مستندات](docs/fa/README.md) · [تم BCC](docs/fa/28-bcc-visual-system.md)
 
 </div>
 
-> [!IMPORTANT]
-> **BAFT هنوز به‌عنوان نرم‌افزار production-ready اعلام نشده است.** این مخزن یک پروژهٔ مهندسی/پژوهشی فعال است. هر ادعای عملکرد، بازیابی یا امنیت فقط در محدوده‌ای معتبر است که کد، تست و شواهد CI آن را پشتیبانی کنند.
+<blockquote dir="rtl" align="right">
+<strong>⚠️ وضعیت پروژه:</strong> BAFT هنوز به‌عنوان نرم‌افزار <code>production-ready</code> اعلام نشده است. این مخزن یک پروژهٔ مهندسی/پژوهشی فعال است و هر ادعای عملکرد، بازیابی یا امنیت فقط در محدوده‌ای معتبر است که کد، تست و شواهد CI آن را پشتیبانی کنند.
+</blockquote>
 
-> [!CAUTION]
-> © 2026 BAFT Project — همهٔ حقوق محفوظ است. این مخزن برای مشاهده و بررسی عمومی منتشر شده و **هیچ مجوز استفاده، کپی، تغییر، توزیع یا ارائهٔ سرویس** داده نشده است. جزئیات در [COPYRIGHT](COPYRIGHT).
+<blockquote dir="rtl" align="right">
+<strong>© 2026 BAFT Project — همهٔ حقوق محفوظ است.</strong> این مخزن برای مشاهده و بررسی عمومی منتشر شده و هیچ مجوز عمومی برای استفاده، کپی، تغییر، توزیع یا ارائهٔ سرویس داده نشده است. جزئیات: <a href="LICENSE">LICENSE</a> و <a href="COPYRIGHT">COPYRIGHT</a>.
+</blockquote>
 
 ---
 
@@ -45,20 +42,29 @@ BAFT یک VPN عمومی، reverse proxy مقصد-دلخواه یا جایگزی
 
 ## در یک نگاه
 
-| مؤلفه | وضعیت فعلی | توضیح |
-|---|---|---|
-| **Release** | ✅ | نسخهٔ عمومی و امضاشدهٔ [v0.1.0](https://github.com/zarkmakerburg/baft/releases/tag/v0.1.0) |
-| **Signed artifacts** | ✅ | باینری‌های amd64/arm64 + manifest + certificate + SHA256SUMS |
-| **Installer** | ✅ | نصب پیش‌فرض از Release امضاشده، بدون نیاز به Go/git روی سرور |
-| **BCC Control Plane** | ✅ | دسترسی وب امن، session، CSRF، rate limit، SQLite، audit و monitoring |
-| **Secure Agent** | ✅ | Pull-based، job امضاشده، allowlist و بدون shell دلخواه |
-| **SSH Bootstrap** | ✅ | host-key pinning و عدم نگه‌داری credential پس از enrollment |
-| **Native Tunnel Builder** | ✅ | plan → validate → prepare → commit → health → rollback |
-| **Two-sided rollback** | ✅ | در failure، هر دو سمت به وضعیت قبل برمی‌گردند |
-| **Launch-1 E2E** | ✅ | اجرای انتهابه‌انتها در CI روی مسیر واقعی محصول |
-| **ECRL same-process recovery** | ✅ محدود | تعویض Carrier و bounded replay در همان process/session |
-| **Process restart / reboot resume** | ⚠️ | هنوز پیاده‌سازی و ادعا نشده است |
-| **Production readiness** | ⚠️ | هنوز اعلام نشده است |
+<table dir="rtl" align="right">
+<thead>
+<tr>
+<th align="right">مؤلفه</th>
+<th align="center">وضعیت</th>
+<th align="right">توضیح</th>
+</tr>
+</thead>
+<tbody>
+<tr><td align="right"><strong>Release</strong></td><td align="center">✅</td><td align="right">نسخهٔ عمومی و امضاشدهٔ <a href="https://github.com/zarkmakerburg/baft/releases/tag/v0.1.0"><code>v0.1.0</code></a></td></tr>
+<tr><td align="right"><strong>Signed artifacts</strong></td><td align="center">✅</td><td align="right">باینری‌های <code>amd64</code>/<code>arm64</code> به‌همراه manifest، certificate و SHA256SUMS</td></tr>
+<tr><td align="right"><strong>Installer</strong></td><td align="center">✅</td><td align="right">نصب پیش‌فرض از Release امضاشده، بدون نیاز به Go/git روی سرور</td></tr>
+<tr><td align="right"><strong>BCC Control Plane</strong></td><td align="center">✅</td><td align="right">دسترسی وب امن، session، CSRF، rate limit، SQLite، audit و monitoring</td></tr>
+<tr><td align="right"><strong>Secure Agent</strong></td><td align="center">✅</td><td align="right">Pull-based، job امضاشده، allowlist و بدون shell دلخواه</td></tr>
+<tr><td align="right"><strong>SSH Bootstrap</strong></td><td align="center">✅</td><td align="right">host-key pinning و عدم نگه‌داری credential پس از enrollment</td></tr>
+<tr><td align="right"><strong>Native Tunnel Builder</strong></td><td align="center">✅</td><td align="right"><code>plan → validate → prepare → commit → health → rollback</code></td></tr>
+<tr><td align="right"><strong>Two-sided rollback</strong></td><td align="center">✅</td><td align="right">در failure، هر دو سمت به وضعیت قبل برمی‌گردند</td></tr>
+<tr><td align="right"><strong>Launch-1 E2E</strong></td><td align="center">✅</td><td align="right">اجرای انتهابه‌انتها در CI روی مسیر واقعی محصول</td></tr>
+<tr><td align="right"><strong>ECRL same-process recovery</strong></td><td align="center">✅ محدود</td><td align="right">تعویض Carrier و bounded replay در همان process/session</td></tr>
+<tr><td align="right"><strong>Process restart / reboot resume</strong></td><td align="center">⚠️</td><td align="right">هنوز پیاده‌سازی و ادعا نشده است</td></tr>
+<tr><td align="right"><strong>Production readiness</strong></td><td align="center">⚠️</td><td align="right">هنوز اعلام نشده است</td></tr>
+</tbody>
+</table>
 
 ---
 
@@ -193,19 +199,22 @@ Release رسمی فعلی:
 
 این Release شامل **۱۱ artifact امضاشده** است:
 
-| فایل | معماری / نقش |
-|---|---|
-| `baft-linux-amd64` | Runtime اصلی — amd64 |
-| `baft-linux-arm64` | Runtime اصلی — arm64 |
-| `baft-pair-linux-amd64` | Pairing — amd64 |
-| `baft-pair-linux-arm64` | Pairing — arm64 |
-| `baft-bcc-linux-amd64` | Control Plane — amd64 |
-| `baft-bcc-linux-arm64` | Control Plane — arm64 |
-| `baft-agent-linux-amd64` | Secure Agent — amd64 |
-| `baft-agent-linux-arm64` | Secure Agent — arm64 |
-| `manifest.json` | manifest امضاشدهٔ Release |
-| `release-key.cert.json` | certificate کلید Release |
-| `SHA256SUMS` | checksum تمام artifactها |
+<table dir="rtl" align="right">
+<thead><tr><th align="right">فایل</th><th align="right">معماری / نقش</th></tr></thead>
+<tbody>
+<tr><td dir="ltr" align="left"><code>baft-linux-amd64</code></td><td align="right">Runtime اصلی — amd64</td></tr>
+<tr><td dir="ltr" align="left"><code>baft-linux-arm64</code></td><td align="right">Runtime اصلی — arm64</td></tr>
+<tr><td dir="ltr" align="left"><code>baft-pair-linux-amd64</code></td><td align="right">Pairing — amd64</td></tr>
+<tr><td dir="ltr" align="left"><code>baft-pair-linux-arm64</code></td><td align="right">Pairing — arm64</td></tr>
+<tr><td dir="ltr" align="left"><code>baft-bcc-linux-amd64</code></td><td align="right">Control Plane — amd64</td></tr>
+<tr><td dir="ltr" align="left"><code>baft-bcc-linux-arm64</code></td><td align="right">Control Plane — arm64</td></tr>
+<tr><td dir="ltr" align="left"><code>baft-agent-linux-amd64</code></td><td align="right">Secure Agent — amd64</td></tr>
+<tr><td dir="ltr" align="left"><code>baft-agent-linux-arm64</code></td><td align="right">Secure Agent — arm64</td></tr>
+<tr><td dir="ltr" align="left"><code>manifest.json</code></td><td align="right">manifest امضاشدهٔ Release</td></tr>
+<tr><td dir="ltr" align="left"><code>release-key.cert.json</code></td><td align="right">certificate کلید Release</td></tr>
+<tr><td dir="ltr" align="left"><code>SHA256SUMS</code></td><td align="right">checksum تمام artifactها</td></tr>
+</tbody>
+</table>
 
 دو Source archive استاندارد GitHub نیز در UI نمایش داده می‌شوند؛ بنابراین صفحهٔ Release مجموعاً ۱۳ مورد قابل دانلود نشان می‌دهد.
 
@@ -405,22 +414,25 @@ BAFT فقط به تست unit محدود نیست. مسیر CI فعلی شامل 
 
 ## نقشهٔ مستندات
 
-| موضوع | فارسی | English |
-|---|---|---|
-| معرفی پروژه | [01-overview](docs/fa/01-overview.md) | [Overview](docs/en/01-overview.md) |
-| معماری | [02-architecture](docs/fa/02-architecture.md) | [Architecture](docs/en/02-architecture.md) |
-| مدل امنیت | [03-security-model](docs/fa/03-security-model.md) | [Security Model](docs/en/03-security-model.md) |
-| پروتکل BAFT/1 | [04-protocol-baft1](docs/fa/04-protocol-baft1.md) | [Protocol](docs/en/04-protocol-baft1.md) |
-| پیکربندی | [05-configuration](docs/fa/05-configuration.md) | [Configuration](docs/en/05-configuration.md) |
-| نصب و اجرا | [06-running-ir-ex](docs/fa/06-running-ir-ex.md) | [Running IR/EX](docs/en/06-running-ir-ex.md) |
-| تست و CI | [08-testing-and-ci](docs/fa/08-testing-and-ci.md) | [Testing & CI](docs/en/08-testing-and-ci.md) |
-| ECRL / Stage D | [20-stage-d-ecrl](docs/fa/20-stage-d-ecrl.md) | [Stage D ECRL](docs/en/20-stage-d-ecrl.md) |
-| Launch-1 | [22-launch-1-roadmap](docs/fa/22-launch-1-roadmap.md) | [Launch-1 Roadmap](docs/en/22-launch-1-roadmap.md) |
-| Signed Release | [23-p1a-signed-releases](docs/fa/23-p1a-signed-releases.md) | [Signed Releases](docs/en/23-p1a-signed-releases.md) |
-| BCC Access | [24-p1c-bcc-access](docs/fa/24-p1c-bcc-access.md) | [BCC Access](docs/en/24-p1c-bcc-access.md) |
-| Secure Agent | [25-p1d-agent](docs/fa/25-p1d-agent.md) | [Secure Agent](docs/en/25-p1d-agent.md) |
-| SSH Bootstrap | [26-p1d-ssh-bootstrap](docs/fa/26-p1d-ssh-bootstrap.md) | [SSH Bootstrap](docs/en/26-p1d-ssh-bootstrap.md) |
-| Tunnel Builder | [27-p1e-tunnel-builder](docs/fa/27-p1e-tunnel-builder.md) | [Tunnel Builder](docs/en/27-p1e-tunnel-builder.md) |
+<table dir="rtl" align="right">
+<thead><tr><th align="right">موضوع</th><th align="right">فارسی</th><th align="left" dir="ltr">English</th></tr></thead>
+<tbody>
+<tr><td align="right">معرفی پروژه</td><td align="right"><a href="docs/fa/01-overview.md">01-overview</a></td><td align="left" dir="ltr"><a href="docs/en/01-overview.md">Overview</a></td></tr>
+<tr><td align="right">معماری</td><td align="right"><a href="docs/fa/02-architecture.md">02-architecture</a></td><td align="left" dir="ltr"><a href="docs/en/02-architecture.md">Architecture</a></td></tr>
+<tr><td align="right">مدل امنیت</td><td align="right"><a href="docs/fa/03-security-model.md">03-security-model</a></td><td align="left" dir="ltr"><a href="docs/en/03-security-model.md">Security Model</a></td></tr>
+<tr><td align="right">پروتکل BAFT/1</td><td align="right"><a href="docs/fa/04-protocol-baft1.md">04-protocol-baft1</a></td><td align="left" dir="ltr"><a href="docs/en/04-protocol-baft1.md">Protocol</a></td></tr>
+<tr><td align="right">پیکربندی</td><td align="right"><a href="docs/fa/05-configuration.md">05-configuration</a></td><td align="left" dir="ltr"><a href="docs/en/05-configuration.md">Configuration</a></td></tr>
+<tr><td align="right">نصب و اجرا</td><td align="right"><a href="docs/fa/06-running-ir-ex.md">06-running-ir-ex</a></td><td align="left" dir="ltr"><a href="docs/en/06-running-ir-ex.md">Running IR/EX</a></td></tr>
+<tr><td align="right">تست و CI</td><td align="right"><a href="docs/fa/08-testing-and-ci.md">08-testing-and-ci</a></td><td align="left" dir="ltr"><a href="docs/en/08-testing-and-ci.md">Testing &amp; CI</a></td></tr>
+<tr><td align="right">ECRL / Stage D</td><td align="right"><a href="docs/fa/20-stage-d-ecrl.md">20-stage-d-ecrl</a></td><td align="left" dir="ltr"><a href="docs/en/20-stage-d-ecrl.md">Stage D ECRL</a></td></tr>
+<tr><td align="right">Launch-1</td><td align="right"><a href="docs/fa/22-launch-1-roadmap.md">22-launch-1-roadmap</a></td><td align="left" dir="ltr"><a href="docs/en/22-launch-1-roadmap.md">Launch-1 Roadmap</a></td></tr>
+<tr><td align="right">Signed Release</td><td align="right"><a href="docs/fa/23-p1a-signed-releases.md">23-p1a-signed-releases</a></td><td align="left" dir="ltr"><a href="docs/en/23-p1a-signed-releases.md">Signed Releases</a></td></tr>
+<tr><td align="right">BCC Access</td><td align="right"><a href="docs/fa/24-p1c-bcc-access.md">24-p1c-bcc-access</a></td><td align="left" dir="ltr"><a href="docs/en/24-p1c-bcc-access.md">BCC Access</a></td></tr>
+<tr><td align="right">Secure Agent</td><td align="right"><a href="docs/fa/25-p1d-agent.md">25-p1d-agent</a></td><td align="left" dir="ltr"><a href="docs/en/25-p1d-agent.md">Secure Agent</a></td></tr>
+<tr><td align="right">SSH Bootstrap</td><td align="right"><a href="docs/fa/26-p1d-ssh-bootstrap.md">26-p1d-ssh-bootstrap</a></td><td align="left" dir="ltr"><a href="docs/en/26-p1d-ssh-bootstrap.md">SSH Bootstrap</a></td></tr>
+<tr><td align="right">Tunnel Builder</td><td align="right"><a href="docs/fa/27-p1e-tunnel-builder.md">27-p1e-tunnel-builder</a></td><td align="left" dir="ltr"><a href="docs/en/27-p1e-tunnel-builder.md">Tunnel Builder</a></td></tr>
+</tbody>
+</table>
 
 ### اسناد وضعیت
 
@@ -497,11 +509,11 @@ BAFT در وضعیت فعلی:
 
 مشاهده و بررسی عمومی مخزن مجاز است، اما استفاده، اجرا، کپی، تغییر، توزیع، ساخت سرویس یا استفاده از نام و لوگوی BAFT بدون اجازهٔ کتبی قبلی مجاز نیست.
 
-[متن کامل COPYRIGHT](COPYRIGHT)
+[متن کامل LICENSE](LICENSE) · [COPYRIGHT](COPYRIGHT)
 
 ---
 
-<div align="center">
+<div dir="rtl" align="center" lang="fa">
 
 ### BAFT
 
