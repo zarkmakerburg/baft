@@ -3,7 +3,7 @@ name: stage-e-benchmark-validate
 on:
   push:
     branches:
-      - bench/stage-e-foundation
+      - bench/stage-e
     paths:
       - 'cmd/baft-bench/**'
       - 'bench/**'
