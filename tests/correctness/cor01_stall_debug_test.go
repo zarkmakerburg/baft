@@ -278,6 +278,7 @@ func TestCOR01OneGiBBidirectionalInstrumented(t *testing.T) {
 	var recvProgress atomic.Int64
 	watchdogDone := make(chan struct{})
 	defer close(watchdogDone)
+	watchdogStarted := time.Now()
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -297,7 +298,9 @@ func TestCOR01OneGiBBidirectionalInstrumented(t *testing.T) {
 					continue
 				}
 				stalledFor := time.Since(lastProgress)
-				if stalledFor >= 30*time.Second && !dumped {
+				totalElapsed := time.Since(watchdogStarted)
+				if !dumped && (stalledFor >= 30*time.Second || totalElapsed >= 60*time.Second) {
+					t.Logf("COR-01 STALL trigger stalled_for=%s total_elapsed=%s", stalledFor, totalElapsed)
 					logCOR01FullStallEvidence(t, ir, exPeer, irTap, exTap, s, r, stalledFor)
 					t.Log("COR-01 STALL watchdog: canceling debug context after evidence dump")
 					cancel()
