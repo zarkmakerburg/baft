@@ -471,6 +471,23 @@ func writeLike(path string, b []byte) error {
 	return nil
 }
 
+// waitSettled waits, for a bounded time, until the service is active and
+// stays active for the settle window, tolerating systemd restarting it.
+func (m *Manager) waitSettled(ctx context.Context) error {
+	deadline := m.Now().Add(6*m.Settle + 30*time.Second)
+	for {
+		err := m.waitActive(ctx)
+		if err == nil || !m.Now().Before(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 func (m *Manager) restartService(ctx context.Context) error {
 	if _, err := m.System.Systemctl(ctx, "restart", m.Service); err != nil {
 		return fmt.Errorf("systemctl restart %s: %w", m.Service, err)
@@ -1026,6 +1043,11 @@ func (m *Manager) RotateConfirmIR(ctx context.Context, rid, certSHA string) (str
 	}
 	if served != certSHA {
 		return "", fmt.Errorf("the EX serves %s, not the new certificate", served)
+	}
+	// The IR dialer exits when its EX restarts and systemd starts it again
+	// (Restart=on-failure): wait for it to come back and stay up.
+	if err := m.waitSettled(ctx); err != nil {
+		return "", err
 	}
 	r0, err := m.stableSample(ctx)
 	if err != nil {
