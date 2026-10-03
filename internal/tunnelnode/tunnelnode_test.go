@@ -417,7 +417,7 @@ func TestUnitMatchesInstallScript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`(?s)cat >"/etc/systemd/system/\$BAFT_SERVICE\.service" <<EOF\n(.*?)\nEOF\n`).FindSubmatch(sh)
+	m := regexp.MustCompile(`(?s)render_service_unit\(\) \{.*?cat <<EOF\n(.*?)\nEOF\n`).FindSubmatch(sh)
 	if m == nil {
 		t.Fatal("unit heredoc not found in install.sh")
 	}

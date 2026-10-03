@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,6 +33,11 @@ func newPlanRig(t *testing.T) *planRig {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not installed")
 	}
+	u, err := user.Current()
+	if err != nil {
+		t.Skip("no current user")
+	}
+	me := u.Username
 	d := t.TempDir()
 	r := &planRig{t: t, dir: d, bins: filepath.Join(d, "stubs")}
 	for _, p := range []string{"stubs", "opt", "etc", "var", "bin", "sysd", "agent", "agentstate"} {
@@ -57,7 +63,7 @@ exit 0
 		"BAFT_RELEASE_STATE="+filepath.Join(d, "opt/release-state.json"),
 		"BAFT_SYSTEMD_DIR="+filepath.Join(d, "sysd"),
 		"BAFT_AGENT_DIR="+filepath.Join(d, "agent"), "BAFT_AGENT_STATE_DIR="+filepath.Join(d, "agentstate"),
-		"BAFT_USER=root", "BAFT_NONINTERACTIVE=1",
+		"BAFT_USER="+me, "BAFT_NONINTERACTIVE=1",
 	)
 	return r
 }
