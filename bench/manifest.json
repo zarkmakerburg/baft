@@ -173,6 +173,44 @@
       "repetitions": 1,
       "timeout_seconds": 900,
       "informational": true
+    },
+    {
+      "id": "B10",
+      "name": "BAFT Session over raw loopback TCP",
+      "kind": "cost-decomposition",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasurePlainTCPSessionThroughput$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
+    },
+    {
+      "id": "B11",
+      "name": "protocol.Decode 32KiB allocation cost",
+      "kind": "cost-decomposition",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureProtocolDecodeAllocation$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
     }
   ]
 }
