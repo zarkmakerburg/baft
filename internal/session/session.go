@@ -125,6 +125,10 @@ type Peer struct {
 	recoveryFrameHook   func(string, protocol.Frame) bool
 	runExitObserverMu sync.RWMutex
 	runExitObserver func(error)
+	// Test-only physical carrier write/start controls.
+	writeFaultMu sync.RWMutex
+	writeFaultForTest func(frame protocol.Frame,generation uint64) error
+	senderStartHoldForTest func(generation uint64) <-chan struct{}
 	recoveryWaitExpiryHookMu sync.RWMutex
 	recoveryWaitExpiryHook func() bool
 	logicalSessionRetainObserverMu sync.RWMutex
@@ -321,6 +325,29 @@ func (p *Peer) RunContextCauseForTest() error {
 func (p *Peer) notifyRunExitForTest(err error) {
 	p.runExitObserverMu.RLock();fn:=p.runExitObserver;p.runExitObserverMu.RUnlock()
 	if fn!=nil{fn(err)}
+}
+
+// SetCarrierWriteFaultForTest injects an error at the physical write boundary
+// of every recovery sender bound after this call.
+func (p *Peer) SetCarrierWriteFaultForTest(fn func(frame protocol.Frame,generation uint64) error) {
+	p.writeFaultMu.Lock();p.writeFaultForTest=fn;p.writeFaultMu.Unlock()
+}
+
+// SetSenderStartHoldForTest delays the start of an activated recovery sender.
+func (p *Peer) SetSenderStartHoldForTest(fn func(generation uint64) <-chan struct{}) {
+	p.writeFaultMu.Lock();p.senderStartHoldForTest=fn;p.writeFaultMu.Unlock()
+}
+
+func (p *Peer) senderStartHold(generation uint64) <-chan struct{} {
+	p.writeFaultMu.RLock();fn:=p.senderStartHoldForTest;p.writeFaultMu.RUnlock()
+	if fn==nil{return nil}
+	return fn(generation)
+}
+
+func (p *Peer) carrierWriteFault(frame protocol.Frame,generation uint64) error {
+	p.writeFaultMu.RLock();fn:=p.writeFaultForTest;p.writeFaultMu.RUnlock()
+	if fn==nil{return nil}
+	return fn(frame,generation)
 }
 
 func (p *Peer) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
