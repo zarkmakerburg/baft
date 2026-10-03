@@ -1,0 +1,81 @@
+name: r003-browser-fingerprints
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e-foundation
+    paths:
+      - '.github/workflows/r003-browser-fingerprints.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browsers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install fingerprint tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcpdump tshark
+          python3 -m pip install --disable-pip-version-check --quiet pyja3
+          git clone --depth 1 https://github.com/FoxIO-LLC/ja4.git "$RUNNER_TEMP/ja4"
+          git -C "$RUNNER_TEMP/ja4" rev-parse HEAD > "$RUNNER_TEMP/ja4-source-commit.txt"
+      - name: Create local TLS control server
+        run: |
+          mkdir -p "$RUNNER_TEMP/r003-browser"
+          cp "$RUNNER_TEMP/ja4-source-commit.txt" "$RUNNER_TEMP/r003-browser/"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=control.test' \
+            -addext 'subjectAltName=DNS:control.test' \
+            -keyout "$RUNNER_TEMP/r003-browser/key.pem" \
+            -out "$RUNNER_TEMP/r003-browser/cert.pem" >/dev/null 2>&1
+          echo '127.0.0.1 control.test' | sudo tee -a /etc/hosts
+          openssl s_server -quiet -accept 9443 \
+            -cert "$RUNNER_TEMP/r003-browser/cert.pem" \
+            -key "$RUNNER_TEMP/r003-browser/key.pem" -www \
+            >"$RUNNER_TEMP/r003-browser/server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/r003-browser/server.pid"
+          sleep 1
+      - name: Capture Chrome
+        run: |
+          CHROME=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || true)
+          if [[ -z "$CHROME" ]]; then echo 'Chrome unavailable' | tee "$RUNNER_TEMP/r003-browser/chrome.unavailable"; exit 0; fi
+          "$CHROME" --version | tee "$RUNNER_TEMP/r003-browser/chrome.version"
+          sudo tcpdump -i lo -nn -s 0 -U -w "$RUNNER_TEMP/r003-browser/chrome.pcap" 'tcp port 9443' >/tmp/chrome-tcpdump.log 2>&1 & CAP=$!
+          sleep 1
+          timeout 15s "$CHROME" --headless=new --no-sandbox --disable-gpu --ignore-certificate-errors 'https://control.test:9443/' >/tmp/chrome.out 2>/tmp/chrome.err || true
+          sudo kill -INT "$CAP" 2>/dev/null || true; wait "$CAP" 2>/dev/null || true
+          ja3 -a -j "$RUNNER_TEMP/r003-browser/chrome.pcap" > "$RUNNER_TEMP/r003-browser/chrome-ja3.json" || true
+          python3 "$RUNNER_TEMP/ja4/python/ja4.py" "$RUNNER_TEMP/r003-browser/chrome.pcap" -J --ja4 > "$RUNNER_TEMP/r003-browser/chrome-ja4.json" || true
+      - name: Capture Firefox
+        run: |
+          FIREFOX=$(command -v firefox || true)
+          if [[ -z "$FIREFOX" ]]; then echo 'Firefox unavailable' | tee "$RUNNER_TEMP/r003-browser/firefox.unavailable"; exit 0; fi
+          "$FIREFOX" --version | tee "$RUNNER_TEMP/r003-browser/firefox.version"
+          sudo tcpdump -i lo -nn -s 0 -U -w "$RUNNER_TEMP/r003-browser/firefox.pcap" 'tcp port 9443' >/tmp/firefox-tcpdump.log 2>&1 & CAP=$!
+          sleep 1
+          mkdir -p "$RUNNER_TEMP/firefox-profile"
+          timeout 15s "$FIREFOX" --headless --no-remote --profile "$RUNNER_TEMP/firefox-profile" 'https://control.test:9443/' >/tmp/firefox.out 2>/tmp/firefox.err || true
+          sudo kill -INT "$CAP" 2>/dev/null || true; wait "$CAP" 2>/dev/null || true
+          ja3 -a -j "$RUNNER_TEMP/r003-browser/firefox.pcap" > "$RUNNER_TEMP/r003-browser/firefox-ja3.json" || true
+          python3 "$RUNNER_TEMP/ja4/python/ja4.py" "$RUNNER_TEMP/r003-browser/firefox.pcap" -J --ja4 > "$RUNNER_TEMP/r003-browser/firefox-ja4.json" || true
+      - name: Stop server and show results
+        if: always()
+        run: |
+          kill "$(cat "$RUNNER_TEMP/r003-browser/server.pid")" 2>/dev/null || true
+          for f in "$RUNNER_TEMP/r003-browser"/*.version "$RUNNER_TEMP/r003-browser"/*-ja3.json "$RUNNER_TEMP/r003-browser"/*-ja4.json; do
+            [[ -f "$f" ]] && { echo "--- $(basename "$f") ---"; cat "$f"; }
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r003-browser-fingerprints-${{ github.sha }}
+          path: ${{ runner.temp }}/r003-browser
+          if-no-files-found: error
+          retention-days: 30
