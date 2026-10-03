@@ -124,7 +124,6 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	if err!=nil { t.Fatal(err) }
 	defer targetLn.Close()
 	targetDone:=make(chan error,1)
-	var progress cor01Progress
 	go func(){
 		c,err:=targetLn.Accept()
 		if err!=nil { targetDone<-err; return }
@@ -133,9 +132,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 		for {
 			n,rerr:=c.Read(buf)
 			if n>0 {
-				progress.targetRead.Add(int64(n))
-				pw:=progressWriter{w:c,n:&progress.targetWrite}
-				if werr:=writeFull(pw,buf[:n]); werr!=nil { targetDone<-werr; return }
+				if werr:=writeFull(c,buf[:n]); werr!=nil { targetDone<-werr; return }
 			}
 			if rerr!=nil {
 				if rerr==io.EOF {
@@ -158,9 +155,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	if err!=nil { t.Fatal(err) }
 	serverErr:=make(chan error,1)
 	hs:=httptest.NewUnstartedServer(carrierh2.Handler(func(hctx context.Context,in io.Reader,out io.Writer,peer carrierh2.PeerInfo) error {
-		exIn:=progressReader{r:in,n:&progress.exCarrierIn}
-		exOut:=progressWriter{w:out,n:&progress.exCarrierOut}
-		ex,err:=session.New(session.Listener,session.Carrier{In:exIn,Out:exOut},peer.Identity,table,session.Options{
+		ex,err:=session.New(session.Listener,session.Carrier{In:in,Out:out},peer.Identity,table,session.Options{
 			NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ShardID:0,
 			ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"cor01",
 		})
@@ -181,9 +176,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	resp,err:=h2c.Open(ctx,reqR)
 	if err!=nil { t.Fatal(err) }
 	defer resp.Body.Close()
-	irIn:=progressReader{r:resp.Body,n:&progress.irCarrierIn}
-	irOut:=progressWriter{w:reqW,n:&progress.irCarrierOut}
-	ir,err:=session.New(session.Dialer,session.Carrier{In:irIn,Out:irOut},"urn:baft:node:ex-01",nil,session.Options{
+	ir,err:=session.New(session.Dialer,session.Carrier{In:resp.Body,Out:reqW},"urn:baft:node:ex-01",nil,session.Options{
 		NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",ShardID:0,
 		ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"cor01",
 	})
