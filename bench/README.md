@@ -53,6 +53,7 @@ Results are written under `bench/results/<UTC>-<git-sha>/` with per-attempt stdo
 | B05 | runtime pair FD/resource lifetime | leak/resource evidence |
 | B06 | warmed multi-flow loopback BAFT throughput | measured TX/RX/aggregate Mbps + resource snapshot |
 | B07 | abrupt Carrier cut on existing flows | session survival + recovery p50/p95/p99 + resource snapshot |
+| B08 | direct loopback TCP control | same payload/flow profile as B06 for overhead comparison |
 
 ## Evidence rules
 
