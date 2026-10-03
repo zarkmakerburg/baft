@@ -19,6 +19,7 @@ func recoveryFixture(t *testing.T,n int)(*Peer,*bytes.Buffer,context.Context,con
 		NodeID:"local",ExpectedPeerNodeID:"peer",RecoveryEnabled:true,RecoveryRetention:time.Second,CarrierID:"carrier-1",
 	})
 	if err!=nil{t.Fatal(err)}
+	if !p.beginRunLifecycle(){t.Fatal("recovery fixture could not model an active Session")}
 	// Local-only session fixtures have no real peer reader to emit ACK frames.
 	// Model authenticated peer acceptance explicitly through the dedicated
 	// test hook; ambiguity tests disable this hook when they need uncertainty.

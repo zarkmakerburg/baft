@@ -426,6 +426,7 @@ func (p *Peer) bindRecoverySenderDiagnostic(s *outboundSender,ctl RecoveryContro
 		PreparedIncarnation:incarnation,CarrierGeneration:generation,PhysicalCarrierInstanceID:physical,
 	})
 	s.setStopObserver(p.onRecoverySenderStop)
+	s.mu.Lock();s.writeFault=p.carrierWriteFault;s.mu.Unlock()
 	s.setDataWriteObserver(func(dw DataWriteDiagnostic){
 		p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{
 			Event:dw.Event,ProducerKind:dw.ProducerKind,StreamID:dw.StreamID,FrameType:protocol.TypeData,
@@ -791,6 +792,15 @@ func (p *Peer) markPostCommitFailureForAttempt(token RecoveryAttemptToken,err er
 
 func (p *Peer) activatePreparedCarrierOwned(prep *preparedRecovery,ctl RecoveryControl,token RecoveryAttemptToken)(uint64,error){
 	if p.recovery==nil{return 0,errors.New("recovery is disabled")}
+	// Run owns the logical Session lifetime. Recovery may activate a carrier
+	// only while holding a read lease on that lifetime. Teardown takes the
+	// exclusive lock before cleanup, so activation and teardown cannot overlap.
+	p.runLifecycleMu.RLock()
+	if !p.runActive||p.runExiting{
+		p.runLifecycleMu.RUnlock()
+		return 0,ErrCarrierUnavailable
+	}
+	defer p.runLifecycleMu.RUnlock()
 	a:=p.recovery
 	a.ownershipMu.RLock();defer a.ownershipMu.RUnlock()
 	a.mu.Lock()
@@ -1278,7 +1288,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 		effectiveFinAcked:=fl.finAcked||fp.LocalFinAckCanAdvance
 		resendFIN:=fl.finSent&&!effectiveFinAcked
 		final:=fl.txNext
-		ackPeerFIN:=fl.finRecv&&!fl.finAckSent&&fl.rxWritten==fl.finRecvFinal
+		ackPeerFIN:=fl.finRecv&&!fl.finAckConfirmed&&fl.rxWritten==fl.finRecvFinal
 		fl.mu.Unlock()
 		if release>0 {
 			if err:=fl.allocator.CanRelease(fl.resourceID,resources.Replay,release);err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
@@ -1482,8 +1492,15 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stopAndFenceWriter(SenderStopExplicitReplace,ErrCarrierUnavailable)}
 	p.traceRecoveryDiagnostic("CARRIER_ACTIVATED",SenderStopUnknown,nil,"",prep.sender,ctl,prep.incarnation,activatedGeneration)
 	if !prep.sender.isStarted(){
+		// activatePreparedCarrierOwned holds the Run lifecycle read lease, so
+		// teardown cannot begin until this Add has completed.
 		p.wg.Add(1)
-		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
+		hold:=p.senderStartHold(activatedGeneration)
+		go func(s *outboundSender,rc context.Context){
+			defer p.wg.Done()
+			if hold!=nil{select{case <-hold:case <-rc.Done():}}
+			s.run(rc)
+		}(prep.sender,runCtx)
 	}
 	return activatedGeneration,nil
 }

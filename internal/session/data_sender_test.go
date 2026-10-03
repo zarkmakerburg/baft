@@ -128,6 +128,61 @@ func TestRecoverableSenderReturnsCarrierUnavailableToCaller(t *testing.T){
 	if !errors.Is(err,ErrCarrierUnavailable){t.Fatalf("caller received non-recoverable error: %v",err)}
 }
 
+func TestRecoverableDirectWriteBeforeStartClassifiesCarrierError(t *testing.T){
+	s:=newOutboundSender(&frameWriter{w:alwaysFailWriter{}},true)
+	err:=s.sendControl(protocol.Frame{Type:protocol.TypePing,Payload:make([]byte,8)})
+	if !errors.Is(err,ErrCarrierUnavailable){
+		t.Fatalf("direct pre-start write leaked raw carrier error: %v",err)
+	}
+	if !errors.Is(err,io.ErrClosedPipe){
+		t.Fatalf("direct pre-start write lost original carrier error chain: %v",err)
+	}
+}
+
+func TestRecoverablePendingRequestStopClassifiesCarrierError(t *testing.T){
+	var buf bytes.Buffer
+	s:=newOutboundSender(&frameWriter{w:&buf},true)
+	req:=&outboundRequest{
+		frame:protocol.Frame{Type:protocol.TypePing,Payload:make([]byte,8)},
+		done:make(chan error,1),control:true,
+	}
+	if err:=s.control.Enqueue(resources.ControlItem{WireBytes:protocol.HeaderSize+8,Value:req});err!=nil{t.Fatal(err)}
+	s.stopWithSource(SenderStopContextDone,context.Canceled)
+	select{
+	case err:=<-req.done:
+		if !errors.Is(err,ErrCarrierUnavailable){
+			t.Fatalf("pending request leaked raw stop error: %v",err)
+		}
+		if !errors.Is(err,context.Canceled){
+			t.Fatalf("pending request lost original context cancellation: %v",err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending request was not released by sender stop")
+	}
+}
+
+func TestRecoverableRemoveFlowPhysicalCancellationClassifiesCarrierError(t *testing.T){
+	var buf bytes.Buffer
+	s:=newOutboundSender(&frameWriter{w:&buf},true)
+	fl:=newFlow(1,"route","00112233445566778899aabbccddeeff",nil,defaultAllocator())
+	req:=&outboundRequest{
+		flow:fl,
+		frame:protocol.Frame{Type:protocol.TypeData,StreamID:1,Payload:[]byte("x")},
+		done:make(chan error,1),
+	}
+	if err:=s.data.AddFlow(1,dataChunk);err!=nil{t.Fatal(err)}
+	if err:=s.data.Enqueue(scheduler.Item{FlowID:1,Bytes:1,Value:req});err!=nil{t.Fatal(err)}
+	s.removeFlow(1,context.Canceled)
+	select{
+	case err:=<-req.done:
+		if !errors.Is(err,ErrCarrierUnavailable){t.Fatalf("removeFlow leaked raw carrier cancellation: %v",err)}
+		if !errors.Is(err,context.Canceled){t.Fatalf("removeFlow lost original cancellation chain: %v",err)}
+	case <-time.After(time.Second):
+		t.Fatal("removeFlow did not release pending request")
+	}
+}
+
+
 
 func TestRecoverableSenderContextCancellationReturnsCarrierUnavailable(t *testing.T){
 	var buf bytes.Buffer
@@ -152,6 +207,9 @@ func TestRecoverableSenderContextCancellationReturnsCarrierUnavailable(t *testin
 	err:=s.sendControl(protocol.Frame{Type:protocol.TypePing,Payload:make([]byte,8)})
 	if !errors.Is(err,ErrCarrierUnavailable){
 		t.Fatalf("recoverable physical context cancellation leaked as logical-session error: %v",err)
+	}
+	if !errors.Is(err,context.Canceled){
+		t.Fatalf("stopped sender lost original context cancellation chain: %v",err)
 	}
 }
 

@@ -214,6 +214,25 @@ func (r *Runtime) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
 	for _,p:=range peers{p.SetRecoveryCarrierWaitExpiryHookForTest(fn)}
 }
 
+func (r *Runtime) peersSnapshotForTest() []*session.Peer {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	return peers
+}
+
+// SetCarrierWriteFaultForTest injects a test-only physical write error into
+// recovery senders of the currently registered logical Sessions.
+func (r *Runtime) SetCarrierWriteFaultForTest(fn func(frame protocol.Frame,generation uint64) error) {
+	for _,p:=range r.peersSnapshotForTest(){p.SetCarrierWriteFaultForTest(fn)}
+}
+
+// SetSenderStartHoldForTest delays recovery sender start by generation.
+func (r *Runtime) SetSenderStartHoldForTest(fn func(generation uint64) <-chan struct{}) {
+	for _,p:=range r.peersSnapshotForTest(){p.SetSenderStartHoldForTest(fn)}
+}
+
 func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
 	r.recoveryFaultMu.Lock()
 	r.recoveryFault=fn

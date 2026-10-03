@@ -98,6 +98,9 @@ type Peer struct {
 	finishedFins       map[uint64]uint64
 	nextID             uint64
 	closed             bool
+	runLifecycleMu     sync.RWMutex
+	runActive          bool
+	runExiting         bool
 	wg                 sync.WaitGroup
 	trafficObserver    TrafficObserver
 	latencyObserver    LatencyObserver
@@ -122,6 +125,10 @@ type Peer struct {
 	recoveryFrameHook   func(string, protocol.Frame) bool
 	runExitObserverMu sync.RWMutex
 	runExitObserver func(error)
+	// Test-only physical carrier write/start controls.
+	writeFaultMu sync.RWMutex
+	writeFaultForTest func(frame protocol.Frame,generation uint64) error
+	senderStartHoldForTest func(generation uint64) <-chan struct{}
 	recoveryWaitExpiryHookMu sync.RWMutex
 	recoveryWaitExpiryHook func() bool
 	logicalSessionRetainObserverMu sync.RWMutex
@@ -320,6 +327,29 @@ func (p *Peer) notifyRunExitForTest(err error) {
 	if fn!=nil{fn(err)}
 }
 
+// SetCarrierWriteFaultForTest injects an error at the physical write boundary
+// of every recovery sender bound after this call.
+func (p *Peer) SetCarrierWriteFaultForTest(fn func(frame protocol.Frame,generation uint64) error) {
+	p.writeFaultMu.Lock();p.writeFaultForTest=fn;p.writeFaultMu.Unlock()
+}
+
+// SetSenderStartHoldForTest delays the start of an activated recovery sender.
+func (p *Peer) SetSenderStartHoldForTest(fn func(generation uint64) <-chan struct{}) {
+	p.writeFaultMu.Lock();p.senderStartHoldForTest=fn;p.writeFaultMu.Unlock()
+}
+
+func (p *Peer) senderStartHold(generation uint64) <-chan struct{} {
+	p.writeFaultMu.RLock();fn:=p.senderStartHoldForTest;p.writeFaultMu.RUnlock()
+	if fn==nil{return nil}
+	return fn(generation)
+}
+
+func (p *Peer) carrierWriteFault(frame protocol.Frame,generation uint64) error {
+	p.writeFaultMu.RLock();fn:=p.writeFaultForTest;p.writeFaultMu.RUnlock()
+	if fn==nil{return nil}
+	return fn(frame,generation)
+}
+
 func (p *Peer) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
 	p.recoveryWaitExpiryHookMu.Lock();p.recoveryWaitExpiryHook=fn;p.recoveryWaitExpiryHookMu.Unlock()
 }
@@ -352,6 +382,32 @@ func (p *Peer) logicalSessionRetentionReason() string {
 	return ""
 }
 
+func (p *Peer) beginRunLifecycle() bool {
+	p.runLifecycleMu.Lock()
+	defer p.runLifecycleMu.Unlock()
+	if p.runActive||p.runExiting{return false}
+	p.runActive=true
+	return true
+}
+
+func (p *Peer) beginRunTeardown() {
+	// Taking the exclusive lifecycle lock waits for any in-flight recovery
+	// activation lease to finish. Once runExiting is published, no later
+	// activation or worker admission may mutate this Session.
+	p.runLifecycleMu.Lock()
+	p.runExiting=true
+	p.runActive=false
+	p.runLifecycleMu.Unlock()
+}
+
+func (p *Peer) admitWorker() bool {
+	p.runLifecycleMu.RLock()
+	defer p.runLifecycleMu.RUnlock()
+	if !p.runActive||p.runExiting{return false}
+	p.wg.Add(1)
+	return true
+}
+
 func (p *Peer) Run(ctx context.Context) error { return p.run(ctx,nil) }
 
 func (p *Peer) RunWithFirstFrame(ctx context.Context, first protocol.Frame) error {
@@ -359,16 +415,20 @@ func (p *Peer) RunWithFirstFrame(ctx context.Context, first protocol.Frame) erro
 }
 
 func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
+	if !p.beginRunLifecycle(){return errors.New("session Run lifecycle already active or exiting")}
 	runCtx, cancel := context.WithCancel(ctx)
 	p.mu.Lock()
 	p.runCtx = runCtx
 	p.mu.Unlock()
-	p.wg.Add(1)
+	if !p.admitWorker(){cancel();return errors.New("session worker admission closed")}
 	go func() {
 		defer p.wg.Done()
 		p.senderNow().run(runCtx)
 	}()
 	defer func() {
+		// Once Run exits, no recovery/pump path may add another goroutine while
+		// teardown is waiting for the existing worker set.
+		p.beginRunTeardown()
 		// Test-only lifecycle proof is emitted before destructive cleanup so it
 		// observes the logical Session authority/flows that existed at Run exit.
 		p.notifyRunExitForTest(retErr)
@@ -378,8 +438,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 	}()
 	if p.role == Dialer {
 		if err := p.sendHello(); err != nil { return err }
-		if p.pingInterval > 0 {
-			p.wg.Add(1)
+		if p.pingInterval > 0 && p.admitWorker() {
 			go func() { defer p.wg.Done(); p.pingLoop(runCtx) }()
 		}
 	}
@@ -905,7 +964,11 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 	}
 	p.pendingOpens[fr.StreamID] = req
 	p.mu.Unlock()
-	p.wg.Add(1)
+	if !p.admitWorker(){
+		p.mu.Lock();delete(p.pendingOpens,fr.StreamID);p.mu.Unlock()
+		p.flowSlots.Release()
+		return ErrCarrierUnavailable
+	}
 	go func() {
 		defer p.wg.Done()
 		conn, err := p.dial(ctx, "tcp", target)
@@ -1171,9 +1234,10 @@ func (p *Peer) ackRemoteFin(fl *flow) error {
 	err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final})
 	fl.mu.Lock()
 	fl.finAckWriteInFlight=false
-	if err!=nil && !fl.finAckConfirmed {
-		// No peer proof exists for this emission. Keep the terminal obligation
-		// retryable instead of pretending a failed local write was delivered.
+	if err!=nil && !fl.finAckConfirmed && !p.recoveryEnabled {
+		// Baseline non-recovery sessions may retry from local write failure.
+		// Recovery-enabled sessions keep finAckSent monotonic: a carrier error
+		// after emission is not proof that the peer missed the FIN_ACK.
 		fl.finAckSent=false
 	}
 	fl.mu.Unlock()
@@ -1211,7 +1275,12 @@ func (p *Peer) startPump(ctx context.Context, fl *flow) {
 	fl.localPumpRunning=true
 	fl.localPumpDone=done
 	fl.mu.Unlock()
-	p.wg.Add(1)
+	if !p.admitWorker(){
+		fl.mu.Lock()
+		if fl.localPumpDone==done{fl.localPumpRunning=false;close(done)}
+		fl.mu.Unlock()
+		return
+	}
 	go func() {
 		defer p.wg.Done()
 		defer func(){
@@ -1230,7 +1299,12 @@ func (p *Peer) startTargetPump(ctx context.Context, fl *flow) {
 	fl.targetPumpRunning=true
 	fl.targetPumpDone=done
 	fl.mu.Unlock()
-	p.wg.Add(1)
+	if !p.admitWorker(){
+		fl.mu.Lock()
+		if fl.targetPumpDone==done{fl.targetPumpRunning=false;close(done)}
+		fl.mu.Unlock()
+		return
+	}
 	go func() {
 		defer p.wg.Done()
 		defer func(){
@@ -1247,11 +1321,11 @@ func (p *Peer) ensurePumpsAfterRecovery(ctx context.Context,fl *flow){
 	localRunning,localDone:=fl.localPumpRunning,fl.localPumpDone
 	targetRunning,targetDone:=fl.targetPumpRunning,fl.targetPumpDone
 	fl.mu.Unlock()
-	if !localRunning { p.startPump(ctx,fl) } else if localDone!=nil {
-		p.wg.Add(1);go func(){defer p.wg.Done();select{case <-ctx.Done():case <-localDone:p.startPump(ctx,fl)}}()
+	if !localRunning { p.startPump(ctx,fl) } else if localDone!=nil && p.admitWorker() {
+		go func(){defer p.wg.Done();select{case <-ctx.Done():case <-localDone:p.startPump(ctx,fl)}}()
 	}
-	if !targetRunning { p.startTargetPump(ctx,fl) } else if targetDone!=nil {
-		p.wg.Add(1);go func(){defer p.wg.Done();select{case <-ctx.Done():case <-targetDone:p.startTargetPump(ctx,fl)}}()
+	if !targetRunning { p.startTargetPump(ctx,fl) } else if targetDone!=nil && p.admitWorker() {
+		go func(){defer p.wg.Done();select{case <-ctx.Done():case <-targetDone:p.startTargetPump(ctx,fl)}}()
 	}
 }
 
@@ -1283,7 +1357,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 		}
 		fl.rxWritten += uint64(len(segment))
 		delivered := fl.rxWritten
-		finalReady := fl.finRecv && !fl.finAckSent && delivered == fl.finRecvFinal
+		finalReady := fl.finRecv && !fl.finAckConfirmed && delivered == fl.finRecvFinal
 		closed := fl.closed
 		fl.mu.Unlock()
 
@@ -1303,7 +1377,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			// must absorb that late credit intent instead of emitting RESET.
 			fl.mu.Lock()
 			closed = fl.closed
-			finalReady = fl.finRecv && !fl.finAckSent && fl.rxWritten == fl.finRecvFinal
+			finalReady = fl.finRecv && !fl.finAckConfirmed && fl.rxWritten == fl.finRecvFinal
 			fl.mu.Unlock()
 			if closed{return}
 			if finalReady{_ = p.ackRemoteFin(fl);return}
@@ -1328,7 +1402,12 @@ func (p *Peer) queueExactLiveFrame(ctx context.Context,fl *flow,fr protocol.Fram
 	wake:=fl.deferredLiveWake
 	fl.mu.Unlock()
 	if start{
-		p.wg.Add(1)
+		if !p.admitWorker(){
+			fl.mu.Lock()
+			fl.deferredLiveRunning=false
+			fl.mu.Unlock()
+			return
+		}
 		go func(){defer p.wg.Done();p.runExactLiveDelivery(ctx,fl)}()
 	}
 	select{case wake<-struct{}{}:default:}

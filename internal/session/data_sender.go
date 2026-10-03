@@ -103,6 +103,8 @@ type outboundSender struct {
 	hasStopEvent bool
 	onStop func(SenderStopEvent)
 	onDataWrite func(DataWriteDiagnostic)
+	// writeFault is a test-only fault injector at the physical write boundary.
+	writeFault func(frame protocol.Frame,generation uint64) error
 	writeSeq uint64
 	windowHigh map[uint64]uint64
 }
@@ -139,10 +141,22 @@ func (s *outboundSender) writeFrame(frame protocol.Frame) error {
 		s.mu.Unlock()
 		return errors.New("outbound sender writer is nil")
 	}
+	fault,generation:=s.writeFault,s.diag.CarrierGeneration
 	w.mu.Lock()
 	s.mu.Unlock()
 	defer w.mu.Unlock()
-	return protocol.Encode(w.w,frame)
+	if fault!=nil{
+		if err:=fault(frame,generation);err!=nil{return s.carrierError(err)}
+	}
+	return s.carrierError(protocol.Encode(w.w,frame))
+}
+
+// carrierError classifies a failure from the physical carrier while preserving
+// the original error in the chain. Non-recoverable senders keep baseline
+// behavior; an already-classified error is not wrapped again.
+func (s *outboundSender) carrierError(err error) error {
+	if err==nil||s==nil||!s.recoverable||errors.Is(err,ErrCarrierUnavailable){return err}
+	return fmt.Errorf("%w: %w",ErrCarrierUnavailable,err)
 }
 
 func (s *outboundSender) addFlow(flowID uint64) error {
@@ -166,8 +180,14 @@ func (s *outboundSender) removeFlow(flowID uint64, cause error) {
 		if !ok || req == nil {
 			continue
 		}
+		err:=cause
+		// Flow-level closure remains flow-level. If a physical cancellation is
+		// used as the removal cause, classify it before handing it to the caller.
+		if errors.Is(cause,context.Canceled)||errors.Is(cause,context.DeadlineExceeded)||errors.Is(cause,ErrCarrierUnavailable){
+			err=s.carrierError(cause)
+		}
 		select {
-		case req.done <- cause:
+		case req.done <- err:
 		default:
 		}
 	}
@@ -324,10 +344,7 @@ func (s *outboundSender) run(ctx context.Context) {
 			s.mu.Unlock()
 			if observer!=nil{observer(begin)}
 		}
-		err := s.writeFrame(req.frame)
-		if err != nil && s.recoverable {
-			err = fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)
-		}
+		err := s.carrierError(s.writeFrame(req.frame))
 		if err==nil && req.frame.Type==protocol.TypeData && observer!=nil {
 			s.mu.Lock();done:=s.dataWriteDiagnosticLocked(req,"DATA_WRITE_SUCCESS");s.mu.Unlock()
 			observer(done)
@@ -433,7 +450,7 @@ func (s *outboundSender) stopWithSource(source SenderStopSource,err error) {
 	if observer!=nil{observer(ev)}
 	for _, req := range pending {
 		select {
-		case req.done <- err:
+		case req.done <- s.carrierError(err):
 		default:
 		}
 	}
@@ -453,18 +470,10 @@ func (s *outboundSender) stopAndFenceWriter(source SenderStopSource, err error) 
 }
 
 func (s *outboundSender) stopErrorLocked() error {
-	err := s.stopErr
-	if err == nil {
-		err = errors.New("outbound sender stopped")
+	if s.stopErr != nil {
+		return s.carrierError(s.stopErr)
 	}
-	// A recoverable sender belongs to a disposable physical carrier. The
-	// carrier's private context may be canceled while the logical Session
-	// context remains alive. Never leak that raw cancellation to Peer.run:
-	// classify it as carrier loss so recovery/rebind owns the transition.
-	if s.recoverable && !errors.Is(err, ErrCarrierUnavailable) {
-		return fmt.Errorf("%w: %v", ErrCarrierUnavailable, err)
-	}
-	return err
+	return s.carrierError(errors.New("outbound sender stopped"))
 }
 
 func (s *outboundSender) signal() {
