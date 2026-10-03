@@ -362,3 +362,164 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	select { case <-irDone: case <-time.After(time.Second): }
 	select { case <-serverErr: case <-time.After(time.Second): }
 }
+
+
+func TestCOR01DirectTCPControl(t *testing.T) {
+	if os.Getenv("BAFT_COR01_1GIB") != "1" {
+		t.Skip("set BAFT_COR01_1GIB=1 to run the 1 GiB correctness gate")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Minute)
+	defer cancel()
+
+	var sentBytes, recvBytes atomic.Int64
+	var targetReadBytes, targetWrittenBytes atomic.Int64
+
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetLn.Close()
+
+	targetDone := make(chan error, 1)
+	go func() {
+		c, err := targetLn.Accept()
+		if err != nil {
+			targetDone <- err
+			return
+		}
+		defer c.Close()
+		buf := make([]byte, 128*1024)
+		for {
+			n, rerr := c.Read(buf)
+			if n > 0 {
+				targetReadBytes.Add(int64(n))
+				if werr := writeFull(countingWriter{w: c, n: &targetWrittenBytes}, buf[:n]); werr != nil {
+					targetDone <- werr
+					return
+				}
+			}
+			if rerr != nil {
+				if rerr == io.EOF {
+					if cw, ok := c.(interface{ CloseWrite() error }); ok {
+						_ = cw.CloseWrite()
+					}
+					targetDone <- nil
+				} else {
+					targetDone <- rerr
+				}
+				return
+			}
+		}
+	}()
+
+	raw, err := net.Dial("tcp", targetLn.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := raw.(*net.TCPConn)
+	defer user.Close()
+
+	type sendResult struct {
+		n   int64
+		sum [32]byte
+		err error
+	}
+	sent := make(chan sendResult, 1)
+	go func() {
+		h := sha256.New()
+		src := io.TeeReader(&patternReader{remaining: oneGiB}, h)
+		n, err := io.CopyBuffer(countingWriter{w: user, n: &sentBytes}, src, make([]byte, 256*1024))
+		if err == nil {
+			err = user.CloseWrite()
+		}
+		var sum [32]byte
+		copy(sum[:], h.Sum(nil))
+		sent <- sendResult{n: n, sum: sum, err: err}
+	}()
+
+	type directStallEvidence struct {
+		sent, recv, targetRead, targetWritten int64
+		goroutines                             string
+	}
+	stallCh := make(chan directStallEvidence, 1)
+	watchDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		lastSent, lastRecv := sentBytes.Load(), recvBytes.Load()
+		lastProgress := time.Now()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s, r := sentBytes.Load(), recvBytes.Load()
+				if s != lastSent || r != lastRecv {
+					lastSent, lastRecv = s, r
+					lastProgress = time.Now()
+					continue
+				}
+				if time.Since(lastProgress) < 15*time.Second {
+					continue
+				}
+				buf := make([]byte, 4<<20)
+				n := runtime.Stack(buf, true)
+				ev := directStallEvidence{
+					sent:          s,
+					recv:          r,
+					targetRead:    targetReadBytes.Load(),
+					targetWritten: targetWrittenBytes.Load(),
+					goroutines:    string(buf[:n]),
+				}
+				select {
+				case stallCh <- ev:
+				default:
+				}
+				_ = user.Close()
+				cancel()
+				return
+			}
+		}
+	}()
+
+	recvHash := sha256.New()
+	recvN, recvErr := io.CopyBuffer(recvHash, countingReader{r: user, n: &recvBytes}, make([]byte, 256*1024))
+	sendRes := <-sent
+	close(watchDone)
+
+	select {
+	case ev := <-stallCh:
+		t.Logf("COR-T1 DIRECT STALL sent=%d recv=%d target_read=%d target_written=%d target_inflight=%d",
+			ev.sent, ev.recv, ev.targetRead, ev.targetWritten, ev.targetRead-ev.targetWritten)
+		t.Logf("COR-T1 DIRECT GOROUTINES:\n%s", ev.goroutines)
+		t.Fatalf("COR-01 direct TCP liveness stall: no byte progress for 15s")
+	default:
+	}
+
+	if sendRes.err != nil {
+		t.Fatal(sendRes.err)
+	}
+	if recvErr != nil {
+		t.Fatal(recvErr)
+	}
+	if sendRes.n != oneGiB || recvN != oneGiB {
+		t.Fatalf("byte count mismatch sent=%d received=%d expected=%d", sendRes.n, recvN, oneGiB)
+	}
+	var recvSum [32]byte
+	copy(recvSum[:], recvHash.Sum(nil))
+	if recvSum != sendRes.sum {
+		t.Fatalf("SHA-256 mismatch sent=%x received=%x", sendRes.sum, recvSum)
+	}
+	t.Logf("COR-01 DIRECT PASS bytes_each_direction=%d sha256=%x", oneGiB, recvSum)
+
+	select {
+	case err := <-targetDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("direct target did not finish")
+	}
+}
