@@ -72,6 +72,8 @@ type Server struct {
 	httpClient *http.Client
 	mutationMu sync.Mutex
 	backupMu sync.Mutex
+	backupDir string
+	backupKey []byte
 	restoreFault func(string) error
 	access *accessGate
 	jobKey ed25519.PrivateKey
@@ -198,6 +200,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/discovery",s.discoveryAPI)
 	m.HandleFunc("/api/history",s.history)
 	m.HandleFunc("/api/audit",s.auditEntries)
+	m.HandleFunc("/api/backups",s.backups)
+	m.HandleFunc("/api/backups/restore-preview",s.restorePreviewAPI)
 	m.HandleFunc("/api/nodes/revoke",s.revokeNode)
 	m.HandleFunc("/api/nodes/rotate-token",s.rotateNodeToken)
 	if s.access!=nil{
