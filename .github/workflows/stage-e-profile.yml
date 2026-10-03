@@ -1,0 +1,54 @@
+name: stage-e-profile
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e-foundation
+    paths:
+      - '.github/workflows/stage-e-profile.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Profile B06 real BAFT path
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage-e-profile"
+          go test ./tests/integration \
+            -run '^TestStageEMeasureMultiFlowThroughput$' \
+            -count=1 -timeout 10m -v \
+            -cpuprofile="$RUNNER_TEMP/stage-e-profile/cpu.pprof" \
+            -memprofile="$RUNNER_TEMP/stage-e-profile/heap.pprof" \
+            -blockprofile="$RUNNER_TEMP/stage-e-profile/block.pprof" \
+            -mutexprofile="$RUNNER_TEMP/stage-e-profile/mutex.pprof" \
+            2>&1 | tee "$RUNNER_TEMP/stage-e-profile/test.log"
+      - name: Render profile tops
+        if: always()
+        run: |
+          for p in cpu heap block mutex; do
+            if [ -s "$RUNNER_TEMP/stage-e-profile/$p.pprof" ]; then
+              go tool pprof -top -nodecount=40 "$RUNNER_TEMP/stage-e-profile/$p.pprof" > "$RUNNER_TEMP/stage-e-profile/$p-top.txt" || true
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baft-stage-e-profile-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-profile
+          if-no-files-found: error
+          retention-days: 30
