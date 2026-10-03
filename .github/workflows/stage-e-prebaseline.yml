@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - bench/stage-e-foundation
+      - bench/stage-e
     paths:
       - '.github/workflows/stage-e-prebaseline.yml'
 
