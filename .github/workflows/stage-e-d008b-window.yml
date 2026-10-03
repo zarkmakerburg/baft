@@ -1,0 +1,66 @@
+name: stage-e-d008b-window-bdp
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e-foundation
+    paths:
+      - '.github/workflows/stage-e-d008b-window.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  window-bdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Record provenance
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008b-window"
+          {
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "sha=$GITHUB_SHA"
+            echo "go=$(go version)"
+            echo "uname=$(uname -a)"
+            lscpu
+            tc -V
+          } | tee "$RUNNER_TEMP/stage-e-d008b-window/provenance.txt"
+
+      - name: Validate single-flow controls
+        run: |
+          set -euxo pipefail
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          BAFT_STAGE_E_FLOWS=1 BAFT_STAGE_E_BYTES_PER_FLOW=2097152             go test ./tests/integration               -run '^TestStageEMeasure(MultiFlowThroughput|DirectTCPThroughput)$'               -count=1 -timeout 10m
+
+      - name: Window over RTT matrix
+        run: |
+          set -euxo pipefail
+          for rtt in 50 150 300; do
+            echo "=== BAFT single-flow RTT=${rtt}ms ==="
+            echo "COMMAND: BAFT_STAGE_E_FLOWS=1 BAFT_STAGE_E_BYTES_PER_FLOW=2097152 BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=0 go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=10 -timeout 20m -v"
+            BAFT_STAGE_E_FLOWS=1             BAFT_STAGE_E_BYTES_PER_FLOW=2097152             BAFT_STAGE_E_NETEM_RTT_MS="$rtt"             BAFT_STAGE_E_NETEM_LOSS_PCT=0               go test ./tests/integration                 -run '^TestStageEMeasureMultiFlowThroughput$'                 -count=10 -timeout 20m -v                 2>&1 | tee "$RUNNER_TEMP/stage-e-d008b-window/baft-rtt${rtt}.log"
+
+            echo "=== DIRECT single-flow RTT=${rtt}ms ==="
+            echo "COMMAND: BAFT_STAGE_E_FLOWS=1 BAFT_STAGE_E_BYTES_PER_FLOW=2097152 BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=0 go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=10 -timeout 20m -v"
+            BAFT_STAGE_E_FLOWS=1             BAFT_STAGE_E_BYTES_PER_FLOW=2097152             BAFT_STAGE_E_NETEM_RTT_MS="$rtt"             BAFT_STAGE_E_NETEM_LOSS_PCT=0               go test ./tests/integration                 -run '^TestStageEMeasureDirectTCPThroughput$'                 -count=10 -timeout 20m -v                 2>&1 | tee "$RUNNER_TEMP/stage-e-d008b-window/direct-rtt${rtt}.log"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008b-window-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008b-window
+          if-no-files-found: error
+          retention-days: 30
