@@ -2,14 +2,6 @@ name: stage-e-b07-statistics
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - bench/stage-e
-    paths:
-      - 'tests/integration/stage_e_benchmark_test.go'
-      - 'bench/manifest.json'
-      - 'bench/analyze_b07.py'
-      - '.github/workflows/stage-e-b07-statistics.yml'
 
 permissions:
   contents: read
