@@ -20,6 +20,7 @@ func main(){
 	if len(os.Args)>1&&os.Args[1]=="access"{os.Exit(runAccess(os.Args[2:]))}
 	if len(os.Args)>1&&os.Args[1]=="jobkey"{os.Exit(runJobKey(os.Args[2:]))}
 	if len(os.Args)>1&&os.Args[1]=="restore-preview"{os.Exit(runRestorePreview(os.Args[2:],os.Stdout,os.Stderr))}
+	if len(os.Args)>1&&os.Args[1]=="restore"{os.Exit(runRestore(os.Args[2:],os.Stdout,os.Stderr))}
 	if len(os.Args)>1&&os.Args[1]=="verify-backup"{os.Exit(runVerifyBackup(os.Args[2:],os.Stdout,os.Stderr))}
 	listen:=flag.String("listen","127.0.0.1:8080","BCC HTTP listen address")
 	stateFile:=flag.String("state-file","./bcc-state.json","persistent BCC state file")
