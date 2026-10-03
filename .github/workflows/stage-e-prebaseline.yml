@@ -36,6 +36,9 @@ jobs:
       - name: Repeated recovery B07
         run: |
           go run ./cmd/baft-bench -scenario B07 -out '${{ runner.temp }}/baft-stage-e'
+      - name: Repeated direct TCP control B08
+        run: |
+          go run ./cmd/baft-bench -scenario B08 -out '${{ runner.temp }}/baft-stage-e'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
