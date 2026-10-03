@@ -120,6 +120,15 @@ func stageEIntEnv(t *testing.T, name string, fallback, min, max int) int {
 	return v
 }
 
+const stageEReceiveWindowBytes = 64 * 1024
+
+func stageEWindowCeilingMbps(rttMS int) float64 {
+	if rttMS <= 0 {
+		return 0
+	}
+	return float64(stageEReceiveWindowBytes*8) / (float64(rttMS) / 1000) / 1_000_000
+}
+
 func stageEMaybeApplyNetem(t *testing.T, addr net.Addr) (int, float64, func()) {
 	t.Helper()
 	rttRaw := os.Getenv("BAFT_STAGE_E_NETEM_RTT_MS")
@@ -193,7 +202,7 @@ func TestStageEMeasureFrameCoalescedThroughput(t *testing.T) {
 }
 
 func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, measurement, scope string) {
-	const flowCount = 8
+	flowCount := stageEIntEnv(t, "BAFT_STAGE_E_FLOWS", 8, 1, 64)
 	bytesPerFlow := stageEIntEnv(t, "BAFT_STAGE_E_BYTES_PER_FLOW", 4*1024*1024, 64*1024, 64*1024*1024)
 	testTimeout := 45 * time.Second
 	clientDeadline := 35 * time.Second
@@ -466,6 +475,8 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 		"fd_after":                 fdAfter,
 		"netem_rtt_ms":             netemRTTMS,
 		"netem_loss_percent":       netemLossPct,
+		"receive_window_bytes":     stageEReceiveWindowBytes,
+		"expected_window_ceiling_mbps": stageEWindowCeilingMbps(netemRTTMS),
 		"scope":                    scope,
 	})
 
@@ -599,7 +610,7 @@ func TestStageEMeasureRecovery(t *testing.T) {
 // It uses the same flow count, payload size, warmup, hashing, and timed region,
 // but removes BAFT Session and H2/mTLS from the path.
 func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
-	const flowCount = 8
+	flowCount := stageEIntEnv(t, "BAFT_STAGE_E_FLOWS", 8, 1, 64)
 	bytesPerFlow := stageEIntEnv(t, "BAFT_STAGE_E_BYTES_PER_FLOW", 4*1024*1024, 64*1024, 64*1024*1024)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -786,6 +797,8 @@ func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
 		"fd_after":                 fdAfter,
 		"netem_rtt_ms":             netemRTTMS,
 		"netem_loss_percent":       netemLossPct,
+		"receive_window_bytes":     0,
+		"expected_window_ceiling_mbps": 0,
 		"scope":                    "direct loopback TCP control; same warmed-flow payload profile as B06",
 	})
 }
