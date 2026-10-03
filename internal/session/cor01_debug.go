@@ -18,6 +18,8 @@ type COR01FlowDebugSnapshot struct {
 	Closed           bool
 	LocalPumpRunning bool
 	TargetPumpRunning bool
+	ConnLocal string
+	ConnRemote string
 }
 
 type COR01SenderDebugSnapshot struct {
@@ -67,6 +69,10 @@ func (p *Peer) COR01DebugSnapshot() COR01PeerDebugSnapshot {
 			Closed: fl.closed,
 			LocalPumpRunning: fl.localPumpRunning,
 			TargetPumpRunning: fl.targetPumpRunning,
+		}
+		if fl.conn != nil {
+			if a := fl.conn.LocalAddr(); a != nil { fs.ConnLocal = a.String() }
+			if a := fl.conn.RemoteAddr(); a != nil { fs.ConnRemote = a.String() }
 		}
 		for _, ch := range fl.replay {
 			if ch.end >= ch.start {
