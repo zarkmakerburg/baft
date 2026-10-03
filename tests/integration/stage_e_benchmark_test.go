@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	carrierh2 "github.com/zarkmakerburg/baft/internal/carrier/h2"
 	"github.com/zarkmakerburg/baft/internal/identity"
+	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/routes"
 	"github.com/zarkmakerburg/baft/internal/session"
 )
@@ -49,6 +51,52 @@ func percentileMillis(values []time.Duration, percentile float64) float64 {
 	return float64(cp[idx]) / float64(time.Millisecond)
 }
 
+
+type stageEFrameCoalescingWriter struct {
+	mu      sync.Mutex
+	w       io.Writer
+	pending []byte
+	want    int
+}
+
+func (w *stageEFrameCoalescingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, p...)
+	for {
+		if w.want == 0 {
+			if len(w.pending) < 4 {
+				break
+			}
+			w.want = int(binary.BigEndian.Uint32(w.pending[:4]))
+			if w.want < protocol.HeaderSize || w.want > protocol.MaxFrameSize {
+				return 0, fmt.Errorf("benchmark coalescer invalid frame size %d", w.want)
+			}
+		}
+		if len(w.pending) < w.want {
+			break
+		}
+		n, err := w.w.Write(w.pending[:w.want])
+		if err != nil {
+			return 0, err
+		}
+		if n != w.want {
+			return 0, io.ErrShortWrite
+		}
+		copy(w.pending, w.pending[w.want:])
+		w.pending = w.pending[:len(w.pending)-w.want]
+		w.want = 0
+	}
+	return len(p), nil
+}
+
+func stageECarrierWriter(w io.Writer, coalesce bool) io.Writer {
+	if !coalesce {
+		return w
+	}
+	return &stageEFrameCoalescingWriter{w: w, pending: make([]byte, 0, protocol.MaxFrameSize)}
+}
+
 func stageEFDCount() int {
 	entries, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
@@ -63,6 +111,14 @@ func stageEFDCount() int {
 // timed bulk transfer. This is a reproducible local-path measurement, not an
 // Internet-throughput claim.
 func TestStageEMeasureMultiFlowThroughput(t *testing.T) {
+	runStageEMeasureMultiFlowThroughput(t, false, "B06", "loopback_multiflow_throughput", "loopback BAFT Session + H2/mTLS; warmed flows; not public-network throughput")
+}
+
+func TestStageEMeasureFrameCoalescedThroughput(t *testing.T) {
+	runStageEMeasureMultiFlowThroughput(t, true, "B09", "loopback_frame_coalesced_throughput", "test-only frame-coalesced BAFT Session + H2/mTLS; same B06 payload profile")
+}
+
+func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, measurement, scope string) {
 	const (
 		flowCount    = 8
 		bytesPerFlow = 4 * 1024 * 1024
@@ -130,7 +186,7 @@ func TestStageEMeasureMultiFlowThroughput(t *testing.T) {
 	}
 	serverErr := make(chan error, 1)
 	hs := httptest.NewUnstartedServer(carrierh2.Handler(func(hctx context.Context, in io.Reader, out io.Writer, peer carrierh2.PeerInfo) error {
-		ex, err := session.New(session.Listener, session.Carrier{In: in, Out: out}, peer.Identity, table, session.Options{
+		ex, err := session.New(session.Listener, session.Carrier{In: in, Out: stageECarrierWriter(out, coalesce)}, peer.Identity, table, session.Options{
 			NodeID: "ex-01", ExpectedPeerNodeID: "ir-01", ShardID: 0,
 			ProfileID: "secure-fast", ProfileVersion: 1, ConfigRevision: "stage-e-throughput",
 		})
@@ -166,7 +222,7 @@ func TestStageEMeasureMultiFlowThroughput(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	ir, err := session.New(session.Dialer, session.Carrier{In: resp.Body, Out: reqW}, "urn:baft:node:ex-01", nil, session.Options{
+	ir, err := session.New(session.Dialer, session.Carrier{In: resp.Body, Out: stageECarrierWriter(reqW, coalesce)}, "urn:baft:node:ex-01", nil, session.Options{
 		NodeID: "ir-01", ExpectedPeerNodeID: "ex-01", ShardID: 0,
 		ProfileID: "secure-fast", ProfileVersion: 1, ConfigRevision: "stage-e-throughput",
 	})
@@ -313,8 +369,8 @@ func TestStageEMeasureMultiFlowThroughput(t *testing.T) {
 	aggregateMbps := txMbps * 2 // payload traverses BAFT in both directions via echo
 
 	emitStageEMetric(t, map[string]any{
-		"scenario":                 "B06",
-		"measurement":              "loopback_multiflow_throughput",
+		"scenario":                 scenario,
+		"measurement":              measurement,
 		"flows":                    flowCount,
 		"tx_bytes":                 txBytes,
 		"rx_bytes":                 txBytes,
@@ -328,7 +384,7 @@ func TestStageEMeasureMultiFlowThroughput(t *testing.T) {
 		"goroutines_after":         goroutinesAfter,
 		"fd_before":                fdBefore,
 		"fd_after":                 fdAfter,
-		"scope":                    "loopback BAFT Session + H2/mTLS; warmed flows; not public-network throughput",
+		"scope":                    scope,
 	})
 
 	_ = reqW.Close()
