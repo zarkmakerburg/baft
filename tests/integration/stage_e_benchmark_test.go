@@ -610,8 +610,10 @@ func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
 	netemRTTMS, netemLossPct, cleanupNetem := stageEMaybeApplyNetem(t, ln.Addr())
 	defer cleanupNetem()
 	clientDeadline := 20 * time.Second
+	dialTimeout := time.Second
 	if netemRTTMS > 0 || netemLossPct > 0 {
 		clientDeadline = 4 * time.Minute
+		dialTimeout = 10 * time.Second
 	}
 
 	var serverWG sync.WaitGroup
@@ -662,7 +664,7 @@ func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
 		clients.Add(1)
 		go func() {
 			defer clients.Done()
-			raw, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+			raw, err := net.DialTimeout("tcp", ln.Addr().String(), dialTimeout)
 			if err != nil {
 				ready <- err
 				clientErr <- err
