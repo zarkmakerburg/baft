@@ -193,10 +193,8 @@ func TestStageEMeasureFrameCoalescedThroughput(t *testing.T) {
 }
 
 func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, measurement, scope string) {
-	const (
-		flowCount    = 8
-		bytesPerFlow = 4 * 1024 * 1024
-	)
+	const flowCount = 8
+	bytesPerFlow := stageEIntEnv(t, "BAFT_STAGE_E_BYTES_PER_FLOW", 4*1024*1024, 64*1024, 64*1024*1024)
 	testTimeout := 45 * time.Second
 	clientDeadline := 35 * time.Second
 	if os.Getenv("BAFT_STAGE_E_NETEM_RTT_MS") != "" || os.Getenv("BAFT_STAGE_E_NETEM_LOSS_PCT") != "" {
@@ -601,10 +599,8 @@ func TestStageEMeasureRecovery(t *testing.T) {
 // It uses the same flow count, payload size, warmup, hashing, and timed region,
 // but removes BAFT Session and H2/mTLS from the path.
 func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
-	const (
-		flowCount    = 8
-		bytesPerFlow = 4 * 1024 * 1024
-	)
+	const flowCount = 8
+	bytesPerFlow := stageEIntEnv(t, "BAFT_STAGE_E_BYTES_PER_FLOW", 4*1024*1024, 64*1024, 64*1024*1024)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
