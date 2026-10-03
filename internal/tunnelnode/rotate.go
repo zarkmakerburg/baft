@@ -1307,7 +1307,17 @@ func (m *Manager) irRollback(ctx context.Context, cfg config.Config, r Rotation,
 		if err != nil {
 			return "", err
 		}
+		// The EX may have just restarted on its rollback: give its listener
+		// a few seconds before concluding it cannot be seen.
 		served, perr := m.probeServed(ctx, cfg, r, pool)
+		for i := 0; perr != nil && i < 5; i++ {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Second):
+			}
+			served, perr = m.probeServed(ctx, cfg, r, pool)
+		}
 		switch {
 		case perr == nil && r.NewCertSHA256 != "" && served == r.NewCertSHA256:
 			return "", errors.New("rollback refused: the EX still serves the new certificate; roll the EX back first")
