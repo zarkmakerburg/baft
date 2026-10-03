@@ -28,8 +28,12 @@ fail() {
   fi
   exit 1
 }
+# The original stdout/stderr, so the exit trap reports even when the failure
+# happened inside a redirected block.
+exec 7>&1 8>&2
 cleanup() {
   local rc=$?
+  exec 1>&7 2>&8
   if [[ $rc -ne 0 ]]; then
     {
       for f in "$WORK"/*.out "$WORK"/*.err "$WORK"/*.log; do [[ -f "$f" ]] && { echo "== $f"; tail -n 40 "$f"; }; done
@@ -82,7 +86,8 @@ inst_ir() { local r="$1"; shift; env $(rel_env "$r") BAFT_INSTALL_FROM=release "
 # Provenance of what appears in the service user's home (the EX state
 # directory, created by useradd --create-home from /etc/skel): recorded at
 # every phase, before any behaviour depends on it.
-prov() {
+prov() (
+  set +e +o pipefail
   {
     echo "--- phase: $1"
     for d in /var/lib/baft-ex /var/lib/baft-ir; do
@@ -105,7 +110,7 @@ prov() {
       fi
     done
   } >>"$WORK/prov.log" 2>&1
-}
+)
 { echo "--- /etc/skel before any install:"; ls -la /etc/skel; getent passwd baft || echo "no baft user yet"; } >"$WORK/prov.log" 2>&1
 
 python3 tests/e2e/echo.py serve 2443 >"$WORK/target.log" 2>&1 & PIDS+=($!)
