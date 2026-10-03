@@ -331,6 +331,10 @@ func clonePreparedForRebind(old *preparedRecovery,c Carrier,sender *outboundSend
 func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c Carrier) error {
 	if p.recovery==nil{return errors.New("recovery is disabled")}
 	if c.In==nil||c.Out==nil{return errors.New("resolution carrier input/output required")}
+	// ctx belongs to one physical carrier. Whatever outlives it (the new
+	// sender's pumps, the prepared state) is owned by the logical Session.
+	runCtx,ok:=p.logicalSessionContext()
+	if !ok{return ErrLogicalSessionContextUnavailable}
 	a:=p.recovery
 	a.ownershipMu.Lock()
 	defer a.ownershipMu.Unlock()
@@ -362,10 +366,6 @@ func (p *Peer) RebindPreparedRecovery(ctx context.Context,ctl RecoveryControl,c 
 			extra=append(extra,entry)
 		}
 	}
-	runCtx:=ctx
-	p.mu.Lock()
-	if p.runCtx!=nil{runCtx=p.runCtx}
-	p.mu.Unlock()
 	newPrep:=clonePreparedForRebind(oldPrep,c,newSender,runCtx)
 	newPrep.flows=append(newPrep.flows,extra...)
 	p.bindRecoverySenderDiagnostic(newSender,newPrep.control,newPrep.incarnation,0)
@@ -572,6 +572,7 @@ func (p *Peer) EnsureRecoverySignal(err error) {
 func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c Carrier) error {
 	if p.recovery==nil{return errors.New("recovery is disabled")}
 	if c.In==nil||c.Out==nil{return errors.New("resolution carrier input/output required")}
+	if _,ok:=p.logicalSessionContext();!ok{return ErrLogicalSessionContextUnavailable}
 	a:=p.recovery
 	a.mu.Lock()
 	if a.lastCommit.SessionID==""||!sameRecoveryTransaction(a.lastCommit,ctl)||a.engine.CurrentEpoch()!=ctl.NextEpoch||a.engine.Owner()!=ctl.CandidateID{
@@ -598,7 +599,7 @@ func (p *Peer) RebindCommittedCarrier(ctx context.Context,ctl RecoveryControl,c 
 	for _,fl:=range p.flows{flows=append(flows,fl)}
 	runCtx:=p.runCtx
 	p.mu.Unlock()
-	if runCtx==nil{runCtx=ctx}
+	if runCtx==nil{return ErrLogicalSessionContextUnavailable}
 	preparedFlows:=make([]preparedFlowRecovery,0,len(flows))
 	for _,fl:=range flows{
 		entry,ok:=p.rebindEntryForLiveFlow(fl)

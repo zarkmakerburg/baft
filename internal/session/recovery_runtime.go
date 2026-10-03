@@ -426,6 +426,7 @@ func (p *Peer) bindRecoverySenderDiagnostic(s *outboundSender,ctl RecoveryContro
 		PreparedIncarnation:incarnation,CarrierGeneration:generation,PhysicalCarrierInstanceID:physical,
 	})
 	s.setStopObserver(p.onRecoverySenderStop)
+	s.mu.Lock();s.writeFault=p.carrierWriteFault;s.mu.Unlock()
 	s.setDataWriteObserver(func(dw DataWriteDiagnostic){
 		p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{
 			Event:dw.Event,ProducerKind:dw.ProducerKind,StreamID:dw.StreamID,FrameType:protocol.TypeData,
@@ -1229,6 +1230,9 @@ func sameRecoveryTransaction(a,b RecoveryControl) bool {
 func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Carrier)(RecoveryControl,error){
 	if c.In==nil||c.Out==nil{return RecoveryControl{},errors.New("candidate carrier input/output required")}
 	if p.recovery==nil{return RecoveryControl{},errors.New("recovery is disabled")}
+	// ctx belongs to the physical carrier that delivered the candidate; the
+	// prepared state outlives it and is owned by the logical Session.
+	if _,ok:=p.logicalSessionContext();!ok{return RecoveryControl{},ErrLogicalSessionContextUnavailable}
 	a:=p.recovery
 	a.mu.Lock()
 	if !a.frozen||a.pendingCandidate!=candidateID||!a.hasPlan{a.mu.Unlock();return RecoveryControl{},recovery.ErrNotPrepared}
@@ -1257,7 +1261,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 	p.mu.Unlock()
 	peerFlow:=make(map[uint64]recovery.FlowSnapshot,len(peerSnap.Flows))
 	for _,sf:=range peerSnap.Flows{peerFlow[sf.StreamID]=sf}
-	if runCtx==nil{runCtx=ctx}
+	if runCtx==nil{return RecoveryControl{},ErrLogicalSessionContextUnavailable}
 	prep:=&preparedRecovery{control:ctl,incarnation:1,physicalCarrierInstanceID:physicalCarrierInstanceID(ctl.NextEpoch,1),carrier:c,sender:newSender,runCtx:runCtx,flows:make([]preparedFlowRecovery,0,len(plan.Flows))}
 	p.bindRecoverySenderDiagnostic(newSender,ctl,1,0)
 	p.traceRecoveryDiagnostic("PREPARED_CREATED",SenderStopUnknown,nil,"",newSender,ctl,1,0)
@@ -1483,7 +1487,12 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	p.traceRecoveryDiagnostic("CARRIER_ACTIVATED",SenderStopUnknown,nil,"",prep.sender,ctl,prep.incarnation,activatedGeneration)
 	if !prep.sender.isStarted(){
 		p.wg.Add(1)
-		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
+		hold:=p.senderStartHold(activatedGeneration)
+		go func(s *outboundSender,rc context.Context){
+			defer p.wg.Done()
+			if hold!=nil{select{case <-hold:case <-rc.Done():}}
+			s.run(rc)
+		}(prep.sender,runCtx)
 	}
 	return activatedGeneration,nil
 }

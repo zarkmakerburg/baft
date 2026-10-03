@@ -136,6 +136,13 @@ type LogicalSessionLifecycleEvent struct {
 	NeedsRecovery bool
 	NeedsExactTransactionResolution bool
 	ActiveFlows int
+	// Evidence of why the Session actor exited (PEER_RUN_EXIT only).
+	ExitSite string
+	ExitError string
+	ExitCause string
+	ExitObligation string
+	SessionContextDone bool
+	OuterContextDone bool
 }
 
 func (r *Runtime) SetFlowOpenErrorHookForTest(fn func(string,error)) {
@@ -169,6 +176,10 @@ func (r *Runtime) appendLogicalSessionLifecycle(ev LogicalSessionLifecycleEvent)
 }
 
 func (r *Runtime) recordLogicalSessionLifecycleForID(event,reason,id string,p *session.Peer) {
+	r.recordLogicalSessionLifecycleWith(event,reason,id,p,nil)
+}
+
+func (r *Runtime) recordLogicalSessionLifecycleWith(event,reason,id string,p *session.Peer,fill func(*LogicalSessionLifecycleEvent)) {
 	if r==nil||p==nil{return}
 	st:=p.RecoveryStability()
 	prep:=p.RecoveryPreparedOwnershipForTest()
@@ -184,11 +195,32 @@ func (r *Runtime) recordLogicalSessionLifecycleForID(event,reason,id string,p *s
 	}
 	if id!=""{ev.SessionID=id}
 	if ok{ev.CandidateID=tx.CandidateID;ev.PlanDigest=tx.PlanDigest}
+	if fill!=nil{fill(&ev)}
 	r.appendLogicalSessionLifecycle(ev)
 }
 
 func (r *Runtime) recordLogicalSessionLifecycle(event,reason string,p *session.Peer) {
 	r.recordLogicalSessionLifecycleForID(event,reason,"",p)
+}
+
+// recordPeerRunExit records why a logical Session actor exited. A Session
+// that ends while an exact recovery obligation or an application Flow is open,
+// although neither its own context nor the Runtime's had ended, is an
+// invariant violation: a physical carrier must never end the Session.
+func (r *Runtime) recordPeerRunExit(p *session.Peer,runErr error) {
+	if r==nil||p==nil{return}
+	// Run records its exit evidence before it notifies; the snapshot below is
+	// taken at the same instant, before destructive cleanup.
+	x:=p.RunExit()
+	r.recordLogicalSessionLifecycleWith("PEER_RUN_EXIT",lifecycleErrorString(runErr),"",p,func(ev *LogicalSessionLifecycleEvent){
+		ev.ExitSite,ev.ExitError,ev.ExitCause,ev.ExitObligation=x.Site,x.Err,x.Cause,x.Obligation
+		ev.SessionContextDone,ev.OuterContextDone=x.SessionContextDone,x.OuterContextDone
+	})
+	if x.Violation{
+		r.recordLogicalSessionLifecycleWith("INVARIANT_VIOLATION_SESSION_EXIT",fmt.Sprintf("session ended at %s with %q open: %s",x.Site,x.Obligation,x.Err),"",p,func(ev *LogicalSessionLifecycleEvent){
+			ev.ExitSite,ev.ExitError,ev.ExitCause,ev.ExitObligation=x.Site,x.Err,x.Cause,x.Obligation
+		})
+	}
 }
 
 func (r *Runtime) recordStatusLookupMiss(query session.RecoveryControl,peerIdentity,reason string) {
@@ -211,6 +243,25 @@ func (r *Runtime) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
 	for p:=range r.peers{peers=append(peers,p)}
 	r.peerMu.Unlock()
 	for _,p:=range peers{p.SetRecoveryCarrierWaitExpiryHookForTest(fn)}
+}
+
+func (r *Runtime) peersSnapshot() []*session.Peer {
+	r.peerMu.Lock()
+	peers:=make([]*session.Peer,0,len(r.peers))
+	for p:=range r.peers{peers=append(peers,p)}
+	r.peerMu.Unlock()
+	return peers
+}
+
+// SetCarrierWriteFaultForTest injects an error at the physical write boundary
+// of the Sessions' recovery senders (test only).
+func (r *Runtime) SetCarrierWriteFaultForTest(fn func(frame protocol.Frame,generation uint64) error) {
+	for _,p:=range r.peersSnapshot(){p.SetCarrierWriteFaultForTest(fn)}
+}
+
+// SetSenderStartHoldForTest delays sender start per activated generation (test only).
+func (r *Runtime) SetSenderStartHoldForTest(fn func(generation uint64) <-chan struct{}) {
+	for _,p:=range r.peersSnapshot(){p.SetSenderStartHoldForTest(fn)}
 }
 
 func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
@@ -524,13 +575,16 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
 		}
 		r.FlowSlots = s
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	// The Runtime context is the parent of every logical Session context. It
+	// ends only for the reasons below, and says which: a Session that ends
+	// "context canceled" is traceable to one of them or it is a bug.
+	runCtx, cancelRuntime := context.WithCancelCause(ctx)
 	var backgroundWG sync.WaitGroup
 	// Runtime must not return while telemetry/probe writers can still mutate
 	// persistent state. This makes shutdown a deterministic lifecycle boundary
 	// for the durable spool and its atomic temp files.
 	defer func(){
-		cancel()
+		cancelRuntime(errRuntimeReturned)
 		backgroundWG.Wait()
 	}()
 
@@ -579,20 +633,28 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
 
 	select {
 	case err := <-roleDone:
-		cancel()
+		cancelRuntime(fmt.Errorf("%w: %v",errRuntimeRoleExited,err))
 		return err
 	case err := <-metricsDone:
-		cancel()
+		cancelRuntime(fmt.Errorf("%w: %v",errRuntimeMetricsExited,err))
 		if err == nil {
 			err = errors.New("metrics server stopped unexpectedly")
 		}
 		return fmt.Errorf("metrics: %w", err)
 	case <-ctx.Done():
-		cancel()
+		cancelRuntime(fmt.Errorf("%w: %v",errRuntimeShutdown,context.Cause(ctx)))
 		<-roleDone
 		return nil
 	}
 }
+
+// Reasons the Runtime context (the parent of every logical Session) ends.
+var (
+	errRuntimeShutdown       = errors.New("runtime shutdown requested")
+	errRuntimeRoleExited     = errors.New("runtime role loop exited")
+	errRuntimeMetricsExited  = errors.New("runtime metrics server exited")
+	errRuntimeReturned       = errors.New("runtime returned")
+)
 
 var ErrNoRevocationFile = errors.New("no revocation.file configured")
 
@@ -730,7 +792,7 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 			r.sessionMu.Unlock()
 			r.recordLogicalSessionLifecycleForID("LOGICAL_SESSION_REGISTER","listener logical session registered",h.SessionID,p)
 			r.registerPeer(p)
-			p.SetRunExitObserverForTest(func(runErr error){r.recordLogicalSessionLifecycle("PEER_RUN_EXIT",lifecycleErrorString(runErr),p)})
+			p.SetRunExitObserverForTest(func(runErr error){r.recordPeerRunExit(p,runErr)})
 			p.SetLogicalSessionRetainObserverForTest(func(reason string){r.recordLogicalSessionLifecycle("STALE_LIFECYCLE_RETIRE_REJECTED",reason,p)})
 			defer func(){r.unregisterPeer(p);r.unregisterSession(p)}()
 			return p.RunWithFirstFrame(ctx,first)

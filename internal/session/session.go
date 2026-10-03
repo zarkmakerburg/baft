@@ -122,6 +122,13 @@ type Peer struct {
 	recoveryFrameHook   func(string, protocol.Frame) bool
 	runExitObserverMu sync.RWMutex
 	runExitObserver func(error)
+	runExitMu sync.Mutex
+	runExit RunExitInfo
+	unclassifiedMu sync.Mutex
+	// writeFaultForTest is bound into every recovery sender (test only).
+	writeFaultMu sync.RWMutex
+	writeFaultForTest func(frame protocol.Frame,generation uint64) error
+	senderStartHoldForTest func(generation uint64) <-chan struct{}
 	recoveryWaitExpiryHookMu sync.RWMutex
 	recoveryWaitExpiryHook func() bool
 	logicalSessionRetainObserverMu sync.RWMutex
@@ -308,6 +315,102 @@ func (p *Peer) notifyRunExitForTest(err error) {
 	if fn!=nil{fn(err)}
 }
 
+// Run exit sites. A Session actor may only end because its own (logical
+// Session) context ended, or because Run itself decided so for a reason that
+// is not a carrier failure.
+const (
+	RunExitSessionContext  = "session_context_done"  // the logical Session context ended
+	RunExitDecode          = "carrier_decode"        // decode failed with the Session context done
+	RunExitWaitSwitch      = "wait_carrier_switch"   // retention expired or the Session context ended while waiting
+	RunExitFrame           = "frame_handler"         // a frame handler returned a non-carrier error
+	RunExitHello           = "hello_or_first_frame"
+	RunExitNonRecoverable  = "non_recoverable_decode"
+)
+
+// RunExitInfo is the evidence of why a Peer.Run returned. It exists so a
+// Session that ends while an exact recovery obligation is open can never be
+// explained by "context canceled" alone.
+type RunExitInfo struct {
+	Site string
+	Err string
+	// SessionContextDone: the logical Session context (runCtx) had ended when
+	// Run returned; Cause is its cancellation cause.
+	SessionContextDone bool
+	Cause string
+	// OuterContextDone: the context handed to Run had ended.
+	OuterContextDone bool
+	// Obligation is the retention reason that held at the exit ("" if none).
+	Obligation string
+	// Violation: the Session ended with an error that belongs to a physical
+	// carrier (cancellation, closed or reset stream, carrier unavailable)
+	// while an obligation was open, although neither the Session context nor
+	// the outer context had ended. A protocol violation by the peer may end a
+	// Session legitimately and is not flagged.
+	Violation bool
+}
+
+func (p *Peer) recordRunExit(site string,err error,runCtx,outer context.Context) {
+	info:=RunExitInfo{Site:site}
+	if err!=nil{info.Err=err.Error()}
+	if runCtx!=nil&&runCtx.Err()!=nil{info.SessionContextDone=true;info.Cause=fmt.Sprint(context.Cause(runCtx))}
+	if outer!=nil&&outer.Err()!=nil{info.OuterContextDone=true}
+	info.Obligation=p.logicalSessionRetentionReason()
+	info.Violation=info.Obligation!=""&&!info.SessionContextDone&&!info.OuterContextDone&&carrierScopedError(err)
+	p.runExitMu.Lock();p.runExit=info;p.runExitMu.Unlock()
+}
+
+// carrierScopedError: the failure belongs to one physical carrier, not to the
+// Session.
+func carrierScopedError(err error) bool {
+	return err!=nil&&(errors.Is(err,context.Canceled)||errors.Is(err,context.DeadlineExceeded)||errors.Is(err,ErrCarrierUnavailable)||
+		errors.Is(err,io.EOF)||errors.Is(err,io.ErrUnexpectedEOF)||errors.Is(err,io.ErrClosedPipe)||errors.Is(err,net.ErrClosed))
+}
+
+// RunExit returns the evidence of the last Run exit.
+func (p *Peer) RunExit() RunExitInfo {
+	p.runExitMu.Lock();defer p.runExitMu.Unlock()
+	return p.runExit
+}
+
+// ErrLogicalSessionContextUnavailable: a recovery step needed the logical
+// Session context while no Run owns one. The handler context of a physical
+// carrier must never stand in for it.
+var ErrLogicalSessionContextUnavailable = errors.New("logical session context unavailable")
+
+// logicalSessionContext is the only context allowed to own Session-lifetime
+// work (sender pumps, prepared recovery state): it ends only with the Runtime
+// or the Session itself, never with one physical carrier.
+func (p *Peer) logicalSessionContext() (context.Context,bool) {
+	p.mu.Lock();defer p.mu.Unlock()
+	return p.runCtx,p.runCtx!=nil
+}
+
+// SetCarrierWriteFaultForTest injects an error at the physical write
+// boundary of every recovery sender bound after this call.
+func (p *Peer) SetCarrierWriteFaultForTest(fn func(frame protocol.Frame,generation uint64) error) {
+	p.writeFaultMu.Lock();p.writeFaultForTest=fn;p.writeFaultMu.Unlock()
+}
+
+// SetSenderStartHoldForTest delays the start of the sender of each activated
+// carrier generation until the returned channel is closed (nil: no delay). It
+// widens the window in which a frame handler writes through a sender that has
+// not started yet, to make that path deterministic in tests.
+func (p *Peer) SetSenderStartHoldForTest(fn func(generation uint64) <-chan struct{}) {
+	p.writeFaultMu.Lock();p.senderStartHoldForTest=fn;p.writeFaultMu.Unlock()
+}
+
+func (p *Peer) senderStartHold(generation uint64) <-chan struct{} {
+	p.writeFaultMu.RLock();fn:=p.senderStartHoldForTest;p.writeFaultMu.RUnlock()
+	if fn==nil{return nil}
+	return fn(generation)
+}
+
+func (p *Peer) carrierWriteFault(frame protocol.Frame,generation uint64) error {
+	p.writeFaultMu.RLock();fn:=p.writeFaultForTest;p.writeFaultMu.RUnlock()
+	if fn==nil{return nil}
+	return fn(frame,generation)
+}
+
 func (p *Peer) SetRecoveryCarrierWaitExpiryHookForTest(fn func() bool) {
 	p.recoveryWaitExpiryHookMu.Lock();p.recoveryWaitExpiryHook=fn;p.recoveryWaitExpiryHookMu.Unlock()
 }
@@ -347,7 +450,7 @@ func (p *Peer) RunWithFirstFrame(ctx context.Context, first protocol.Frame) erro
 }
 
 func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancelCause(ctx)
 	p.mu.Lock()
 	p.runCtx = runCtx
 	p.mu.Unlock()
@@ -356,16 +459,20 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 		defer p.wg.Done()
 		p.senderNow().run(runCtx)
 	}()
+	exit:=func(site string,err error) error {
+		p.recordRunExit(site,err,runCtx,ctx)
+		return err
+	}
 	defer func() {
 		// Test-only lifecycle proof is emitted before destructive cleanup so it
 		// observes the logical Session authority/flows that existed at Run exit.
 		p.notifyRunExitForTest(retErr)
-		cancel()
+		cancel(fmt.Errorf("session run ended: %v",retErr))
 		p.closeAll()
 		p.wg.Wait()
 	}()
 	if p.role == Dialer {
-		if err := p.sendHello(); err != nil { return err }
+		if err := p.sendHello(); err != nil { return exit(RunExitHello,err) }
 		if p.pingInterval > 0 {
 			p.wg.Add(1)
 			go func() { defer p.wg.Done(); p.pingLoop(runCtx) }()
@@ -373,19 +480,19 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 	}
 	if first != nil {
 		epoch,carrierID,generation:=p.currentCarrierIdentity()
-		if err:=p.handleFrameFrom(runCtx,epoch,carrierID,*first,generation);err!=nil{return err}
+		if err:=p.handleFrameFrom(runCtx,epoch,carrierID,*first,generation);err!=nil{return exit(RunExitHello,err)}
 	}
 	for {
 		carrier,epoch,carrierID,generation:=p.currentCarrier()
 		f, err := protocol.Decode(carrier.In)
 		if err != nil {
-			if ctx.Err() != nil { return ctx.Err() }
+			if ctx.Err() != nil { return exit(RunExitDecode,ctx.Err()) }
 			if !p.recoveryEnabled {
-				if errors.Is(err,io.EOF){return ctx.Err()}
-				return err
+				if errors.Is(err,io.EOF){return exit(RunExitNonRecoverable,ctx.Err())}
+				return exit(RunExitNonRecoverable,err)
 			}
 			p.onCarrierFailureForGeneration(err,generation,SenderStopCarrierReaderDecode)
-			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);err!=nil{return err}
+			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);err!=nil{return exit(RunExitWaitSwitch,err)}
 			continue
 		}
 		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f,generation); err != nil {
@@ -397,10 +504,10 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 			}
 			if p.recoveryEnabled && errors.Is(err,ErrCarrierUnavailable) {
 				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
-				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);werr!=nil{return werr}
+				if werr:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);werr!=nil{return exit(RunExitWaitSwitch,werr)}
 				continue
 			}
-			return err
+			return exit(RunExitFrame,err)
 		}
 	}
 }

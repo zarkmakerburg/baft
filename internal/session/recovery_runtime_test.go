@@ -41,6 +41,9 @@ func recoveryFixture(t *testing.T,n int)(*Peer,*bytes.Buffer,context.Context,con
 	// Unit fixtures do not run a real peer reader. Model the cumulative ACK
 	// proof that the real Runtime obtains from authenticated peer acceptance.
 	ctx,cancel:=context.WithCancel(context.Background())
+	// Fixtures run no Peer.Run, so they bind the logical Session context
+	// explicitly (the production path never falls back to a handler context).
+	p.mu.Lock();p.runCtx=ctx;p.mu.Unlock()
 	return p,&old,ctx,cancel
 }
 

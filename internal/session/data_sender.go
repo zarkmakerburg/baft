@@ -103,6 +103,8 @@ type outboundSender struct {
 	hasStopEvent bool
 	onStop func(SenderStopEvent)
 	onDataWrite func(DataWriteDiagnostic)
+	// writeFault is a test-only injection at the physical write boundary.
+	writeFault func(frame protocol.Frame,generation uint64) error
 	writeSeq uint64
 	windowHigh map[uint64]uint64
 }
@@ -139,10 +141,26 @@ func (s *outboundSender) writeFrame(frame protocol.Frame) error {
 		s.mu.Unlock()
 		return errors.New("outbound sender writer is nil")
 	}
+	fault,generation:=s.writeFault,s.diag.CarrierGeneration
 	w.mu.Lock()
 	s.mu.Unlock()
 	defer w.mu.Unlock()
-	return protocol.Encode(w.w,frame)
+	if fault!=nil{
+		if err:=fault(frame,generation);err!=nil{return s.carrierError(err)}
+	}
+	return s.carrierError(protocol.Encode(w.w,frame))
+}
+
+// carrierError classifies an error that came from the physical carrier. In a
+// recoverable Session every failure of the physical stream (a write on a
+// cancelled request, a closed Noise connection, a reset HTTP/2 stream) is a
+// carrier failure, whichever path produced it: the queued writer, a direct
+// write before the sender started, or the stop error of a stopped sender.
+// The original error stays in the chain. A raw carrier error must never reach
+// the logical Session actor, which would read it as the Session's own end.
+func (s *outboundSender) carrierError(err error) error {
+	if err==nil||s==nil||!s.recoverable||errors.Is(err,ErrCarrierUnavailable){return err}
+	return fmt.Errorf("%w: %w",ErrCarrierUnavailable,err)
 }
 
 func (s *outboundSender) addFlow(flowID uint64) error {
@@ -324,10 +342,7 @@ func (s *outboundSender) run(ctx context.Context) {
 			s.mu.Unlock()
 			if observer!=nil{observer(begin)}
 		}
-		err := s.writeFrame(req.frame)
-		if err != nil && s.recoverable {
-			err = fmt.Errorf("%w: %v",ErrCarrierUnavailable,err)
-		}
+		err := s.carrierError(s.writeFrame(req.frame))
 		if err==nil && req.frame.Type==protocol.TypeData && observer!=nil {
 			s.mu.Lock();done:=s.dataWriteDiagnosticLocked(req,"DATA_WRITE_SUCCESS");s.mu.Unlock()
 			observer(done)
@@ -433,7 +448,7 @@ func (s *outboundSender) stopWithSource(source SenderStopSource,err error) {
 	if observer!=nil{observer(ev)}
 	for _, req := range pending {
 		select {
-		case req.done <- err:
+		case req.done <- s.carrierError(err):
 		default:
 		}
 	}
@@ -454,9 +469,9 @@ func (s *outboundSender) stopAndFenceWriter(source SenderStopSource, err error) 
 
 func (s *outboundSender) stopErrorLocked() error {
 	if s.stopErr != nil {
-		return s.stopErr
+		return s.carrierError(s.stopErr)
 	}
-	return errors.New("outbound sender stopped")
+	return s.carrierError(errors.New("outbound sender stopped"))
 }
 
 func (s *outboundSender) signal() {
