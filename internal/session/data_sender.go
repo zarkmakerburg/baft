@@ -453,19 +453,10 @@ func (s *outboundSender) stopAndFenceWriter(source SenderStopSource, err error) 
 }
 
 func (s *outboundSender) stopErrorLocked() error {
-	err := s.stopErr
-	if err == nil {
-		err = errors.New("outbound sender stopped")
+	if s.stopErr != nil {
+		return s.stopErr
 	}
-	// Recovery callers reason about the physical carrier, not the sender
-	// goroutine's private cancellation context. A carrier handler may cancel
-	// its sender while the logical Session context is still alive; leaking raw
-	// context.Canceled here makes Peer.run retire the logical Session instead
-	// of entering the carrier-rebind path.
-	if s.recoverable && !errors.Is(err, ErrCarrierUnavailable) {
-		return fmt.Errorf("%w: %v", ErrCarrierUnavailable, err)
-	}
-	return err
+	return errors.New("outbound sender stopped")
 }
 
 func (s *outboundSender) signal() {
