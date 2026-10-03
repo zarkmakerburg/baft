@@ -228,8 +228,11 @@ F_BIN=0; F_PAIR=0; F_AGENT_BIN=0; F_RELSTATE=0; F_UNIT=0; F_UNIT_MANAGED=0; F_CF
 F_KEY=0; F_KEY_OK=0; F_PKI=0; F_PENDING=0; F_USER=0; F_ACTIVE=0; F_ENABLED=0; F_DIRS=0
 F_AGENT_UNIT=0; F_AGENT_ACTIVE=0; F_AGENT_ENABLED=0; F_TOKEN=0; F_JOBKEY=0
 
+INSPECTED=0; CFG_INVALID_WHY=""
 inspect_install() {
-  [[ -x "$BAFT_BIN" ]] && F_BIN=1
+  INSPECTED=1
+  # A binary that does not run counts as missing: it cannot vouch for the config.
+  if [[ -x "$BAFT_BIN" ]] && "$BAFT_BIN" version >/dev/null 2>&1; then F_BIN=1; fi
   [[ -x "$BAFT_PAIR_BIN" ]] && F_PAIR=1
   [[ -x "$BAFT_AGENT_BIN" ]] && F_AGENT_BIN=1
   if [[ -f "$BAFT_RELEASE_STATE" ]]; then
@@ -258,6 +261,7 @@ inspect_install() {
 }
 
 classify_state() {
+  if [[ -n "$CFG_INVALID_WHY" ]]; then STATE="BROKEN_INSTALL"; STATE_WHY="$CFG_INVALID_WHY"; return; fi
   if [[ "$AGENT_ONLY" == "1" ]]; then
     # The binaries are shared by every instance on a host, so only this
     # instance's own files decide whether it is fresh.
@@ -346,10 +350,17 @@ build_role_plan() {
     else plan_add "outer PKI" create "generate the CA and server certificate for ${PUBLIC_ADDR:-this host}"; DO_PKI=1; fi
   fi
   # Config and pairing.
-  if [[ "$F_CFG_VALID" == 1 && "$RE_PAIR" == 0 ]]; then
-    plan_add "config" keep "valid; it is not overwritten"
+  # An existing config is never overwritten or re-paired on its own. Without a
+  # usable installed binary it is validated with the verified release binary
+  # once that is staged (a config that then fails refuses the install).
+  local cfg_kept=0
+  if [[ "$F_CFG_VALID" == 1 ]]; then cfg_kept=1
+  elif [[ "$F_CFG" == 1 && "$STAGED" == 0 ]]; then cfg_kept=1; fi
+  if [[ "$cfg_kept" == 1 && "$RE_PAIR" == 0 ]]; then
+    if [[ "$F_CFG_VALID" == 1 ]]; then plan_add "config" keep "valid; it is not overwritten"
+    else plan_add "config" keep "exists; validated with the verified release binary once it is downloaded, never overwritten"; fi
     plan_add "pairing" skip "already paired; --re-pair starts a new pairing"
-  elif [[ "$F_CFG_VALID" == 1 && "$RE_PAIR" == 1 ]]; then
+  elif [[ "$cfg_kept" == 1 && "$RE_PAIR" == 1 ]]; then
     plan_add "config" replace "new pairing requested (--re-pair); the current config is backed up first"
     plan_add "pairing" create "issue a new one-time pairing code; the tunnel is interrupted until pairing completes"
     DO_PAIRING=1
@@ -892,7 +903,7 @@ plan_base() {
 }
 
 plan_everything() {
-  inspect_install
+  [[ "$INSPECTED" == 1 ]] || inspect_install
   classify_state
   [[ "$AGENT_ONLY" == "1" ]] && prepare_agent_inputs
   plan_base
@@ -1093,6 +1104,26 @@ else
   build_from_source
 fi
 STAGED=1
+
+# An existing config that the installed binary could not validate (the binary
+# is missing or does not run) is validated with the verified staged binary.
+# It is kept if it validates; if not the install is refused. It is never paired
+# over.
+if [[ "$AGENT_ONLY" != "1" && "$STEALTH_PRO" != "1" && "$F_CFG" == 1 && "$F_CFG_VALID" == 0 ]]; then
+  if "$STAGE_BIN" config validate --file "$CONFIG" >/dev/null 2>&1; then
+    F_CFG_VALID=1
+    log "the existing config validates with the verified release; it is kept"
+  else
+    CFG_INVALID_WHY="$CONFIG exists but does not validate with the verified release binary"
+  fi
+fi
+if [[ -n "$CFG_INVALID_WHY" ]]; then
+  plan_everything
+  show_plan
+  log "refusing to touch a broken install: $STATE_WHY"
+  log "nothing was changed; repair it by hand (see docs/en/33-rerunnable-installer.md) or restore from a backup"
+  exit 3
+fi
 
 # Stealth Pro is an explicit config change on an installed host: the binaries
 # are replaced, the config is backed up and swapped, nothing else is touched.

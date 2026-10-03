@@ -148,6 +148,20 @@ func TestPlanStateMatrix(t *testing.T) {
 			r.mark("active.baft.service")
 		}, []string{"--role", "ex"}, "REPAIR_REQUIRED",
 			map[string]string{"service enable": "update", "service": "keep"}},
+		{"valid config but the binary is missing", func(r *planRig) {
+			r.installed(true)
+			os.Remove(filepath.Join(r.dir, "bin/baft"))
+			r.mark("active.baft.service")
+			r.mark("enabled.baft.service")
+		}, []string{"--role", "ex"}, "PARTIAL_INSTALL",
+			map[string]string{"baft binary": "create", "config": "keep", "pairing": "skip", "noise key": "keep", "outer PKI": "keep", "systemd unit": "keep"}},
+		{"valid config but the binary does not run", func(r *planRig) {
+			r.installed(true)
+			r.write("bin/baft", "#!/bin/sh\nexit 1\n", 0o755)
+			r.mark("active.baft.service")
+			r.mark("enabled.baft.service")
+		}, []string{"--role", "ex"}, "PARTIAL_INSTALL",
+			map[string]string{"config": "keep", "pairing": "skip"}},
 		{"invalid config", func(r *planRig) { r.installed(false) }, []string{"--role", "ex"}, "BROKEN_INSTALL",
 			map[string]string{"install": "refuse"}},
 		{"config without key", func(r *planRig) {

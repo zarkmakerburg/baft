@@ -13,6 +13,14 @@ ROOT="$PWD"
 W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
 log() { printf '[faults] %s\n' "$*"; }
+# Diagnostics for CI (job logs are not always retrievable; annotations are).
+on_err() { local rc=$? line=$1 cmd=$2
+  { echo "line $line (rc $rc): $cmd"; for f in "$W"/e "$W"/o "$W"/ex.err "$W"/ir.err; do [[ -f "$f" ]] && { echo "== $f"; tail -n 12 "$f"; }; done; } >&2
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    printf '::error title=installer-faults::line %s (rc %s): %s\n' "$line" "$rc" "${cmd//%/%25}"
+  fi
+}
+trap 'on_err "$LINENO" "$BASH_COMMAND"' ERR
 fail() { printf '[faults] FAIL: %s\n' "$*" >&2; exit 1; }
 
 mkdir -p "$W/stubs" "$W/sysd" "$W/state"
@@ -67,9 +75,9 @@ run() { # PATH-prefix env... -- args
   env PATH="$p" "${common[@]}" "$@" <"${RUN_STDIN:-/dev/null}"
 }
 snapshot() { # everything an install could touch, minus stub bookkeeping
-  { find "$W/bin" "$W/sysd" "$W"/etc-* "$W"/var-* "$W"/opt-* "$W/ag" "$W/ags" "$W/src" -xdev 2>/dev/null | sort |
+  { { find "$W/bin" "$W/sysd" "$W"/etc-* "$W"/var-* "$W"/opt-* "$W/ag" "$W/ags" "$W/src" -xdev 2>/dev/null || true; } | sort |
       while read -r f; do [[ -f "$f" ]] && sha256sum "$f" && stat -c '%n %U:%G %a' "$f" || echo "$f"; done
-    ls "$W/state" | sort; ls /usr/local/go 2>/dev/null | head -1; } | sha256sum
+    ls "$W/state" | sort; { ls /usr/local/go 2>/dev/null || true; } | head -1; } | sha256sum
 }
 active() { [[ -f "$W/state/active.$1.service" ]]; }
 enabled() { [[ -f "$W/state/enabled.$1.service" ]]; }
@@ -125,6 +133,38 @@ rc=0; run nocurl $(rel "$W/rel1") $(role_env ex) BAFT_NONINTERACTIVE=1 bash inst
 [[ "$(snapshot)" == "$S1" ]] || fail "a refused broken install changed the host"
 cp "$W/baft.yaml.good" "$W/etc-ex/baft.yaml"; chown root:root "$W/etc-ex/baft.yaml"; chmod 0640 "$W/etc-ex/baft.yaml"
 touch "$W/state/active.baft-ex.service"
+
+log "1e. valid config + Noise key + PKI + unit, but the installed baft binary is MISSING: binary only, config and pairing untouched"
+cfgsum() { sha256sum "$W/etc-ex/baft.yaml" "$W/etc-ex/noise-key.json" "$W"/etc-ex/pki/* "$W/sysd/baft-ex.service"; stat -c '%n %U:%G %a' "$W/etc-ex/baft.yaml"; }
+K0="$(cfgsum)"
+rm -f "$W/bin/baft"
+rc=0; EXI --plan --json >"$W/plan.json" 2>/dev/null || rc=$?
+python3 - "$W/plan.json" <<'PY' || fail "plan for a missing binary re-pairs or overwrites the config"
+import json, sys
+p = {s["item"]: s["action"] for s in json.load(open(sys.argv[1]))["steps"]}
+assert p["config"] == "keep" and p["pairing"] == "skip" and p["baft binary"] == "create", p
+PY
+rc=0; EXI >"$W/o" 2>"$W/e" || rc=$?
+[[ "$rc" == 4 ]] || { cat "$W/e"; fail "repair without --yes exited $rc"; }
+EXI --yes >"$W/o" 2>"$W/e" || { cat "$W/e"; fail "repair of a missing binary failed"; }
+grep -q '^BAFTPAIR1:' "$W/o" && fail "a repair printed a pairing code"
+grep -q 'config .*keep' "$W/e" && grep -q 'pairing .*skip' "$W/e" || { cat "$W/e"; fail "final plan does not keep the config and skip pairing"; }
+[[ "$(cfgsum)" == "$K0" ]] || fail "config, key, PKI or unit changed while repairing a missing binary"
+[[ -x "$W/bin/baft" ]] || fail "binary not restored"
+active baft-ex && enabled baft-ex || fail "service not running after the repair"
+
+log "1f. INVALID config + missing binary: refused, config unchanged, binary still missing"
+printf 'not: [valid\n' >"$W/etc-ex/baft.yaml"
+chown root:root "$W/etc-ex/baft.yaml"; chmod 0640 "$W/etc-ex/baft.yaml"
+rm -f "$W/bin/baft"
+K1="$(cfgsum)"; S1="$(snapshot)"
+rc=0; EXI --yes >"$W/o" 2>"$W/e" || rc=$?
+[[ "$rc" == 3 ]] || { cat "$W/e"; fail "invalid config + missing binary exited $rc, want 3"; }
+grep -q '^BAFTPAIR1:' "$W/o" && fail "paired over an invalid config"
+[[ "$(cfgsum)" == "$K1" && ! -e "$W/bin/baft" ]] || fail "a refused install changed config or binary"
+[[ "$(snapshot)" == "$S1" ]] || fail "a refused install changed the host"
+cp "$W/baft.yaml.good" "$W/etc-ex/baft.yaml"; chown root:root "$W/etc-ex/baft.yaml"; chmod 0640 "$W/etc-ex/baft.yaml"
+EXI --yes >"$W/o" 2>"$W/e" || { cat "$W/e"; fail "restoring the binary failed"; }
 
 # ---------------------------------------------------------------------------
 cfg_hash() { sha256sum "$W/etc-ex/baft.yaml" "$W/etc-ex/noise-key.json" "$W"/etc-ex/pki/* "$W/sysd/baft-ex.service" "$W/opt-ex/release-state.json" "$W/bin/baft"; }
