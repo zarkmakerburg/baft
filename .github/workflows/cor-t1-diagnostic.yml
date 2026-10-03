@@ -1,0 +1,86 @@
+name: cor-t1-diagnostic
+
+on:
+  push:
+    branches:
+      - diag/cor-t1-stall-evidence
+      - diag/cor-t1-ab
+    paths:
+      - 'tests/correctness/**'
+      - 'internal/session/**'
+      - '.github/workflows/cor-t1-diagnostic.yml'
+  workflow_dispatch:
+    inputs:
+      target_buf_kib:
+        description: 'Target echo buffer size in KiB (BAFT mode)'
+        required: true
+        default: '128'
+        type: string
+      mode:
+        description: 'COR-T1 mode'
+        required: true
+        default: baft
+        type: choice
+        options:
+          - baft
+          - direct
+
+
+permissions:
+  contents: read
+
+jobs:
+  stall-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: COR-T1 1 GiB A/B evidence
+        env:
+          BAFT_COR01_1GIB: "1"
+          BAFT_COR01_TARGET_BUF_KIB: ${{ inputs.target_buf_kib || '128' }}
+          COR_T1_MODE: ${{ inputs.mode || 'baft' }}
+        run: |
+          case "$COR_T1_MODE" in
+            baft)
+              TEST_RE='^TestCOR01OneGiBBidirectional$'
+              ;;
+            direct)
+              TEST_RE='^TestCOR01DirectTCPControl$'
+              if [ "$BAFT_COR01_TARGET_BUF_KIB" != "128" ]; then
+                echo "direct control is fixed at 128 KiB; got target_buf_kib=$BAFT_COR01_TARGET_BUF_KIB"
+                exit 2
+              fi
+              ;;
+            *)
+              echo "unknown mode: $COR_T1_MODE"
+              exit 2
+              ;;
+          esac
+          echo "COR-T1 mode=$COR_T1_MODE target_buf_kib=$BAFT_COR01_TARGET_BUF_KIB"
+          set -o pipefail
+          go test ./tests/correctness -run "$TEST_RE" -count=1 -timeout 20m -v 2>&1 | tee /tmp/cor-t1.log
+      - name: Publish stall evidence as annotations
+        if: failure()
+        run: |
+          # Job logs are not readable everywhere; annotations are available through
+          # the check-runs API. Publish the stall line, kernel socket state and drop
+          # counters (no goroutine dump) in at most 10 chunks.
+          awk '/COR-T1 STALL/{print; next} /COR-T1 SOCKETS/{on=1} /COR-T1 GOROUTINES/{on=0} on' /tmp/cor-t1.log | cut -c1-600 > /tmp/evidence.txt || true
+          python3 - <<'PY'
+          data=open('/tmp/evidence.txt').read()
+          n=6000
+          chunks=[data[i:i+n] for i in range(0,len(data),n)][:10]
+          for i,c in enumerate(chunks):
+              c=c.replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+              print(f"::notice title=cor-t1-evidence-{i+1}-of-{len(chunks)}::{c}")
+          PY
