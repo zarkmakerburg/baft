@@ -4,8 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func tunnelsTree(r *rig) {
@@ -220,4 +222,64 @@ func TestNestedSymlinks(t *testing.T) {
 		}
 	}
 	_ = filepath.Join
+}
+
+// Many nested files: each step is one appended line, so a large tree is
+// linear, and a crash in the middle is still resumed from the log.
+func TestLargeTreeCrashResume(t *testing.T) {
+	r := newRig(t)
+	r.installerEX(false)
+	for i := 0; i < 3000; i++ {
+		rel := filepath.Join(".tool", "lib", strconv.Itoa(i/100), "f"+strconv.Itoa(i))
+		r.write("skel/"+rel, strconv.Itoa(i), 0o644)
+		r.write("var/"+rel, strconv.Itoa(i), 0o644)
+	}
+	os.Symlink("lib/0/f1", r.p("var/.tool/link"))
+	os.Symlink("lib/0/f1", r.p("skel/.tool/link"))
+	p := r.plan(yes(Options{}))
+	start := time.Now()
+	withCrash(t, "before-commit", func() { r.env.Apply(ctx, p) })
+	pj, err := r.env.Pending()
+	if err != nil || pj == nil {
+		t.Fatalf("pending: %v", err)
+	}
+	moved := 0
+	for _, f := range pj.Files {
+		if f.State == "moved" {
+			moved++
+		}
+	}
+	if moved < 3000 {
+		t.Fatalf("journal replay shows %d moved", moved)
+	}
+	res, err := r.env.Resume(ctx)
+	if err != nil || res.Status != stCommitted {
+		t.Fatalf("resume: %v %+v", err, res)
+	}
+	if d := time.Since(start); d > 60*time.Second {
+		t.Fatalf("too slow: %v", d)
+	}
+	if exists(r.p("var/.tool/lib/0/f2")) {
+		t.Fatal("skeleton copies left")
+	}
+	if fi, err := os.Lstat(r.p("var/.tool/link")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("a symlink inside the tree was removed")
+	}
+}
+
+func TestProgressLogTornLine(t *testing.T) {
+	r := newRig(t)
+	r.installerEX(false)
+	p := r.plan(yes(Options{}))
+	withCrash(t, "after-first-move", func() { r.env.Apply(ctx, p) })
+	pj, _ := r.env.Pending()
+	f, _ := os.OpenFile(filepath.Join(pj.Dir(), "progress.log"), os.O_APPEND|os.O_WRONLY, 0o600)
+	f.WriteString("F 1 mov") // a crash mid-write
+	f.Close()
+	if _, err := r.env.Restore(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(r.p("units/baft.service")) {
+		t.Fatal("not restored")
+	}
 }

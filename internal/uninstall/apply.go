@@ -331,8 +331,7 @@ func (e *Env) stopService(ctx context.Context, j *Journal, i int) error {
 		if _, err := e.System.Systemctl(ctx, "stop", s.Unit); err != nil {
 			return fmt.Errorf("systemctl stop %s: %w", s.Unit, err)
 		}
-		s.Stopped = true
-		if err := j.save(e.now()); err != nil {
+		if err := j.markService(i, "stopped"); err != nil {
 			return err
 		}
 		e.logf("stopped %s", s.Unit)
@@ -343,8 +342,7 @@ func (e *Env) stopService(ctx context.Context, j *Journal, i int) error {
 				return fmt.Errorf("systemctl disable %s: %w", s.Unit, err)
 			}
 		}
-		s.Disabled = true
-		if err := j.save(e.now()); err != nil {
+		if err := j.markService(i, "disabled"); err != nil {
 			return err
 		}
 	}
@@ -363,8 +361,7 @@ func (e *Env) moveOut(j *Journal, i int) error {
 		srcThere, dstThere := exists(f.Path), exists(dst)
 		switch {
 		case !srcThere && dstThere:
-			f.State = "moved"
-			return j.save(e.now())
+			return j.markFile(i, "moved")
 		case srcThere && dstThere:
 			// An interrupted cross-device copy: the original is intact.
 			if err := os.RemoveAll(dst); err != nil {
@@ -372,8 +369,7 @@ func (e *Env) moveOut(j *Journal, i int) error {
 			}
 		case !srcThere && !dstThere:
 			if f.Class == ClassRuntime {
-				f.State = "moved" // a socket removed across filesystems
-				return j.save(e.now())
+				return j.markFile(i, "moved") // a socket removed across filesystems
 			}
 			return fmt.Errorf("%s is gone and not in the quarantine", f.Path)
 		}
@@ -392,15 +388,13 @@ func (e *Env) moveOut(j *Journal, i int) error {
 			return fmt.Errorf("%s changed since the plan was made; nothing of it was removed", f.Path)
 		}
 	}
-	f.State = "moving"
-	if err := j.save(e.now()); err != nil {
+	if err := j.markFile(i, "moving"); err != nil {
 		return err
 	}
 	if err := moveAside(f.Path, dst, f.Dir); err != nil {
-		return fmt.Errorf("move %s aside: %w", f.Path, err)
+		return fmt.Errorf("move %s aside: %v", f.Path, err)
 	}
-	f.State = "moved"
-	if err := j.save(e.now()); err != nil {
+	if err := j.markFile(i, "moved"); err != nil {
 		return err
 	}
 	e.logf("removed %s", f.Path)
@@ -490,8 +484,7 @@ func (e *Env) restore(ctx context.Context, j *Journal) error {
 		case srcThere && dstThere:
 			_ = os.RemoveAll(dst) // an unfinished copy; the original stayed
 		}
-		f.State = "restored"
-		_ = j.save(e.now())
+		_ = j.markFile(i, "restored")
 	}
 	if e.System != nil {
 		_, _ = e.System.Systemctl(ctx, "daemon-reload")
@@ -507,7 +500,7 @@ func (e *Env) restore(ctx context.Context, j *Journal) error {
 					errs = append(errs, "start "+s.Unit+": "+err.Error())
 				}
 			}
-			s.Stopped, s.Disabled = false, false
+			_ = j.markService(i, "reset")
 		}
 	}
 	if len(errs) > 0 {

@@ -33,7 +33,8 @@ type Journal struct {
 	BackupSkipped bool   `json:"bcc_backup_skipped,omitempty"`
 	Error         string `json:"error,omitempty"`
 
-	dir string // the run directory
+	dir      string   // the run directory
+	progress *os.File // progress.log, appended as each step happens
 }
 
 type JService struct {
@@ -109,8 +110,49 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
+// Per-step progress is appended to progress.log (one short fsynced line per
+// change: "F <file> <state>" or "S <service> stopped|disabled|reset"), so a
+// run touching many files costs O(n), not a rewrite of the whole journal per
+// file. journal.json is rewritten only when the run's status changes; on
+// reading, the log is replayed over it (replaying is idempotent).
+func (j *Journal) appendProgress(line string) error {
+	if j.progress == nil {
+		f, err := os.OpenFile(filepath.Join(j.dir, "progress.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		j.progress = f
+	}
+	if _, err := j.progress.WriteString(line + "\n"); err != nil {
+		return err
+	}
+	return j.progress.Sync()
+}
+
+func (j *Journal) markFile(i int, state string) error {
+	j.Files[i].State = state
+	return j.appendProgress(fmt.Sprintf("F %d %s", i, state))
+}
+
+func (j *Journal) markService(i int, what string) error {
+	s := &j.Services[i]
+	switch what {
+	case "stopped":
+		s.Stopped = true
+	case "disabled":
+		s.Disabled = true
+	case "reset":
+		s.Stopped, s.Disabled = false, false
+	}
+	return j.appendProgress(fmt.Sprintf("S %d %s", i, what))
+}
+
+const maxJournalBytes = 1 << 30
+
+var validFileState = map[string]bool{"pending": true, "moving": true, "moved": true, "restored": true}
+
 func readJournal(dir string) (*Journal, error) {
-	b, problem := readRegular(filepath.Join(dir, "journal.json"), 16<<20)
+	b, problem := readRegular(filepath.Join(dir, "journal.json"), maxJournalBytes)
 	if problem != "" {
 		return nil, errors.New("journal " + problem)
 	}
@@ -119,6 +161,38 @@ func readJournal(dir string) (*Journal, error) {
 		return nil, fmt.Errorf("journal: %w", err)
 	}
 	j.dir = dir
+	if pb, problem := readRegular(filepath.Join(dir, "progress.log"), maxJournalBytes); problem == "" {
+		lines := strings.Split(string(pb), "\n")
+		for n, line := range lines {
+			if line == "" {
+				continue
+			}
+			f := strings.Fields(line)
+			idx := -1
+			if len(f) == 3 {
+				fmt.Sscanf(f[1], "%d", &idx)
+			}
+			switch {
+			case len(f) == 3 && f[0] == "F" && idx >= 0 && idx < len(j.Files) && validFileState[f[2]]:
+				j.Files[idx].State = f[2]
+			case len(f) == 3 && f[0] == "S" && idx >= 0 && idx < len(j.Services) && (f[2] == "stopped" || f[2] == "disabled" || f[2] == "reset"):
+				switch f[2] {
+				case "stopped":
+					j.Services[idx].Stopped = true
+				case "disabled":
+					j.Services[idx].Disabled = true
+				case "reset":
+					j.Services[idx].Stopped, j.Services[idx].Disabled = false, false
+				}
+			case n == len(lines)-1:
+				// a torn last line from a crash mid-write: ignore it
+			default:
+				return nil, fmt.Errorf("progress.log line %d is not valid", n+1)
+			}
+		}
+	} else if exists(filepath.Join(dir, "progress.log")) {
+		return nil, errors.New("progress.log " + problem)
+	}
 	return &j, nil
 }
 

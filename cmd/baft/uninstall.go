@@ -295,8 +295,12 @@ func printUninstallResult(w io.Writer, r *uninstall.Result) {
 		fmt.Fprintf(w, "  stopped:  %s\n", strings.Join(r.Stopped, ", "))
 	}
 	fmt.Fprintf(w, "  removed:  %d item(s)\n", len(r.Removed))
-	if len(r.RemovedDirs) > 0 {
-		fmt.Fprintf(w, "  removed empty directories: %s\n", strings.Join(r.RemovedDirs, ", "))
+	if n := len(r.RemovedDirs); n > 0 {
+		shown := r.RemovedDirs
+		if n > 5 {
+			shown = append(append([]string{}, shown[:5]...), fmt.Sprintf("... %d more (see the journal)", n-5))
+		}
+		fmt.Fprintf(w, "  removed empty directories: %s\n", strings.Join(shown, ", "))
 	}
 	if r.Backup != nil && r.Backup.Dir != "" {
 		fmt.Fprintf(w, "  BCC emergency backup: %s (verified: %s%s)\n", r.Backup.Dir, r.Backup.VerifiedBy, summarySuffix(r.Backup.Summary))

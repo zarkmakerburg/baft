@@ -24,31 +24,32 @@ fail() {
   printf '[uninstall-e2e] FAIL: %s\n' "$*" >&2
   printf '%s\n' "$*" >>"$WORK/zz-fail.log"
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    local m="$*"; m="${m//%/%25}"; printf '::error title=uninstall e2e FAIL::%s\n' "${m//$'\n'/%0A}"
+    local m="$*"; m="${m:0:3500}"; m="${m//%/%25}"; printf '::error title=uninstall e2e FAIL::%s\n' "${m//$'\n'/%0A}"
   fi
   exit 1
 }
 cleanup() {
   local rc=$?
-  if [[ -f "$WORK/prov.log" ]]; then
-    echo "== provenance of service-home entries"; cat "$WORK/prov.log"
-    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-      m="$(cat "$WORK/prov.log")"; m="${m//%/%25}"; printf '::notice title=uninstall e2e provenance (.ghcup and skeleton copies)::%s\n' "${m//$'\n'/%0A}"
-    fi
-  fi
   if [[ $rc -ne 0 ]]; then
     {
       for f in "$WORK"/*.out "$WORK"/*.err "$WORK"/*.log; do [[ -f "$f" ]] && { echo "== $f"; tail -n 40 "$f"; }; done
       for s in baft-ex baft-ir baft-agent baft-bcc baft-hand; do echo "== journal $s"; journalctl -u "$s" -n 20 --no-pager 2>/dev/null || true; done
+      echo "== uninstall journals"; for r in /var/lib/baft-uninstall/run-*; do [[ -f "$r/journal.json" ]] && python3 -c 'import json,sys;j=json.load(open(sys.argv[1]+"/journal.json"));print(sys.argv[1], j["status"], len(j["files"]), "files", j.get("error",""))' "$r" 2>&1; done
       echo "== BAFT paths left"; find /etc/baft* /var/lib/baft* /opt/baft* /usr/local/bin/baft* -maxdepth 2 2>/dev/null | grep -v '^/var/lib/baft-uninstall/' | head -60 || true
     } >"$WORK/diag" 2>&1
     cat "$WORK/diag"
     if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
       awk '/^== /{if (msg != "") print msg; msg=$0; next} {msg = msg "\\n" $0} END{if (msg != "") print msg}' "$WORK/diag" |
         tail -n 8 | while IFS= read -r section; do
-          section="${section//%/%25}"
+          section="${section:0:3500}"; section="${section//%/%25}"
           printf '::error title=uninstall e2e diagnostics::%s\n' "${section//\\n/%0A}"
         done
+    fi
+  fi
+  if [[ -f "$WORK/prov.log" ]]; then
+    echo "== provenance of service-home entries"; cat "$WORK/prov.log"
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      m="$(tail -c 3500 "$WORK/prov.log")"; m="${m//%/%25}"; printf '::notice title=uninstall e2e provenance (.ghcup and skeleton copies)::%s\n' "${m//$'\n'/%0A}"
     fi
   fi
   for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
@@ -89,7 +90,7 @@ prov() {
           s="/etc/skel/$(basename "$e")"
           if [[ -e "$s" || -L "$s" ]]; then
             echo "    skeleton original: $(stat -c 'uid=%u gid=%g mode=%a type=%F' "$s"); differences (no dereference):"
-            diff -rq --no-dereference "$s" "$e" 2>&1 | head -5 | sed 's/^/      /'
+            timeout 60 diff -rq --no-dereference "$s" "$e" 2>&1 | head -5 | sed 's/^/      /'
             echo "    symlinks inside: $(find "$e" -type l 2>/dev/null | wc -l), files: $(find "$e" -type f 2>/dev/null | wc -l)"
           else
             echo "    no skeleton original"
@@ -251,8 +252,20 @@ prov "crash and restore"
 log "interrupted uninstall (killed before the commit) -> --resume: the normal uninstall"
 rc=0; BAFT_UNINSTALL_CRASH_AT=before-commit UN --yes --stop-active-tunnels >"$WORK/crash2.out" 2>&1 || rc=$?
 [[ "$rc" == 86 ]] || { cat "$WORK/crash2.out"; fail "crash hook exited $rc"; }
-UN --resume >"$WORK/resume.out" 2>&1 || { cat "$WORK/resume.out"; fail "resume failed"; }
-grep -q "Uninstall finished and verified" "$WORK/resume.out"
+# The crashed run's journal stays in "applying"; --resume takes that very run
+# to "committed".
+latest_run() { ls -1d /var/lib/baft-uninstall/run-* | sort | tail -n 1; }
+run_status() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]+"/journal.json"))["status"])' "$1"; }
+CRASHED="$(latest_run)"
+[[ "$(run_status "$CRASHED")" == applying ]] || fail "after the crash the journal of $CRASHED is $(run_status "$CRASHED"), want applying"
+rc=0; UN --resume >"$WORK/resume.out" 2>&1 || rc=$?
+[[ "$rc" == 0 ]] || fail "resume exited $rc:
+$(tail -n 30 "$WORK/resume.out")"
+grep -q "Uninstall finished and verified" "$WORK/resume.out" || fail "resume did not finish the run:
+$(tail -n 30 "$WORK/resume.out")"
+grep -q "journal:  $CRASHED" "$WORK/resume.out" || fail "resume finished another run than $CRASHED:
+$(tail -n 30 "$WORK/resume.out")"
+[[ "$(run_status "$CRASHED")" == committed ]] || fail "after resume the journal of $CRASHED is $(run_status "$CRASHED"), want committed"
 for u in baft-ex baft-ir baft-agent; do
   [[ ! -e /etc/systemd/system/$u.service ]] || fail "$u.service left"
   systemctl is-active --quiet "$u" && fail "$u still running"
