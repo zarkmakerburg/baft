@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -171,6 +172,13 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	}
 	var exMu sync.Mutex
 	var exPeer *session.Peer
+	targetBufBytes:=128*1024
+	if raw:=os.Getenv("BAFT_COR01_TARGET_BUF_KIB");raw!=""{
+		kib,err:=strconv.Atoi(raw)
+		if err!=nil||kib<=0||kib>1024{t.Fatalf("invalid BAFT_COR01_TARGET_BUF_KIB=%q",raw)}
+		targetBufBytes=kib*1024
+	}
+	t.Logf("COR-T1 target_echo_buffer_bytes=%d",targetBufBytes)
 
 	targetLn,err:=net.Listen("tcp","127.0.0.1:0")
 	if err!=nil { t.Fatal(err) }
@@ -180,7 +188,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 		c,err:=targetLn.Accept()
 		if err!=nil { targetDone<-err; return }
 		defer c.Close()
-		buf:=make([]byte,128*1024)
+		buf:=make([]byte,targetBufBytes)
 		for {
 			n,rerr:=c.Read(buf)
 			if n>0 {
