@@ -135,6 +135,25 @@
       "repetitions": 1,
       "timeout_seconds": 1200,
       "informational": true
+    },
+    {
+      "id": "B08",
+      "name": "Direct TCP loopback throughput control",
+      "kind": "control-performance",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureDirectTCPThroughput$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
     }
   ]
 }
