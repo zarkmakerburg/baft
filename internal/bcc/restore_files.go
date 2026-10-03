@@ -90,9 +90,9 @@ func RestoreFiles(statePath, backupPath string, key []byte, now time.Time) error
 		audit:        audit,
 		activeAlerts: store.ActiveAlertsSnapshot(),
 		alertConfig: AlertConfig{
-			TelemetryStaleAfter:              3 * time.Minute,
+			TelemetryStaleAfter:           3 * time.Minute,
 			HandshakeErrorRateMilliPerMin: 5000,
-			Interval:                         15 * time.Second,
+			Interval:                      15 * time.Second,
 		},
 		now: func() time.Time { return now },
 	}
