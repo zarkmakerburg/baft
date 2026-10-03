@@ -67,4 +67,20 @@ jobs:
               ;;
           esac
           echo "COR-T1 mode=$COR_T1_MODE target_buf_kib=$BAFT_COR01_TARGET_BUF_KIB"
-          go test ./tests/correctness -run "$TEST_RE" -count=1 -timeout 20m -v
+          set -o pipefail
+          go test ./tests/correctness -run "$TEST_RE" -count=1 -timeout 20m -v 2>&1 | tee /tmp/cor-t1.log
+      - name: Publish stall evidence as annotations
+        if: failure()
+        run: |
+          # Job logs are not readable everywhere; annotations are available through
+          # the check-runs API. Publish the stall line, kernel socket state and drop
+          # counters (no goroutine dump) in at most 10 chunks.
+          awk '/COR-T1 STALL/{print; next} /COR-T1 SOCKETS/{on=1} /COR-T1 GOROUTINES/{on=0} on' /tmp/cor-t1.log | cut -c1-600 > /tmp/evidence.txt || true
+          python3 - <<'PY'
+          data=open('/tmp/evidence.txt').read()
+          n=6000
+          chunks=[data[i:i+n] for i in range(0,len(data),n)][:10]
+          for i,c in enumerate(chunks):
+              c=c.replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+              print(f"::notice title=cor-t1-evidence-{i+1}-of-{len(chunks)}::{c}")
+          PY
