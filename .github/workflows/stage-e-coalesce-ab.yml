@@ -2,11 +2,6 @@ name: stage-e-coalesce-ab
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - bench/stage-e
-    paths:
-      - '.github/workflows/stage-e-coalesce-ab.yml'
 
 permissions:
   contents: read
