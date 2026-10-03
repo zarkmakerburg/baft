@@ -52,5 +52,6 @@
 28. [28 — سیستم بصری BCC](28-bcc-visual-system.md)
 29. [29 — پشتیبان BCC و پیش‌نمایش restore](29-bcc-backup-restore-preview.md)
 30. [30 — سلامت چندلایهٔ BCC با hysteresis](30-bcc-layered-health.md)
+31. [31 — کشف تونل‌های موجود (فقط گزارش)](31-tunnel-discovery.md)
 
 </div>

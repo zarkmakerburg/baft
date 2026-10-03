@@ -49,3 +49,4 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 28. [28 — BCC visual system](28-bcc-visual-system.md)
 29. [29 — BCC backups and restore preview](29-bcc-backup-restore-preview.md)
 30. [30 — BCC layered health with hysteresis](30-bcc-layered-health.md)
+31. [31 — Discovery of existing tunnels (report only)](31-tunnel-discovery.md)

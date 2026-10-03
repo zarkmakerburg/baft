@@ -165,6 +165,29 @@ cat "$WORK/ex.yaml.keep" > /etc/baft-ex/baft.yaml
 cat "$WORK/ex.marker.keep" > /etc/baft-ex/baft.managed.json
 [[ "$(drift_check "$T1")" == "IN_SYNC" ]] || fail "the restored config is not IN_SYNC"
 
+log "discovery (report only): both nodes MANAGED, nothing on the hosts changes"
+dc_sum() { sha256sum /etc/baft-ex/baft.yaml /etc/baft-ir/baft.yaml /etc/baft-ex/baft.managed.json /etc/baft-ir/baft.managed.json \
+  /etc/systemd/system/baft-ex.service /etc/systemd/system/baft-ir.service | sha256sum; }
+DC_BEFORE="$(dc_sum)"
+api -X POST "$BCC/api/discovery?all=1" >/dev/null
+for _ in $(seq 1 60); do
+  if api "$BCC/api/discovery" | python3 -c 'import json,sys;d=json.load(sys.stdin)["nodes"];sys.exit(0 if d and all(not n.get("pending") and n.get("at") for n in d) else 1)'; then break; fi
+  sleep 2
+done
+api "$BCC/api/discovery" | python3 -c '
+import json, sys
+nodes = {n["node_id"]: n for n in json.load(sys.stdin)["nodes"]}
+for nid in ("ex-e2e", "ir-e2e"):
+    n = nodes[nid]
+    assert not n.get("problem"), (nid, n)
+    prim = [v for v in n["instances"] if v["primary"]]
+    assert len(prim) == 1 and prim[0]["state"] == "MANAGED", (nid, n["instances"])
+    assert not any(v["state"] == "MISSING" for v in n["instances"]), (nid, n["instances"])
+' || fail "discovery did not report both nodes as MANAGED"
+[[ "$(dc_sum)" == "$DC_BEFORE" ]] || fail "discovery changed a config, marker or unit on the host"
+systemctl is-active baft-ex baft-ir >/dev/null || fail "discovery disturbed the tunnel services"
+traffic || fail "discovery disturbed the traffic"
+
 EX_CFG_SUM="$(sha256sum /etc/baft-ex/baft.yaml | cut -d' ' -f1)"
 IR_CFG_SUM="$(sha256sum /etc/baft-ir/baft.yaml | cut -d' ' -f1)"
 EX_MARK_SUM="$(sha256sum /etc/baft-ex/baft.managed.json | cut -d' ' -f1)"
