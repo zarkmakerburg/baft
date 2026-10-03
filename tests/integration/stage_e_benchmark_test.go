@@ -231,14 +231,15 @@ func TestStageEMeasureMultiFlowThroughput(t *testing.T) {
 				clientErr <- err
 				return
 			}
-			ready <- nil
-			<-startBulk
-
+			// Prepare payload and expected hash before the timed region so B06
+			// measures transport work rather than fixture allocation/generation.
 			payload := make([]byte, bytesPerFlow)
 			for j := range payload {
 				payload[j] = byte((j*17 + i*29) % 251)
 			}
 			want := sha256.Sum256(payload)
+			ready <- nil
+			<-startBulk
 			writeDone := make(chan error, 1)
 			go func() {
 				_, err := io.Copy(c, bytes.NewReader(payload))
@@ -426,8 +427,9 @@ func TestStageEMeasureRecovery(t *testing.T) {
 		"scenario":                 "B07",
 		"measurement":              "carrier_cut_recovery",
 		"flows":                    flows,
-		"sessions_survived":        survived,
-		"session_survival_percent": survivalPercent,
+		"flows_survived":           survived,
+		"flow_survival_percent":    survivalPercent,
+		"logical_session_survived": survived == flows,
 		"recovery_ms_p50":          percentileMillis(latencies, 0.50),
 		"recovery_ms_p95":          percentileMillis(latencies, 0.95),
 		"recovery_ms_p99":          percentileMillis(latencies, 0.99),
