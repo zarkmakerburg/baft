@@ -66,10 +66,914 @@ jobs:
       - name: B07 larger flow population
         run: |
           set -euxo pipefail
-          echo "COMMAND: BAFT_STAGE_E_RECOVERY_FLOWS=128 go test ./tests/integration -run '^TestStageEMeasureRecovery$' -count=10 -timeout 20m -v"
-          BAFT_STAGE_E_RECOVERY_FLOWS=128             go test ./tests/integration               -run '^TestStageEMeasureRecovery$'               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-128flows.log"
+          echo "NOTE: BAFT protocol maxFlowsPerShard=64; the prior 128-flow attempt is preserved in run 37147162603 and failed during OPEN admission before Carrier cut."
+          echo "COMMAND: BAFT_STAGE_E_RECOVERY_FLOWS=64 go test ./tests/integration -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             | tee "$RUNNER_TEMP/stage-e-d008/profile/cpu-top.txt"
+          go tool pprof -top -nodecount=50 -sample_index=alloc_space "$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             | tee "$RUNNER_TEMP/stage-e-d008/profile/heap-alloc-top.txt"
+          go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             | tee "$RUNNER_TEMP/stage-e-d008/profile/block-top.txt"
+          go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             | tee "$RUNNER_TEMP/stage-e-d008/profile/mutex-top.txt"
+
+      - name: Netem matrix BAFT versus direct TCP
+        if: always()
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_BYTES_PER_FLOW=524288 BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_BYTES_PER_FLOW=524288 BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
 
       - name: Profile B06 cost centres
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_BYTES_PER_FLOW=524288 BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
+
+      - name: Profile B06 cost centres
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
+
+      - name: Profile B06 cost centres
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_BYTES_PER_FLOW=524288 BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
+
+      - name: Profile B06 cost centres
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_BYTES_PER_FLOW=524288 BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
+
+      - name: Profile B06 cost centres
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
+
+      - name: Profile B06 cost centres
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
+
+      - name: Profile B06 cost centres
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_BYTES_PER_FLOW=524288 BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
+
+      - name: Profile B06 cost centres
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+ -count=10 -timeout 20m -v"
+          BAFT_STAGE_E_RECOVERY_FLOWS=64             go test ./tests/integration               -run '^TestStageEMeasureRecovery
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
+          echo "COMMAND: go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v -cpuprofile=cpu.pprof -memprofile=heap.pprof -blockprofile=block.pprof -mutexprofile=mutex.pprof"
+          go test ./tests/integration             -run '^TestStageEMeasureMultiFlowThroughput$'             -count=1 -timeout 10m -v             -cpuprofile="$RUNNER_TEMP/stage-e-d008/profile/cpu.pprof"             -memprofile="$RUNNER_TEMP/stage-e-d008/profile/heap.pprof"             -blockprofile="$RUNNER_TEMP/stage-e-d008/profile/block.pprof"             -mutexprofile="$RUNNER_TEMP/stage-e-d008/profile/mutex.pprof"             2>&1 | tee "$RUNNER_TEMP/stage-e-d008/profile/test.log"
+          for p in cpu heap block mutex; do
+            go tool pprof -top -nodecount=50 "$RUNNER_TEMP/stage-e-d008/profile/$p.pprof"               | tee "$RUNNER_TEMP/stage-e-d008/profile/$p-top.txt"
+          done
+
+      - name: Netem matrix BAFT versus direct TCP
+        run: |
+          set -euxo pipefail
+          sudo -n tc qdisc show dev lo
+          status=0
+          for rtt in 50 150 300; do
+            for loss in 0 1 3; do
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% BAFT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureMultiFlowThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-baft-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+
+              echo "=== NETEM RTT=${rtt}ms LOSS=${loss}% DIRECT ==="
+              echo "COMMAND: BAFT_STAGE_E_NETEM_RTT_MS=${rtt} BAFT_STAGE_E_NETEM_LOSS_PCT=${loss} go test ./tests/integration -run '^TestStageEMeasureDirectTCPThroughput$' -count=3 -timeout 20m -v"
+              if ! BAFT_STAGE_E_NETEM_RTT_MS="$rtt" BAFT_STAGE_E_NETEM_LOSS_PCT="$loss"                 go test ./tests/integration                   -run '^TestStageEMeasureDirectTCPThroughput$'                   -count=3 -timeout 20m -v                   2>&1 | tee "$RUNNER_TEMP/stage-e-d008/netem-direct-rtt${rtt}-loss${loss}.log"; then
+                status=1
+              fi
+            done
+          done
+          sudo -n tc qdisc del dev lo root || true
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d008-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-d008
+          if-no-files-found: error
+          retention-days: 30
+               -count=10 -timeout 20m -v               2>&1 | tee "$RUNNER_TEMP/stage-e-d008/b07-64flows.log"
+
+      - name: Profile B06 cost centres
+        if: always()
         run: |
           set -euxo pipefail
           mkdir -p "$RUNNER_TEMP/stage-e-d008/profile"
