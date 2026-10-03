@@ -2,11 +2,6 @@ name: stage-e-wan-netem
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - bench/stage-e
-    paths:
-      - '.github/workflows/stage-e-wan-netem.yml'
 
 permissions:
   contents: read
