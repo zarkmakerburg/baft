@@ -490,28 +490,11 @@ func TestFrozenListenerRefusesOpenWithoutEndingSession(t *testing.T) {
 
 func TestSessionWorkerAdmissionRejectsAfterTeardownGate(t *testing.T){
 	p:=&Peer{}
+	if !p.beginRunLifecycle(){t.Fatal("initial Run lifecycle admission unexpectedly rejected")}
 	if !p.admitWorker(){t.Fatal("initial worker admission unexpectedly rejected")}
 
-	closed:=make(chan struct{})
-	go func(){
-		p.closeWorkerAdmission()
-		p.wg.Wait()
-		close(closed)
-	}()
-
-	deadline:=time.Now().Add(time.Second)
-	for {
-		p.workerMu.Lock();closing:=p.workersClosing;p.workerMu.Unlock()
-		if closing{break}
-		if time.Now().After(deadline){t.Fatal("worker admission gate never closed")}
-		time.Sleep(time.Millisecond)
-	}
+	p.beginRunTeardown()
 	if p.admitWorker(){t.Fatal("worker admitted after Session teardown gate closed")}
 	p.wg.Done()
-
-	select{
-	case <-closed:
-	case <-time.After(time.Second):
-		t.Fatal("worker wait did not complete after existing worker exited")
-	}
+	p.wg.Wait()
 }
