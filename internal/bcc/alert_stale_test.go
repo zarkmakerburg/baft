@@ -48,13 +48,24 @@ func TestForcedStaleAlertFiresOnceAndResolvesOnce(t *testing.T){
 	body,_:=json.Marshal(rep)
 	if _,_,err:=store.ApplyTelemetry(token,telemetry.Sign(token,body),body,rep);err!=nil{t.Fatal(err)}
 
-	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
+	// Fresh telemetry: samples are OK, no alert.
+	tick:=func(at time.Time){
+		app.now=func() time.Time{return at}
+		app.evaluateHealthAt(at)
+		if err:=app.evaluateAlertsAt(context.Background(),at);err!=nil{t.Fatal(err)}
+	}
+	for i:=0;i<3;i++{tick(base.Add(time.Duration(i)*10*time.Second))}
 	mu.Lock();if len(got)!=0{t.Fatalf("unexpected alert before threshold: %+v",got)};mu.Unlock()
 
+	// The node goes silent. The first stale sample is only an observation; the
+	// alert opens once the layer is confirmed DEGRADED (two stale samples), and
+	// only once however long the silence lasts.
 	fakeNow:=base.Add(3*time.Minute)
-	app.now=func() time.Time{return fakeNow}
-	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
-	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
+	tick(fakeNow)
+	mu.Lock();if len(got)!=0{t.Fatalf("one stale sample alerted: %+v",got)};mu.Unlock()
+	tick(fakeNow.Add(10*time.Second))
+	tick(fakeNow.Add(20*time.Second))
+	fakeNow=fakeNow.Add(20*time.Second)
 	mu.Lock()
 	if len(got)!=1{t.Fatalf("stale alert count=%d want=1 alerts=%+v",len(got),got)}
 	if got[0].Type!="telemetry_stale"||got[0].Status!="firing"{t.Fatalf("unexpected firing alert=%+v",got[0])}
@@ -65,14 +76,21 @@ func TestForcedStaleAlertFiresOnceAndResolvesOnce(t *testing.T){
 
 	fresh:=rep
 	fresh.Sequence=2
-	fresh.TimestampUnix=fakeNow.Unix()
+	fresh.TimestampUnix=fakeNow.Add(5*time.Second).Unix()
 	fresh.IngressBytes=150
 	fresh.EgressBytes=250
 	freshBody,_:=json.Marshal(fresh)
 	if _,_,err:=store.ApplyTelemetry(token,telemetry.Sign(token,freshBody),freshBody,fresh);err!=nil{t.Fatal(err)}
 
-	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
-	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
+	// Telemetry is back: the layer must prove itself with consecutive OK samples
+	// (DEGRADED -> UP needs three) before the alert resolves, and then once.
+	tick(fakeNow.Add(10*time.Second))
+	mu.Lock()
+	if len(got)!=1{t.Fatalf("resolved after one OK sample: %+v",got)}
+	mu.Unlock()
+	tick(fakeNow.Add(20*time.Second))
+	tick(fakeNow.Add(30*time.Second))
+	tick(fakeNow.Add(40*time.Second))
 	mu.Lock()
 	if len(got)!=2{t.Fatalf("resolved alert count=%d want=2 alerts=%+v",len(got),got)}
 	if got[1].Status!="resolved"||!strings.Contains(got[1].Message,"برطرف شد"){

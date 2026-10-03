@@ -64,6 +64,7 @@ type LayerRecord struct {
 	BadRun       int       `json:"bad_run"`
 	RunStart     time.Time `json:"run_start,omitempty"`
 	NoneSince    time.Time `json:"none_since,omitempty"`
+	LastOKAt     time.Time `json:"last_ok_at,omitempty"`
 	LastSample   string    `json:"last_sample,omitempty"`
 	LastSampleAt time.Time `json:"last_sample_at,omitempty"`
 	LastEvidence string    `json:"last_evidence,omitempty"`
@@ -85,6 +86,8 @@ type LayerTransition struct {
 	NodeTo   string    `json:"node_to,omitempty"`
 	Reason   string    `json:"reason"`
 	Evidence string    `json:"evidence"`
+	// EventID identifies this transition in history, audit and alerts.
+	EventID string `json:"event_id,omitempty"`
 }
 
 // observe applies one sample. It is deterministic: the result depends only on
@@ -99,6 +102,9 @@ func observe(rec *LayerRecord, s Sample, now time.Time, p HealthPolicy) (string,
 		rec.OKRun, rec.BadRun, rec.RunStart, rec.NoneSince = 0, 0, time.Time{}, time.Time{}
 	}
 	rec.LastSample, rec.LastSampleAt, rec.LastEvidence = s.Kind, now, s.Evidence
+	if s.Kind == SampleOK {
+		rec.LastOKAt = now
+	}
 	from := rec.State
 	move := func(to, reason string) (string, string, bool) {
 		rec.State, rec.Since = to, now

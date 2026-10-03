@@ -35,6 +35,22 @@ type Alert struct {
 	RouteID   string    `json:"route_id,omitempty"`
 	Message   string    `json:"message"`
 	Timestamp time.Time `json:"timestamp"`
+	// Severity is "warning" for a confirmed DEGRADED layer and "critical" for a
+	// confirmed DOWN one. Health is the layer state behind it and Evidence the
+	// raw observation that fed that layer; neither is an alert trigger by itself.
+	Severity string `json:"severity,omitempty"`
+	Health   string `json:"health,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+	// EvidenceFields is the structured evidence (node_unreachable carries the
+	// address, previous and current state, failure duration, last successful
+	// reachability, transition reason and event id).
+	EvidenceFields map[string]string `json:"evidence_fields,omitempty"`
+	// Unnotified: the alert is recorded but its notification was withheld
+	// because it belongs to a larger incident (CorrelatedWith names it).
+	// CorrelatedAlerts, on the root alert, lists what it covers.
+	Unnotified       bool     `json:"unnotified,omitempty"`
+	CorrelatedWith   string   `json:"correlated_with,omitempty"`
+	CorrelatedAlerts []string `json:"correlated_alerts,omitempty"`
 }
 
 type Server struct {
@@ -415,68 +431,6 @@ func (s *Server) StartAlertLoop(ctx context.Context) {
 
 func (s *Server) EvaluateAlertsOnce(ctx context.Context) error {
 	return s.evaluateAlertsAt(ctx,s.now().UTC())
-}
-
-func (s *Server) evaluateAlertsAt(ctx context.Context,now time.Time) error {
-	view:=s.store.MonitoringSnapshot(now,s.alertConfig.TelemetryStaleAfter)
-	current:=map[string]Alert{}
-	for _,n:=range view{
-		if !n.LastSeen.IsZero()&&now.Sub(n.LastSeen)>=s.alertConfig.TelemetryStaleAfter{
-			key:="telemetry_stale:"+n.NodeID
-			current[key]=s.makeAlert("telemetry_stale","firing",n.NodeID,n.Alias,"",now)
-		}
-		if n.HandshakeErrorRateMilliMin>=s.alertConfig.HandshakeErrorRateMilliPerMin{
-			key:="handshake_error_rate:"+n.NodeID
-			current[key]=s.makeAlert("handshake_error_rate","firing",n.NodeID,n.Alias,"",now)
-		}
-		for _,route:=range n.Routes{
-			if route.Status=="down"{
-				key:="route_down:"+n.NodeID+":"+route.RouteID
-				current[key]=s.makeAlert("route_down","firing",n.NodeID,n.Alias,route.RouteID,now)
-			}
-		}
-	}
-
-	s.alertMu.Lock()
-	defer s.alertMu.Unlock()
-
-	for key,prior:=range s.activeAlerts{
-		if _,ok:=current[key];ok{continue}
-		resolved:=s.makeAlert(prior.Type,"resolved",prior.NodeID,prior.NodeAlias,prior.RouteID,now)
-		if s.alertConfig.WebhookURL!=""{
-			if err:=s.sendWebhook(ctx,resolved);err!=nil{return err}
-		}
-		delete(s.activeAlerts,key)
-	}
-	for key,alert:=range current{
-		if _,exists:=s.activeAlerts[key];exists{continue}
-		if s.alertConfig.WebhookURL!=""{
-			if err:=s.sendWebhook(ctx,alert);err!=nil{return err}
-		}
-		s.activeAlerts[key]=alert
-	}
-	return s.store.SetActiveAlerts(s.activeAlerts)
-}
-
-func (s *Server) makeAlert(kind,status,nodeID,nodeAlias,routeID string,at time.Time) Alert {
-	if nodeAlias==""{nodeAlias=nodeID}
-	typeFA:=map[string]string{
-		"telemetry_stale":"توقف دریافت تل‌متری",
-		"handshake_error_rate":"افزایش نرخ خطای Handshake",
-		"route_down":"قطع مسیر",
-	}[kind]
-	if typeFA==""{typeFA=kind}
-	statusFA:="فعال"
-	if status=="resolved"{statusFA="برطرف شد"}
-	loc,err:=time.LoadLocation("Asia/Tehran")
-	if err!=nil{loc=time.FixedZone("Asia/Tehran",3*3600+30*60)}
-	routeText:="—"
-	if routeID!=""{routeText=routeID}
-	at=at.UTC()
-	msg:=fmt.Sprintf("هشدار BAFT\nوضعیت: %s\nنود: %s (%s)\nمسیر: %s\nنوع هشدار: %s\nزمان UTC: %s\nزمان تهران: %s",
-		statusFA,nodeAlias,nodeID,routeText,typeFA,
-		at.Format(time.RFC3339),at.In(loc).Format(time.RFC3339))
-	return Alert{Type:kind,Status:status,NodeID:nodeID,NodeAlias:nodeAlias,RouteID:routeID,Message:msg,Timestamp:at}
 }
 
 func (s *Server) sendWebhook(ctx context.Context,alert Alert) error {

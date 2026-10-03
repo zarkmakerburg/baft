@@ -168,7 +168,8 @@ func (s *Store) EvaluateHealth(now time.Time, c HealthConfig) ([]HealthEvent, er
 				continue
 			}
 			after, _ := overallHealth(rec.Layers)
-			t := LayerTransition{At: now, Layer: l, From: from, To: lr.State, NodeFrom: before, NodeTo: after, Reason: reason, Evidence: sm.Evidence}
+			t := LayerTransition{At: now, Layer: l, From: from, To: lr.State, NodeFrom: before, NodeTo: after, Reason: reason, Evidence: sm.Evidence,
+				EventID: fmt.Sprintf("hl-%s-%s-%d", id, l, now.UnixNano())}
 			rec.History = append(rec.History, t)
 			if len(rec.History) > healthHistoryCap {
 				rec.History = rec.History[len(rec.History)-healthHistoryCap:]
@@ -271,7 +272,7 @@ func (s *Server) evaluateHealthAt(now time.Time) {
 			Timestamp: now.UTC(), Actor: "bcc", Action: "health.transition", Target: e.NodeID + "/" + e.Layer, Outcome: outcome,
 			Details: map[string]any{
 				"layer": e.Layer, "from": e.From, "to": e.To, "node_from": e.NodeFrom, "node_to": e.NodeTo,
-				"reason": e.Reason, "evidence": e.Evidence,
+				"reason": e.Reason, "evidence": e.Evidence, "event_id": e.EventID,
 			},
 		})
 	}
@@ -300,4 +301,49 @@ func (s *Server) healthAPI(w http.ResponseWriter, r *http.Request) {
 		},
 		"nodes": s.store.HealthSnapshot(node, history),
 	})
+}
+
+// L1Incident describes the current reachability incident of a node from its
+// layer record and history: what an operator needs to see in a node_unreachable
+// alert. All of it comes from stored health data, never from a raw probe.
+type L1Incident struct {
+	Address, PreviousState, CurrentState, Reason, EventID string
+	FailureStarted, LastReachable                         time.Time
+}
+
+func (s *Store) L1Incident(nodeID string) (L1Incident, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.st.Nodes[nodeID]
+	if !ok {
+		return L1Incident{}, false
+	}
+	rec := s.st.Health[nodeID]
+	inc := L1Incident{Address: n.Address}
+	if lr := rec.Layers[LayerL1]; lr != nil {
+		inc.LastReachable = lr.LastOKAt
+		inc.FailureStarted = lr.Since
+	}
+	// The transition that made L1 DOWN, and the one that started the failure.
+	downAt := -1
+	for i := len(rec.History) - 1; i >= 0; i-- {
+		if t := rec.History[i]; t.Layer == LayerL1 && t.To == HealthDown {
+			downAt = i
+			break
+		}
+	}
+	if downAt < 0 {
+		return inc, true
+	}
+	t := rec.History[downAt]
+	inc.PreviousState, inc.CurrentState, inc.Reason, inc.EventID, inc.FailureStarted = t.From, t.To, t.Reason, t.EventID, t.At
+	for i := downAt - 1; i >= 0; i-- {
+		if p := rec.History[i]; p.Layer == LayerL1 {
+			if p.To == HealthDegraded {
+				inc.FailureStarted = p.At
+			}
+			break
+		}
+	}
+	return inc, true
 }

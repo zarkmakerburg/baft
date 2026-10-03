@@ -201,7 +201,19 @@ func TestMonitoringAlertsAndSevenDayHistory(t *testing.T){
 	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,signedTelemetryReq(t,token,second))
 	if rr.Code!=http.StatusAccepted{t.Fatalf("second telemetry status=%d body=%s",rr.Code,rr.Body.String())}
 
-	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
+	// Alerts follow confirmed health: three consecutive samples, not one reading.
+	tick:=func(k int){
+		at:=now.Add(time.Duration(k)*10*time.Second)
+		app.evaluateHealthAt(at)
+		if err:=app.evaluateAlertsAt(context.Background(),at);err!=nil{t.Fatal(err)}
+	}
+	tick(1)
+	select{
+	case a:=<-alerts:
+		t.Fatalf("an alert after one sample: %+v",a)
+	default:
+	}
+	tick(2);tick(3)
 	gotTypes:=map[string]bool{}
 	deadline:=time.After(2*time.Second)
 	for len(gotTypes)<2{
@@ -225,12 +237,18 @@ func TestMonitoringAlertsAndSevenDayHistory(t *testing.T){
 	}
 	rr=httptest.NewRecorder();app.Handler().ServeHTTP(rr,signedTelemetryReq(t,"stale-agent",staleRep))
 	if rr.Code!=http.StatusAccepted{t.Fatalf("stale telemetry status=%d body=%s",rr.Code,rr.Body.String())}
-	if err:=app.EvaluateAlertsOnce(context.Background());err!=nil{t.Fatal(err)}
-	select{
-	case a:=<-alerts:
-		if a.Type!="telemetry_stale"||a.NodeID!="n-stale"{t.Fatalf("unexpected stale alert=%+v",a)}
-	case <-time.After(2*time.Second):
-		t.Fatal("telemetry_stale webhook alert not emitted")
+	tick(4);tick(5)
+	// n-monitor's sustained problems may escalate meanwhile; look for n-stale's alert.
+	for found:=false;!found;{
+		select{
+		case a:=<-alerts:
+			if a.NodeID=="n-stale"{
+				if a.Type!="telemetry_stale"||a.Severity!="warning"{t.Fatalf("unexpected stale alert=%+v",a)}
+				found=true
+			}
+		case <-time.After(2*time.Second):
+			t.Fatal("telemetry_stale webhook alert not emitted")
+		}
 	}
 
 	view:=store.MonitoringSnapshot(time.Now(),3*time.Minute)
