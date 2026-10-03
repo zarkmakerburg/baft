@@ -74,6 +74,9 @@ func (a *Agent) tunnel(ctx context.Context, j agentjob.Job) (string, string, err
 		d, err := t.Rollback(ctx, id)
 		return d, "", err
 	}
+	if strings.HasPrefix(j.Action, "tunnel_cert_") {
+		return a.certRotation(ctx, t, j)
+	}
 	return "", "", fmt.Errorf("action %s has no tunnel handler", j.Action)
 }
 
@@ -86,4 +89,57 @@ func exParams(p map[string]string, port int) tunnelnode.ExParams {
 
 func irParams(p map[string]string) tunnelnode.IRParams {
 	return tunnelnode.IRParams{RouteListen: p["route_listen"], RouteID: p["route_id"]}
+}
+
+// certRotation runs one step of a certificate rotation. Every step answers
+// with the node's own evidence; the EX's PREPARE also returns the public
+// plan (new CA and leaf certificate) as output.
+func (a *Agent) certRotation(ctx context.Context, t *tunnelnode.Manager, j agentjob.Job) (string, string, error) {
+	p, rid := j.Params, j.Params["rotation_id"]
+	if st, err := t.RotationState(rid); err == nil && st.TunnelID != p["tunnel_id"] {
+		return "", "", fmt.Errorf("rotation %s belongs to tunnel %s", rid, st.TunnelID)
+	}
+	epoch, _ := strconv.Atoi(p["epoch"])
+	switch j.Action {
+	case agentjob.ActionCertPrepareEX:
+		plan, err := t.RotatePrepareEX(ctx, rid, p["tunnel_id"], epoch)
+		if err != nil {
+			return "", "", err
+		}
+		b, err := json.Marshal(plan)
+		return "new certificate staged for " + plan.Host, string(b), err
+	case agentjob.ActionCertTrustIR:
+		ca, err := tunnelnode.DecodeDER(p["ca_der"])
+		if err != nil {
+			return "", "", errors.New("ca_der is not base64url")
+		}
+		d, err := t.RotateTrustIR(ctx, rid, p["tunnel_id"], epoch, ca, p["ca_sha256"])
+		return d, "", err
+	case agentjob.ActionCertVerifyEX:
+		d, err := t.RotateVerifyEX(ctx, rid)
+		return d, "", err
+	case agentjob.ActionCertVerifyIR:
+		cert, err := tunnelnode.DecodeDER(p["cert_der"])
+		if err != nil {
+			return "", "", errors.New("cert_der is not base64url")
+		}
+		d, err := t.RotateVerifyIR(ctx, rid, cert, p["cert_sha256"])
+		return d, "", err
+	case agentjob.ActionCertActivateEX:
+		d, err := t.RotateActivateEX(ctx, rid)
+		return d, "", err
+	case agentjob.ActionCertConfirmIR:
+		d, err := t.RotateConfirmIR(ctx, rid, p["cert_sha256"])
+		return d, "", err
+	case agentjob.ActionCertRetireIR:
+		d, err := t.RotateRetireIR(ctx, rid)
+		return d, "", err
+	case agentjob.ActionCertRetireEX:
+		d, err := t.RotateRetireEX(ctx, rid)
+		return d, "", err
+	case agentjob.ActionCertRollback:
+		d, err := t.RotateRollback(ctx, rid, p["ex_never_activated"] == "true")
+		return d, "", err
+	}
+	return "", "", fmt.Errorf("action %s has no handler", j.Action)
 }

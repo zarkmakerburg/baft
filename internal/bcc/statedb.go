@@ -49,11 +49,13 @@ var stateMigrations = []string{
 	`CREATE TABLE node_health (node_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 	// 4: report-only discovery of existing tunnels (A2).
 	`CREATE TABLE node_discovery (node_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
+	// 5: certificate rotations of built tunnels (A4 Stage F).
+	`CREATE TABLE cert_rotations (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -191,6 +193,11 @@ func writeStateTx(tx *sql.Tx, st state) error {
 	}
 	for id, v := range st.Discovery {
 		if err := put(`INSERT INTO node_discovery VALUES (?, ?)`, id, v); err != nil {
+			return err
+		}
+	}
+	for id, v := range st.CertRotations {
+		if err := put(`INSERT INTO cert_rotations VALUES (?, ?)`, id, v); err != nil {
 			return err
 		}
 	}
@@ -361,6 +368,12 @@ func readStateDB(path string) (state, error) {
 			var v NodeDiscovery
 			err := decode("node_discovery", d, &v)
 			st.Discovery[k] = v
+			return err
+		}},
+		{`SELECT id, 0, doc FROM cert_rotations`, func(k string, _ int64, d []byte) error {
+			var v CertRotation
+			err := decode("cert_rotations", d, &v)
+			st.CertRotations[k] = v
 			return err
 		}},
 		{`SELECT node_id, 0, doc FROM finance`, func(k string, _ int64, d []byte) error {

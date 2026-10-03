@@ -54,6 +54,19 @@ const (
 	ActionTunnelDiscover = "tunnel_discover"
 	ActionTunnelFinalize = "tunnel_finalize"
 	ActionTunnelRollback = "tunnel_rollback"
+
+	// Certificate rotation of a built tunnel (A4 Stage F). Only public
+	// certificates and digests travel in parameters; new private keys never
+	// leave the EX.
+	ActionCertPrepareEX  = "tunnel_cert_prepare_ex"
+	ActionCertTrustIR    = "tunnel_cert_trust_ir"
+	ActionCertVerifyEX   = "tunnel_cert_verify_ex"
+	ActionCertVerifyIR   = "tunnel_cert_verify_ir"
+	ActionCertActivateEX = "tunnel_cert_activate_ex"
+	ActionCertConfirmIR  = "tunnel_cert_confirm_ir"
+	ActionCertRetireIR   = "tunnel_cert_retire_ir"
+	ActionCertRetireEX   = "tunnel_cert_retire_ex"
+	ActionCertRollback   = "tunnel_cert_rollback"
 )
 
 var (
@@ -68,6 +81,9 @@ var (
 	boolRe          = regexp.MustCompile(`^(true|false)$`)
 	pairCodeRe      = regexp.MustCompile(`^BAFTPAIR1:[A-Za-z0-9_-]{16,}$`)
 	replyCodeRe     = regexp.MustCompile(`^BAFTREPLY1:[A-Za-z0-9_-]{16,}$`)
+	epochRe         = regexp.MustCompile(`^[1-9][0-9]{0,8}$`)
+	sha256Re        = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	derB64Re        = regexp.MustCompile(`^[A-Za-z0-9_-]{64,}$`)
 )
 
 // paramRules lists, per action, the parameters it takes and how each is
@@ -88,6 +104,16 @@ var paramRules = map[string]map[string]*regexp.Regexp{
 	ActionTunnelDiscover:  {},
 	ActionTunnelFinalize:  {"tunnel_id": tunnelIDRe},
 	ActionTunnelRollback:  {"tunnel_id": tunnelIDRe},
+
+	ActionCertPrepareEX:  {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe, "epoch": epochRe},
+	ActionCertTrustIR:    {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe, "epoch": epochRe, "ca_der": derB64Re, "ca_sha256": sha256Re},
+	ActionCertVerifyEX:   {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe},
+	ActionCertVerifyIR:   {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe, "cert_der": derB64Re, "cert_sha256": sha256Re},
+	ActionCertActivateEX: {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe},
+	ActionCertConfirmIR:  {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe, "cert_sha256": sha256Re},
+	ActionCertRetireIR:   {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe},
+	ActionCertRetireEX:   {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe},
+	ActionCertRollback:   {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe, "ex_never_activated": boolRe},
 }
 
 // Actions returns the allowlist, sorted.

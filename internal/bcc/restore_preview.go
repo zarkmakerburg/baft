@@ -128,6 +128,16 @@ func buildRestorePreview(payload backupPayload, header BackupHeader, current sta
 			warn("tunnel %s is in progress (%s) in the backup; it would resume or time out", id, t.Phase)
 		}
 	}
+	for id, r := range restored.CertRotations {
+		if !terminalCertRotation(r.Phase) {
+			warn("certificate rotation %s is in progress (%s) in the backup; it would resume or time out and roll back", id, r.Phase)
+		}
+	}
+	for id, r := range current.CertRotations {
+		if _, ok := restored.CertRotations[id]; !ok && r.Phase == CertRotComplete {
+			warn("certificate rotation %s of tunnel %s completed since the backup; the restored record would show an older certificate epoch than the servers use", id, r.TunnelID)
+		}
+	}
 	if len(p.Nodes.Added) > 0 {
 		warn("%d node(s) present only in the backup would reappear: %s; check that they are still yours", len(p.Nodes.Added), strings.Join(p.Nodes.Added, ", "))
 	}

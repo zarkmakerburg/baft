@@ -98,6 +98,11 @@ type Tunnel struct {
 	DriftJobs    []string     `json:"drift_jobs,omitempty"`
 	DriftStarted time.Time    `json:"drift_started,omitempty"`
 
+	// CertEpoch is the certificate generation of an active tunnel: the epoch
+	// of the last completed certificate rotation (0 = pairing certificate).
+	CertEpoch  int    `json:"cert_epoch,omitempty"`
+	CertSHA256 string `json:"cert_sha256,omitempty"`
+
 	Phase          string    `json:"phase"`
 	Error          string    `json:"error,omitempty"`
 	JobID          string    `json:"job_id,omitempty"`
@@ -234,6 +239,9 @@ func (s *Store) resolveTunnelLocked(req TunnelRequest, now time.Time) (Tunnel, N
 		if shares && other.Phase == TunnelRollbackFailed {
 			return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s could not be rolled back on one of these nodes; fix that first", other.ID)
 		}
+	}
+	if r := s.rotationOnNodesLocked(req.EXNode, req.IRNode); r != nil {
+		return Tunnel{}, Node{}, Node{}, fmt.Errorf("certificate rotation %s is %s on one of these nodes", r.ID, r.Phase)
 	}
 	t := Tunnel{
 		ID: newTunnelID(), EXNode: req.EXNode, IRNode: req.IRNode, PublicAddress: req.PublicAddress, Port: req.Port,
@@ -459,7 +467,9 @@ func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 			events = append(events, *ev)
 		}
 	}
-	if !changed {
+	rotEvents, rotChanged := s.advanceRotationsLocked(now.UTC())
+	events = append(events, rotEvents...)
+	if !changed && !rotChanged {
 		return nil, nil
 	}
 	return events, s.saveLocked()
@@ -645,7 +655,9 @@ func (s *Server) AdvanceTunnels() {
 	}
 	for _, e := range events {
 		outcome := "success"
-		if e.Action != "tunnel.active" && e.Action != "tunnel.in_sync" {
+		switch e.Action {
+		case "tunnel.active", "tunnel.in_sync", "cert.rotation.activated", "cert.rotation.complete":
+		default:
 			outcome = "failure"
 		}
 		_, _ = s.audit.Append(AuditEntry{

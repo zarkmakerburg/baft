@@ -45,6 +45,9 @@ type hostSys struct {
 	enabled     bool
 	failRestart bool
 	calls       []string
+	// onRestart plays the service starting; an error means it failed.
+	onRestart func() error
+	dead      bool
 }
 
 func (h *hostSys) Systemctl(_ context.Context, args ...string) (string, error) {
@@ -54,6 +57,12 @@ func (h *hostSys) Systemctl(_ context.Context, args ...string) (string, error) {
 	switch args[0] {
 	case "restart":
 		h.active = !h.failRestart
+		h.dead = false
+		if h.active && h.onRestart != nil {
+			if err := h.onRestart(); err != nil {
+				h.active, h.dead = false, true
+			}
+		}
 	case "stop":
 		h.active = false
 	case "enable":
@@ -64,7 +73,7 @@ func (h *hostSys) Systemctl(_ context.Context, args ...string) (string, error) {
 		if h.active {
 			return "active", nil
 		}
-		if h.failRestart {
+		if h.failRestart || h.dead {
 			return "failed", nil
 		}
 		return "inactive", nil
@@ -102,6 +111,7 @@ type flow struct {
 	exPort  int
 	irRoute string
 	dir     string
+	jobKey  ed25519.PrivateKey
 }
 
 func freeFlowPort(t *testing.T) int {
@@ -134,6 +144,13 @@ func accept(t *testing.T, port int) {
 
 func newFlow(t *testing.T) *flow {
 	t.Helper()
+	return newFlowWith(t, accept)
+}
+
+// newFlowWith builds the flow with serveEX standing in for the EX's
+// listener on its tunnel port.
+func newFlowWith(t *testing.T, serveEX func(*testing.T, int)) *flow {
+	t.Helper()
 	dir := t.TempDir()
 	store, err := bcc.OpenStore(filepath.Join(dir, "bcc", "state.json"))
 	if err != nil {
@@ -148,11 +165,12 @@ func newFlow(t *testing.T) *flow {
 		t.Fatal(err)
 	}
 	app.ConfigureJobSigning(key)
-	f := &flow{t: t, app: app, store: store, h: app.Handler(), dir: dir, exPort: freeFlowPort(t)}
+	f := &flow{t: t, app: app, store: store, h: app.Handler(), dir: dir, exPort: freeFlowPort(t), jobKey: key}
 	f.irRoute = "127.0.0.1:" + strconv.Itoa(freeFlowPort(t))
-	accept(t, f.exPort)
+	serveEX(t, f.exPort)
 	accept(t, mustFlowPort(f.irRoute))
-	srv := httptest.NewServer(app.Handler())
+	// Agents reach BCC through f.h, so a test can restart BCC underneath.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { f.h.ServeHTTP(w, r) }))
 	t.Cleanup(srv.Close)
 	f.ex = f.addNode(t, srv.URL, key.Public().(ed25519.PublicKey), "ex-1", "foreign", "127.0.0.1:1")
 	f.ir = f.addNode(t, srv.URL, key.Public().(ed25519.PublicKey), "ir-1", "worker", "127.0.0.1:2")
