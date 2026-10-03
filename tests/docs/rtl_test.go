@@ -22,7 +22,8 @@ func TestPersianMarkdownIsRTLAndCodeBlocksAreLTR(t *testing.T) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(strings.ToLower(d.Name()), ".md") || strings.HasSuffix(strings.ToLower(d.Name()), ".en.md") || strings.HasPrefix(rel, "docs/en/") || strings.HasPrefix(rel, "docs/adr/en/") {
+		// README.md is the English front page (Persian lives in README.fa.md).
+		if !strings.HasSuffix(strings.ToLower(d.Name()), ".md") || strings.HasSuffix(strings.ToLower(d.Name()), ".en.md") || rel == "README.md" || strings.HasPrefix(rel, "docs/en/") || strings.HasPrefix(rel, "docs/adr/en/") {
 			return nil
 		}
 		b, readErr := os.ReadFile(path)
