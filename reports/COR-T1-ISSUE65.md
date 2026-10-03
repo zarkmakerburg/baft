@@ -189,7 +189,13 @@ Proposed scope:
 
 A timeout must be **progress-based**, not a fixed total-transfer deadline. Any implementation must avoid false termination of a slow but progressing target.
 
-A separate follow-up experiment should determine why the local echo target TCP pair enters persistent zero-progress under this workload; endpoint/TCP-state evidence can narrow whether a fixture/socket interaction is involved. That deeper socket subcause does not change the proven BAFT invariant: a target write currently has no bounded escape.
+Endpoint-identity follow-up run `37141980412` reproduced the same stall and timed out at 4 minutes. At its watchdog snapshot:
+- IR Flow socket: `127.0.0.1:38069 -> 127.0.0.1:57750` (local application connection)
+- EX Flow socket: `127.0.0.1:52602 -> 127.0.0.1:34135` (the target listener connection)
+- IR again had `txNext == peerMax == txAcked`.
+- EX again had `rxNext == rxMax`, with exactly 65536 bytes buffered beyond `rxWritten`.
+
+This excludes a mistaken IR/EX Flow mapping and is consistent with the active EX target connection itself being the blocked delivery boundary. A lower-level TCP-state capture (send/receive queues / TCP_INFO) could further explain why the loopback socket pair enters zero-progress, but that deeper socket subcause does not change the proven BAFT invariant: target delivery currently has no bounded liveness escape.
 
 ## Required correctness gates for any future fix
 
@@ -203,7 +209,7 @@ At minimum, on one candidate SHA:
 
 ## Remaining risks / pending evidence
 
-- exact underlying reason for persistent zero-progress on the loopback target TCP pair is still being narrowed with endpoint identity / socket-state evidence;
+- endpoint identity is confirmed; exact kernel/TCP reason for persistent zero-progress on the target socket still needs TCP_INFO/socket-queue evidence if HQ wants the subcause below the BAFT liveness boundary;
 - no production fix is authorized or applied;
 - Step 5.7 freeze and RC/release remain blocked by Issue #65;
 - COR-01 must still be run on the final P0-R1 follow-up PR SHA as ordered by HQ.
