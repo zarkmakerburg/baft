@@ -283,3 +283,38 @@ func TestProgressLogTornLine(t *testing.T) {
 		t.Fatal("not restored")
 	}
 }
+
+// Certificate rotation artifacts (A4): proven files go with their class,
+// anything else in those directories stays.
+func TestNestedRotationArtifacts(t *testing.T) {
+	r := newRig(t)
+	r.installerEX(false)
+	r.write("etc/pki/host", "203.0.113.7\n", 0o644)
+	r.write("etc/pki.prev-rot-1/ca.pem", pemCert, 0o644)
+	r.write("etc/pki.prev-rot-1/ca.key", pemKey, 0o600)
+	r.write("etc/pki.prev-rot-1/host", "203.0.113.7\n", 0o644)
+	r.write("etc/pki.prev-rot-1/operator.txt", "mine", 0o644)
+	r.write("etc/pki.next-rot-1/server.pem", pemCert, 0o644)
+	r.write("var/rotations/epoch", "2\n", 0o600)
+	r.write("var/rotations/active", "rot-1\n", 0o600)
+	r.write("var/rotations/rot-1/rot.json", `{"version":1,"id":"rot-1","phase":"active","epoch":2}`, 0o600)
+	r.write("var/rotations/rot-1/new-ca.pem", pemCert, 0o644)
+	r.write("var/rotations/rot-1/backup/ca.pem", pemCert, 0o644)
+	r.write("var/rotations/rot-1/notes.md", "mine", 0o644)
+	p := r.plan(yes(Options{Scope: Scope{Full: true}, Delete: map[Class]bool{ClassCertificates: true}}))
+	if _, err := r.env.Apply(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"etc/pki/host", "etc/pki.prev-rot-1/ca.pem", "etc/pki.prev-rot-1/ca.key", "etc/pki.prev-rot-1/host",
+		"etc/pki.next-rot-1", "var/rotations/epoch", "var/rotations/active", "var/rotations/rot-1/rot.json",
+		"var/rotations/rot-1/new-ca.pem", "var/rotations/rot-1/backup"} {
+		if exists(r.p(gone)) {
+			t.Errorf("proven rotation artifact kept: %s", gone)
+		}
+	}
+	for _, kept := range []string{"etc/pki.prev-rot-1/operator.txt", "var/rotations/rot-1/notes.md"} {
+		if !exists(r.p(kept)) {
+			t.Errorf("unknown file removed: %s", kept)
+		}
+	}
+}

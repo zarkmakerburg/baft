@@ -228,6 +228,75 @@ for nid in ("ex-e2e", "ir-e2e"):
 systemctl is-active baft-ex baft-ir >/dev/null || fail "discovery disturbed the tunnel services"
 traffic || fail "discovery disturbed the traffic"
 
+log "certificate rotation (A4): PREPARE -> DISTRIBUTE -> VERIFY -> ACTIVATE -> CONFIRM -> RETIRE_OLD on real services"
+IR_CA="/var/lib/baft-ir/tunnels/$T1/peer-ca.pem"
+served_sha() { python3 -c 'import ssl,hashlib;print(hashlib.sha256(ssl.PEM_cert_to_DER_cert(ssl.get_server_certificate(("127.0.0.1",18443)))).hexdigest())'; }
+# The invariant at every poll: the running EX verifies against the IR's
+# trust file, and the files both would boot from verify too.
+trusted() {
+  # A listener that is restarting refuses the connection; that is not a
+  # trust failure. A completed handshake must verify.
+  if ! openssl s_client -connect 127.0.0.1:18443 -CAfile "$IR_CA" -verify_return_error -verify_ip 127.0.0.1 </dev/null >"$WORK/sclient.log" 2>&1; then
+    grep -qiE 'connect:errno|connection refused' "$WORK/sclient.log" || { cat "$WORK/sclient.log"; return 1; }
+  fi
+  openssl verify -CAfile "$IR_CA" -verify_ip 127.0.0.1 /etc/baft-ex/pki/server.pem >/dev/null 2>&1
+}
+wait_rotation() { # id seconds wanted-phases... ; checks the invariant every poll
+  local id="$1" secs="$2"; shift 2
+  local phase="" i
+  for ((i = 0; i < secs; i++)); do
+    trusted || fail "the IR could not verify the EX during rotation (phase $phase)"
+    phase="$(api "$BCC/api/cert-rotations?id=$id" | jfield '["phase"]')"
+    [[ "$(grep -c 'BEGIN CERTIFICATE' "$IR_CA")" == 2 ]] && SAW_WINDOW=1
+    for want in "$@"; do [[ "$phase" == "$want" ]] && { echo "$phase"; return 0; }; done
+    sleep 1
+  done
+  echo "$phase"; return 1
+}
+trusted || fail "the IR does not verify the EX before rotation"
+OLD_LEAF="$(served_sha)"
+SAW_WINDOW=0
+R1="$(api -d "{\"tunnel_id\":\"$T1\"}" "$BCC/api/tunnels/rotate-cert" | jfield '["id"]')"
+phase="$(wait_rotation "$R1" 300 complete rolled_back rollback_failed retire_failed)" || true
+[[ "$phase" == "complete" ]] || fail "rotation ended as '$phase': $(api "$BCC/api/cert-rotations?id=$R1")"
+[[ "$SAW_WINDOW" == 1 ]] || fail "the IR never trusted old + new during the window"
+NEW_LEAF="$(served_sha)"
+[[ "$NEW_LEAF" != "$OLD_LEAF" ]] || fail "the EX still serves the old certificate"
+[[ "$(grep -c 'BEGIN CERTIFICATE' "$IR_CA")" == 1 ]] || fail "the IR still trusts more than the new CA"
+ls -d /etc/baft-ex/pki.prev-* /etc/baft-ex/pki.next-* 2>/dev/null && fail "old certificate material survived RETIRE"
+python3 - "$(api "$BCC/api/cert-rotations?id=$R1")" "$(api "$BCC/api/tunnels?id=$T1")" "$NEW_LEAF" "$OLD_LEAF" <<'PY' || fail "rotation evidence or tunnel epoch is wrong"
+import json, sys
+r, t, new, old = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], sys.argv[4]
+assert r["cert_sha256"] == new and r["old_cert_sha256"] == old and r["epoch"] == 1, r
+steps = [(e["step"], e["node"]) for e in r["evidence"]]
+for want in [("preparing", "ex-e2e"), ("distributing", "ir-e2e"), ("verifying_ir", "ir-e2e"), ("verifying_ex", "ex-e2e"),
+             ("activating", "ex-e2e"), ("confirming", "ir-e2e"), ("retiring_ir", "ir-e2e"), ("retiring_ex", "ex-e2e")]:
+    assert want in steps, (want, steps)
+assert all(e["ok"] for e in r["evidence"]), r["evidence"]
+assert t["cert_epoch"] == 1 and t["cert_sha256"] == new and t["phase"] == "active", t
+PY
+grep -q '"cert.rotation.complete"' "$WORK"/s.json.audit.jsonl || fail "audit lacks cert.rotation.complete"
+if grep -aq 'PRIVATE KEY' "$WORK"/s.json*; then fail "a private key reached BCC's state"; fi
+systemctl is-active baft-ex baft-ir >/dev/null || fail "tunnel services are not running after the rotation"
+traffic || fail "no traffic through tunnel 1 after the rotation"
+[[ "$(drift_check "$T1")" == "IN_SYNC" ]] || fail "the rotation made the tunnel drift"
+log "rotation complete: new certificate served and trusted alone; traffic passes"
+
+log "a cancelled rotation (after CONFIRM, during HOLD) rolls back EX then IR to the working certificate"
+SAW_WINDOW=0
+R2="$(api -d "{\"tunnel_id\":\"$T1\",\"hold_seconds\":3600}" "$BCC/api/tunnels/rotate-cert" | jfield '["id"]')"
+phase="$(wait_rotation "$R2" 300 holding rolled_back rollback_failed)" || true
+[[ "$phase" == "holding" ]] || fail "rotation 2 ended as '$phase'"
+[[ "$(served_sha)" != "$NEW_LEAF" ]] || fail "rotation 2 did not activate"
+api -d "{\"id\":\"$R2\",\"reason\":\"e2e\"}" "$BCC/api/cert-rotations/cancel" >/dev/null
+phase="$(wait_rotation "$R2" 300 rolled_back rollback_failed)" || true
+[[ "$phase" == "rolled_back" ]] || fail "cancelled rotation ended as '$phase': $(api "$BCC/api/cert-rotations?id=$R2")"
+[[ "$(served_sha)" == "$NEW_LEAF" ]] || fail "the working certificate was not restored"
+[[ "$(grep -c 'BEGIN CERTIFICATE' "$IR_CA")" == 1 ]] || fail "the IR kept the cancelled CA"
+grep -q '"cert.rotation.rolled_back"' "$WORK"/s.json.audit.jsonl || fail "audit lacks cert.rotation.rolled_back"
+traffic || fail "no traffic after the cancelled rotation"
+log "cancelled rotation rolled back; traffic passes"
+
 EX_CFG_SUM="$(sha256sum /etc/baft-ex/baft.yaml | cut -d' ' -f1)"
 IR_CFG_SUM="$(sha256sum /etc/baft-ir/baft.yaml | cut -d' ' -f1)"
 EX_MARK_SUM="$(sha256sum /etc/baft-ex/baft.managed.json | cut -d' ' -f1)"

@@ -666,6 +666,8 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 			e.classifyPKI(inv, l, path, fi)
 		case strings.HasPrefix(name, "pki.before-"):
 			e.walkNested(inv, l, path, pkiBackupRule)
+		case (strings.HasPrefix(name, "pki.next-") || strings.HasPrefix(name, "pki.prev-")) && tunnelIDRe.MatchString(name[len("pki.next-"):]):
+			e.walkNested(inv, l, path, pkiRotationRule)
 		case strings.HasPrefix(name, "baft.yaml.before-repair-") || strings.HasPrefix(name, "baft.yaml.before-stealth-"):
 			file(ClassBackups, func(b []byte) bool { _, err := config.DecodeYAML(bytes.NewReader(b)); return err == nil }, "the installer's copy of an earlier config")
 		default:
@@ -689,6 +691,8 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 			file(ClassCertificates, isPEM("CERTIFICATE"), "the EX certificate authority pinned at pairing")
 		case name == "tunnels":
 			e.walkNested(inv, l, path, tunnelsRule)
+		case name == "rotations":
+			e.walkNested(inv, l, path, rotationsRule)
 		default:
 			// The service user's home is the state directory, and useradd
 			// copied the skeleton into it. Each entry identical to its
@@ -791,6 +795,8 @@ func (e *Env) classifyPKI(inv *Inventory, l location, path string, fi os.FileInf
 			check = isPEM("CERTIFICATE")
 		case "ca.key", "server.key":
 			check = isPEMKey
+		case "host":
+			check = isHostMarker
 		}
 		a := newArtifact(sub, p, ClassCertificates)
 		switch {
