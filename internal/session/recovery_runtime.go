@@ -1482,7 +1482,7 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stopAndFenceWriter(SenderStopExplicitReplace,ErrCarrierUnavailable)}
 	p.traceRecoveryDiagnostic("CARRIER_ACTIVATED",SenderStopUnknown,nil,"",prep.sender,ctl,prep.incarnation,activatedGeneration)
 	if !prep.sender.isStarted(){
-		p.wg.Add(1)
+		if !p.admitWorker(){return 0,ErrCarrierUnavailable}
 		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
 	}
 	return activatedGeneration,nil
