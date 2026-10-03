@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,6 +58,7 @@ type ScenarioResult struct {
 	Informational bool            `json:"informational"`
 	Passed        bool            `json:"passed"`
 	Attempts      []AttemptResult `json:"attempts"`
+	Metrics       []map[string]any `json:"metrics,omitempty"`
 }
 
 type Summary struct {
@@ -144,6 +146,19 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "write summary: %v\n", err)
 		return 2
 	}
+	metrics := map[string][]map[string]any{}
+	for _, s := range summary.Scenarios {
+		if len(s.Metrics) > 0 {
+			metrics[s.ID] = s.Metrics
+		}
+	}
+	if err := writeJSON(filepath.Join(runDir, "metrics.json"), map[string]any{
+		"metadata": summary.Metadata,
+		"metrics":  metrics,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "write metrics: %v\n", err)
+		return 2
+	}
 	fmt.Printf("BAFT benchmark results: %s\n", runDir)
 	if hardFailure {
 		return 1
@@ -219,6 +234,13 @@ func executeScenario(runDir string, s Scenario) ScenarioResult {
 		cancel()
 		_ = stdout.Close()
 		_ = stderr.Close()
+		metrics, metricErr := parseMetricFile(stdoutPath)
+		if metricErr != nil {
+			fmt.Fprintf(os.Stderr, "%s attempt %d metric parse: %v\n", s.ID, i, metricErr)
+			result.Passed = false
+		} else {
+			result.Metrics = append(result.Metrics, metrics...)
+		}
 
 		exitCode := 0
 		if err != nil {
@@ -239,6 +261,37 @@ func executeScenario(runDir string, s Scenario) ScenarioResult {
 		})
 	}
 	return result
+}
+
+const metricPrefix = "BAFT_BENCH_METRIC "
+
+func parseMetricFile(path string) ([]map[string]any, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []map[string]any
+	s := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	s.Buffer(buf, 2*1024*1024)
+	for s.Scan() {
+		line := s.Text()
+		idx := strings.Index(line, metricPrefix)
+		if idx < 0 {
+			continue
+		}
+		payload := strings.TrimSpace(line[idx+len(metricPrefix):])
+		var metric map[string]any
+		if err := json.Unmarshal([]byte(payload), &metric); err != nil {
+			return nil, fmt.Errorf("decode metric %q: %w", payload, err)
+		}
+		out = append(out, metric)
+	}
+	if err := s.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func writeJSON(path string, v any) error {
