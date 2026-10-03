@@ -211,6 +211,44 @@
       "repetitions": 1,
       "timeout_seconds": 900,
       "informational": true
+    },
+    {
+      "id": "B12",
+      "name": "WAN-emulated BAFT throughput and TTFB",
+      "kind": "wan-emulation",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureMultiFlowThroughput$",
+        "-count=3",
+        "-timeout",
+        "15m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 1200,
+      "informational": true
+    },
+    {
+      "id": "B13",
+      "name": "WAN-emulated carrier-cut recovery",
+      "kind": "wan-emulation",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureRecovery$",
+        "-count=5",
+        "-timeout",
+        "20m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 1500,
+      "informational": true
     }
   ]
 }
