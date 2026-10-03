@@ -23,7 +23,20 @@ The preview lists identifiers and counts only: no token hash, pairing code or ke
 
 **BCC must be stopped.** State (SQLite) and audit log are two files that a running BCC changes at different moments, and another process cannot share BCC's in-process lock, so only a stopped BCC gives one coherent snapshot of both. This is enforced, not just documented: BCC holds an exclusive lock on `<state-file>.lock` for its whole life (the kernel drops it however BCC exits; a second BCC on the same state is refused), and `restore-preview` fails with "stop BCC before previewing from files" if it cannot take that lock. It also refuses while an interrupted write (`<state-file>-journal`) or restore (`.restore-journal.json`) is pending: start BCC once so it can recover, stop it, then preview. It reads into memory and a private temp directory and writes nothing in the live directory (apart from the empty `.lock` file BCC maintains).
 
-Inside a running server the same logic is `Server.PreviewRestore`. It takes the same locks in the same order as the real restore (`backupMu`, then `mutationMu`) and verifies the current audit first, so state and audit come from one instant at which no mutation is in progress, the boundary at which `RestoreFromFile` decides. It is a point-in-time answer: BCC keeps changing afterwards. It is not exposed as a command or API yet.
+Inside a running server the same logic is `Server.PreviewRestore`. It takes the same locks in the same order as the real restore (`backupMu`, then `mutationMu`) and verifies the current audit first, so state and audit come from one instant at which no mutation is in progress, the boundary at which `RestoreFromFile` decides. It is a point-in-time answer: BCC keeps changing afterwards. A5 exposes this read-only operation to authenticated administrators without exposing arbitrary filesystem paths.
+
+## A5 — Admin restore preview
+
+When encrypted backups are configured, BCC binds the admin API to the same `--backup-dir` and backup key used by the scheduled backup loop:
+
+```text
+GET  /api/backups
+POST /api/backups/restore-preview   {"filename":"daily-...baftbak"}
+```
+
+Both endpoints require BCC admin authentication. The list contains only regular `.baftbak` files. Preview accepts a **filename only** from that directory; path traversal, subdirectories and symlinks are rejected. The backup key is copied into server memory, is never returned, and the API cannot select an arbitrary host path. Preview attempts are recorded in the audit log as `backup.restore.preview` with only the filename and non-secret result metadata.
+
+The API is preview-only: it cannot restore or mutate BCC state.
 
 ## What is not here
 

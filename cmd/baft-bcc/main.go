@@ -121,6 +121,7 @@ func main(){
 	if strings.TrimSpace(os.Getenv("BAFT_BCC_BACKUP_KEY"))!=""{
 		backupKey,err:=bcc.BackupKeyFromEnv()
 		if err!=nil{fmt.Fprintln(os.Stderr,"backup key:",err);os.Exit(2)}
+		if err:=app.ConfigureBackupAdmin(*backupDir,backupKey);err!=nil{fmt.Fprintln(os.Stderr,"backup admin:",err);os.Exit(2)}
 		go app.StartBackupLoop(ctx,*backupDir,backupKey,*backupInterval,bcc.BackupRetention{Daily:*backupDailyRetention,Weekly:*backupWeeklyRetention})
 	}
 
