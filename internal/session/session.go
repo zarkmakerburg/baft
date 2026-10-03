@@ -303,6 +303,18 @@ func (p *Peer) SetRunExitObserverForTest(fn func(error)) {
 	p.runExitObserverMu.Lock();p.runExitObserver=fn;p.runExitObserverMu.Unlock()
 }
 
+// RunContextCauseForTest exposes the cancellation cause of the logical Session
+// context without transferring ownership of that context. It is used only for
+// lifecycle evidence so a generic "context canceled" exit can be attributed to
+// its actual Runtime-level producer.
+func (p *Peer) RunContextCauseForTest() error {
+	p.mu.Lock()
+	runCtx:=p.runCtx
+	p.mu.Unlock()
+	if runCtx==nil{return nil}
+	return context.Cause(runCtx)
+}
+
 func (p *Peer) notifyRunExitForTest(err error) {
 	p.runExitObserverMu.RLock();fn:=p.runExitObserver;p.runExitObserverMu.RUnlock()
 	if fn!=nil{fn(err)}
