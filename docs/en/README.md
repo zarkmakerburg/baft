@@ -52,3 +52,4 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 31. [31 — Discovery of existing tunnels (report only)](31-tunnel-discovery.md)
 32. [32 — The `baft` menu and the terminal header](32-baft-menu.md)
 33. [33 — The rerunnable installer](33-rerunnable-installer.md)
+34. [34 — Safe uninstall](34-safe-uninstall.md)

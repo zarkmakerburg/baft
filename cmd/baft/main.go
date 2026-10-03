@@ -77,6 +77,8 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runLogs(args[1:], stdout, stderr, hostOps)
 	case "support-bundle":
 		return runSupportBundle(args[1:], stdout, stderr, hostOps, time.Now)
+	case "uninstall":
+		return runUninstall(ctx, args[1:], os.Stdin, stdout, stderr)
 	default:
 		usage(stderr)
 		return 2
@@ -197,4 +199,5 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  baft doctor [--file /etc/baft/baft.yaml] [--service baft] [--json] [--preview-fixes]")
 	fmt.Fprintln(w, "  baft logs [--service baft] [-n 100] [-f]")
 	fmt.Fprintln(w, "  baft support-bundle [--out file.tar.gz] [-n 500]   # secret-safe diagnostics archive")
+	fmt.Fprintln(w, "  baft uninstall [--preview [--json]] [--binaries|--agent|--bcc|--services|--full] [--delete-...] [--yes]")
 }
