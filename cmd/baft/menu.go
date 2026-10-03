@@ -485,9 +485,9 @@ func readCerts(path string) ([]*x509.Certificate, error) {
 }
 
 func (m *menu) backup() {
-	m.printf("Backups are made by BCC (encrypted, daily and weekly) and restored on the BCC host.\n\n")
+	m.printf("Backups are made by BCC (encrypted, daily and weekly) and restored locally on the BCC host.\n\n")
 	m.printf("Preview a restore (read-only, BCC must be stopped):\n  baft-bcc restore-preview --backup FILE.baftbak --state-file bcc-state.json\n\n")
-	m.printf("A real restore command is %s; today restore exists only inside BCC as a tested library operation.\n", m.st.dim("planned"))
+	m.printf("Commit a verified local restore (BCC must be stopped; explicit confirmation required):\n  baft-bcc restore --backup FILE.baftbak --state-file bcc-state.json --yes\n")
 }
 
 // uninstallMenu is HQ's uninstall submenu; every entry shows the exact plan

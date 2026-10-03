@@ -38,6 +38,23 @@ Both endpoints require BCC admin authentication. The list contains only regular 
 
 The API is preview-only: it cannot restore or mutate BCC state.
 
+## A6 — Local restore CLI
+
+The real restore remains deliberately **offline and local to the BCC host**:
+
+```bash
+export BAFT_BCC_BACKUP_KEY=...
+baft-bcc restore --backup backups/daily-20261002T000000Z.baftbak --state-file bcc-state.json
+# preview only; exits 4 because explicit confirmation is still required
+
+baft-bcc restore --backup backups/daily-20261002T000000Z.baftbak --state-file bcc-state.json --yes
+# repeats all safety checks and commits the transactional restore
+```
+
+The command requires the BCC state-file lock, so a running BCC makes it fail. It first runs the same restore preview and refuses an unauthenticated/corrupt backup, an invalid current audit chain, an anchor that the current audit does not extend, a legacy state that still needs migration, or a pending write/restore journal. Without `--yes` it never mutates state. With `--yes`, `RestoreFiles` reacquires the process lock and repeats backup/audit/anchor checks before calling the already fault-injection-tested transactional restore.
+
+Exit codes: `0` committed, `1` safety/verification/restore failure, `2` usage or key configuration error, `4` verified preview but confirmation not given. `--json` reports both the preview and whether a restore was committed.
+
 ## What is not here
 
-The restore itself (`Server.RestoreFromFile`) is a transactional, fault-injection-tested library operation (stage, verify, journal, commit, roll back on failure), but it is **not yet exposed** as a command or API: this PR adds the preview only. A restore command that is safe against a running BCC needs its own design and approval.
+There is intentionally **no remote restore API** and no live in-process admin restore action. A5 is preview-only over the admin API; A6 requires local host access, a stopped BCC, the backup key, and explicit `--yes`.
