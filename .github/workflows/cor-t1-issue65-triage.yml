@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - triage/cor-t1-issue65
+      - triage/cor-t1-debug-fast2
     paths:
       - 'tests/correctness/cor01_stall_debug_test.go'
       - 'internal/session/cor01_debug.go'
@@ -20,7 +20,7 @@ concurrency:
 jobs:
   correctness:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -38,4 +38,4 @@ jobs:
         run: >-
           go test -tags cor01debug ./tests/correctness
           -run '^TestCOR01OneGiBBidirectionalInstrumented$'
-          -count=1 -timeout 20m -v
+          -count=1 -timeout 4m -v
