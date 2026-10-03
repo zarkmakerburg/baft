@@ -548,7 +548,31 @@ func (p *Peer) OpenFlow(ctx context.Context, routeID string, conn net.Conn) erro
 	return nil
 }
 
+// appConnSocketBuffer is the kernel send/receive buffer requested for the
+// application-facing TCP connection of every Flow (the local client on the
+// dialer, the target on the listener). The kernel caps it at
+// net.core.{r,w}mem_max.
+//
+// A fixed size turns off receive-buffer autotuning on that socket. With
+// autotuning, BAFT's credit backpressure (a pump that stops reading while the
+// peer has no window) leaves the queue full, and on loopback (MSS ~64 KiB) the
+// kernel drops segments that overrun the autotuned rcvbuf. TCP then recovers
+// only through exponential RTO/persist backoff (observed: backoff 6, rto
+// 12.8 s, cwnd 1), which stalls the Flow for seconds to minutes (COR-T1, #65).
+// Measured on CI at 32 KiB echo: autotuned 3/12 stalls, fixed buffers 0/20.
+const appConnSocketBuffer = 4 * 1024 * 1024
+
+func tuneAppConn(conn net.Conn) {
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tc.SetReadBuffer(appConnSocketBuffer)
+	_ = tc.SetWriteBuffer(appConnSocketBuffer)
+}
+
 func newFlow(id uint64, routeID, nonce string, conn net.Conn, alloc ...*resources.Allocator) *flow {
+	tuneAppConn(conn)
 	a := (*resources.Allocator)(nil)
 	if len(alloc) > 0 {
 		a = alloc[0]
