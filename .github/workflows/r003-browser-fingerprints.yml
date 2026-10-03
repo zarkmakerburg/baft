@@ -61,7 +61,13 @@ jobs:
           sudo tcpdump -i lo -nn -s 0 -U -w "$RUNNER_TEMP/r003-browser/firefox.pcap" 'tcp port 9443' >/tmp/firefox-tcpdump.log 2>&1 & CAP=$!
           sleep 1
           mkdir -p "$RUNNER_TEMP/firefox-profile"
-          timeout 15s "$FIREFOX" --headless --no-remote --profile "$RUNNER_TEMP/firefox-profile" 'https://control.test:9443/' >/tmp/firefox.out 2>/tmp/firefox.err || true
+          cat > "$RUNNER_TEMP/firefox-profile/user.js" <<'EOF'
+          user_pref("network.proxy.type", 0);
+          user_pref("browser.shell.checkDefaultBrowser", false);
+          user_pref("datareporting.policy.dataSubmissionEnabled", false);
+          user_pref("toolkit.telemetry.enabled", false);
+          EOF
+          MOZ_HEADLESS=1 timeout 20s "$FIREFOX" --headless --no-remote --profile "$RUNNER_TEMP/firefox-profile" 'https://127.0.0.1:9443/' >"$RUNNER_TEMP/r003-browser/firefox.stdout" 2>"$RUNNER_TEMP/r003-browser/firefox.stderr" || true
           sudo kill -INT "$CAP" 2>/dev/null || true; wait "$CAP" 2>/dev/null || true
           ja3 -a -j "$RUNNER_TEMP/r003-browser/firefox.pcap" > "$RUNNER_TEMP/r003-browser/firefox-ja3.json" || true
           python3 "$RUNNER_TEMP/ja4/python/ja4.py" "$RUNNER_TEMP/r003-browser/firefox.pcap" -J --ja4 > "$RUNNER_TEMP/r003-browser/firefox-ja4.json" || true
