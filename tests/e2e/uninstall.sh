@@ -52,6 +52,10 @@ cleanup() {
       m="$(tail -c 3500 "$WORK/prov.log")"; m="${m//%/%25}"; printf '::notice title=uninstall e2e provenance (.ghcup and skeleton copies)::%s\n' "${m//$'\n'/%0A}"
     fi
   fi
+  # Keep the evidence where a later workflow step can report it.
+  mkdir -p /tmp/uninstall-e2e-report
+  cp "$WORK"/diag "$WORK"/zz-fail.log "$WORK"/prov.log "$WORK"/*.out "$WORK"/clean.txt /tmp/uninstall-e2e-report/ 2>/dev/null || true
+  chmod -R a+rX /tmp/uninstall-e2e-report 2>/dev/null || true
   for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
   systemctl stop baft-hand baft-ex baft-ir baft-agent baft-bcc 2>/dev/null || true
   rm -rf "$WORK"

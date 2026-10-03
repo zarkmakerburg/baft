@@ -293,6 +293,16 @@ jobs:
           scripts/release/local_release.sh "$RUNNER_TEMP/rel2" v0.0.2-ci
       - name: Uninstall acceptance
         run: sudo env GITHUB_ACTIONS=true tests/e2e/uninstall.sh "$RUNNER_TEMP/rel1" "$RUNNER_TEMP/rel2"
+      - name: Report uninstall evidence
+        if: always()
+        run: |
+          d=/tmp/uninstall-e2e-report
+          [ -d "$d" ] || { echo "::warning title=uninstall evidence::no report directory"; exit 0; }
+          for f in zz-fail.log clean.txt resume.out crash2.out prov.log diag; do
+            [ -f "$d/$f" ] || continue
+            m="$(tail -c 3000 "$d/$f")"; m="${m//'%'/'%25'}"; m="${m//$'\r'/}"; m="${m//$'\n'/'%0A'}"
+            echo "::notice title=uninstall evidence: $f::$m"
+          done
 
   installer-faults:
     # install.sh on a fake tree (stateful systemctl stub, recording apt-get):
