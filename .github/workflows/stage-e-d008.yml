@@ -7,6 +7,7 @@ on:
       - bench/stage-e-foundation
     paths:
       - '.github/workflows/stage-e-d008.yml'
+      - 'tests/integration/stage_e_benchmark_test.go'
 
 permissions:
   contents: read
