@@ -60,6 +60,8 @@ func (w countingWriter) Write(p []byte) (int,error) {
 type cor01StallEvidence struct {
 	SentBytes int64
 	RecvBytes int64
+	TargetReadBytes int64
+	TargetWrittenBytes int64
 	IR session.SessionDebugSnapshotForTest
 	EX session.SessionDebugSnapshotForTest
 	IRWindowSent uint64
@@ -157,6 +159,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	ctx,cancel:=context.WithTimeout(context.Background(),18*time.Minute)
 	defer cancel()
 	var sentBytes,recvBytes atomic.Int64
+	var targetReadBytes,targetWrittenBytes atomic.Int64
 	var irWindowSent,irWindowRecv,exWindowSent,exWindowRecv atomic.Uint64
 	observeWindows:=func(sent,recv *atomic.Uint64) func(session.WindowUpdateDiagnosticForTest) {
 		return func(ev session.WindowUpdateDiagnosticForTest) {
@@ -181,7 +184,8 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 		for {
 			n,rerr:=c.Read(buf)
 			if n>0 {
-				if werr:=writeFull(c,buf[:n]); werr!=nil { targetDone<-werr; return }
+				targetReadBytes.Add(int64(n))
+				if werr:=writeFull(countingWriter{w:c,n:&targetWrittenBytes},buf[:n]); werr!=nil { targetDone<-werr; return }
 			}
 			if rerr!=nil {
 				if rerr==io.EOF {
@@ -293,6 +297,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 				n:=runtime.Stack(buf,true)
 				ev:=cor01StallEvidence{
 					SentBytes:s,RecvBytes:r,
+					TargetReadBytes:targetReadBytes.Load(),TargetWrittenBytes:targetWrittenBytes.Load(),
 					IR:ir.DebugSnapshotForTest(),EX:exSnap,
 					IRWindowSent:irWindowSent.Load(),IRWindowRecv:irWindowRecv.Load(),
 					EXWindowSent:exWindowSent.Load(),EXWindowRecv:exWindowRecv.Load(),
@@ -312,8 +317,9 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	close(watchDone)
 	select{
 	case ev:=<-stallCh:
-		t.Logf("COR-T1 STALL sent=%d recv=%d ir_windows_sent=%d ir_windows_recv=%d ex_windows_sent=%d ex_windows_recv=%d IR=%+v EX=%+v",
-			ev.SentBytes,ev.RecvBytes,ev.IRWindowSent,ev.IRWindowRecv,ev.EXWindowSent,ev.EXWindowRecv,ev.IR,ev.EX)
+		t.Logf("COR-T1 STALL sent=%d recv=%d target_read=%d target_written=%d target_inflight=%d ir_windows_sent=%d ir_windows_recv=%d ex_windows_sent=%d ex_windows_recv=%d IR=%+v EX=%+v",
+			ev.SentBytes,ev.RecvBytes,ev.TargetReadBytes,ev.TargetWrittenBytes,ev.TargetReadBytes-ev.TargetWrittenBytes,
+			ev.IRWindowSent,ev.IRWindowRecv,ev.EXWindowSent,ev.EXWindowRecv,ev.IR,ev.EX)
 		t.Logf("COR-T1 GOROUTINES:\n%s",ev.Goroutines)
 		t.Fatalf("COR-01 liveness stall: no byte progress for 15s")
 	default:
