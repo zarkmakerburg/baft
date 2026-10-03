@@ -35,10 +35,14 @@ baft-bcc restore-preview ... --json   # machine-readable
 
 وقتی backup رمزگذاری‌شده فعال باشد، BCC API ادمین را به همان `--backup-dir` و همان کلیدی که حلقه backup استفاده می‌کند محدود می‌کند:
 
+<div dir="ltr" align="left">
+
 ```text
 GET  /api/backups
 POST /api/backups/restore-preview   {"filename":"daily-...baftbak"}
 ```
+
+</div>
 
 هر دو endpoint فقط با احراز هویت Admin کار می‌کنند. فهرست فقط فایل‌های regular با پسوند `.baftbak` را نشان می‌دهد. Preview فقط **نام فایل** داخل همان پوشه را می‌پذیرد؛ path traversal، زیرپوشه و symlink رد می‌شوند. کلید backup فقط در حافظه نگه داشته می‌شود و هرگز در پاسخ API برنمی‌گردد. تلاش‌های preview با action `backup.restore.preview` و فقط metadata غیرمحرمانه audit می‌شوند.
 
