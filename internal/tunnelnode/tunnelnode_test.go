@@ -40,6 +40,10 @@ type fakeHost struct {
 	enabled     bool
 	failRestart bool
 	calls       []string
+	// onRestart plays the service starting: it loads what the real one would
+	// and an error means it failed to start.
+	onRestart func() error
+	dead      bool
 }
 
 func (f *fakeHost) Systemctl(_ context.Context, args ...string) (string, error) {
@@ -49,6 +53,12 @@ func (f *fakeHost) Systemctl(_ context.Context, args ...string) (string, error) 
 	switch args[0] {
 	case "restart":
 		f.active = !f.failRestart
+		f.dead = false
+		if f.active && f.onRestart != nil {
+			if err := f.onRestart(); err != nil {
+				f.active, f.dead = false, true
+			}
+		}
 	case "stop":
 		f.active = false
 	case "enable":
@@ -59,7 +69,7 @@ func (f *fakeHost) Systemctl(_ context.Context, args ...string) (string, error) 
 		switch {
 		case f.active:
 			return "active", nil
-		case f.failRestart:
+		case f.failRestart || f.dead:
 			return "failed", nil
 		}
 		return "inactive", nil

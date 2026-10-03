@@ -64,6 +64,10 @@ type Env struct {
 	MetricsListen string
 	System        System
 	Now           func() time.Time
+	// Fault, when set, is asked at named points inside a certificate
+	// rotation; an error stops the operation right there, without any
+	// cleanup, as if the process died (fault-injection tests only).
+	Fault func(point string) error
 }
 
 const (
@@ -269,6 +273,9 @@ func (m *Manager) begin(id, role string) (Txn, error) {
 		if t, err := m.readTxn(cur); err == nil && (t.Phase == PhasePrepared || t.Phase == PhaseCommitted) {
 			return Txn{}, fmt.Errorf("tunnel change %s is still in progress on this node", cur)
 		}
+	}
+	if rid := m.rotationInProgress(); rid != "" {
+		return Txn{}, fmt.Errorf("certificate rotation %s is in progress on this node", rid)
 	}
 	if _, err := m.readTxn(id); err == nil {
 		return Txn{}, fmt.Errorf("tunnel change %s already exists on this node", id)
