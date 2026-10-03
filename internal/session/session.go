@@ -1211,6 +1211,12 @@ func (p *Peer) finishIfComplete(fl *flow) {
 	p.mu.Unlock()
 }
 
+// EXPERIMENT E1 (COR-T1, not for merge): fixed kernel socket buffers on the
+// application-facing TCP connection.
+func expSockBuf(c net.Conn) {
+	if tc,ok:=c.(*net.TCPConn);ok{_ = tc.SetReadBuffer(4<<20);_ = tc.SetWriteBuffer(4<<20)}
+}
+
 func (p *Peer) startPump(ctx context.Context, fl *flow) {
 	fl.mu.Lock()
 	if fl.closed||fl.conn==nil||fl.finSent||fl.localPumpRunning { fl.mu.Unlock(); return }
@@ -1226,6 +1232,7 @@ func (p *Peer) startPump(ctx context.Context, fl *flow) {
 			if fl.localPumpDone==done { fl.localPumpRunning=false; close(done) }
 			fl.mu.Unlock()
 		}()
+		expSockBuf(fl.conn)
 		p.pumpLocal(ctx, fl)
 	}()
 }
