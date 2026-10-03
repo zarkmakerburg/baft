@@ -103,6 +103,8 @@ type outboundSender struct {
 	hasStopEvent bool
 	onStop func(SenderStopEvent)
 	onDataWrite func(DataWriteDiagnostic)
+	// writeFault is a test-only fault injector at the physical write boundary.
+	writeFault func(frame protocol.Frame,generation uint64) error
 	writeSeq uint64
 	windowHigh map[uint64]uint64
 }
@@ -139,9 +141,13 @@ func (s *outboundSender) writeFrame(frame protocol.Frame) error {
 		s.mu.Unlock()
 		return errors.New("outbound sender writer is nil")
 	}
+	fault,generation:=s.writeFault,s.diag.CarrierGeneration
 	w.mu.Lock()
 	s.mu.Unlock()
 	defer w.mu.Unlock()
+	if fault!=nil{
+		if err:=fault(frame,generation);err!=nil{return s.carrierError(err)}
+	}
 	return s.carrierError(protocol.Encode(w.w,frame))
 }
 
@@ -174,8 +180,14 @@ func (s *outboundSender) removeFlow(flowID uint64, cause error) {
 		if !ok || req == nil {
 			continue
 		}
+		err:=cause
+		// Flow-level closure remains flow-level. If a physical cancellation is
+		// used as the removal cause, classify it before handing it to the caller.
+		if errors.Is(cause,context.Canceled)||errors.Is(cause,context.DeadlineExceeded)||errors.Is(cause,ErrCarrierUnavailable){
+			err=s.carrierError(cause)
+		}
 		select {
-		case req.done <- cause:
+		case req.done <- err:
 		default:
 		}
 	}
