@@ -413,11 +413,13 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 // session survival across one abrupt Carrier cut. All probe TCP connections
 // remain the same application flows; reopening a target socket is a failure.
 func TestStageEMeasureRecovery(t *testing.T) {
-	// maxFlowsPerShard is currently 64 in production. Stage E intentionally
-	// exercises that existing ceiling without changing production limits.
-	const flows = 64
+	// maxFlowsPerShard is currently 64 in production. Stage E defaults to
+	// that ceiling; WAN profiles may request a smaller population, never >64.
+	flows := stageEEnvInt("BAFT_STAGE_E_RECOVERY_FLOWS", 64)
+	if flows > 64 { t.Fatalf("requested recovery flows %d exceeds production shard ceiling 64", flows) }
 	p := startRecoveryRuntimePair(t, 1)
 	defer p.close(t)
+	netemProfile, _ := stageEApplyNetem(t, p.proxy.Addr())
 
 	conns := make([]net.Conn, 0, flows)
 	for i := 0; i < flows; i++ {
@@ -507,6 +509,9 @@ func TestStageEMeasureRecovery(t *testing.T) {
 		"recovery_ms_p99":          percentileMillis(latencies, 0.99),
 		"sample_count":              len(recoverySamplesMS),
 		"recovery_samples_ms":       recoverySamplesMS,
+		"netem_rtt_ms":              netemProfile.RTTMS,
+		"netem_loss_pct":            netemProfile.LossPct,
+		"netem_rate_mbit":           netemProfile.RateMbit,
 		"carrier_connections_cut":  len(cutIDs),
 		"target_accepts_before":     targetBefore,
 		"target_accepts_after":      targetAfter,
