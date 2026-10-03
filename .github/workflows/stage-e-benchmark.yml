@@ -1,0 +1,54 @@
+name: stage-e-benchmark-lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Benchmark scenario to run
+        required: true
+        default: B02
+        type: choice
+        options:
+          - B01
+          - B02
+          - B03
+          - B04
+          - B05
+          - all
+
+concurrency:
+  group: stage-e-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Verify benchmark runner
+        run: go test ./cmd/baft-bench -count=1
+      - name: Run selected benchmark scenario
+        run: |
+          go run ./cmd/baft-bench \
+            -scenario '${{ inputs.scenario }}' \
+            -out '${{ runner.temp }}/baft-bench-results'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baft-stage-e-${{ inputs.scenario }}-${{ github.sha }}
+          path: ${{ runner.temp }}/baft-bench-results
+          if-no-files-found: warn
+          retention-days: 14
