@@ -455,3 +455,191 @@ func TestStageEMeasureRecovery(t *testing.T) {
 		t.Fatalf("target TCP reopened across Carrier recovery before=%d after=%d", targetBefore, targetAfter)
 	}
 }
+
+
+// TestStageEMeasureDirectTCPThroughput is the control measurement for B06.
+// It uses the same flow count, payload size, warmup, hashing, and timed region,
+// but removes BAFT Session and H2/mTLS from the path.
+func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
+	const (
+		flowCount    = 8
+		bytesPerFlow = 4 * 1024 * 1024
+	)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var serverWG sync.WaitGroup
+	acceptErr := make(chan error, 1)
+	go func() {
+		for i := 0; i < flowCount; i++ {
+			c, err := ln.Accept()
+			if err != nil {
+				acceptErr <- err
+				return
+			}
+			serverWG.Add(1)
+			go func(c net.Conn) {
+				defer serverWG.Done()
+				defer c.Close()
+				buf := make([]byte, 64*1024)
+				for {
+					n, rerr := c.Read(buf)
+					if n > 0 {
+						p := buf[:n]
+						for len(p) > 0 {
+							w, werr := c.Write(p)
+							if werr != nil {
+								return
+							}
+							p = p[w:]
+						}
+					}
+					if rerr != nil {
+						if cw, ok := c.(interface{ CloseWrite() error }); ok {
+							_ = cw.CloseWrite()
+						}
+						return
+					}
+				}
+			}(c)
+		}
+		acceptErr <- nil
+	}()
+
+	ready := make(chan error, flowCount)
+	startBulk := make(chan struct{})
+	clientErr := make(chan error, flowCount)
+	var clients sync.WaitGroup
+
+	for i := 0; i < flowCount; i++ {
+		i := i
+		clients.Add(1)
+		go func() {
+			defer clients.Done()
+			raw, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+			if err != nil {
+				ready <- err
+				clientErr <- err
+				return
+			}
+			c := raw.(*net.TCPConn)
+			defer c.Close()
+			_ = c.SetDeadline(time.Now().Add(20 * time.Second))
+
+			prelude := []byte{0x42, byte(i), 0x45}
+			if _, err := c.Write(prelude); err != nil {
+				ready <- err
+				clientErr <- err
+				return
+			}
+			gotPrelude := make([]byte, len(prelude))
+			if _, err := io.ReadFull(c, gotPrelude); err != nil {
+				ready <- err
+				clientErr <- err
+				return
+			}
+			if !bytes.Equal(gotPrelude, prelude) {
+				err := fmt.Errorf("flow %d warmup echo mismatch", i)
+				ready <- err
+				clientErr <- err
+				return
+			}
+
+			payload := make([]byte, bytesPerFlow)
+			for j := range payload {
+				payload[j] = byte((j*17 + i*29) % 251)
+			}
+			want := sha256.Sum256(payload)
+			ready <- nil
+			<-startBulk
+
+			writeDone := make(chan error, 1)
+			go func() {
+				_, err := io.Copy(c, bytes.NewReader(payload))
+				if err == nil {
+					err = c.CloseWrite()
+				}
+				writeDone <- err
+			}()
+
+			h := sha256.New()
+			n, err := io.Copy(h, c)
+			if err != nil {
+				clientErr <- err
+				return
+			}
+			if err := <-writeDone; err != nil {
+				clientErr <- err
+				return
+			}
+			if n != int64(len(payload)) {
+				clientErr <- fmt.Errorf("flow %d bytes=%d want=%d", i, n, len(payload))
+				return
+			}
+			if !bytes.Equal(h.Sum(nil), want[:]) {
+				clientErr <- fmt.Errorf("flow %d hash mismatch", i)
+				return
+			}
+			clientErr <- nil
+		}()
+	}
+
+	for i := 0; i < flowCount; i++ {
+		if err := <-ready; err != nil {
+			t.Fatalf("warmup %d: %v", i, err)
+		}
+	}
+
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	goroutinesBefore := runtime.NumGoroutine()
+	fdBefore := stageEFDCount()
+
+	started := time.Now()
+	close(startBulk)
+	clients.Wait()
+	elapsed := time.Since(started)
+
+	for i := 0; i < flowCount; i++ {
+		if err := <-clientErr; err != nil {
+			t.Fatalf("client %d: %v", i, err)
+		}
+	}
+	if err := <-acceptErr; err != nil {
+		t.Fatal(err)
+	}
+	serverWG.Wait()
+
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	fdAfter := stageEFDCount()
+	goroutinesAfter := runtime.NumGoroutine()
+
+	txBytes := int64(flowCount * bytesPerFlow)
+	seconds := elapsed.Seconds()
+	txMbps := float64(txBytes*8) / seconds / 1_000_000
+	aggregateMbps := txMbps * 2
+
+	emitStageEMetric(t, map[string]any{
+		"scenario":                 "B08",
+		"measurement":              "direct_tcp_loopback_throughput",
+		"flows":                    flowCount,
+		"tx_bytes":                 txBytes,
+		"rx_bytes":                 txBytes,
+		"elapsed_ms":               float64(elapsed) / float64(time.Millisecond),
+		"tx_mbps":                  txMbps,
+		"rx_mbps":                  txMbps,
+		"aggregate_mbps":           aggregateMbps,
+		"heap_alloc_before_bytes":  before.HeapAlloc,
+		"heap_alloc_after_bytes":   after.HeapAlloc,
+		"goroutines_before":        goroutinesBefore,
+		"goroutines_after":         goroutinesAfter,
+		"fd_before":                fdBefore,
+		"fd_after":                 fdAfter,
+		"scope":                    "direct loopback TCP control; same warmed-flow payload profile as B06",
+	})
+}
