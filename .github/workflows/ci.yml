@@ -138,6 +138,21 @@ jobs:
       - name: Release dry run
         run: scripts/release/dry_run.sh
 
+  third-party-licenses:
+    # THIRD_PARTY_LICENSES.md must match the modules linked into the release
+    # binaries, and none of them may carry a strong-copyleft license.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Check third-party licenses
+        run: scripts/third_party_licenses.sh --check
+
   e2e-binaries:
     # Real `baft` and `baft-pair` binaries: pair an EX and IR the way
     # install.sh does, run both, and push data through a local echo target.
@@ -252,12 +267,13 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release/local_release.sh "$RUNNER_TEMP/rel" v0.0.1-ci
-          scripts/release/offline_bundle.sh "$RUNNER_TEMP/rel/dist" "$RUNNER_TEMP/rel/revocations.json" install.sh "$RUNNER_TEMP/bundle"
-          scripts/release/offline_bundle.sh "$RUNNER_TEMP/rel/dist" "$RUNNER_TEMP/rel/revocations.json" install.sh "$RUNNER_TEMP/bundle2" >/dev/null
+          scripts/release/offline_bundle.sh "$RUNNER_TEMP/rel/dist" "$RUNNER_TEMP/rel/revocations.json" install.sh "$RUNNER_TEMP/bundle" .
+          scripts/release/offline_bundle.sh "$RUNNER_TEMP/rel/dist" "$RUNNER_TEMP/rel/revocations.json" install.sh "$RUNNER_TEMP/bundle2" . >/dev/null
           cmp "$RUNNER_TEMP"/bundle/*.tar.gz "$RUNNER_TEMP"/bundle2/*.tar.gz
           (cd "$RUNNER_TEMP/bundle" && sha256sum -c ./*.sha256)
           mkdir "$RUNNER_TEMP/unpacked"
           tar -xzf "$RUNNER_TEMP"/bundle/*.tar.gz -C "$RUNNER_TEMP/unpacked"
+          for f in LICENSE COPYRIGHT THIRD_PARTY_LICENSES.md; do test -s "$RUNNER_TEMP"/unpacked/baft-offline-*/"$f"; done
       - name: A tampered bundle is refused
         run: |
           set -euo pipefail

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Pack a signed release into one file for servers with no internet access.
 #
-#   scripts/release/offline_bundle.sh <release-dist-dir> <revocations.json> <install.sh> <out-dir>
+#   scripts/release/offline_bundle.sh <release-dist-dir> <revocations.json> <install.sh> <out-dir> [notices-dir]
+#
+# notices-dir, when given, must hold LICENSE, COPYRIGHT and
+# THIRD_PARTY_LICENSES.md; they are copied to the top of the archive so the
+# license and third-party notices ship with the binaries.
 #
 # Writes <out-dir>/baft-offline-<version>.tar.gz and a .sha256 next to it. The
 # archive holds release/ (the signed release files, both architectures and the
@@ -19,6 +23,7 @@ dist=${1:?usage: offline_bundle.sh <dist-dir> <revocations.json> <install.sh> <o
 rev=${2:?revocations.json is required}
 inst=${3:?install.sh is required}
 out=${4:?out-dir is required}
+notices=${5:-}
 
 for f in manifest.json release-key.cert.json SHA256SUMS; do
   [[ -s "$dist/$f" ]] || { echo "offline_bundle: $dist/$f is missing; sign the release first" >&2; exit 1; }
@@ -37,6 +42,12 @@ mkdir -p "$stage/$name/release" "$out"
 cp "$dist"/* "$stage/$name/release/"
 cp "$rev" "$stage/$name/revocations.json"
 cp "$inst" "$stage/$name/install.sh"
+if [[ -n "$notices" ]]; then
+  for f in LICENSE COPYRIGHT THIRD_PARTY_LICENSES.md; do
+    [[ -s "$notices/$f" ]] || { echo "offline_bundle: $notices/$f is missing" >&2; exit 1; }
+    cp "$notices/$f" "$stage/$name/$f"
+  done
+fi
 cat > "$stage/$name/README.txt" <<TXT
 BAFT $version offline bundle
 
