@@ -29,6 +29,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq tcpdump tshark
+          python3 -m pip install --disable-pip-version-check --quiet pyja3
       - name: Capture BAFT Noise H2 TLS ClientHello
         run: |
           mkdir -p "$RUNNER_TEMP/r003-fingerprint"
@@ -47,8 +48,20 @@ jobs:
         run: |
           bash bench/r003/fingerprint_tshark.sh \
             "$RUNNER_TEMP/r003-fingerprint/baft-noise.pcap" \
-            "$RUNNER_TEMP/r003-fingerprint/baft-noise-fingerprints.json"
-          cat "$RUNNER_TEMP/r003-fingerprint/baft-noise-fingerprints.json"
+            "$RUNNER_TEMP/r003-fingerprint/tshark-summary.json"
+          ja3 -a -j "$RUNNER_TEMP/r003-fingerprint/baft-noise.pcap" \
+            > "$RUNNER_TEMP/r003-fingerprint/ja3.json"
+          git clone --depth 1 https://github.com/FoxIO-LLC/ja4.git "$RUNNER_TEMP/ja4"
+          git -C "$RUNNER_TEMP/ja4" rev-parse HEAD > "$RUNNER_TEMP/r003-fingerprint/ja4-source-commit.txt"
+          python3 "$RUNNER_TEMP/ja4/python/ja4.py" \
+            "$RUNNER_TEMP/r003-fingerprint/baft-noise.pcap" -J --ja4 \
+            > "$RUNNER_TEMP/r003-fingerprint/ja4.json"
+          echo '--- tshark ---'
+          cat "$RUNNER_TEMP/r003-fingerprint/tshark-summary.json"
+          echo '--- JA3 ---'
+          cat "$RUNNER_TEMP/r003-fingerprint/ja3.json"
+          echo '--- JA4 ---'
+          cat "$RUNNER_TEMP/r003-fingerprint/ja4.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
