@@ -154,6 +154,25 @@
       "repetitions": 1,
       "timeout_seconds": 900,
       "informational": true
+    },
+    {
+      "id": "B09",
+      "name": "Test-only frame-coalesced BAFT throughput A/B",
+      "kind": "diagnostic-performance",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureFrameCoalescedThroughput$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
     }
   ]
 }
