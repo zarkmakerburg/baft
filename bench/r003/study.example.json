@@ -1,0 +1,88 @@
+{
+  "study_id": "R003-YYYYMMDD",
+  "duration_days": 14,
+  "sample_interval_seconds": 60,
+  "first_disruption_consecutive_failures": 3,
+  "full_block_minutes": 30,
+  "foreign_provider": "REDACTED-IN-SHARED-REPORT-UNTIL-APPROVED",
+  "foreign_asn": "ASNNNN",
+  "foreign_region": "same-region-for-all",
+  "iran_city_alias": "city-A",
+  "isps": [
+    {
+      "id": "ISP-A",
+      "class": "fixed-line"
+    },
+    {
+      "id": "ISP-B",
+      "class": "mobile"
+    },
+    {
+      "id": "ISP-C",
+      "class": "mobile"
+    }
+  ],
+  "tunnels": [
+    {
+      "id": "T1",
+      "name": "GRE/IPIP",
+      "variant": "pin-exact-encapsulation"
+    },
+    {
+      "id": "T2",
+      "name": "plain reverse TCP",
+      "variant": "no-encryption"
+    },
+    {
+      "id": "T3",
+      "name": "WS",
+      "variant": "no-TLS"
+    },
+    {
+      "id": "T4",
+      "name": "WSS direct IP",
+      "variant": "self-signed"
+    },
+    {
+      "id": "T5",
+      "name": "WSS domain CDN",
+      "variant": "record-CDN-and-mode"
+    },
+    {
+      "id": "T6",
+      "name": "Rathole/FRP/Backhaul",
+      "variant": "record-product-version-TLS-Noise"
+    },
+    {
+      "id": "T7",
+      "name": "VLESS Reality",
+      "variant": "pin-Xray-version-and-config-hash"
+    },
+    {
+      "id": "T8",
+      "name": "Hashem",
+      "variant": "GRE+FRP; record Hashem/FRP versions, transport.protocol and transport.tls.enable"
+    },
+    {
+      "id": "T9",
+      "name": "BAFT default",
+      "variant": "Noise-over-H2-TLS1.3:8443; shaping-off"
+    },
+    {
+      "id": "T10",
+      "name": "BAFT shaped",
+      "variant": "Noise-over-H2-TLS1.3:8443; shaping-on; record-config-hash"
+    }
+  ],
+  "profiles": {
+    "light": {
+      "bytes_per_day_target": 0,
+      "schedule_id": "light-v1"
+    },
+    "sustained": {
+      "target_mbit_s": 7.5,
+      "block_minutes": 30,
+      "schedule_id": "sustained-v1"
+    }
+  }
+}
