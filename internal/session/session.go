@@ -126,6 +126,8 @@ type Peer struct {
 	recoveryWaitExpiryHook func() bool
 	logicalSessionRetainObserverMu sync.RWMutex
 	logicalSessionRetainObserver func(string)
+	windowObserverMu sync.RWMutex
+	windowObserverForTest func(WindowUpdateDiagnosticForTest)
 }
 
 type replayChunk struct {
@@ -587,7 +589,9 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 			}
 			return err
 		}
-		return fl.onWindow(fr.Offset)
+		if err:=fl.onWindow(fr.Offset);err!=nil{return err}
+		p.notifyWindowUpdateForTest("received",fr.StreamID,fr.Offset)
+		return nil
 	case protocol.TypeAck:
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
@@ -976,6 +980,7 @@ func (p *Peer) finishOpen(ctx context.Context, id uint64, req protocol.OpenReque
 		p.removeFlow(id)
 		return err
 	}
+	p.notifyWindowUpdateForTest("sent",fl.id,window)
 	p.startPump(ctx, fl)
 	p.startTargetPump(ctx, fl)
 	return nil
@@ -1067,7 +1072,9 @@ func (p *Peer) grantReceive(fl *flow) error {
 	if err != nil {
 		return err
 	}
-	return p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: max})
+	if err:=p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeWindow, StreamID: fl.id, Offset: max});err!=nil{return err}
+	p.notifyWindowUpdateForTest("sent",fl.id,max)
+	return nil
 }
 
 func (p *Peer) handleData(fl *flow, fr protocol.Frame) error {
