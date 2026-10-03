@@ -2114,3 +2114,247 @@ func TestLogicalSessionLifetimeRetainsExactStatusAuthority(t *testing.T){
 		}
 	}
 }
+func TestClassASecondCutCannotCancelLogicalSession(t *testing.T) {
+	p := startRecoveryRuntimePair(t, 1)
+	defer p.closeAllowErrors()
+	c := openRecoveryFlow(t, p)
+	defer c.Close()
+	targetBefore := p.targetAccepts.Load()
+
+	var lifeMu sync.Mutex
+	var life []node.LogicalSessionLifecycleEvent
+	p.exRuntime.SetLogicalSessionLifecycleHookForTest(func(ev node.LogicalSessionLifecycleEvent) {
+		lifeMu.Lock()
+		life = append(life, ev)
+		lifeMu.Unlock()
+	})
+	var diagMu sync.Mutex
+	var diags, irDiags []session.RecoveryDiagnosticEvent
+	p.irRuntime.SetRecoveryDiagnosticHookForTest(func(ev session.RecoveryDiagnosticEvent) {
+		if ev.Event == "HANDLER_CREATED" || ev.Event == "FRAME_BEFORE_MUTATION" || ev.Event == "DATA_WRITE_BEGIN" || ev.Event == "DATA_WRITE_SUCCESS" || ev.Event == "LIVE_DATA_ATTEMPT" {
+			return
+		}
+		diagMu.Lock()
+		if len(irDiags) < 260 {
+			irDiags = append(irDiags, ev)
+		}
+		diagMu.Unlock()
+	})
+	p.exRuntime.SetRecoveryDiagnosticHookForTest(func(ev session.RecoveryDiagnosticEvent) {
+		if ev.Event == "HANDLER_CREATED" || ev.Event == "FRAME_BEFORE_MUTATION" || ev.Event == "DATA_WRITE_BEGIN" || ev.Event == "DATA_WRITE_SUCCESS" {
+			return
+		}
+		diagMu.Lock()
+		if len(diags) < 400 {
+			diags = append(diags, ev)
+		}
+		diagMu.Unlock()
+	})
+	forbidden := func() []node.LogicalSessionLifecycleEvent {
+		lifeMu.Lock()
+		defer lifeMu.Unlock()
+		var out []node.LogicalSessionLifecycleEvent
+		for _, ev := range life {
+			switch ev.Event {
+			case "PEER_RUN_EXIT", "LOGICAL_SESSION_UNREGISTER", "STATUS_LOOKUP_MISS", "INVARIANT_VIOLATION_SESSION_EXIT":
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		lifeMu.Lock()
+		defer lifeMu.Unlock()
+		for _, ev := range life {
+			t.Logf("EX lifecycle_trace=%+v", ev)
+		}
+		diagMu.Lock()
+		defer diagMu.Unlock()
+		for _, d := range diags {
+			t.Logf("EX diag seq=%d event=%s src=%s gen=%d inc=%d err=%q wait=%q", d.Sequence, d.Event, d.Source, d.CarrierGeneration, d.PreparedIncarnation, d.Error, d.WaitReason)
+		}
+		for _, d := range irDiags {
+			t.Logf("IR diag seq=%d event=%s src=%s gen=%d inc=%d err=%q wait=%q", d.Sequence, d.Event, d.Source, d.CarrierGeneration, d.PreparedIncarnation, d.Error, d.WaitReason)
+		}
+	}()
+
+	var mode atomic.Int32
+	mode.Store(1)
+	oldBlocked := make(chan struct{})
+	oldRelease := make(chan struct{})
+	replayBlocked := make(chan struct{})
+	replayRelease := make(chan struct{})
+	var oldOnce, replayOnce sync.Once
+	p.exRuntime.SetRecoveryFrameHookForTest(func(stage string, fr protocol.Frame) bool {
+		if stage != "before_data_accept" {
+			return false
+		}
+		switch mode.Load() {
+		case 1:
+			oldOnce.Do(func() { close(oldBlocked) })
+			<-oldRelease
+			return true
+		case 2:
+			replayOnce.Do(func() { close(replayBlocked) })
+			<-replayRelease
+			return true
+		default:
+			return false
+		}
+	})
+
+	payload := make([]byte, 3*protocol.MaxPayloadSize+777)
+	for i := range payload {
+		payload[i] = byte((i*31 + 11) % 251)
+	}
+	wantHash := sha256.Sum256(payload)
+	got := make([]byte, len(payload))
+	readDone := make(chan error, 1)
+	go func() { _, err := io.ReadFull(c, got); readDone <- err }()
+	writeDone := make(chan error, 1)
+	go func() { _, err := c.Write(payload); writeDone <- err }()
+
+	select {
+	case <-oldBlocked:
+	case <-time.After(8 * time.Second):
+		t.Fatal("old carrier DATA never reached pre-accept barrier")
+	}
+	before := waitSingleFlowFrontier(t, p.irRuntime, func(f session.RecoveryFlowFrontier) bool {
+		return f.TxNext >= f.PeerAccepted+protocol.MaxPayloadSize
+	})
+	if before.PeerAccepted >= before.TxNext {
+		t.Fatalf("expected unaccepted old-carrier bytes frontier=%+v", before)
+	}
+
+	var writeOnce sync.Once
+	replayWritten := make(chan struct{})
+	releaseWriter := make(chan struct{})
+	p.irRuntime.SetRecoveryPostCommitFaultForTest(func(stage string) error {
+		if stage == "after_replay_write" {
+			fired := false
+			writeOnce.Do(func() { fired = true; close(replayWritten) })
+			if fired {
+				<-releaseWriter
+				return errors.New("cut after replay write success before peer acceptance")
+			}
+		}
+		return nil
+	})
+
+	mode.Store(2)
+	p.proxy.CutAll()
+	close(oldRelease)
+	select {
+	case <-replayBlocked:
+	case <-time.After(8 * time.Second):
+		t.Fatal("replacement replay never reached receiver pre-accept barrier")
+	}
+	select {
+	case <-replayWritten:
+	case <-time.After(8 * time.Second):
+		t.Fatal("sender never reported successful replay write")
+	}
+	classA := oneRecoveryAuthority(t, p.irRuntime)
+	if classA.Epoch != 2 || classA.CandidateID == "" || classA.PlanDigest == "" || !classA.ReplayOutstanding || classA.TransactionStable {
+		t.Fatalf("Class-A obligation not visible before the second cut: %+v", classA)
+	}
+	candidate, digest := classA.CandidateID, classA.PlanDigest
+
+	// Generation 3 on the EX: the sender stays un-started and the first ACK
+	// written on it reports a cancelled physical stream.
+	holdGen3 := make(chan struct{})
+	p.exRuntime.SetSenderStartHoldForTest(func(g uint64) <-chan struct{} {
+		if g >= 3 {
+			return holdGen3
+		}
+		return nil
+	})
+	var faults atomic.Int32
+	p.exRuntime.SetCarrierWriteFaultForTest(func(fr protocol.Frame, g uint64) error {
+		if g == 3 && fr.Type == protocol.TypeAck && faults.Add(1) == 1 {
+			return context.Canceled
+		}
+		return nil
+	})
+
+	p.proxy.CutAll()
+	mode.Store(3)
+	close(replayRelease)
+	close(releaseWriter)
+
+	deadline := time.Now().Add(15 * time.Second)
+	for faults.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the generation-3 write fault never fired ex=%+v", p.exRuntime.RecoveryAuthoritiesForTest())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The cancelled physical stream is a carrier failure. Give the actor time
+	// to (wrongly) exit, then require that it did not.
+	time.Sleep(300 * time.Millisecond)
+	if ev := forbidden(); len(ev) != 0 {
+		t.Fatalf("a physical carrier failure ended the logical Session with Class-A open: %+v", ev)
+	}
+	ex := oneRecoveryAuthority(t, p.exRuntime)
+	if ex.Epoch != 2 || ex.CandidateID != candidate || ex.PlanDigest != digest {
+		t.Fatalf("exact transaction identity changed: %+v want candidate=%s digest=%s", ex, candidate, digest)
+	}
+
+	// Releasing the held generation-3 sender lets the already-classified
+	// physical carrier failure drive the normal exact-transaction rebind.
+	// Do not inject another cut here: D-002A is specifically proving that the
+	// raw context.Canceled at this write boundary is classified as carrier
+	// loss without killing the logical Session.
+	close(holdGen3)
+
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("client payload write: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("client write timeout")
+	}
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("client payload read: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("client payload read timeout")
+	}
+	have := sha256.Sum256(got)
+	if !bytes.Equal(got, payload) || have != wantHash {
+		t.Fatalf("delivery mismatch got_hash=%x want_hash=%x", have, wantHash)
+	}
+	stable := time.Now().Add(10 * time.Second)
+	var irFinal, exFinal node.RecoveryAuthoritySnapshot
+	for {
+		irFinal = oneRecoveryAuthority(t, p.irRuntime)
+		exFinal = oneRecoveryAuthority(t, p.exRuntime)
+		if irFinal.Epoch != 2 || exFinal.Epoch != 2 ||
+			irFinal.CandidateID != candidate || exFinal.CandidateID != candidate ||
+			irFinal.PlanDigest != digest || exFinal.PlanDigest != digest {
+			t.Fatalf("epoch/identity escaped after physical carrier cancellation ir=%+v ex=%+v", irFinal, exFinal)
+		}
+		if irFinal.TransactionStable && exFinal.TransactionStable &&
+			irFinal.ApplicationReady && exFinal.ApplicationReady &&
+			!irFinal.ReplayOutstanding && !exFinal.ReplayOutstanding {
+			break
+		}
+		if time.Now().After(stable) {
+			t.Fatalf("Class-A did not settle without logical Session retirement ir=%+v ex=%+v", irFinal, exFinal)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := p.targetAccepts.Load() - targetBefore; n != 0 {
+		t.Fatalf("target TCP reopened accepts_delta=%d", n)
+	}
+	if ev := forbidden(); len(ev) != 0 {
+		t.Fatalf("the logical Session actor exited during the exercise: %+v", ev)
+	}
+	t.Logf("PASS raw cancellation on a physical carrier did not end the logical Session epoch=2 candidate=%s digest=%s faults=%d hash=%x", candidate, digest, faults.Load(), have)
+}

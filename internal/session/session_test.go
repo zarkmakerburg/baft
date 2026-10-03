@@ -124,6 +124,7 @@ func TestOpenIsIdempotentAndDoesNotRedial(t *testing.T) {
 	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
 	out:=&lockedBuffer{}
 	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)}
+	if !p.beginRunLifecycle(){t.Fatal("fixture could not model an active Session")}
 	var dials atomic.Int32;remote:=make(chan net.Conn,1)
 	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);a,b:=net.Pipe();remote<-b;return a,nil}
 	req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:"00112233445566778899aabbccddeeff"})
@@ -145,6 +146,7 @@ func TestSlowTargetDialDoesNotBlockTheFrameLoop(t *testing.T) {
 	tbl,err:=routes.New([]routes.Route{{ID:"main",Target:"127.0.0.1:2443",AllowedPeers:map[string]struct{}{"urn:baft:node:ir-01":{}}}});if err!=nil{t.Fatal(err)}
 	out:=&lockedBuffer{}
 	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test"});if err!=nil{t.Fatal(err)}
+	if !p.beginRunLifecycle(){t.Fatal("fixture could not model an active Session")}
 	release:=make(chan struct{});var released sync.Once;defer released.Do(func(){close(release)})
 	var dials atomic.Int32;remote:=make(chan net.Conn,1)
 	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);<-release;a,b:=net.Pipe();remote<-b;return a,nil}
@@ -173,6 +175,7 @@ func TestAsyncOpenDialFailureAnswersOpenErrAndReleasesSlot(t *testing.T) {
 	slots,err:=resources.NewFlowSlots(1);if err!=nil{t.Fatal(err)}
 	out:=&lockedBuffer{}
 	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test",FlowSlots:slots});if err!=nil{t.Fatal(err)}
+	if !p.beginRunLifecycle(){t.Fatal("fixture could not model an active Session")}
 	p.dial=func(context.Context,string,string)(net.Conn,error){return nil,errors.New("connect: connection refused")}
 	req,_:=protocol.EncodeControl(protocol.OpenRequest{RouteID:"main",OpenNonce:"00112233445566778899aabbccddeeff"})
 	if err:=p.handleOpen(context.Background(),protocol.Frame{Type:protocol.TypeOpen,StreamID:1,Payload:req});err!=nil{t.Fatal(err)}
@@ -210,6 +213,7 @@ func TestNodeFlowSlotsBoundListenerOpensAndAreReleasedOnClose(t *testing.T) {
 	slots,err:=resources.NewFlowSlots(1);if err!=nil{t.Fatal(err)}
 	out:=&lockedBuffer{}
 	p,err:=New(Listener,Carrier{In:bytes.NewReader(nil),Out:out},"urn:baft:node:ir-01",tbl,Options{NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"test",FlowSlots:slots});if err!=nil{t.Fatal(err)}
+	if !p.beginRunLifecycle(){t.Fatal("fixture could not model an active Session")}
 	var dials atomic.Int32;remote:=make(chan net.Conn,1)
 	p.dial=func(context.Context,string,string)(net.Conn,error){dials.Add(1);a,b:=net.Pipe();remote<-b;return a,nil}
 	open:=func(id uint64,nonce string){
@@ -303,6 +307,7 @@ func TestTWRLTargetDrainAdvancesCreditTwiceWithoutCarrierWriteBlocking(t *testin
 	a,err:=resources.NewAllocator(l);if err!=nil{t.Fatal(err)}
 	var out bytes.Buffer
 	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01",Resources:a});if err!=nil{t.Fatal(err)}
+	if !p.beginRunLifecycle(){t.Fatal("fixture could not model an active Session")}
 	local,remote:=net.Pipe()
 	defer remote.Close()
 
