@@ -1,0 +1,13 @@
+{
+  "light": {
+    "description": "fixed browsing-like trace; identical across tunnels",
+    "cycle_seconds": 300,
+    "objects_bytes": [16384, 65536, 131072, 524288, 1048576],
+    "think_seconds": [1, 2, 4, 8, 15]
+  },
+  "sustained": {
+    "description": "rate-limited application transfer",
+    "target_mbit_per_s": 8,
+    "duration_seconds": 1800
+  }
+}
