@@ -98,6 +98,8 @@ type Peer struct {
 	finishedFins       map[uint64]uint64
 	nextID             uint64
 	closed             bool
+	workerMu           sync.Mutex
+	workersClosing     bool
 	wg                 sync.WaitGroup
 	trafficObserver    TrafficObserver
 	latencyObserver    LatencyObserver
@@ -352,6 +354,20 @@ func (p *Peer) logicalSessionRetentionReason() string {
 	return ""
 }
 
+func (p *Peer) admitWorker() bool {
+	p.workerMu.Lock()
+	defer p.workerMu.Unlock()
+	if p.workersClosing{return false}
+	p.wg.Add(1)
+	return true
+}
+
+func (p *Peer) closeWorkerAdmission() {
+	p.workerMu.Lock()
+	p.workersClosing=true
+	p.workerMu.Unlock()
+}
+
 func (p *Peer) Run(ctx context.Context) error { return p.run(ctx,nil) }
 
 func (p *Peer) RunWithFirstFrame(ctx context.Context, first protocol.Frame) error {
@@ -363,12 +379,15 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 	p.mu.Lock()
 	p.runCtx = runCtx
 	p.mu.Unlock()
-	p.wg.Add(1)
+	if !p.admitWorker(){return errors.New("session worker admission closed")}
 	go func() {
 		defer p.wg.Done()
 		p.senderNow().run(runCtx)
 	}()
 	defer func() {
+		// Once Run exits, no recovery/pump path may add another goroutine while
+		// teardown is waiting for the existing worker set.
+		p.closeWorkerAdmission()
 		// Test-only lifecycle proof is emitted before destructive cleanup so it
 		// observes the logical Session authority/flows that existed at Run exit.
 		p.notifyRunExitForTest(retErr)
@@ -378,8 +397,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 	}()
 	if p.role == Dialer {
 		if err := p.sendHello(); err != nil { return err }
-		if p.pingInterval > 0 {
-			p.wg.Add(1)
+		if p.pingInterval > 0 && p.admitWorker() {
 			go func() { defer p.wg.Done(); p.pingLoop(runCtx) }()
 		}
 	}
@@ -905,7 +923,11 @@ func (p *Peer) handleOpen(ctx context.Context, fr protocol.Frame) error {
 	}
 	p.pendingOpens[fr.StreamID] = req
 	p.mu.Unlock()
-	p.wg.Add(1)
+	if !p.admitWorker(){
+		p.mu.Lock();delete(p.pendingOpens,fr.StreamID);p.mu.Unlock()
+		p.flowSlots.Release()
+		return ErrCarrierUnavailable
+	}
 	go func() {
 		defer p.wg.Done()
 		conn, err := p.dial(ctx, "tcp", target)
@@ -1211,7 +1233,12 @@ func (p *Peer) startPump(ctx context.Context, fl *flow) {
 	fl.localPumpRunning=true
 	fl.localPumpDone=done
 	fl.mu.Unlock()
-	p.wg.Add(1)
+	if !p.admitWorker(){
+		fl.mu.Lock()
+		if fl.localPumpDone==done{fl.localPumpRunning=false;close(done)}
+		fl.mu.Unlock()
+		return
+	}
 	go func() {
 		defer p.wg.Done()
 		defer func(){
@@ -1230,7 +1257,12 @@ func (p *Peer) startTargetPump(ctx context.Context, fl *flow) {
 	fl.targetPumpRunning=true
 	fl.targetPumpDone=done
 	fl.mu.Unlock()
-	p.wg.Add(1)
+	if !p.admitWorker(){
+		fl.mu.Lock()
+		if fl.targetPumpDone==done{fl.targetPumpRunning=false;close(done)}
+		fl.mu.Unlock()
+		return
+	}
 	go func() {
 		defer p.wg.Done()
 		defer func(){
@@ -1247,11 +1279,11 @@ func (p *Peer) ensurePumpsAfterRecovery(ctx context.Context,fl *flow){
 	localRunning,localDone:=fl.localPumpRunning,fl.localPumpDone
 	targetRunning,targetDone:=fl.targetPumpRunning,fl.targetPumpDone
 	fl.mu.Unlock()
-	if !localRunning { p.startPump(ctx,fl) } else if localDone!=nil {
-		p.wg.Add(1);go func(){defer p.wg.Done();select{case <-ctx.Done():case <-localDone:p.startPump(ctx,fl)}}()
+	if !localRunning { p.startPump(ctx,fl) } else if localDone!=nil && p.admitWorker() {
+		go func(){defer p.wg.Done();select{case <-ctx.Done():case <-localDone:p.startPump(ctx,fl)}}()
 	}
-	if !targetRunning { p.startTargetPump(ctx,fl) } else if targetDone!=nil {
-		p.wg.Add(1);go func(){defer p.wg.Done();select{case <-ctx.Done():case <-targetDone:p.startTargetPump(ctx,fl)}}()
+	if !targetRunning { p.startTargetPump(ctx,fl) } else if targetDone!=nil && p.admitWorker() {
+		go func(){defer p.wg.Done();select{case <-ctx.Done():case <-targetDone:p.startTargetPump(ctx,fl)}}()
 	}
 }
 
@@ -1328,7 +1360,12 @@ func (p *Peer) queueExactLiveFrame(ctx context.Context,fl *flow,fr protocol.Fram
 	wake:=fl.deferredLiveWake
 	fl.mu.Unlock()
 	if start{
-		p.wg.Add(1)
+		if !p.admitWorker(){
+			fl.mu.Lock()
+			fl.deferredLiveRunning=false
+			fl.mu.Unlock()
+			return
+		}
 		go func(){defer p.wg.Done();p.runExactLiveDelivery(ctx,fl)}()
 	}
 	select{case wake<-struct{}{}:default:}
