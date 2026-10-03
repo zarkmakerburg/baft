@@ -138,7 +138,12 @@ PY
 fi
 
 mkdir -p "$work/dist"
-for f in "$work"/rel/*; do [[ "$f" == "$bundle" || "$f" == "$bundle.sha256" ]] || cp "$f" "$work/dist/"; done
+# License and third-party notices are published next to the signed files but
+# are not part of the signed release.
+for f in "$work"/rel/*; do
+  case "$(basename "$f")" in LICENSE|COPYRIGHT|THIRD_PARTY_LICENSES.md) continue ;; esac
+  [[ "$f" == "$bundle" || "$f" == "$bundle.sha256" ]] || cp "$f" "$work/dist/"
+done
 
 mcommit=$(python3 -c 'import base64,json,sys;e=json.load(open(sys.argv[1]));print(json.loads(base64.b64decode(e["payload"]))["commit"])' "$work/dist/manifest.json" 2>/dev/null)
 if [[ "$mcommit" == "$sha" ]]; then row PASS "manifest commit" "signed manifest names $sha"; else row FAIL "manifest commit" "manifest says '${mcommit:-?}', tag is $sha"; fi
@@ -153,7 +158,14 @@ fi
 
 if [[ -n "$bundle" ]]; then
   git show "$sha:install.sh" > "$work/install.sh"
-  if scripts/release/offline_bundle.sh "$work/dist" "$work/revocations.json" "$work/install.sh" "$work/rebuilt" >/dev/null 2>&1 &&
+  # Releases cut after notices were added carry them in the bundle.
+  notices=()
+  if git cat-file -e "$sha:THIRD_PARTY_LICENSES.md" 2>/dev/null; then
+    mkdir -p "$work/notices"
+    for f in LICENSE COPYRIGHT THIRD_PARTY_LICENSES.md; do git show "$sha:$f" > "$work/notices/$f"; done
+    notices=("$work/notices")
+  fi
+  if scripts/release/offline_bundle.sh "$work/dist" "$work/revocations.json" "$work/install.sh" "$work/rebuilt" "${notices[@]}" >/dev/null 2>&1 &&
      cmp -s "$bundle" "$work/rebuilt/$(basename "$bundle")"; then
     row PASS "offline bundle" "byte-identical to a rebuild from the assets"
   else

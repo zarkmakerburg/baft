@@ -2,6 +2,7 @@ package tunnelnode
 
 import (
 	"context"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/exec"
@@ -120,14 +121,24 @@ func newNode(t *testing.T) *node {
 	return &node{Manager: m, host: h, dir: dir}
 }
 
+// freePort returns a port that is free now and is bound again later by the
+// code under test. It is picked below the kernel's ephemeral range (Linux
+// default 32768-60999): a port from ":0" comes from that range, so an
+// outgoing connection made by any test running in parallel can take it before
+// it is bound again ("address already in use").
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for i := 0; i < 200; i++ {
+		port := 20000 + rand.IntN(12000)
+		l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if err != nil {
+			continue
+		}
+		l.Close()
+		return port
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatal("no free port below the ephemeral range")
+	return 0
 }
 
 // listen keeps a TCP listener up for the health check to find.
