@@ -17,6 +17,7 @@ on:
           - B06
           - B07
           - B08
+          - B09
           - all
 
 concurrency:
