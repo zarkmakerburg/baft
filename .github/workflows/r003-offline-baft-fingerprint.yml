@@ -1,0 +1,58 @@
+name: r003-offline-baft-fingerprint
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e-foundation
+    paths:
+      - '.github/workflows/r003-offline-baft-fingerprint.yml'
+      - 'bench/r003/fingerprint_tshark.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Install capture tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcpdump tshark
+      - name: Capture BAFT Noise H2 TLS ClientHello
+        run: |
+          mkdir -p "$RUNNER_TEMP/r003-fingerprint"
+          sudo tcpdump -i lo -nn -s 0 -U -w "$RUNNER_TEMP/r003-fingerprint/baft-noise.pcap" 'tcp' >/tmp/r003-tcpdump.log 2>&1 &
+          CAP_PID=$!
+          sleep 1
+          set +e
+          go test ./tests/integration -run '^TestNoiseMorphingRuntime$' -count=1 -timeout 2m -v | tee "$RUNNER_TEMP/r003-fingerprint/test.log"
+          TEST_RC=${PIPESTATUS[0]}
+          set -e
+          sudo kill -INT "$CAP_PID" 2>/dev/null || true
+          wait "$CAP_PID" 2>/dev/null || true
+          cat /tmp/r003-tcpdump.log || true
+          exit "$TEST_RC"
+      - name: Extract JA3 JA4
+        run: |
+          bash bench/r003/fingerprint_tshark.sh \
+            "$RUNNER_TEMP/r003-fingerprint/baft-noise.pcap" \
+            "$RUNNER_TEMP/r003-fingerprint/baft-noise-fingerprints.json"
+          cat "$RUNNER_TEMP/r003-fingerprint/baft-noise-fingerprints.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r003-baft-fingerprint-${{ github.sha }}
+          path: ${{ runner.temp }}/r003-fingerprint
+          if-no-files-found: error
+          retention-days: 30
