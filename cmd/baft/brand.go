@@ -160,11 +160,16 @@ func renderHeader(w io.Writer, caps termCaps, h headerInfo) {
 		if caps.Unicode {
 			sep, dot = " ◈ ", " · "
 		}
+		line := func(s string) {
+			fmt.Fprintln(w, truncateStyled(s, caps.Width))
+		}
 		if caps.Color == colorPlain {
-			fmt.Fprintf(w, "BAFT %s%s%s\n%s%s%s%s%s\n", h.Version, " ", "", h.Node, dot, h.Role, dot, h.Health)
+			line("BAFT " + h.Version)
+			line(h.Node + dot + h.Role + dot + h.Health)
 			return
 		}
-		fmt.Fprintf(w, "%s%s%s\n%s%s%s%s%s\n", st.goldBold("BAFT"), sep, st.light(h.Version), st.light(h.Node), dot, st.light(h.Role), dot, st.status(h.Health))
+		line(st.goldBold("BAFT") + sep + st.light(h.Version))
+		line(st.light(h.Node) + dot + st.light(h.Role) + dot + st.status(h.Health))
 		return
 	}
 
@@ -219,6 +224,7 @@ func truncateStyled(s string, width int) string {
 	}
 	var b strings.Builder
 	n := 0
+	styled := false
 	for i := 0; i < len(s) && n < width; {
 		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
 			j := i + 2
@@ -226,6 +232,7 @@ func truncateStyled(s string, width int) string {
 				j++
 			}
 			b.WriteString(s[i : j+1])
+			styled = true
 			i = j + 1
 			continue
 		}
@@ -234,6 +241,9 @@ func truncateStyled(s string, width int) string {
 		i += size
 		n++
 	}
-	b.WriteString("\x1b[0m")
+	// Close a color only if one was opened: with NO_COLOR nothing is emitted.
+	if styled {
+		b.WriteString("\x1b[0m")
+	}
 	return b.String()
 }

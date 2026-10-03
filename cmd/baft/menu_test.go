@@ -437,3 +437,76 @@ func TestTheMenuSystemAdapterOnlyAllowsIsActive(t *testing.T) {
 		}
 	}
 }
+
+func TestIsTerminalIsARealTerminalTestNotJustACharacterDevice(t *testing.T) {
+	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	if st, _ := null.Stat(); st.Mode()&os.ModeCharDevice == 0 {
+		t.Skip("/dev/null is not a character device here")
+	}
+	if isTerminal(null) {
+		t.Fatal("/dev/null (a character device that is not a terminal) was taken for a terminal")
+	}
+	pr, pw, _ := os.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	reg, _ := os.CreateTemp(t.TempDir(), "x")
+	defer reg.Close()
+	for name, f := range map[string]*os.File{"pipe": pr, "pipe write end": pw, "regular file": reg} {
+		if isTerminal(f) {
+			t.Errorf("%s was taken for a terminal", name)
+		}
+	}
+	if pty := openPTYForTest(t); pty != nil && !isTerminal(pty) {
+		t.Fatal("a real pseudo-terminal was not recognized")
+	}
+}
+
+func TestBaftWithCharacterDevicesThatAreNotTerminalsKeepsTheOldContract(t *testing.T) {
+	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	var errOut bytes.Buffer
+	if code := menuEntry(nil, null, null, &errOut); code != 2 || !strings.Contains(errOut.String(), "usage:") {
+		t.Fatalf("baft with stdin and stdout on /dev/null entered the menu or changed the contract: %d %q", code, errOut.String())
+	}
+	errOut.Reset()
+	if code := menuEntry([]string{"menu"}, null, null, &errOut); code != 2 || !strings.Contains(errOut.String(), "interactive terminal") {
+		t.Fatalf("baft menu on /dev/null: %d %q", code, errOut.String())
+	}
+}
+
+func TestLongValuesAreBoundedAndNO_COLORStaysFreeOfEscapes(t *testing.T) {
+	long := strings.Repeat("n", 64) // a valid 64-byte node id
+	h := headerInfo{Version: "v0.1.2", Node: long, Role: "IR (dialer)", Health: "DEGRADED", Release: "signed v0.1.2-rc.1+" + strings.Repeat("r", 40)}
+	for _, color := range []string{colorMono, colorPlain, color256, colorFull} {
+		for _, uni := range []bool{true, false} {
+			for _, w := range []int{30, 40, 50, 60, 69, 70, 72, 80, 99, 100, 110, 140} {
+				c := termCaps{TTY: true, Color: color, Unicode: uni && color != colorPlain, Width: w}
+				switch {
+				case w >= 100:
+					c.Layout = layoutWide
+				case w >= 70:
+					c.Layout = layoutNormal
+				default:
+					c.Layout = layoutCompact
+				}
+				out := header(c, h)
+				name := fmt.Sprintf("%s unicode=%v width=%d", color, c.Unicode, w)
+				if (color == colorMono || color == colorPlain) && strings.Contains(out, "\x1b") {
+					t.Errorf("%s: an escape sequence with no color: %q", name, out[:min(len(out), 120)])
+				}
+				for _, line := range strings.Split(strings.TrimRight(stripANSI(out), "\n"), "\n") {
+					if n := displayWidth(line); n > w {
+						t.Errorf("%s: a line is %d columns:\n%s", name, n, line)
+					}
+				}
+			}
+		}
+	}
+}

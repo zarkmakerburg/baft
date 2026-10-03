@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strconv"
 	"strings"
 	"unicode"
@@ -153,10 +152,4 @@ func clean(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
-}
-
-// isTerminal reports whether f is a character device (a terminal).
-func isTerminal(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
