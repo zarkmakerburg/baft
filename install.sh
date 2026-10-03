@@ -459,6 +459,9 @@ backup_file() {
     install -d -m 0700 -o root -g root "$BAFT_PREFIX/backups" "$BACKUP_DIR"
   fi
   cp -p -- "$f" "$BACKUP_DIR/$(backup_name "$f")"
+  # The manifest is the proof of what this run wrote here: an uninstall
+  # removes only files it lists with a matching digest.
+  ( cd "$BACKUP_DIR" && sha256sum -- "$(backup_name "$f")" >>MANIFEST.sha256 )
   BACKUP_MAP+=("$f")
 }
 prune_backups() {

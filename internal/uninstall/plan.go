@@ -349,6 +349,13 @@ func (e *Env) plan(inv *Inventory, o Options) *Plan {
 			}
 		}
 	}
+	for _, nd := range inv.nested {
+		if !o.areaInScope(nd.area) || (nd.owner != nil && kept(nd.owner)) || seen[nd.path] {
+			continue
+		}
+		seen[nd.path] = true
+		p.Dirs = append(p.Dirs, nd.path)
+	}
 	sort.Slice(p.Dirs, func(i, j int) bool {
 		return strings.Count(p.Dirs[i], "/") > strings.Count(p.Dirs[j], "/") || (strings.Count(p.Dirs[i], "/") == strings.Count(p.Dirs[j], "/") && p.Dirs[i] < p.Dirs[j])
 	})

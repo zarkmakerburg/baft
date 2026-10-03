@@ -591,18 +591,20 @@ func TestSkeletonFiles(t *testing.T) {
 	if a := has(p.Remove, r.p("var/.bashrc")); a == nil || a.Class != ClassRuntime {
 		t.Fatalf(".bashrc: %+v", a)
 	}
-	if a := has(p.Remove, r.p("var/.cargo")); a == nil || !a.Dir {
-		t.Fatalf(".cargo: %+v", a)
+	for _, gone := range []string{"var/.cargo/env", "var/.cache/x"} {
+		if a := has(p.Remove, r.p(gone)); a == nil || a.Class != ClassRuntime {
+			t.Fatalf("%s: %+v", gone, a)
+		}
 	}
-	for _, kept := range []string{"var/.profile", "var/.cache"} {
+	for _, kept := range []string{"var/.profile", "var/.cache/mine"} {
 		if a := has(p.Untouched, r.p(kept)); a == nil {
-			t.Fatalf("%s (changed since the skeleton copy) not protected", kept)
+			t.Fatalf("%s (not the skeleton copy) not protected", kept)
 		}
 	}
 	if _, err := r.env.Apply(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	if exists(r.p("var/.cargo")) || !exists(r.p("var/.cache/mine")) {
+	if exists(r.p("var/.cargo")) || exists(r.p("var/.cache/x")) || !exists(r.p("var/.cache/mine")) || !exists(r.p("var")) {
 		t.Fatal("wrong skeleton handling")
 	}
 }

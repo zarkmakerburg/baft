@@ -30,6 +30,12 @@ fail() {
 }
 cleanup() {
   local rc=$?
+  if [[ -f "$WORK/prov.log" ]]; then
+    echo "== provenance of service-home entries"; cat "$WORK/prov.log"
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      m="$(cat "$WORK/prov.log")"; m="${m//%/%25}"; printf '::notice title=uninstall e2e provenance (.ghcup and skeleton copies)::%s\n' "${m//$'\n'/%0A}"
+    fi
+  fi
   if [[ $rc -ne 0 ]]; then
     {
       for f in "$WORK"/*.out "$WORK"/*.err "$WORK"/*.log; do [[ -f "$f" ]] && { echo "== $f"; tail -n 40 "$f"; }; done
@@ -68,6 +74,35 @@ IR_ENV=(BAFT_SERVICE=baft-ir BAFT_CONFIG_DIR=/etc/baft-ir BAFT_STATE_DIR=/var/li
 inst_ex() { local r="$1"; shift; env $(rel_env "$r") BAFT_INSTALL_FROM=release "${EX_ENV[@]}" "$@"; }
 inst_ir() { local r="$1"; shift; env $(rel_env "$r") BAFT_INSTALL_FROM=release "${IR_ENV[@]}" "$@"; }
 
+# Provenance of what appears in the service user's home (the EX state
+# directory, created by useradd --create-home from /etc/skel): recorded at
+# every phase, before any behaviour depends on it.
+prov() {
+  {
+    echo "--- phase: $1"
+    for d in /var/lib/baft-ex /var/lib/baft-ir; do
+      if [[ -d "$d" ]]; then
+        stat -c '%n uid=%u gid=%g mode=%a mtime=%y ctime=%z' "$d"
+        for e in "$d"/.[!.]*; do
+          [[ -e "$e" || -L "$e" ]] || continue
+          stat -c '  %n uid=%u gid=%g mode=%a type=%F mtime=%y ctime=%z' "$e"
+          s="/etc/skel/$(basename "$e")"
+          if [[ -e "$s" || -L "$s" ]]; then
+            echo "    skeleton original: $(stat -c 'uid=%u gid=%g mode=%a type=%F' "$s"); differences (no dereference):"
+            diff -rq --no-dereference "$s" "$e" 2>&1 | head -5 | sed 's/^/      /'
+            echo "    symlinks inside: $(find "$e" -type l 2>/dev/null | wc -l), files: $(find "$e" -type f 2>/dev/null | wc -l)"
+          else
+            echo "    no skeleton original"
+          fi
+        done
+      else
+        echo "$d absent"
+      fi
+    done
+  } >>"$WORK/prov.log" 2>&1
+}
+{ echo "--- /etc/skel before any install:"; ls -la /etc/skel; getent passwd baft || echo "no baft user yet"; } >"$WORK/prov.log" 2>&1
+
 python3 tests/e2e/echo.py serve 2443 >"$WORK/target.log" 2>&1 & PIDS+=($!)
 
 pair_fresh() { # rel
@@ -98,7 +133,9 @@ units() { systemctl list-unit-files --no-legend 'baft*' | awk '{print $1}' | sor
 
 log "install EX and IR from release 1 and pass traffic"
 pair_fresh "$REL1"
+prov "fresh install"
 traffic
+prov "services started, traffic"
 
 log "a labelled BCC (systemd) with state, and an agent enrolled to it"
 install -m 0755 "$WORK/baft-bcc" /usr/local/bin/baft-bcc
@@ -209,6 +246,7 @@ UN --restore >"$WORK/restore.out" 2>&1 || { cat "$WORK/restore.out"; fail "resto
 systemctl is-active baft-ex baft-ir baft-agent baft-bcc >/dev/null || fail "restore did not restart the services"
 traffic
 hand_ok
+prov "crash and restore"
 
 log "interrupted uninstall (killed before the commit) -> --resume: the normal uninstall"
 rc=0; BAFT_UNINSTALL_CRASH_AT=before-commit UN --yes --stop-active-tunnels >"$WORK/crash2.out" 2>&1 || rc=$?
@@ -225,11 +263,13 @@ done
 [[ "$(datahash)" == "$(echo "$SNAP0" | head -n "$(datahash | wc -l)")" ]] || fail "user data changed by the normal uninstall"
 [[ -e /etc/baft-agent/token && -e /opt/baft-ex/release-state.json ]] || fail "agent token or release state removed without being chosen"
 hand_ok
+prov "normal uninstall (resumed)"
 
 log "reinstall over the kept data: same node, no re-pairing"
 D0="$(datahash)"
 inst_ex "$REL1" BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 --yes </dev/null >"$WORK/rex.out" 2>"$WORK/rex.err"
 inst_ir "$REL1" BAFT_NONINTERACTIVE=1 bash install.sh --role ir --yes </dev/null >"$WORK/rir.out" 2>"$WORK/rir.err"
+prov "reinstall"
 grep -q 'BAFTPAIR1:\|BAFTREPLY1:' "$WORK/rex.out" "$WORK/rir.out" && fail "reinstall paired again"
 [[ "$(datahash)" == "$D0" ]] || fail "reinstall changed the kept config or keys"
 traffic
@@ -237,6 +277,7 @@ traffic
 log "upgrade to release 2, uninstall, reinstall: release 1 is refused (anti-rollback kept), release 2 is fine"
 inst_ex "$REL2" BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 --yes </dev/null >"$WORK/uex.out" 2>"$WORK/uex.err"
 inst_ir "$REL2" BAFT_NONINTERACTIVE=1 bash install.sh --role ir --yes </dev/null >"$WORK/uir.out" 2>"$WORK/uir.err"
+prov "upgrade"
 V2="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' /opt/baft-ex/release-state.json)"
 traffic
 UN --yes --stop-active-tunnels >"$WORK/un2.out" 2>&1 || { cat "$WORK/un2.out"; fail "uninstall after upgrade"; }
@@ -247,6 +288,8 @@ inst_ex "$REL2" BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address
 inst_ir "$REL2" BAFT_NONINTERACTIVE=1 bash install.sh --role ir --yes </dev/null >"$WORK/r2ir.out" 2>"$WORK/r2ir.err"
 traffic
 hand_ok
+
+prov "uninstall after upgrade, reinstall"
 
 log "BCC state: deleted only after a verified emergency backup"
 rc=0; UN --bcc --delete-bcc-state >"$WORK/bccno.out" 2>&1 || rc=$?
@@ -270,6 +313,7 @@ UN --full --delete-tunnel-configs --yes --stop-active-tunnels >"$WORK/full1.out"
 [[ -e /etc/baft-ex/noise-key.json && -e /etc/baft-ex/pki/ca.key && -e /opt/baft-ex/release-state.json && -e /etc/baft-agent/token && -e /var/lib/baft-bcc/state.db.audit.jsonl ]] || fail "data removed without being chosen"
 [[ -d "$BKDIR" ]] || fail "the emergency backup was removed"
 hand_ok
+prov "full uninstall (tunnel configs)"
 
 log "everything chosen: verify clean (the operator first removes their manual unit)"
 rm /etc/systemd/system/baft-manual.service; systemctl daemon-reload
@@ -283,14 +327,61 @@ UN "${ALL[@]}" --bcc-state-file /var/lib/baft-bcc/state.db >"$WORK/full2.out" 2>
 for p in ex ir; do
   UN "${ALL[@]}" --prefix /opt/baft-$p --config-dir /etc/baft-$p --state-dir /var/lib/baft-$p >"$WORK/purge-$p.out" 2>&1 || { cat "$WORK/purge-$p.out"; fail "purge $p"; }
 done
-left=""
-for p in /usr/local/bin/baft /usr/local/bin/baft-pair /usr/local/bin/baft-agent /usr/local/bin/baft-bcc \
-  /etc/baft-ex /etc/baft-ir /var/lib/baft-ex /var/lib/baft-ir /opt/baft-ex /opt/baft-ir /opt/baft /etc/baft /var/lib/baft \
-  /etc/baft-agent /var/lib/baft-agent /var/lib/baft-bcc/state.db.audit.jsonl /var/lib/baft-bcc/state.db.audit-anchor-outbox.json /var/lib/baft-bcc/state.db.lock; do
-  [[ -e "$p" ]] && left+=" $p"
+prov "purge"
+# Ownership-aware clean: every proven, selected BAFT artifact is gone; what
+# survives is exactly what the uninstall reports as UNKNOWN / unmanaged (and
+# the directories that hold it).
+for b in /usr/local/bin/baft /usr/local/bin/baft-pair /usr/local/bin/baft-agent /usr/local/bin/baft-bcc; do
+  [[ -e "$b" ]] && fail "binary left: $b"
 done
-[[ -z "$left" ]] || fail "not clean:$left
-$(find $left -maxdepth 2 2>&1 | head -40)"
+UN --preview --json --full --delete-certificates --delete-backups --delete-audit --delete-tunnel-configs --bcc-state-file /var/lib/baft-bcc/state.db >"$WORK/clean-default.json"
+for p in ex ir; do
+  UN --preview --json --full --delete-certificates --delete-backups --delete-audit --delete-tunnel-configs \
+    --prefix /opt/baft-$p --config-dir /etc/baft-$p --state-dir /var/lib/baft-$p >"$WORK/clean-$p.json"
+done
+python3 - "$WORK" <<'PY' || fail "not clean: $(cat "$WORK/clean.txt")"
+import json, os, sys
+work = sys.argv[1]
+untouched, problems = set(), []
+for n in ("default", "ex", "ir"):
+    p = json.load(open(f"{work}/clean-{n}.json"))
+    if p["remove"]:
+        problems.append(f"{n}: still eligible: " + ", ".join(a["path"] for a in p["remove"]))
+    for a in p["keep"]:
+        problems.append(f"{n}: a proven BAFT artifact is kept: {a['path']} ({a['reason']})")
+    for a in p["untouched"] + p["hold"]:
+        untouched.add(a["path"])
+roots = ["/etc/baft-ex", "/etc/baft-ir", "/var/lib/baft-ex", "/var/lib/baft-ir", "/opt/baft-ex", "/opt/baft-ir", "/opt/baft",
+         "/etc/baft", "/var/lib/baft", "/etc/baft-agent", "/var/lib/baft-agent"]
+def covered(path):
+    return any(path == u or path.startswith(u + "/") for u in untouched)
+survivors = []
+for r in roots:
+    if not os.path.lexists(r):
+        continue
+    for dirpath, dirnames, filenames in os.walk(r):
+        for name in filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]:
+            path = os.path.join(dirpath, name)
+            if covered(path):
+                survivors.append(path)
+            else:
+                problems.append(f"left but not reported as UNKNOWN/unmanaged: {path}")
+        for d in list(dirnames):
+            full = os.path.join(dirpath, d)
+            if not os.path.islink(full) and not covered(full) and not any(s.startswith(full + "/") for s in untouched):
+                if not any(True for _ in os.scandir(full)):
+                    problems.append(f"empty BAFT directory left: {full}")
+    if not covered(r) and not any(u.startswith(r + "/") for u in untouched):
+        problems.append(f"{r} left although nothing in it is preserved")
+for f in ("/var/lib/baft-bcc/state.db.audit.jsonl", "/var/lib/baft-bcc/state.db.lock"):
+    if os.path.lexists(f):
+        problems.append(f"BCC file left: {f}")
+open(f"{work}/clean.txt", "w").write("\n".join(problems))
+print("preserved (UNKNOWN / unmanaged):", len(survivors))
+for s in sorted(survivors)[:20]:
+    print("  ", s)
+sys.exit(1 if problems else 0)
+PY
 [[ "$(units)" == "baft-hand.service " ]] || fail "units left: $(units)"
 [[ -d "$BKDIR" ]] || fail "the emergency backup was removed"
 hand_ok

@@ -159,7 +159,7 @@ func (e *Env) newRun(p *Plan) (*Journal, error) {
 				continue
 			}
 			switch a.Class {
-			case ClassUnit, ClassBinary, ClassCertificates, ClassTunnelConfigs, ClassBackups, ClassInstall:
+			case ClassUnit, ClassBinary, ClassCertificates, ClassTunnelConfigs, ClassBackups, ClassInstall, "":
 				if a.owner != nil && a.owner.active() && !p.removedU[a.owner.Name] && a.Class != ClassUnit && a.Class != ClassBinary {
 					continue // a service that keeps running may change its own files
 				}

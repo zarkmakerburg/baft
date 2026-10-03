@@ -83,6 +83,7 @@ type Inventory struct {
 	Artifacts []*Artifact
 	Errors    []string
 	Pending   *Journal
+	nested    []nestedDir
 	// refs maps an absolute program path to the units that run it.
 	refs map[string][]string
 }
@@ -664,7 +665,7 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 		case name == "pki":
 			e.classifyPKI(inv, l, path, fi)
 		case strings.HasPrefix(name, "pki.before-"):
-			dir(ClassBackups, "the tunnel builder's copy of the previous certificates")
+			e.walkNested(inv, l, path, pkiBackupRule)
 		case strings.HasPrefix(name, "baft.yaml.before-repair-") || strings.HasPrefix(name, "baft.yaml.before-stealth-"):
 			file(ClassBackups, func(b []byte) bool { _, err := config.DecodeYAML(bytes.NewReader(b)); return err == nil }, "the installer's copy of an earlier config")
 		default:
@@ -687,25 +688,27 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 		case name == "peer-ca.pem":
 			file(ClassCertificates, isPEM("CERTIFICATE"), "the EX certificate authority pinned at pairing")
 		case name == "tunnels":
-			dir(ClassTunnelConfigs, "the tunnel builder's change records")
+			e.walkNested(inv, l, path, tunnelsRule)
 		default:
 			// The service user's home is the state directory, and useradd
-			// copied the skeleton into it: an entry identical to its
-			// skeleton original (content and modes, the whole tree for a
-			// directory) is that copy.
-			if e.isSkelCopy(path, fi) {
-				a := newArtifact(l, path, ClassRuntime)
-				a.Dir = fi.IsDir()
-				if a.Dir {
-					a.SHA256, _ = treeHash(path)
+			// copied the skeleton into it. Each entry identical to its
+			// skeleton original is that copy; anything else stays.
+			skel := filepath.Join(e.SkelDir, name)
+			sfi, err := os.Lstat(skel)
+			switch {
+			case err != nil:
+				unknown("not a file BAFT writes here")
+			case fi.IsDir() && fi.Mode()&os.ModeSymlink == 0 && sfi.IsDir() && sfi.Mode()&os.ModeSymlink == 0:
+				e.walkNested(inv, l, path, e.skelRule(skel))
+			case fi.Mode().IsRegular():
+				if class, ev, ok := e.skelRule(e.SkelDir)(name, path, fi); ok {
+					file(class, nil, ev)
 				} else {
-					a.SHA256, a.Size, _ = hashRegular(path)
+					unknown("differs from " + skel)
 				}
-				a.Ownership, a.Evidence = Managed, "copied from "+e.SkelDir+" by useradd for the service user (identical)"
-				inv.add(a)
-				return
+			default:
+				unknown("not a file BAFT writes here")
 			}
-			unknown("not a file BAFT writes here")
 		}
 	case locPrefix:
 		switch {
@@ -723,11 +726,8 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 				if err != nil {
 					continue
 				}
-				if strings.HasPrefix(ent.Name(), "rerun-") && sub.IsDir() {
-					fi = sub
-					name = ent.Name()
-					path = p
-					dir(ClassBackups, "the installer's rollback copy of a rerun")
+				if strings.HasPrefix(ent.Name(), "rerun-") && sub.IsDir() && sub.Mode()&os.ModeSymlink == 0 {
+					e.walkNested(inv, l, p, rerunRule(p))
 				} else {
 					a := newArtifact(l, p, "")
 					a.Ownership, a.Evidence, a.Dir = Unknown, "not a backup the installer writes", sub.IsDir()
@@ -735,11 +735,16 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 				}
 			}
 		case name == "src":
-			b, _ := readRegular(filepath.Join(path, "go.mod"), maxSmallBytes)
-			if fi.IsDir() && bytes.HasPrefix(b, []byte("module "+baftModule+"\n")) {
-				dir(ClassInstall, "the installer's BAFT source checkout (--from-source)")
+			if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+				unknown("not a directory")
+				return
+			}
+			if ok, why := sourceCheckout(path); ok {
+				dir(ClassInstall, why)
 			} else {
-				unknown("not a BAFT source checkout")
+				a := newArtifact(l, path, "")
+				a.Ownership, a.Evidence, a.Dir = Unknown, why, true
+				inv.add(a)
 			}
 		default:
 			unknown("not a file BAFT writes here")
@@ -763,27 +768,6 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 			unknown("not a file BAFT writes here")
 		}
 	}
-}
-
-// isSkelCopy reports whether path is an unchanged copy of the same entry in
-// the user skeleton directory.
-func (e *Env) isSkelCopy(path string, fi os.FileInfo) bool {
-	skel := filepath.Join(e.SkelDir, filepath.Base(path))
-	sfi, err := os.Lstat(skel)
-	if err != nil || fi.Mode()&os.ModeSymlink != 0 || sfi.Mode()&os.ModeSymlink != 0 {
-		return false
-	}
-	switch {
-	case fi.IsDir() && sfi.IsDir():
-		a, pa := treeHash(path)
-		b, pb := treeHash(skel)
-		return pa == "" && pb == "" && a == b && fi.Mode().Perm() == sfi.Mode().Perm()
-	case fi.Mode().IsRegular() && sfi.Mode().IsRegular():
-		a, _, pa := hashRegular(path)
-		b, _, pb := hashRegular(skel)
-		return pa == "" && pb == "" && a == b && fi.Mode().Perm() == sfi.Mode().Perm()
-	}
-	return false
 }
 
 func (e *Env) classifyPKI(inv *Inventory, l location, path string, fi os.FileInfo) {
