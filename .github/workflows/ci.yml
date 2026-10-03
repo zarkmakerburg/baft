@@ -109,8 +109,7 @@ jobs:
           go test ./tests/integration -run 'TestDistributedCommitACKLossResolvesWithoutAuthorityDivergence|TestDistributedCommitDisconnectBeforePublishProvesAbortSafe|TestDistributedCommitFault|TestTwoRuntimeDialerPreCommitFailureKeepsBothOldEpoch|TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch|TestFinalACKLossAfterDialerPublishConvergesBothFinalized|TestUnprovenReplayCarrierFailureStaysExactTransaction|TestUnprovenReplayWithLiveDataRecutRemainsExact|TestStableRecoveryTransactionAllowsFreshLaterEpoch|TestReplayWriteSuccessWithoutPeerAcceptanceIsRetriedSafely|TestReplayPeerAcceptanceFrontierAdvancesMonotonically|TestFINWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestFINACKWriteSuccessWithoutPeerAcceptanceRetriesIdempotently|TestPostFinalizationCarrierFailureUsesFreshRecoverySnapshot|TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow|TestOldFinalizeInvocationCannotAdoptReboundPreparedCarrier|TestStaleFinalizeTeardownCannotFenceNewIncarnation|TestStaleFinalizeFailureCannotRegressNewIncarnation' -count=1 -v
       - name: P0-R1 Class-A cancellation ownership stress
         run: |
-          go test ./tests/integration \
-            -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction
+          go test ./tests/integration -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction
       - name: Vet
         run: go vet ./...
       - name: Protocol fuzz smoke
@@ -353,10 +352,8 @@ jobs:
             BAFT_REVOCATIONS_URL="file://$RUNNER_TEMP/rel/revocations.json" \
             BAFT_E2E_UPGRADE_DIR="$RUNNER_TEMP/up" \
             tests/e2e/install_two_roles.sh
- \
-            -count=500 -timeout 15m -v
-          GOMAXPROCS=2 go test ./tests/integration \
-            -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction
+ -count=500 -timeout 15m -v
+          GOMAXPROCS=2 go test ./tests/integration -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction
       - name: Vet
         run: go vet ./...
       - name: Protocol fuzz smoke
@@ -599,10 +596,8 @@ jobs:
             BAFT_REVOCATIONS_URL="file://$RUNNER_TEMP/rel/revocations.json" \
             BAFT_E2E_UPGRADE_DIR="$RUNNER_TEMP/up" \
             tests/e2e/install_two_roles.sh
- \
-            -count=500 -timeout 15m -v
-          go test -race ./tests/integration \
-            -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction
+ -count=500 -timeout 15m -v
+          go test -race ./tests/integration -run '^TestUnprovenReplayCarrierFailureStaysExactTransaction
       - name: Vet
         run: go vet ./...
       - name: Protocol fuzz smoke
@@ -845,8 +840,7 @@ jobs:
             BAFT_REVOCATIONS_URL="file://$RUNNER_TEMP/rel/revocations.json" \
             BAFT_E2E_UPGRADE_DIR="$RUNNER_TEMP/up" \
             tests/e2e/install_two_roles.sh
- \
-            -count=50 -timeout 15m -v
+ -count=50 -timeout 15m -v
       - name: Race detector
         run: go test -race ./...
       - name: Vet
