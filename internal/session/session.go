@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	defaultWindow           uint64 = 64 * 1024
+	defaultWindow           uint64 = 1024 * 1024 // EXPERIMENT E2 (COR-T1, not for merge)
 	dataChunk                      = 32 * 1024
 	maxClosedFlowTombstones         = 256
 	maxFlowsPerShard                = 64
