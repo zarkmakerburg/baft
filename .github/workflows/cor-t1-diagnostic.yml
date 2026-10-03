@@ -1,0 +1,42 @@
+name: cor-t1-diagnostic
+
+on:
+  push:
+    branches:
+      - diag/cor-t1-stall-evidence
+    paths:
+      - 'tests/correctness/**'
+      - 'internal/session/**'
+      - '.github/workflows/cor-t1-diagnostic.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: cor-t1-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  stall-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: COR-T1 repeated 1 GiB stall evidence
+        env:
+          BAFT_COR01_1GIB: "1"
+        run: |
+          for i in $(seq 1 10); do
+            echo "===== COR-T1 diagnostic iteration $i/10 ====="
+            go test ./tests/correctness -run '^TestCOR01OneGiBBidirectional$' -count=1 -timeout 90s -v
+          done
