@@ -17,7 +17,7 @@ HQ A3 (منو و هدر). اجرای `baft` روی ترمینال (یا `baft me
 | 5 | BCC | وضعیت سرویس BCC روی این میزبان و فرمان‌های BCC که باید روی میزبان BCC اجرا شود |
 | 6 | Monitoring | متریک‌های محلی نود؛ مانیتورینگ ناوگان و سلامت در BCC است |
 | 7 | Certificates | فایل‌های CA و گواهی که config نام برده: subject، انقضا، روزهای باقی‌مانده (`WARNING` زیر ۳۰ روز، `FAILED` وقتی منقضی است) |
-| 8 | Backup / Restore | نحوهٔ پشتیبان‌گیری و فرمان فقط‌خواندنی `baft-bcc restore-preview` (فرمان restore واقعی planned است) |
+| 8 | Backup / Restore | راهنمای backup، فرمان فقط‌خواندنی `baft-bcc restore-preview` و restore محلی/offline با `baft-bcc restore ... --yes` |
 | 9 | Logs | ۱۰۰ یا ۵۰۰ خط آخر (برای دنبال‌کردن زنده `baft logs -f`) |
 | 10 | Support bundle | بعد از «بله»ی صریح آرشیو عیب‌یابی secret-safe را می‌نویسد |
 | 11 | Update | **planned** |
