@@ -24,6 +24,8 @@ const (
 	dataChunk                      = 32 * 1024
 	maxClosedFlowTombstones         = 256
 	maxFlowsPerShard                = 64
+	targetWritePollInterval         = time.Second
+	targetWriteNoProgressLimit      = 30 * time.Second
 )
 
 var ErrRecoverableDataGap = errors.New("recoverable DATA gap on recovery carrier")
@@ -1256,62 +1258,80 @@ func (p *Peer) ensurePumpsAfterRecovery(ctx context.Context,fl *flow){
 }
 
 func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
+	p.pumpTargetWithPolicy(ctx,fl,targetWritePollInterval,targetWriteNoProgressLimit)
+}
+
+func (p *Peer) pumpTargetWithPolicy(ctx context.Context,fl *flow,writePoll,noProgressLimit time.Duration) {
 	fl.mu.Lock()
-	ring := fl.rxRing
+	ring:=fl.rxRing
+	conn:=fl.conn
 	fl.mu.Unlock()
-	if ring == nil {
-		return
-	}
+	if ring==nil||conn==nil{return}
+	if writePoll<=0{writePoll=targetWritePollInterval}
+	if noProgressLimit<=0{noProgressLimit=targetWriteNoProgressLimit}
 
+	lastProgress:=time.Now()
 	for {
-		segment, err := ring.Peek(ctx, dataChunk)
-		if err != nil {
-			return
-		}
-		if len(segment) == 0 {
-			continue
-		}
-		if err := writeConnFull(fl.conn, segment); err != nil {
-			_ = p.sendReset(fl, protocol.ErrorTargetUnreachable)
-			return
-		}
-		fl.mu.Lock()
-		if err := ring.Consume(len(segment)); err != nil {
-			fl.mu.Unlock()
-			_ = p.sendReset(fl, protocol.ErrorProtocol)
-			return
-		}
-		fl.rxWritten += uint64(len(segment))
-		delivered := fl.rxWritten
-		finalReady := fl.finRecv && !fl.finAckSent && delivered == fl.finRecvFinal
-		closed := fl.closed
-		fl.mu.Unlock()
+		segment,err:=ring.Peek(ctx,dataChunk)
+		if err!=nil{return}
+		if len(segment)==0{continue}
 
-		if closed {
+		if err:=conn.SetWriteDeadline(time.Now().Add(writePoll));err!=nil{
+			_ = p.sendReset(fl,protocol.ErrorTargetUnreachable)
 			return
 		}
-		if finalReady {
-			_ = p.ackRemoteFin(fl)
+		n,writeErr:=conn.Write(segment)
+		_ = conn.SetWriteDeadline(time.Time{})
+		if n<0||n>len(segment){
+			_ = p.sendReset(fl,protocol.ErrorProtocol)
 			return
 		}
-		for {
-			epoch,owner,generation:=p.currentCarrierIdentity()
-			err := p.grantReceive(fl)
-			if err==nil{break}
-			// FIN completion can race the credit refresh. A Flow that became
-			// terminal while this goroutine was between delivery and WINDOW
-			// must absorb that late credit intent instead of emitting RESET.
+
+		if n>0{
+			if err:=ring.Consume(n);err!=nil{
+				_ = p.sendReset(fl,protocol.ErrorProtocol)
+				return
+			}
 			fl.mu.Lock()
-			closed = fl.closed
-			finalReady = fl.finRecv && !fl.finAckSent && fl.rxWritten == fl.finRecvFinal
+			fl.rxWritten+=uint64(n)
+			delivered:=fl.rxWritten
+			finalReady:=fl.finRecv&&!fl.finAckSent&&delivered==fl.finRecvFinal
+			closed:=fl.closed
 			fl.mu.Unlock()
+			lastProgress=time.Now()
+
 			if closed{return}
 			if finalReady{_ = p.ackRemoteFin(fl);return}
-			if p.recoveryEnabled {
-				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
-				if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
+			for {
+				epoch,owner,generation:=p.currentCarrierIdentity()
+				err:=p.grantReceive(fl)
+				if err==nil{break}
+				fl.mu.Lock()
+				closed=fl.closed
+				finalReady=fl.finRecv&&!fl.finAckSent&&fl.rxWritten==fl.finRecvFinal
+				fl.mu.Unlock()
+				if closed{return}
+				if finalReady{_ = p.ackRemoteFin(fl);return}
+				if p.recoveryEnabled{
+					p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
+					if werr:=p.waitForReplacement(ctx,epoch,owner,generation);werr==nil{continue}
+				}
+				_ = p.sendReset(fl,protocol.ErrorResourceExhausted)
+				return
 			}
-			_ = p.sendReset(fl, protocol.ErrorResourceExhausted)
+		}
+
+		if writeErr!=nil{
+			var ne net.Error
+			if errors.As(writeErr,&ne)&&ne.Timeout(){
+				if ctx.Err()!=nil{return}
+				if time.Since(lastProgress)<noProgressLimit{continue}
+			}
+			_ = p.sendReset(fl,protocol.ErrorTargetUnreachable)
+			return
+		}
+		if n==0{
+			_ = p.sendReset(fl,protocol.ErrorTargetUnreachable)
 			return
 		}
 	}
