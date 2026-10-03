@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net"
 	"net/http/httptest"
@@ -358,5 +357,4 @@ func TestCOR01OneGiBBidirectionalInstrumented(t *testing.T) {
 	cancel()
 	select { case <-irDone: case <-time.After(time.Second): }
 	select { case <-serverErr: case <-time.After(time.Second): }
-	fmt.Sprintf("")
 }
