@@ -25,9 +25,6 @@ on:
           - baft
           - direct
 
-concurrency:
-  group: cor-t1-diagnostic-${{ github.ref }}
-  cancel-in-progress: false
 
 permissions:
   contents: read
