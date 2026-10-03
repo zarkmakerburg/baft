@@ -48,8 +48,29 @@ POST /api/backups/restore-preview   {"filename":"daily-...baftbak"}
 
 این API فقط preview است و هیچ restore یا mutation روی state انجام نمی‌دهد.
 
+## A6 — Restore محلی از CLI
+
+Restore واقعی عمداً فقط **به‌صورت local و offline روی میزبان BCC** در دسترس است:
+
+<div dir="ltr" align="left">
+
+```bash
+export BAFT_BCC_BACKUP_KEY=...
+baft-bcc restore --backup backups/daily-20261002T000000Z.baftbak --state-file bcc-state.json
+# preview only; exits 4 because explicit confirmation is still required
+
+baft-bcc restore --backup backups/daily-20261002T000000Z.baftbak --state-file bcc-state.json --yes
+# repeats all safety checks and commits the transactional restore
+```
+
+</div>
+
+فرمان باید lock فایل state را بگیرد؛ بنابراین اگر BCC در حال اجرا باشد restore رد می‌شود. ابتدا همان preview رسمی اجرا می‌شود و backup خراب/نامعتبر، audit فعلی نامعتبر، anchor ناسازگار، state قدیمی که هنوز migration لازم دارد، یا journal نیمه‌کاره رد می‌شود. بدون `--yes` هیچ mutation انجام نمی‌شود. با `--yes`، تابع `RestoreFiles` دوباره lock را می‌گیرد و backup/audit/anchor را مجدداً بررسی می‌کند و فقط بعد وارد restore تراکنشی و fault-tested موجود می‌شود.
+
+کد خروج: `0` = commit موفق، `1` = خطای ایمنی/verify/restore، `2` = استفاده یا تنظیم کلید اشتباه، `4` = preview معتبر است ولی confirmation داده نشده. گزینه `--json` preview و وضعیت commit را ماشین‌خوانا می‌دهد.
+
 ## آنچه اینجا نیست
 
-خودِ restore (`Server.RestoreFromFile`) یک عملیات تراکنشی با تست fault-injection است (stage، verify، journal، commit، بازگشت در صورت خطا) ولی **هنوز به‌صورت فرمان یا API در دسترس نیست**: این PR فقط پیش‌نمایش را اضافه می‌کند. فرمان restore که کنار BCC در حال اجرا امن باشد طراحی و تأیید جدا می‌خواهد.
+عمداً **هیچ Remote Restore API** و هیچ restore زنده از داخل Admin UI/API اضافه نشده است. A5 فقط preview از API است؛ A6 نیازمند دسترسی محلی به میزبان، BCC متوقف، کلید backup و `--yes` صریح است.
 
 </div>
