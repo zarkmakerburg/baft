@@ -55,8 +55,25 @@ BAFT_AGENT_STATE_DIR="${BAFT_AGENT_STATE_DIR:-/var/lib/baft-agent}"
 # systemd unit name and poll interval of the agent (tests run two on one host).
 BAFT_AGENT_UNIT="${BAFT_AGENT_UNIT:-baft-agent}"
 BAFT_AGENT_INTERVAL="${BAFT_AGENT_INTERVAL:-30s}"
+CONFIG="$BAFT_CONFIG_DIR/baft.yaml"
+NOISE_KEY="$BAFT_CONFIG_DIR/noise-key.json"
+BAFT_SYSTEMD_DIR="${BAFT_SYSTEMD_DIR:-/etc/systemd/system}"
+UNIT_FILE="$BAFT_SYSTEMD_DIR/$BAFT_SERVICE.service"
+AGENT_UNIT_FILE="$BAFT_SYSTEMD_DIR/$BAFT_AGENT_UNIT.service"
+# Rerun controls. A rerun inspects first and changes only what the plan shows.
+PLAN_ONLY=0
+PLAN_JSON=0
+ASSUME_YES="${BAFT_ASSUME_YES:-0}"
+RE_PAIR=0
 CLEANUP=()
-cleanup(){ if ((${#CLEANUP[@]})); then rm -rf -- "${CLEANUP[@]}"; fi; }
+APPLYING=0
+cleanup(){
+  local rc=$?
+  trap - EXIT
+  if [[ "$APPLYING" == "1" && "$rc" -ne 0 ]]; then rollback_apply || true; fi
+  if ((${#CLEANUP[@]})); then rm -rf -- "${CLEANUP[@]}"; fi
+  exit "$rc"
+}
 trap cleanup EXIT
 
 log(){ printf '[baft-install] %s\n' "$*" >&2; }
@@ -114,6 +131,12 @@ Options:
   --version vX.Y.Z    install this signed release (default: the latest)
   --allow-downgrade   accept a release older than the one installed
   --from-source       build from BAFT_REPO_URL at BAFT_REF (development only)
+  --plan              inspect this server and show what a run would do, then stop.
+                      Changes nothing, needs no root and no network (with --json: machine-readable).
+  --yes               apply a plan that changes an existing install without asking
+                      (also BAFT_ASSUME_YES=1). A fresh install never asks.
+  --re-pair           start a NEW pairing on an installed node (the current config is
+                      backed up first); a rerun never re-pairs on its own
   --offline DIR       install from an unpacked baft-offline-<version>.tar.gz: no
                       network, no apt; python3 and openssl must already be installed.
                       The release is verified exactly as for an online install.
@@ -121,6 +144,13 @@ Options:
 By default the installer downloads the signed release for this architecture,
 verifies it against the pinned root key and the current revocation list, and
 refuses a downgrade or a re-tagged version (state in BAFT_RELEASE_STATE).
+
+Rerunning is safe. The installer inspects the server first (FRESH_INSTALL,
+PARTIAL_INSTALL, ALREADY_INSTALLED, CURRENT, UPGRADE_AVAILABLE, REPAIR_REQUIRED,
+BROKEN_INSTALL), shows a plan, and applies only that plan, with a rollback if
+it fails. It never rotates a key or certificate, overwrites a valid config,
+re-pairs, removes a tunnel, clears state, resets the release state or touches an
+ownership marker on its own; a healthy, current install is left exactly as it is.
 
 Environment:
   BAFT_INSTALL_FROM (release|source) BAFT_VERSION BAFT_RELEASE_URL
@@ -158,6 +188,10 @@ while [[ $# -gt 0 ]]; do
     --from-source) BAFT_INSTALL_FROM=source; shift ;;
     --offline) BAFT_OFFLINE_DIR="${2:-}"; shift 2 ;;
     --verify-release) VERIFY_ONLY_DIR="${2:-}"; shift 2 ;;
+    --plan|--dry-run) PLAN_ONLY=1; shift ;;
+    --json) PLAN_JSON=1; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    --re-pair) RE_PAIR=1; shift ;;
     --agent-only) AGENT_ONLY=1; shift ;;
     --bcc-url) BAFT_BCC_URL="${2:-}"; shift 2 ;;
     --node-id) BAFT_NODE_ID="${2:-}"; shift 2 ;;
@@ -165,6 +199,282 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# ---------------------------------------------------------------------------
+# Inspect, plan, apply (rerunnable installer).
+#
+#   INSPECT -> BUILD PLAN -> SHOW PLAN -> APPLY -> VERIFY -> ROLLBACK IF FAILED
+#
+# RERUN != REINSTALL. Inspecting changes nothing. The plan lists every item as
+# keep, create, update, replace, start or restart, and only the items that are
+# not "keep" are touched. Long-lived secrets (the Noise key, the outer PKI, the
+# agent token and job key), a valid config, the release state, tunnels and
+# ownership markers are never regenerated, overwritten or removed by a rerun.
+# ---------------------------------------------------------------------------
+sha_of() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+same_file() { [[ -f "$1" && -f "$2" ]] && cmp -s -- "$1" "$2"; }
+svc_active() { [[ "$(systemctl is-active "$1" 2>/dev/null || true)" == "active" ]]; }
+svc_enabled() { [[ "$(systemctl is-enabled "$1" 2>/dev/null || true)" == "enabled" ]]; }
+json_escape() { printf '%s' "$1" | tr -d '\n\r\t' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+PLAN_ITEM=(); PLAN_ACT=(); PLAN_DETAIL=(); PLAN_CHANGES=0
+plan_add() {
+  PLAN_ITEM+=("$1"); PLAN_ACT+=("$2"); PLAN_DETAIL+=("$3")
+  case "$2" in keep|skip) ;; *) PLAN_CHANGES=$((PLAN_CHANGES + 1)) ;; esac
+}
+
+STATE=""; STATE_WHY=""; INSTALLED_REL=""
+F_BIN=0; F_PAIR=0; F_AGENT_BIN=0; F_RELSTATE=0; F_UNIT=0; F_UNIT_MANAGED=0; F_CFG=0; F_CFG_VALID=0
+F_KEY=0; F_KEY_OK=0; F_PKI=0; F_PENDING=0; F_USER=0; F_ACTIVE=0; F_ENABLED=0; F_DIRS=0
+F_AGENT_UNIT=0; F_AGENT_ACTIVE=0; F_TOKEN=0; F_JOBKEY=0
+
+inspect_install() {
+  [[ -x "$BAFT_BIN" ]] && F_BIN=1
+  [[ -x "$BAFT_PAIR_BIN" ]] && F_PAIR=1
+  [[ -x "$BAFT_AGENT_BIN" ]] && F_AGENT_BIN=1
+  if [[ -f "$BAFT_RELEASE_STATE" ]]; then
+    F_RELSTATE=1
+    INSTALLED_REL="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$BAFT_RELEASE_STATE" | head -n1)"
+  fi
+  [[ -f "$UNIT_FILE" ]] && F_UNIT=1
+  if [[ "$F_UNIT" == 1 ]] && grep -q '^# baft-managed: true' "$UNIT_FILE" 2>/dev/null; then F_UNIT_MANAGED=1; fi
+  [[ -f "$BAFT_CONFIG_DIR/baft.managed.json" ]] && F_UNIT_MANAGED=1
+  [[ -f "$CONFIG" ]] && F_CFG=1
+  if [[ "$F_CFG" == 1 && "$F_BIN" == 1 ]] && "$BAFT_BIN" config validate --file "$CONFIG" >/dev/null 2>&1; then F_CFG_VALID=1; fi
+  [[ -f "$NOISE_KEY" ]] && F_KEY=1
+  if [[ "$F_KEY" == 1 ]] && [[ "$(stat -c '%a %U' "$NOISE_KEY" 2>/dev/null)" == "600 $BAFT_USER" ]]; then F_KEY_OK=1; fi
+  [[ -f "$BAFT_CONFIG_DIR/pki/ca.pem" && -f "$BAFT_CONFIG_DIR/pki/server.pem" && -f "$BAFT_CONFIG_DIR/pki/server.key" ]] && F_PKI=1
+  [[ -f "$BAFT_STATE_DIR/pairing.ex.json" ]] && F_PENDING=1
+  id -u "$BAFT_USER" >/dev/null 2>&1 && F_USER=1
+  [[ -d "$BAFT_CONFIG_DIR" && -d "$BAFT_STATE_DIR" && -d "$BAFT_PREFIX" ]] && F_DIRS=1
+  if svc_active "$BAFT_SERVICE.service"; then F_ACTIVE=1; fi
+  if svc_enabled "$BAFT_SERVICE.service"; then F_ENABLED=1; fi
+  [[ -f "$AGENT_UNIT_FILE" ]] && F_AGENT_UNIT=1
+  if svc_active "$BAFT_AGENT_UNIT.service"; then F_AGENT_ACTIVE=1; fi
+  [[ -f "$BAFT_AGENT_DIR/token" ]] && F_TOKEN=1
+  [[ -f "$BAFT_AGENT_DIR/bcc-job.pub" ]] && F_JOBKEY=1
+  return 0
+}
+
+classify_state() {
+  if [[ "$AGENT_ONLY" == "1" ]]; then
+    # The binaries are shared by every instance on a host, so only this
+    # instance's own files decide whether it is fresh.
+    if [[ "$F_AGENT_UNIT$F_TOKEN$F_JOBKEY" == "000" ]]; then
+      STATE="FRESH_INSTALL"; STATE_WHY="nothing of BAFT is installed here"; return
+    fi
+    if [[ "$F_BIN" == 1 && "$F_PAIR" == 1 && "$F_AGENT_BIN" == 1 && "$F_AGENT_UNIT" == 1 && "$F_TOKEN" == 1 && "$F_JOBKEY" == 1 ]]; then
+      if [[ "$F_AGENT_ACTIVE" == 1 ]]; then STATE="ALREADY_INSTALLED"; STATE_WHY="the agent is installed and running"
+      else STATE="REPAIR_REQUIRED"; STATE_WHY="the agent is installed but not running"; fi
+      return
+    fi
+    STATE="PARTIAL_INSTALL"; STATE_WHY="some agent files are missing"; return
+  fi
+  if [[ "$F_UNIT$F_CFG$F_KEY" == "000" ]]; then
+    STATE="FRESH_INSTALL"; STATE_WHY="nothing of BAFT is installed here"; return
+  fi
+  if [[ "$F_CFG" == 1 && "$F_BIN" == 1 && "$F_CFG_VALID" == 0 ]]; then
+    STATE="BROKEN_INSTALL"; STATE_WHY="$CONFIG exists but does not validate"; return
+  fi
+  if [[ "$F_CFG" == 1 && "$F_KEY" == 0 ]]; then
+    STATE="BROKEN_INSTALL"; STATE_WHY="$CONFIG exists but the Noise key $NOISE_KEY is missing (a new key would need a new pairing)"; return
+  fi
+  if [[ "$F_CFG" == 1 && "$ROLE" == "ex" && "$F_PKI" == 0 ]]; then
+    STATE="BROKEN_INSTALL"; STATE_WHY="$CONFIG exists but the certificate files in $BAFT_CONFIG_DIR/pki are missing"; return
+  fi
+  if [[ "$F_BIN" == 1 && "$F_PAIR" == 1 && "$F_UNIT" == 1 && "$F_CFG_VALID" == 1 && "$F_KEY" == 1 ]]; then
+    if [[ "$F_ACTIVE" == 0 || "$F_ENABLED" == 0 || "$F_KEY_OK" == 0 || "$F_USER" == 0 || "$F_DIRS" == 0 ]]; then
+      STATE="REPAIR_REQUIRED"; STATE_WHY="installed and paired, but the service is not running or enabled, or a permission is off"
+    else
+      STATE="ALREADY_INSTALLED"; STATE_WHY="installed, paired and running"
+    fi
+    return
+  fi
+  STATE="PARTIAL_INSTALL"; STATE_WHY="some of the install is missing (an interrupted install, or a node still waiting for pairing)"
+}
+
+# plan_binaries compares the staged (verified) binaries with the installed ones.
+# STAGED=1 once a release was downloaded and verified; before that (--plan) the
+# comparison can only use the requested version.
+STAGED=0; TARGET_REL=""
+DO_BIN=0
+plan_binary() { # item installed-path staged-path flag
+  local item="$1" path="$2" staged="$3" present="$4"
+  if [[ "$STAGED" == 1 ]]; then
+    if same_file "$staged" "$path"; then plan_add "$item" keep "identical to the verified release ${TARGET_REL}"
+    elif [[ "$present" == 1 ]]; then plan_add "$item" update "replace with the verified release ${TARGET_REL} (the old one is kept for rollback)"; DO_BIN=1
+    else plan_add "$item" create "install from the verified release ${TARGET_REL}"; DO_BIN=1; fi
+  else
+    if [[ "$present" == 1 ]]; then
+      if [[ -n "$BAFT_VERSION" && -n "$INSTALLED_REL" && "$BAFT_VERSION" != "$INSTALLED_REL" ]]; then
+        plan_add "$item" update "installed $INSTALLED_REL, requested $BAFT_VERSION (verified when downloaded)"
+      else plan_add "$item" keep "installed${INSTALLED_REL:+ ($INSTALLED_REL)}; compared with the release when it is downloaded"; fi
+    else plan_add "$item" create "not installed"; fi
+  fi
+}
+
+DO_RELSTATE=0
+plan_relstate() {
+  [[ "$BAFT_INSTALL_FROM" == "release" ]] || return 0
+  if [[ "$F_RELSTATE" == 0 ]]; then plan_add "release state" create "record the verified release"; DO_RELSTATE=1
+  elif [[ "$STAGED" == 1 && -n "$TARGET_REL" && "$TARGET_REL" != "$INSTALLED_REL" ]]; then
+    plan_add "release state" update "move forward to ${TARGET_REL} after the install verifies (never backwards, never reset)"; DO_RELSTATE=1
+  else plan_add "release state" keep "recorded${INSTALLED_REL:+: $INSTALLED_REL}; only moves forward, never reset"; fi
+}
+DO_UNIT=0; DO_PKI=0; DO_KEYGEN=0; DO_PAIRING=0; DO_RESTART=0; DO_START=0; DO_ENABLE=0; DO_FIXPERM=0
+DO_AGENT_UNIT=0; DO_TOKEN=0; DO_JOBKEY=0; DO_ROOTPIN=0
+REFUSED=""
+
+build_role_plan() {
+  plan_binary "baft binary" "$BAFT_BIN" "$BAFT_BIN.new" "$F_BIN"
+  plan_binary "baft-pair binary" "$BAFT_PAIR_BIN" "$BAFT_PAIR_BIN.new" "$F_PAIR"
+  plan_relstate
+  if [[ "$STATE" == "BROKEN_INSTALL" ]]; then
+    plan_add "install" refuse "$STATE_WHY"
+    REFUSED="$STATE_WHY"
+    return
+  fi
+  # Noise key: created only when absent, never regenerated.
+  if [[ "$F_KEY" == 0 ]]; then plan_add "noise key" create "generate $NOISE_KEY (owner-only)"; DO_KEYGEN=1
+  elif [[ "$F_KEY_OK" == 0 ]]; then plan_add "noise key" update "fix owner and mode only (never regenerated)"; DO_FIXPERM=1
+  else plan_add "noise key" keep "exists; a rerun never regenerates it"; fi
+  # Outer PKI (EX): created only when absent.
+  if [[ "$ROLE" == "ex" ]]; then
+    if [[ "$F_PKI" == 1 ]]; then plan_add "outer PKI" keep "CA and server certificate exist; never regenerated"
+    else plan_add "outer PKI" create "generate the CA and server certificate for ${PUBLIC_ADDR:-this host}"; DO_PKI=1; fi
+  fi
+  # Config and pairing.
+  if [[ "$F_CFG_VALID" == 1 && "$RE_PAIR" == 0 ]]; then
+    plan_add "config" keep "valid; it is not overwritten"
+    plan_add "pairing" skip "already paired; --re-pair starts a new pairing"
+  elif [[ "$F_CFG_VALID" == 1 && "$RE_PAIR" == 1 ]]; then
+    plan_add "config" replace "new pairing requested (--re-pair); the current config is backed up first"
+    plan_add "pairing" create "issue a new one-time pairing code; the tunnel is interrupted until pairing completes"
+    DO_PAIRING=1
+  else
+    plan_add "config" create "written when pairing completes"
+    if [[ "$ROLE" == "ex" ]]; then plan_add "pairing" create "issue a one-time pairing code${REPLY_CODE:+ and finish with the given reply code}"
+    else plan_add "pairing" create "pair with the EX using the pairing code"; fi
+    DO_PAIRING=1
+  fi
+  # systemd unit: created when missing; an existing one is never overwritten.
+  if [[ "$F_UNIT" == 0 ]]; then plan_add "systemd unit" create "$UNIT_FILE"; DO_UNIT=1
+  elif [[ "$F_UNIT_MANAGED" == 1 ]]; then plan_add "systemd unit" keep "managed by the BCC tunnel builder (ownership marker); not touched"
+  else plan_add "systemd unit" keep "exists; not overwritten"; fi
+  [[ "$F_ENABLED" == 0 && "$F_UNIT" == 1 ]] && { plan_add "service enable" update "enable $BAFT_SERVICE.service"; DO_ENABLE=1; }
+  # Service.
+  if [[ "$DO_PAIRING" == 1 ]]; then plan_add "service" restart "started when pairing completes"
+  elif [[ "$DO_BIN" == 1 || "$DO_UNIT" == 1 ]]; then plan_add "service" restart "to run the new binary or unit"; DO_RESTART=1
+  elif [[ "$F_ACTIVE" == 0 && "$F_CFG_VALID" == 1 ]]; then plan_add "service" start "installed and paired but not running"; DO_START=1
+  else plan_add "service" keep "left running; no restart needed"; fi
+  if [[ "$STATE" != "FRESH_INSTALL" && "$PLAN_CHANGES" == 0 ]]; then
+    plan_add "credentials" keep "none created, rotated or removed"
+  fi
+}
+
+build_agent_plan() {
+  plan_binary "baft binary" "$BAFT_BIN" "$BAFT_BIN.new" "$F_BIN"
+  plan_binary "baft-pair binary" "$BAFT_PAIR_BIN" "$BAFT_PAIR_BIN.new" "$F_PAIR"
+  plan_binary "baft-agent binary" "$BAFT_AGENT_BIN" "$BAFT_AGENT_BIN.new" "$F_AGENT_BIN"
+  plan_relstate
+  # The given token / job key / root pin are compared with what is installed.
+  if [[ "$F_TOKEN" == 0 ]]; then plan_add "agent token" create "$BAFT_AGENT_DIR/token"; DO_TOKEN=1
+  elif same_file "$AGENT_TOKEN_TMP" "$BAFT_AGENT_DIR/token"; then plan_add "agent token" keep "same token as installed"
+  else plan_add "agent token" replace "a DIFFERENT token was given; the installed one is replaced"; DO_TOKEN=1; fi
+  if [[ "$F_JOBKEY" == 0 ]]; then plan_add "BCC job key" create "$BAFT_AGENT_DIR/bcc-job.pub"; DO_JOBKEY=1
+  elif [[ "$(cat "$BAFT_AGENT_DIR/bcc-job.pub" 2>/dev/null)" == "$BAFT_BCC_JOB_KEY" ]]; then plan_add "BCC job key" keep "same pinned key as installed"
+  else plan_add "BCC job key" replace "a DIFFERENT job key was given; the pinned one is replaced"; DO_JOBKEY=1; fi
+  if [[ -n "$BAFT_ROOT_PUB" ]]; then
+    if [[ "$(cat "$BAFT_AGENT_DIR/release-root.pub" 2>/dev/null)" == "$BAFT_ROOT_PUB" ]]; then plan_add "release root pin" keep "same as installed"
+    elif [[ -f "$BAFT_AGENT_DIR/release-root.pub" ]]; then plan_add "release root pin" replace "a DIFFERENT release root key was given"; DO_ROOTPIN=1
+    else plan_add "release root pin" create "$BAFT_AGENT_DIR/release-root.pub"; DO_ROOTPIN=1; fi
+  fi
+  render_agent_unit >"$AGENT_UNIT_TMP"
+  if [[ "$F_AGENT_UNIT" == 0 ]]; then plan_add "agent unit" create "$AGENT_UNIT_FILE"; DO_AGENT_UNIT=1
+  elif same_file "$AGENT_UNIT_TMP" "$AGENT_UNIT_FILE"; then plan_add "agent unit" keep "identical"
+  else plan_add "agent unit" update "arguments differ from the installed unit (BCC URL, node id, paths or interval)"; DO_AGENT_UNIT=1; fi
+  if [[ "$DO_BIN" == 1 || "$DO_TOKEN" == 1 || "$DO_JOBKEY" == 1 || "$DO_ROOTPIN" == 1 || "$DO_AGENT_UNIT" == 1 ]]; then
+    plan_add "agent service" restart "to pick up the change"; DO_RESTART=1
+  elif [[ "$F_AGENT_ACTIVE" == 0 ]]; then plan_add "agent service" start "installed but not running"; DO_START=1
+  else plan_add "agent service" keep "left running; no restart needed"; fi
+}
+
+show_plan() {
+  if [[ "$PLAN_JSON" == "1" ]]; then
+    local i sep=""
+    printf '{"state":"%s","why":"%s","changes":%d,"steps":[' "$STATE" "$(json_escape "$STATE_WHY")" "$PLAN_CHANGES"
+    for i in "${!PLAN_ITEM[@]}"; do
+      printf '%s{"item":"%s","action":"%s","detail":"%s"}' "$sep" "$(json_escape "${PLAN_ITEM[$i]}")" "${PLAN_ACT[$i]}" "$(json_escape "${PLAN_DETAIL[$i]}")"
+      sep=","
+    done
+    printf ']}\n'
+    return
+  fi
+  local i
+  log "install state: $STATE ($STATE_WHY)"
+  log "plan:"
+  for i in "${!PLAN_ITEM[@]}"; do
+    printf '[baft-install]   %-20s %-8s %s\n' "${PLAN_ITEM[$i]}" "${PLAN_ACT[$i]}" "${PLAN_DETAIL[$i]}" >&2
+  done
+  if [[ "$PLAN_CHANGES" == 0 ]]; then log "nothing to change"; fi
+}
+
+# A plan that changes an existing install needs a yes; a fresh install never asks.
+confirm_plan() {
+  [[ -n "$REFUSED" ]] && return 0
+  [[ "$STATE" == "FRESH_INSTALL" || "$PLAN_CHANGES" == 0 ]] && return 0
+  [[ "$ASSUME_YES" == "1" ]] && return 0
+  if [[ -t 0 && "$NONINTERACTIVE" != "1" ]]; then
+    local a
+    read -r -p "[baft-install] Apply this plan? [y/N] " a
+    [[ "$a" == "y" || "$a" == "Y" || "$a" == "yes" ]] || die "not applied; nothing was changed"
+    return 0
+  fi
+  log "this plan changes an existing install; re-run with --yes to apply it (or --plan to review it)"
+  exit 4
+}
+
+# ---- apply with rollback ----
+BACKUP_DIR=""; BACKUP_MAP=(); CREATED=(); WAS_ACTIVE=0; WAS_AGENT_ACTIVE=0; TOUCHED_SERVICE=0
+backup_name() { printf '%s' "$1" | tr '/' '_'; }
+backup_file() {
+  local f="$1"
+  if [[ ! -e "$f" ]]; then CREATED+=("$f"); return 0; fi
+  if [[ -z "$BACKUP_DIR" ]]; then
+    BACKUP_DIR="$BAFT_PREFIX/backups/rerun-$(date +%Y%m%dT%H%M%S)-$$"
+    install -d -m 0700 -o root -g root "$BAFT_PREFIX/backups" "$BACKUP_DIR"
+  fi
+  cp -p -- "$f" "$BACKUP_DIR/$(backup_name "$f")"
+  BACKUP_MAP+=("$f")
+}
+prune_backups() {
+  local d n=0
+  [[ -d "$BAFT_PREFIX/backups" ]] || return 0
+  # Keep the newest three runs.
+  while IFS= read -r d; do
+    n=$((n + 1))
+    if (( n > 3 )); then rm -rf -- "$d"; fi
+  done < <(ls -1dt "$BAFT_PREFIX"/backups/rerun-* 2>/dev/null)
+}
+rollback_apply() {
+  APPLYING=0
+  log "apply failed: rolling back"
+  local f
+  for f in "${BACKUP_MAP[@]}"; do
+    cp -p -- "$BACKUP_DIR/$(backup_name "$f")" "$f" || log "could not restore $f (copy kept in $BACKUP_DIR)"
+  done
+  for f in "${CREATED[@]}"; do rm -f -- "$f"; done
+  systemctl daemon-reload || true
+  # A service this run never stopped or restarted is left alone.
+  if [[ "$TOUCHED_SERVICE" == 1 ]]; then
+    if [[ "$AGENT_ONLY" == "1" ]]; then
+      if [[ "$WAS_AGENT_ACTIVE" == 1 ]]; then systemctl restart "$BAFT_AGENT_UNIT.service" || true; fi
+    elif [[ "$WAS_ACTIVE" == 1 ]]; then
+      systemctl restart "$BAFT_SERVICE.service" || true
+    fi
+  fi
+  log "rolled back to the previous binaries and files; the release state was not recorded"
+}
 
 # verify_release DIR REVOCATIONS UPDATE(0|1) ARTIFACT... checks a downloaded
 # release with the rules of internal/release (cmd/baft-release verify):
@@ -473,6 +783,131 @@ if [[ "$AGENT_ONLY" == "1" ]]; then
 else
   [[ "$ROLE" == "ex" || "$ROLE" == "ir" ]] || die "--role must be ex or ir"
 fi
+
+# ---- renderers (pure: they print, they never touch the system) ----
+render_service_unit() {
+  local caps=""
+  if (( BAFT_PORT < 1024 )); then
+    caps=$'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE'
+  fi
+  cat <<EOF
+[Unit]
+Description=BAFT transport service
+After=network-online.target
+Wants=network-online.target
+# The IR dialer exits while its EX is unreachable; keep retrying forever.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=$BAFT_USER
+Group=$BAFT_USER
+ExecStart=$BAFT_BIN run --file $CONFIG
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+RestartSec=2s
+$caps
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=$BAFT_STATE_DIR
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+render_agent_unit() {
+  local root_flag="" http_flag="" bindir
+  if [[ -n "$BAFT_ROOT_PUB" ]]; then root_flag="--release-root $BAFT_AGENT_DIR/release-root.pub"; fi
+  if [[ "$BAFT_BCC_URL" == http://* ]]; then http_flag="--allow-insecure-http"; fi
+  # Where the agent fetches releases for update jobs (defaults: GitHub).
+  if [[ -n "${BAFT_AGENT_RELEASE_BASE_URL:-}" ]]; then http_flag+=" --release-base-url $BAFT_AGENT_RELEASE_BASE_URL"; fi
+  if [[ -n "${BAFT_AGENT_REVOCATIONS_URL:-}" ]]; then http_flag+=" --revocations-url $BAFT_AGENT_REVOCATIONS_URL"; fi
+  bindir="$(dirname "$BAFT_BIN")"
+  cat <<UNIT
+[Unit]
+Description=BAFT agent (signed BCC jobs)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=$BAFT_AGENT_BIN --bcc-url $BAFT_BCC_URL --node-id $BAFT_NODE_ID --token-file $BAFT_AGENT_DIR/token --bcc-job-key $BAFT_AGENT_DIR/bcc-job.pub $root_flag --state-dir $BAFT_AGENT_STATE_DIR --release-state $BAFT_RELEASE_STATE --bin-dir $bindir --service $BAFT_SERVICE --config-dir $BAFT_CONFIG_DIR --baft-state-dir $BAFT_STATE_DIR --service-user $BAFT_USER --metrics-listen $BAFT_METRICS_LISTEN --interval $BAFT_AGENT_INTERVAL $http_flag
+Restart=always
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Tunnel jobs write the BAFT config, keys and unit.
+ReadWritePaths=$bindir $BAFT_PREFIX $BAFT_AGENT_STATE_DIR $BAFT_CONFIG_DIR $BAFT_STATE_DIR $BAFT_SYSTEMD_DIR
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+# The agent inputs are written to private temp files so the plan can compare
+# them with what is installed (no secret is printed).
+AGENT_TOKEN_TMP=""; AGENT_UNIT_TMP=""
+prepare_agent_inputs() {
+  AGENT_TOKEN_TMP="$(mktemp)"; AGENT_UNIT_TMP="$(mktemp)"
+  CLEANUP+=("$AGENT_TOKEN_TMP" "$AGENT_UNIT_TMP")
+  if [[ -n "${BAFT_AGENT_TOKEN_FILE:-}" ]]; then
+    [[ -r "$BAFT_AGENT_TOKEN_FILE" ]] || die "cannot read BAFT_AGENT_TOKEN_FILE"
+    cat -- "$BAFT_AGENT_TOKEN_FILE" >"$AGENT_TOKEN_TMP"
+  else
+    printf '%s\n' "$BAFT_AGENT_TOKEN" >"$AGENT_TOKEN_TMP"
+  fi
+}
+
+plan_base() {
+  if [[ "$F_USER" == 0 ]]; then plan_add "service user" create "system user $BAFT_USER"; else plan_add "service user" keep "$BAFT_USER exists"; fi
+  if [[ "$F_DIRS" == 0 ]]; then plan_add "directories" create "missing ones of $BAFT_PREFIX $BAFT_CONFIG_DIR $BAFT_STATE_DIR (existing ones are not touched)"
+  else plan_add "directories" keep "exist; owner and mode are not changed"; fi
+}
+
+plan_everything() {
+  inspect_install
+  classify_state
+  [[ "$AGENT_ONLY" == "1" ]] && prepare_agent_inputs
+  plan_base
+  if [[ "$AGENT_ONLY" == "1" ]]; then build_agent_plan; else build_role_plan; fi
+  refine_state
+}
+
+refine_state() {
+  [[ "$STATE" == "ALREADY_INSTALLED" ]] || return 0
+  if [[ "$STAGED" == 1 ]]; then
+    if [[ "$DO_BIN" == 1 ]]; then STATE="UPGRADE_AVAILABLE"; STATE_WHY="installed and running; the verified release ${TARGET_REL} differs from the installed binaries"
+    else STATE="CURRENT"; STATE_WHY="installed, running and identical to the verified release ${TARGET_REL}"; fi
+  elif [[ -n "$BAFT_VERSION" && -n "$INSTALLED_REL" && "$BAFT_VERSION" != "$INSTALLED_REL" ]]; then
+    STATE="UPGRADE_AVAILABLE"; STATE_WHY="installed $INSTALLED_REL; $BAFT_VERSION was requested"
+  fi
+}
+
+# --plan: inspect and show what a run would do. No root, no network, no apt,
+# nothing is written, nothing is downloaded.
+if [[ "$PLAN_ONLY" == "1" ]]; then
+  plan_everything
+  show_plan
+  exit 0
+fi
+
 show_logo
 [[ "$BAFT_INSTALL_FROM" == "release" || "$BAFT_INSTALL_FROM" == "source" ]] || die "BAFT_INSTALL_FROM must be release or source"
 if [[ "$BAFT_INSTALL_FROM" == "release" && -z "$BAFT_ROOT_PUB" ]]; then
@@ -495,6 +930,11 @@ case "$(dpkg --print-architecture)" in
   *) die "supported architectures: amd64, arm64" ;;
 esac
 
+# INSPECT: look before touching anything.
+inspect_install
+classify_state
+log "inspecting: $STATE ($STATE_WHY)"
+
 export DEBIAN_FRONTEND=noninteractive
 if [[ -n "$BAFT_OFFLINE_DIR" ]]; then
   [[ "$BAFT_INSTALL_FROM" == "release" ]] || die "--offline installs a signed release; it cannot be combined with --from-source"
@@ -503,6 +943,9 @@ if [[ -n "$BAFT_OFFLINE_DIR" ]]; then
     command -v "$c" >/dev/null 2>&1 || die "offline install needs $c, which is not installed (install it from your OS media or mirror first)"
   done
   log "offline install from $BAFT_OFFLINE_DIR (no network, no apt)"
+elif [[ "$BAFT_INSTALL_FROM" == "release" ]] && command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 \
+  && command -v python3 >/dev/null 2>&1 && [[ -s /etc/ssl/certs/ca-certificates.crt ]]; then
+  log "curl, openssl and python3 are already installed; apt is not run"
 else
   apt-get update
   if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
@@ -538,13 +981,10 @@ if [[ "$BAFT_INSTALL_FROM" == "source" ]]; then
   install_go
 fi
 
-if ! id "$BAFT_USER" >/dev/null 2>&1; then
-  useradd --system --home-dir "$BAFT_STATE_DIR" --create-home --shell /usr/sbin/nologin "$BAFT_USER"
-fi
-install -d -m 0750 -o root -g "$BAFT_USER" "$BAFT_CONFIG_DIR"
-install -d -m 0700 -o "$BAFT_USER" -g "$BAFT_USER" "$BAFT_STATE_DIR"
-install -d -m 0755 -o root -g root "$BAFT_PREFIX"
-
+# Staging only: nothing outside temp files and *.new is written here, and the
+# *.new files are removed on every exit.
+CLEANUP+=("$BAFT_BIN.new" "$BAFT_PAIR_BIN.new" "$BAFT_AGENT_BIN.new")
+install -d -m 0755 -o root -g root "$(dirname "$BAFT_BIN")"
 REL_DIR=""
 REL_REV=""
 REL_ARTIFACTS=("baft-linux-$GOARCH" "baft-pair-linux-$GOARCH")
@@ -576,6 +1016,7 @@ fetch_release() {
   fi
   local got
   got="$(verify_release "$REL_DIR" "$REL_REV" 0 "${REL_ARTIFACTS[@]}")" || die "the downloaded release did not verify; nothing was installed"
+  TARGET_REL="${got%% *}"
   log "verified signed release $got"
   install -m 0755 "$REL_DIR/baft-linux-$GOARCH" "$BAFT_BIN.new"
   install -m 0755 "$REL_DIR/baft-pair-linux-$GOARCH" "$BAFT_PAIR_BIN.new"
@@ -585,6 +1026,7 @@ fetch_release() {
 build_from_source() {
   SRC="$BAFT_PREFIX/src"
   rm -rf "$SRC.tmp"
+  install -d -m 0755 -o root -g root "$BAFT_PREFIX"
   if ! git clone --filter=blob:none --no-checkout "$BAFT_REPO_URL" "$SRC.tmp"; then
     [[ -n "$BAFT_MIRROR_URL" ]] || die "primary repository unavailable and BAFT_MIRROR_URL is unset"
     log "trying configured mirror"
@@ -604,6 +1046,7 @@ build_from_source() {
     go build -trimpath -ldflags="-s -w" -o "$BAFT_PAIR_BIN.new" ./cmd/baft-pair
     if [[ "$AGENT_ONLY" == "1" ]]; then go build -trimpath -ldflags="-s -w" -o "$BAFT_AGENT_BIN.new" ./cmd/baft-agent; fi
   )
+  TARGET_REL="$BAFT_REF"
 }
 
 if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
@@ -611,6 +1054,10 @@ if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
 else
   build_from_source
 fi
+STAGED=1
+
+# Stealth Pro is an explicit config change on an installed host: the binaries
+# are replaced, the config is backed up and swapped, nothing else is touched.
 if [[ "$STEALTH_PRO" == "1" ]]; then
   SHAPE_CONFIG_TMP="$(mktemp "$BAFT_CONFIG_DIR/.stealth-XXXXXX.yaml")"
   CLEANUP+=("$SHAPE_CONFIG_TMP")
@@ -626,71 +1073,11 @@ if [[ "$STEALTH_PRO" == "1" ]]; then
   )
   "$BAFT_BIN.new" config stealth-pro "${SHAPE_ARGS[@]}" >"$SHAPE_CONFIG_TMP"
   "$BAFT_BIN.new" config validate --file "$SHAPE_CONFIG_TMP"
-fi
-install -m 0755 -o root -g root "$BAFT_BIN.new" "$BAFT_BIN"
-install -m 0755 -o root -g root "$BAFT_PAIR_BIN.new" "$BAFT_PAIR_BIN"
-if [[ "$AGENT_ONLY" == "1" ]]; then install -m 0755 -o root -g root "$BAFT_AGENT_BIN.new" "$BAFT_AGENT_BIN"; fi
-rm -f "$BAFT_BIN.new" "$BAFT_PAIR_BIN.new" "$BAFT_AGENT_BIN.new"
-if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
-  # Record the release only once its binaries are in place.
-  verify_release "$REL_DIR" "$REL_REV" 1 "${REL_ARTIFACTS[@]}" >/dev/null || die "could not record the installed release"
-fi
-
-# Server enrollment: the agent runs as root (it restarts services and swaps
-# binaries) with the rest of the system read-only. It holds the agent token,
-# the pinned BCC job key and the pinned release root; no tunnel config yet.
-install_agent() {
-  install -d -m 0700 -o root -g root "$BAFT_AGENT_DIR" "$BAFT_AGENT_STATE_DIR"
-  if [[ -n "${BAFT_AGENT_TOKEN_FILE:-}" ]]; then
-    install -m 0600 -o root -g root "$BAFT_AGENT_TOKEN_FILE" "$BAFT_AGENT_DIR/token"
-  else
-    ( umask 077; printf '%s\n' "$BAFT_AGENT_TOKEN" >"$BAFT_AGENT_DIR/token" )
+  install -m 0755 -o root -g root "$BAFT_BIN.new" "$BAFT_BIN"
+  install -m 0755 -o root -g root "$BAFT_PAIR_BIN.new" "$BAFT_PAIR_BIN"
+  if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
+    verify_release "$REL_DIR" "$REL_REV" 1 "${REL_ARTIFACTS[@]}" >/dev/null || die "could not record the installed release"
   fi
-  printf '%s\n' "$BAFT_BCC_JOB_KEY" >"$BAFT_AGENT_DIR/bcc-job.pub"
-  local root_flag="" http_flag="" bindir
-  if [[ -n "$BAFT_ROOT_PUB" ]]; then
-    printf '%s\n' "$BAFT_ROOT_PUB" >"$BAFT_AGENT_DIR/release-root.pub"
-    root_flag="--release-root $BAFT_AGENT_DIR/release-root.pub"
-  fi
-  if [[ "$BAFT_BCC_URL" == http://* ]]; then http_flag="--allow-insecure-http"; fi
-  # Where the agent fetches releases for update jobs (defaults: GitHub).
-  if [[ -n "${BAFT_AGENT_RELEASE_BASE_URL:-}" ]]; then http_flag+=" --release-base-url $BAFT_AGENT_RELEASE_BASE_URL"; fi
-  if [[ -n "${BAFT_AGENT_REVOCATIONS_URL:-}" ]]; then http_flag+=" --revocations-url $BAFT_AGENT_REVOCATIONS_URL"; fi
-  bindir="$(dirname "$BAFT_BIN")"
-  cat >"/etc/systemd/system/$BAFT_AGENT_UNIT.service" <<UNIT
-[Unit]
-Description=BAFT agent (signed BCC jobs)
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-ExecStart=$BAFT_AGENT_BIN --bcc-url $BAFT_BCC_URL --node-id $BAFT_NODE_ID --token-file $BAFT_AGENT_DIR/token --bcc-job-key $BAFT_AGENT_DIR/bcc-job.pub $root_flag --state-dir $BAFT_AGENT_STATE_DIR --release-state $BAFT_RELEASE_STATE --bin-dir $bindir --service $BAFT_SERVICE --config-dir $BAFT_CONFIG_DIR --baft-state-dir $BAFT_STATE_DIR --service-user $BAFT_USER --metrics-listen $BAFT_METRICS_LISTEN --interval $BAFT_AGENT_INTERVAL $http_flag
-Restart=always
-RestartSec=10s
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-# Tunnel jobs write the BAFT config, keys and unit.
-ReadWritePaths=$bindir $BAFT_PREFIX $BAFT_AGENT_STATE_DIR $BAFT_CONFIG_DIR $BAFT_STATE_DIR /etc/systemd/system
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-  systemctl daemon-reload
-  systemctl enable "$BAFT_AGENT_UNIT.service"
-  systemctl restart "$BAFT_AGENT_UNIT.service"
-  log "baft-agent enrolled as $BAFT_NODE_ID with $BAFT_BCC_URL; add tunnels from BCC"
-}
-if [[ "$AGENT_ONLY" == "1" ]]; then
-  install_agent
-  exit 0
-fi
-
-if [[ "$STEALTH_PRO" == "1" ]]; then
   cp -p "$BAFT_CONFIG_DIR/baft.yaml" "$BAFT_CONFIG_DIR/baft.yaml.before-stealth-$(date +%s)"
   chown root:"$BAFT_USER" "$SHAPE_CONFIG_TMP"
   chmod 0640 "$SHAPE_CONFIG_TMP"
@@ -700,15 +1087,122 @@ if [[ "$STEALTH_PRO" == "1" ]]; then
   exit 0
 fi
 
-NOISE_KEY="$BAFT_CONFIG_DIR/noise-key.json"
-"$BAFT_PAIR_BIN" keygen --file "$NOISE_KEY" >/dev/null
-# The service reads this key as $BAFT_USER, and the runtime refuses a private
-# key that group or other can access, so it must be owner-only for that user.
-chown "$BAFT_USER:$BAFT_USER" "$NOISE_KEY"
-chmod 0600 "$NOISE_KEY"
+# BUILD PLAN -> SHOW PLAN -> confirm.
+plan_everything
+show_plan
+if [[ -n "$REFUSED" ]]; then
+  log "refusing to touch a broken install: $REFUSED"
+  log "nothing was changed; repair it by hand (see docs/en/33-rerunnable-installer.md) or restore from a backup"
+  exit 3
+fi
+confirm_plan
+
+# APPLY. From here a failure rolls back the files and restarts the service
+# that was running before.
+APPLYING=1
+WAS_ACTIVE="$F_ACTIVE"; WAS_AGENT_ACTIVE="$F_AGENT_ACTIVE"
+
+ensure_base() {
+  if [[ "$F_USER" == 0 ]]; then
+    useradd --system --home-dir "$BAFT_STATE_DIR" --create-home --shell /usr/sbin/nologin "$BAFT_USER"
+  fi
+  [[ -d "$BAFT_CONFIG_DIR" ]] || install -d -m 0750 -o root -g "$BAFT_USER" "$BAFT_CONFIG_DIR"
+  [[ -d "$BAFT_STATE_DIR" ]] || install -d -m 0700 -o "$BAFT_USER" -g "$BAFT_USER" "$BAFT_STATE_DIR"
+  [[ -d "$BAFT_PREFIX" ]] || install -d -m 0755 -o root -g root "$BAFT_PREFIX"
+}
+
+# install_changed NEW PATH: replaces PATH only when the bytes differ.
+install_changed() {
+  local new="$1" path="$2"
+  [[ -f "$new" ]] || return 0
+  if same_file "$new" "$path"; then return 0; fi
+  backup_file "$path"
+  install -m 0755 -o root -g root "$new" "$path"
+}
+
+install_binaries() {
+  install_changed "$BAFT_BIN.new" "$BAFT_BIN"
+  install_changed "$BAFT_PAIR_BIN.new" "$BAFT_PAIR_BIN"
+  if [[ "$AGENT_ONLY" == "1" ]]; then install_changed "$BAFT_AGENT_BIN.new" "$BAFT_AGENT_BIN"; fi
+  # A new binary that does not run is caught before any service is touched.
+  "$BAFT_BIN" version >/dev/null 2>&1 || die "verify: the installed $BAFT_BIN does not run"
+}
+
+# wait_active UNIT SECONDS: active, and still the same process a few seconds
+# later (a unit whose binary exits at once is briefly "active" before it dies).
+wait_active() {
+  local i pid
+  for ((i = 0; i < $2; i++)); do
+    if svc_active "$1"; then
+      pid="$(systemctl show -p MainPID --value "$1" 2>/dev/null || true)"
+      sleep 3
+      if svc_active "$1" && [[ "$(systemctl show -p MainPID --value "$1" 2>/dev/null || true)" == "$pid" && "$pid" != "0" ]]; then return 0; fi
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# VERIFY, then record the release (only after everything verified), then keep
+# the rollback copies of the last three runs and stop rolling back.
+finalize_apply() {
+  "$BAFT_BIN" version >/dev/null 2>&1 || die "verify: $BAFT_BIN does not run"
+  if [[ "$AGENT_ONLY" != "1" && -f "$CONFIG" ]]; then
+    "$BAFT_BIN" config validate --file "$CONFIG" >/dev/null 2>&1 || die "verify: $CONFIG does not validate"
+  fi
+  if [[ "$BAFT_INSTALL_FROM" == "release" && "$DO_RELSTATE" == 1 ]]; then
+    backup_file "$BAFT_RELEASE_STATE"
+    verify_release "$REL_DIR" "$REL_REV" 1 "${REL_ARTIFACTS[@]}" >/dev/null || die "could not record the installed release"
+  fi
+  APPLYING=0
+  prune_backups
+}
+
+# Server enrollment: the agent runs as root (it restarts services and swaps
+# binaries) with the rest of the system read-only. It holds the agent token,
+# the pinned BCC job key and the pinned release root; no tunnel config yet.
+install_agent() {
+  [[ -d "$BAFT_AGENT_DIR" ]] || install -d -m 0700 -o root -g root "$BAFT_AGENT_DIR"
+  [[ -d "$BAFT_AGENT_STATE_DIR" ]] || install -d -m 0700 -o root -g root "$BAFT_AGENT_STATE_DIR"
+  if [[ "$DO_TOKEN" == 1 ]]; then
+    backup_file "$BAFT_AGENT_DIR/token"
+    install -m 0600 -o root -g root "$AGENT_TOKEN_TMP" "$BAFT_AGENT_DIR/token"
+  fi
+  if [[ "$DO_JOBKEY" == 1 ]]; then
+    backup_file "$BAFT_AGENT_DIR/bcc-job.pub"
+    printf '%s\n' "$BAFT_BCC_JOB_KEY" >"$BAFT_AGENT_DIR/bcc-job.pub"
+  fi
+  if [[ "$DO_ROOTPIN" == 1 ]]; then
+    backup_file "$BAFT_AGENT_DIR/release-root.pub"
+    printf '%s\n' "$BAFT_ROOT_PUB" >"$BAFT_AGENT_DIR/release-root.pub"
+  fi
+  if [[ "$DO_AGENT_UNIT" == 1 ]]; then
+    backup_file "$AGENT_UNIT_FILE"
+    install -m 0644 -o root -g root "$AGENT_UNIT_TMP" "$AGENT_UNIT_FILE"
+    systemctl daemon-reload
+    systemctl enable "$BAFT_AGENT_UNIT.service"
+  fi
+  if [[ "$DO_RESTART" == 1 || "$DO_START" == 1 ]]; then TOUCHED_SERVICE=1; fi
+  if [[ "$DO_RESTART" == 1 ]]; then systemctl restart "$BAFT_AGENT_UNIT.service"
+  elif [[ "$DO_START" == 1 ]]; then systemctl start "$BAFT_AGENT_UNIT.service"; fi
+  if [[ "$DO_RESTART" == 1 || "$DO_START" == 1 ]]; then
+    wait_active "$BAFT_AGENT_UNIT.service" 20 || die "verify: $BAFT_AGENT_UNIT.service is not running"
+  fi
+  finalize_apply
+  if [[ "$PLAN_CHANGES" == 0 ]]; then log "baft-agent is already enrolled as $BAFT_NODE_ID; nothing was changed"
+  else log "baft-agent enrolled as $BAFT_NODE_ID with $BAFT_BCC_URL; add tunnels from BCC"; fi
+}
+
+ensure_base
+install_binaries
+if [[ "$AGENT_ONLY" == "1" ]]; then
+  install_agent
+  exit 0
+fi
 
 generate_outer_pki_ex() {
-  local host="$1" pki="$BAFT_CONFIG_DIR/pki"
+  local host="$1" pki="$BAFT_CONFIG_DIR/pki" f
+  for f in ca.pem ca.key server.pem server.key; do backup_file "$pki/$f"; done
   install -d -m 0750 -o root -g "$BAFT_USER" "$pki"
   "$BAFT_PAIR_BIN" pki --dir "$pki" --host "$host"
   chmod 0600 "$pki/ca.key"
@@ -719,50 +1213,26 @@ generate_outer_pki_ex() {
   chmod 0644 "$pki/ca.pem" "$pki/server.pem"
 }
 
-CONFIG="$BAFT_CONFIG_DIR/baft.yaml"
-CAPS=""
-if (( BAFT_PORT < 1024 )); then
-  CAPS=$'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE'
+# The service reads this key as $BAFT_USER, and the runtime refuses a private
+# key that group or other can access, so it must be owner-only for that user.
+if [[ "$DO_KEYGEN" == 1 ]]; then
+  backup_file "$NOISE_KEY"
+  "$BAFT_PAIR_BIN" keygen --file "$NOISE_KEY" >/dev/null
+fi
+if [[ "$DO_KEYGEN" == 1 || "$DO_FIXPERM" == 1 ]]; then
+  chown "$BAFT_USER:$BAFT_USER" "$NOISE_KEY"
+  chmod 0600 "$NOISE_KEY"
 fi
 
-cat >"/etc/systemd/system/$BAFT_SERVICE.service" <<EOF
-[Unit]
-Description=BAFT transport service
-After=network-online.target
-Wants=network-online.target
-# The IR dialer exits while its EX is unreachable; keep retrying forever.
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-User=$BAFT_USER
-Group=$BAFT_USER
-ExecStart=$BAFT_BIN run --file $CONFIG
-ExecReload=/bin/kill -HUP \$MAINPID
-Restart=on-failure
-RestartSec=2s
-$CAPS
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-ReadWritePaths=$BAFT_STATE_DIR
-UMask=0027
-
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable "$BAFT_SERVICE.service"
+if [[ "$DO_UNIT" == 1 ]]; then
+  backup_file "$UNIT_FILE"
+  render_service_unit >"$UNIT_FILE"
+  chmod 0644 "$UNIT_FILE"
+  systemctl daemon-reload
+  systemctl enable "$BAFT_SERVICE.service"
+elif [[ "$DO_ENABLE" == 1 ]]; then
+  systemctl enable "$BAFT_SERVICE.service"
+fi
 
 # The config is root-owned and group-readable by the service, and must pass
 # the same loader `baft run` uses before the service is (re)started.
@@ -772,55 +1242,82 @@ install_config() {
   "$BAFT_BIN" config validate --file "$CONFIG" >/dev/null
 }
 
-if [[ "$ROLE" == "ex" ]]; then
-  [[ -n "$PUBLIC_ADDR" ]] || PUBLIC_ADDR="$(hostname -I | awk '{print $1}')"
-  [[ -n "$PUBLIC_ADDR" ]] || die "cannot determine public address; use --public-address"
-  generate_outer_pki_ex "$PUBLIC_ADDR"
-  IDENTITY="urn:baft:node:ex-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  SHAPING_FLAG=()
-  if [[ "$RECORD_SHAPING" == "1" ]]; then
-    SHAPING_FLAG=(--record-shaping)
+if [[ "$DO_PAIRING" == 1 ]]; then
+  if [[ "$RE_PAIR" == 1 && -f "$CONFIG" ]]; then
+    backup_file "$CONFIG"
+    cp -p -- "$CONFIG" "$CONFIG.before-repair-$(date +%Y%m%dT%H%M%S)"
+    # The EX listens on the service port while pairing.
+    if [[ "$ROLE" == "ex" && "$F_ACTIVE" == 1 ]]; then TOUCHED_SERVICE=1; systemctl stop "$BAFT_SERVICE.service"; fi
+  else
+    backup_file "$CONFIG"
   fi
-  PAIRING="$("$BAFT_PAIR_BIN" ex-code --key "$NOISE_KEY" --address "${PUBLIC_ADDR}:${BAFT_PORT}" \
-    --server-name "$PUBLIC_ADDR" --identity "$IDENTITY" --ca-file "$BAFT_CONFIG_DIR/pki/ca.pem" \
-    --psk-out "$BAFT_STATE_DIR/pairing.psk" --pending-out "$BAFT_STATE_DIR/pairing.ex.json" \
-    --ttl 15m "${SHAPING_FLAG[@]}")"
-  ACCEPT=("$BAFT_PAIR_BIN" ex-accept
-    --pending "$BAFT_STATE_DIR/pairing.ex.json" --psk-file "$BAFT_STATE_DIR/pairing.psk"
-    --key "$NOISE_KEY" --listen "0.0.0.0:${BAFT_PORT}"
-    --ca-file "$BAFT_CONFIG_DIR/pki/ca.pem" --cert-file "$BAFT_CONFIG_DIR/pki/server.pem"
-    --cert-key-file "$BAFT_CONFIG_DIR/pki/server.key" --target "$BAFT_TARGET"
-    --metrics-listen "$BAFT_METRICS_LISTEN" --unix-socket "$BAFT_STATE_DIR/admin.sock"
-    --config-out "$CONFIG")
-  printf '\nPAIRING CODE (secret, one-time, 15 minute lifetime):\n%s\n\n' "$PAIRING"
-  if [[ -z "$REPLY_CODE" && "$NONINTERACTIVE" != "1" ]]; then
-    read -r -p "Run the IR installer with this code, then paste its BAFTREPLY1 code here: " REPLY_CODE
+  if [[ "$ROLE" == "ex" ]]; then
+    [[ -n "$PUBLIC_ADDR" ]] || PUBLIC_ADDR="$(hostname -I | awk '{print $1}')"
+    [[ -n "$PUBLIC_ADDR" ]] || die "cannot determine public address; use --public-address"
+    if [[ "$DO_PKI" == 1 ]]; then generate_outer_pki_ex "$PUBLIC_ADDR"; fi
+    IDENTITY="urn:baft:node:ex-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    SHAPING_FLAG=()
+    if [[ "$RECORD_SHAPING" == "1" ]]; then
+      SHAPING_FLAG=(--record-shaping)
+    fi
+    backup_file "$BAFT_STATE_DIR/pairing.psk"; backup_file "$BAFT_STATE_DIR/pairing.ex.json"
+    PAIRING="$("$BAFT_PAIR_BIN" ex-code --key "$NOISE_KEY" --address "${PUBLIC_ADDR}:${BAFT_PORT}" \
+      --server-name "$PUBLIC_ADDR" --identity "$IDENTITY" --ca-file "$BAFT_CONFIG_DIR/pki/ca.pem" \
+      --psk-out "$BAFT_STATE_DIR/pairing.psk" --pending-out "$BAFT_STATE_DIR/pairing.ex.json" \
+      --ttl 15m "${SHAPING_FLAG[@]}")"
+    ACCEPT=("$BAFT_PAIR_BIN" ex-accept
+      --pending "$BAFT_STATE_DIR/pairing.ex.json" --psk-file "$BAFT_STATE_DIR/pairing.psk"
+      --key "$NOISE_KEY" --listen "0.0.0.0:${BAFT_PORT}"
+      --ca-file "$BAFT_CONFIG_DIR/pki/ca.pem" --cert-file "$BAFT_CONFIG_DIR/pki/server.pem"
+      --cert-key-file "$BAFT_CONFIG_DIR/pki/server.key" --target "$BAFT_TARGET"
+      --metrics-listen "$BAFT_METRICS_LISTEN" --unix-socket "$BAFT_STATE_DIR/admin.sock"
+      --config-out "$CONFIG")
+    printf '\nPAIRING CODE (secret, one-time, 15 minute lifetime):\n%s\n\n' "$PAIRING"
+    if [[ -z "$REPLY_CODE" && "$NONINTERACTIVE" != "1" ]]; then
+      read -r -p "Run the IR installer with this code, then paste its BAFTREPLY1 code here: " REPLY_CODE
+    fi
+    if [[ -z "$REPLY_CODE" ]]; then
+      printf 'When the IR prints its reply code, finish pairing on this host with:\n  sudo %s --reply BAFTREPLY1:...\n  sudo chown root:%s %s && sudo chmod 0640 %s && sudo systemctl restart %s\n\n' \
+        "${ACCEPT[*]}" "$BAFT_USER" "$CONFIG" "$CONFIG" "$BAFT_SERVICE" >&2
+      finalize_apply
+      log "installed; $BAFT_SERVICE.service starts once pairing is finished"
+      exit 0
+    fi
+    "${ACCEPT[@]}" --reply "$REPLY_CODE" >/dev/null
+    install_config
+    TOUCHED_SERVICE=1
+    systemctl restart "$BAFT_SERVICE.service"
+    finalize_apply
+    log "$BAFT_SERVICE.service started; listening on 0.0.0.0:${BAFT_PORT}, exiting to $BAFT_TARGET"
+  else
+    if [[ -z "$PAIRING_CODE" ]]; then
+      [[ "$NONINTERACTIVE" == "1" ]] && die "BAFT_PAIRING_CODE is required in non-interactive mode"
+      read -r -s -p "Paste BAFT pairing code: " PAIRING_CODE
+      printf '\n'
+    fi
+    REPLY="$("$BAFT_PAIR_BIN" ir-apply --code "$PAIRING_CODE" --key "$NOISE_KEY" --state-dir "$BAFT_STATE_DIR" \
+      --config-out "$CONFIG" --route-listen "$BAFT_ROUTE_LISTEN" --metrics-listen "$BAFT_METRICS_LISTEN" \
+      --unix-socket "$BAFT_STATE_DIR/admin.sock")"
+    chown -R "$BAFT_USER:$BAFT_USER" "$BAFT_STATE_DIR"
+    install_config
+    printf '\nREPLY CODE for the EX (secret, expires with the pairing code):\n%s\n\n' "$REPLY"
+    # Until the EX accepts this reply the dialer cannot connect and exits;
+    # Restart=on-failure retries every 2s, so it connects once the EX is up.
+    TOUCHED_SERVICE=1
+    systemctl restart "$BAFT_SERVICE.service"
+    finalize_apply
+    log "$BAFT_SERVICE.service started; local clients connect to $BAFT_ROUTE_LISTEN"
   fi
-  if [[ -z "$REPLY_CODE" ]]; then
-    printf 'When the IR prints its reply code, finish pairing on this host with:\n  sudo %s --reply BAFTREPLY1:...\n  sudo chown root:%s %s && sudo chmod 0640 %s && sudo systemctl restart %s\n\n' \
-      "${ACCEPT[*]}" "$BAFT_USER" "$CONFIG" "$CONFIG" "$BAFT_SERVICE" >&2
-    log "installed; $BAFT_SERVICE.service starts once pairing is finished"
-    exit 0
-  fi
-  "${ACCEPT[@]}" --reply "$REPLY_CODE" >/dev/null
-  install_config
-  systemctl restart "$BAFT_SERVICE.service"
-  log "$BAFT_SERVICE.service started; listening on 0.0.0.0:${BAFT_PORT}, exiting to $BAFT_TARGET"
 else
-  if [[ -z "$PAIRING_CODE" ]]; then
-    [[ "$NONINTERACTIVE" == "1" ]] && die "BAFT_PAIRING_CODE is required in non-interactive mode"
-    read -r -s -p "Paste BAFT pairing code: " PAIRING_CODE
-    printf '\n'
+  # Already paired: only what the plan listed is done.
+  if [[ "$DO_RESTART" == 1 || "$DO_START" == 1 ]]; then TOUCHED_SERVICE=1; fi
+  if [[ "$DO_RESTART" == 1 ]]; then systemctl restart "$BAFT_SERVICE.service"
+  elif [[ "$DO_START" == 1 ]]; then systemctl start "$BAFT_SERVICE.service"; fi
+  if [[ "$DO_RESTART" == 1 || "$DO_START" == 1 ]]; then
+    wait_active "$BAFT_SERVICE.service" 20 || die "verify: $BAFT_SERVICE.service is not running"
   fi
-  REPLY="$("$BAFT_PAIR_BIN" ir-apply --code "$PAIRING_CODE" --key "$NOISE_KEY" --state-dir "$BAFT_STATE_DIR" \
-    --config-out "$CONFIG" --route-listen "$BAFT_ROUTE_LISTEN" --metrics-listen "$BAFT_METRICS_LISTEN" \
-    --unix-socket "$BAFT_STATE_DIR/admin.sock")"
-  chown -R "$BAFT_USER:$BAFT_USER" "$BAFT_STATE_DIR"
-  install_config
-  printf '\nREPLY CODE for the EX (secret, expires with the pairing code):\n%s\n\n' "$REPLY"
-  # Until the EX accepts this reply the dialer cannot connect and exits;
-  # Restart=on-failure retries every 2s, so it connects once the EX is up.
-  systemctl restart "$BAFT_SERVICE.service"
-  log "$BAFT_SERVICE.service started; local clients connect to $BAFT_ROUTE_LISTEN"
+  finalize_apply
+  if [[ "$PLAN_CHANGES" == 0 ]]; then log "already installed and current; nothing was changed"
+  else log "$BAFT_SERVICE.service is running"; fi
 fi
-log "installed $BAFT_BIN and $BAFT_PAIR_BIN"
+log "baft is installed: $BAFT_BIN and $BAFT_PAIR_BIN"

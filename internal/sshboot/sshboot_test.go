@@ -158,7 +158,7 @@ func TestBootstrapSendsSecretsOnStdinOnly(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"export BAFT_AGENT_TOKEN='" + testToken + "'", "export BAFT_BCC_JOB_KEY='" + testJobKey + "'",
-		"--agent-only --bcc-url 'https://bcc.example.com' --node-id 'ex-1'", "echo installing", "BAFT_INSTALL_SCRIPT_EOF"} {
+		"--agent-only --yes --bcc-url 'https://bcc.example.com' --node-id 'ex-1'", "echo installing", "BAFT_INSTALL_SCRIPT_EOF"} {
 		if !strings.Contains(d.stdin, want) {
 			t.Errorf("script is missing %q:\n%s", want, d.stdin)
 		}
