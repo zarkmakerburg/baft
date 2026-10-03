@@ -29,7 +29,8 @@ TEXT="$OUT/connections-$STAMP.ndjson"
 FILTER="tcp port $PORT"
 if [[ -n "$KNOWN" && -s "$KNOWN" ]]; then
   while IFS= read -r ip; do
-    [[ -z "$ip" || "$ip" == #* ]] && continue
+    [[ -z "$ip" ]] && continue
+    [[ "${ip:0:1}" == "#" ]] && continue
     FILTER="$FILTER and not host $ip"
   done < "$KNOWN"
 fi
