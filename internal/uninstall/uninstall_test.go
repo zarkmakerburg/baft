@@ -576,14 +576,34 @@ func TestSkeletonFiles(t *testing.T) {
 	r.installerEX(false)
 	r.write("skel/.bashrc", "# skel\n", 0o644)
 	r.write("skel/.profile", "# profile\n", 0o644)
+	r.write("skel/.cargo/env", "export PATH\n", 0o644)
+	r.write("skel/.cache/x", "y", 0o600)
 	r.write("var/.bashrc", "# skel\n", 0o644)
 	r.write("var/.profile", "# changed\n", 0o644)
+	r.write("var/.cargo/env", "export PATH\n", 0o644)
+	r.write("var/.cache/x", "y", 0o600)
+	r.write("var/.cache/mine", "user data", 0o600)
+	os.Chmod(r.p("var/.cargo"), 0o755)
+	os.Chmod(r.p("skel/.cargo"), 0o755)
+	os.Chmod(r.p("var/.cache"), 0o755)
+	os.Chmod(r.p("skel/.cache"), 0o755)
 	p := r.plan(yes(Options{}))
 	if a := has(p.Remove, r.p("var/.bashrc")); a == nil || a.Class != ClassRuntime {
 		t.Fatalf(".bashrc: %+v", a)
 	}
-	if a := has(p.Untouched, r.p("var/.profile")); a == nil {
-		t.Fatal("edited .profile not protected")
+	if a := has(p.Remove, r.p("var/.cargo")); a == nil || !a.Dir {
+		t.Fatalf(".cargo: %+v", a)
+	}
+	for _, kept := range []string{"var/.profile", "var/.cache"} {
+		if a := has(p.Untouched, r.p(kept)); a == nil {
+			t.Fatalf("%s (changed since the skeleton copy) not protected", kept)
+		}
+	}
+	if _, err := r.env.Apply(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if exists(r.p("var/.cargo")) || !exists(r.p("var/.cache/mine")) {
+		t.Fatal("wrong skeleton handling")
 	}
 }
 

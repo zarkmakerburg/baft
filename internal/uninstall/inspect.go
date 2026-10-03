@@ -688,14 +688,23 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 			file(ClassCertificates, isPEM("CERTIFICATE"), "the EX certificate authority pinned at pairing")
 		case name == "tunnels":
 			dir(ClassTunnelConfigs, "the tunnel builder's change records")
-		case name == ".bashrc" || name == ".profile" || name == ".bash_logout":
-			skel, problem := readRegular(filepath.Join(e.SkelDir, name), maxSmallBytes)
-			if problem != "" {
-				unknown("no matching " + filepath.Join(e.SkelDir, name))
+		default:
+			// The service user's home is the state directory, and useradd
+			// copied the skeleton into it: an entry identical to its
+			// skeleton original (content and modes, the whole tree for a
+			// directory) is that copy.
+			if e.isSkelCopy(path, fi) {
+				a := newArtifact(l, path, ClassRuntime)
+				a.Dir = fi.IsDir()
+				if a.Dir {
+					a.SHA256, _ = treeHash(path)
+				} else {
+					a.SHA256, a.Size, _ = hashRegular(path)
+				}
+				a.Ownership, a.Evidence = Managed, "copied from "+e.SkelDir+" by useradd for the service user (identical)"
+				inv.add(a)
 				return
 			}
-			file(ClassRuntime, func(b []byte) bool { return bytes.Equal(b, skel) }, "copied from "+e.SkelDir+" by useradd for the service user (byte-identical)")
-		default:
 			unknown("not a file BAFT writes here")
 		}
 	case locPrefix:
@@ -754,6 +763,27 @@ func (e *Env) classifyEntry(inv *Inventory, l location, path string) {
 			unknown("not a file BAFT writes here")
 		}
 	}
+}
+
+// isSkelCopy reports whether path is an unchanged copy of the same entry in
+// the user skeleton directory.
+func (e *Env) isSkelCopy(path string, fi os.FileInfo) bool {
+	skel := filepath.Join(e.SkelDir, filepath.Base(path))
+	sfi, err := os.Lstat(skel)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || sfi.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	switch {
+	case fi.IsDir() && sfi.IsDir():
+		a, pa := treeHash(path)
+		b, pb := treeHash(skel)
+		return pa == "" && pb == "" && a == b && fi.Mode().Perm() == sfi.Mode().Perm()
+	case fi.Mode().IsRegular() && sfi.Mode().IsRegular():
+		a, _, pa := hashRegular(path)
+		b, _, pb := hashRegular(skel)
+		return pa == "" && pb == "" && a == b && fi.Mode().Perm() == sfi.Mode().Perm()
+	}
+	return false
 }
 
 func (e *Env) classifyPKI(inv *Inventory, l location, path string, fi os.FileInfo) {

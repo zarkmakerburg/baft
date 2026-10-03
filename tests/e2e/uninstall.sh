@@ -20,14 +20,21 @@ REL2="$(cd "${2:?usage: uninstall.sh <rel1> <rel2>}" && pwd)"
 WORK="$(mktemp -d)"
 PIDS=()
 log() { printf '[uninstall-e2e] %s\n' "$*"; }
-fail() { printf '[uninstall-e2e] FAIL: %s\n' "$*" >&2; exit 1; }
+fail() {
+  printf '[uninstall-e2e] FAIL: %s\n' "$*" >&2
+  printf '%s\n' "$*" >>"$WORK/zz-fail.log"
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    local m="$*"; m="${m//%/%25}"; printf '::error title=uninstall e2e FAIL::%s\n' "${m//$'\n'/%0A}"
+  fi
+  exit 1
+}
 cleanup() {
   local rc=$?
   if [[ $rc -ne 0 ]]; then
     {
       for f in "$WORK"/*.out "$WORK"/*.err "$WORK"/*.log; do [[ -f "$f" ]] && { echo "== $f"; tail -n 40 "$f"; }; done
       for s in baft-ex baft-ir baft-agent baft-bcc baft-hand; do echo "== journal $s"; journalctl -u "$s" -n 20 --no-pager 2>/dev/null || true; done
-      ls -la /var/lib/baft-uninstall/*/ 2>/dev/null || true
+      echo "== BAFT paths left"; find /etc/baft* /var/lib/baft* /opt/baft* /usr/local/bin/baft* -maxdepth 2 2>/dev/null | grep -v '^/var/lib/baft-uninstall/' | head -60 || true
     } >"$WORK/diag" 2>&1
     cat "$WORK/diag"
     if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
@@ -282,7 +289,8 @@ for p in /usr/local/bin/baft /usr/local/bin/baft-pair /usr/local/bin/baft-agent 
   /etc/baft-agent /var/lib/baft-agent /var/lib/baft-bcc/state.db.audit.jsonl /var/lib/baft-bcc/state.db.audit-anchor-outbox.json /var/lib/baft-bcc/state.db.lock; do
   [[ -e "$p" ]] && left+=" $p"
 done
-[[ -z "$left" ]] || { ls -la $left 2>&1 | head -40; fail "not clean:$left"; }
+[[ -z "$left" ]] || fail "not clean:$left
+$(find $left -maxdepth 2 2>&1 | head -40)"
 [[ "$(units)" == "baft-hand.service " ]] || fail "units left: $(units)"
 [[ -d "$BKDIR" ]] || fail "the emergency backup was removed"
 hand_ok
