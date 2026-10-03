@@ -791,6 +791,15 @@ func (p *Peer) markPostCommitFailureForAttempt(token RecoveryAttemptToken,err er
 
 func (p *Peer) activatePreparedCarrierOwned(prep *preparedRecovery,ctl RecoveryControl,token RecoveryAttemptToken)(uint64,error){
 	if p.recovery==nil{return 0,errors.New("recovery is disabled")}
+	// Run owns the logical Session lifetime. Recovery may activate a carrier
+	// only while holding a read lease on that lifetime. Teardown takes the
+	// exclusive lock before cleanup, so activation and teardown cannot overlap.
+	p.runLifecycleMu.RLock()
+	if !p.runActive||p.runExiting{
+		p.runLifecycleMu.RUnlock()
+		return 0,ErrCarrierUnavailable
+	}
+	defer p.runLifecycleMu.RUnlock()
 	a:=p.recovery
 	a.ownershipMu.RLock();defer a.ownershipMu.RUnlock()
 	a.mu.Lock()
@@ -1482,7 +1491,9 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 	if oldSender!=nil&&oldSender!=prep.sender{oldSender.stopAndFenceWriter(SenderStopExplicitReplace,ErrCarrierUnavailable)}
 	p.traceRecoveryDiagnostic("CARRIER_ACTIVATED",SenderStopUnknown,nil,"",prep.sender,ctl,prep.incarnation,activatedGeneration)
 	if !prep.sender.isStarted(){
-		if !p.admitWorker(){return 0,ErrCarrierUnavailable}
+		// activatePreparedCarrierOwned holds the Run lifecycle read lease, so
+		// teardown cannot begin until this Add has completed.
+		p.wg.Add(1)
 		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
 	}
 	return activatedGeneration,nil
