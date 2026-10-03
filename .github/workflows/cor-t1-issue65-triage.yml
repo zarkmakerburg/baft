@@ -34,4 +34,5 @@ jobs:
       - name: COR-T1 instrumented 1 GiB run
         env:
           BAFT_COR01_1GIB: '1'
-        run: go test ./tests/correctness -run '^TestCOR01OneGiBBidirectional$' -count=1 -timeout 20m -v
+        run: go test -tags cor01debug ./tests/correctness -run '^TestCOR01OneGiBBidirectionalInstrumented
+ -count=1 -timeout 20m -v
