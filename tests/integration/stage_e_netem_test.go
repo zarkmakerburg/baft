@@ -29,7 +29,7 @@ func stageENetemFromEnv() (stageENetemProfile,bool) {
 	rate:=stageEEnvInt("BAFT_STAGE_E_NETEM_RATE_MBIT",0)
 	loss:=strings.TrimSpace(os.Getenv("BAFT_STAGE_E_NETEM_LOSS_PCT"))
 	if loss=="" { loss="0" }
-	if rtt<=0 && rate<=0 && loss=="0" && loss=="0.0" { return stageENetemProfile{},false }
+	if rtt<=0 && rate<=0 && (loss=="0" || loss=="0.0") { return stageENetemProfile{},false }
 	if rtt<=0 || rate<=0 { return stageENetemProfile{},false }
 	return stageENetemProfile{RTTMS:rtt,LossPct:loss,RateMbit:rate},true
 }
