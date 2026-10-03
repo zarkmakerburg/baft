@@ -11,7 +11,9 @@ import (
 	"net"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
 	"sort"
 	"sync"
 	"testing"
@@ -105,6 +107,78 @@ func stageEFDCount() int {
 	return len(entries)
 }
 
+func stageEIntEnv(t *testing.T, name string, fallback, min, max int) int {
+	t.Helper()
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < min || v > max {
+		t.Fatalf("%s=%q must be an integer in [%d,%d]", name, raw, min, max)
+	}
+	return v
+}
+
+func stageEMaybeApplyNetem(t *testing.T, addr net.Addr) (int, float64, func()) {
+	t.Helper()
+	rttRaw := os.Getenv("BAFT_STAGE_E_NETEM_RTT_MS")
+	lossRaw := os.Getenv("BAFT_STAGE_E_NETEM_LOSS_PCT")
+	if rttRaw == "" && lossRaw == "" {
+		return 0, 0, func() {}
+	}
+	if runtime.GOOS != "linux" {
+		t.Fatalf("Stage E netem requires Linux")
+	}
+	rttMS := 0
+	var err error
+	if rttRaw != "" {
+		rttMS, err = strconv.Atoi(rttRaw)
+		if err != nil || rttMS < 0 || rttMS > 10000 {
+			t.Fatalf("BAFT_STAGE_E_NETEM_RTT_MS=%q must be an integer in [0,10000]", rttRaw)
+		}
+	}
+	lossPct := 0.0
+	if lossRaw != "" {
+		lossPct, err = strconv.ParseFloat(lossRaw, 64)
+		if err != nil || lossPct < 0 || lossPct > 100 {
+			t.Fatalf("BAFT_STAGE_E_NETEM_LOSS_PCT=%q must be in [0,100]", lossRaw)
+		}
+	}
+	_, portRaw, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		t.Fatalf("netem split address %q: %v", addr.String(), err)
+	}
+	port, err := strconv.Atoi(portRaw)
+	if err != nil || port <= 0 || port > 65535 {
+		t.Fatalf("netem invalid port %q", portRaw)
+	}
+
+	runTC := func(ignore bool, args ...string) {
+		cmdArgs := append([]string{"-n", "tc"}, args...)
+		out, runErr := exec.Command("sudo", cmdArgs...).CombinedOutput()
+		if runErr != nil && !ignore {
+			t.Fatalf("netem tc %v: %v: %s", args, runErr, bytes.TrimSpace(out))
+		}
+	}
+	runTC(true, "qdisc", "del", "dev", "lo", "root")
+	runTC(false, "qdisc", "add", "dev", "lo", "root", "handle", "1:", "prio", "bands", "3")
+	oneWayMS := float64(rttMS) / 2
+	runTC(false, "qdisc", "add", "dev", "lo", "parent", "1:3", "handle", "30:", "netem",
+		"delay", fmt.Sprintf("%.3fms", oneWayMS), "loss", fmt.Sprintf("%.3f%%", lossPct))
+	portText := strconv.Itoa(port)
+	runTC(false, "filter", "add", "dev", "lo", "protocol", "ip", "parent", "1:0", "prio", "3", "u32",
+		"match", "ip", "dport", portText, "0xffff", "flowid", "1:3")
+	runTC(false, "filter", "add", "dev", "lo", "protocol", "ip", "parent", "1:0", "prio", "3", "u32",
+		"match", "ip", "sport", portText, "0xffff", "flowid", "1:3")
+	t.Logf("STAGE_E_NETEM rtt_ms=%d loss_pct=%.3f one_way_delay_ms=%.3f carrier_port=%d", rttMS, lossPct, oneWayMS, port)
+
+	cleanup := func() {
+		runTC(true, "qdisc", "del", "dev", "lo", "root")
+	}
+	return rttMS, lossPct, cleanup
+}
+
 // TestStageEMeasureMultiFlowThroughput measures the application-visible
 // payload rate through the real BAFT Session + H2/mTLS path on loopback.
 // It intentionally excludes fixture setup by warming every Flow before the
@@ -123,7 +197,13 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 		flowCount    = 8
 		bytesPerFlow = 4 * 1024 * 1024
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	testTimeout := 45 * time.Second
+	clientDeadline := 35 * time.Second
+	if os.Getenv("BAFT_STAGE_E_NETEM_RTT_MS") != "" || os.Getenv("BAFT_STAGE_E_NETEM_LOSS_PCT") != "" {
+		testTimeout = 5 * time.Minute
+		clientDeadline = 4 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -202,6 +282,8 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 	}))
 	hs.EnableHTTP2 = true
 	hs.TLS = serverTLS
+	netemRTTMS, netemLossPct, cleanupNetem := stageEMaybeApplyNetem(t, hs.Listener.Addr())
+	defer cleanupNetem()
 	hs.StartTLS()
 	defer hs.Close()
 
@@ -267,7 +349,7 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 			}
 			c := raw.(*net.TCPConn)
 			defer c.Close()
-			_ = c.SetDeadline(time.Now().Add(35 * time.Second))
+			_ = c.SetDeadline(time.Now().Add(clientDeadline))
 
 			prelude := []byte{0x42, byte(i), 0x45}
 			if _, err := c.Write(prelude); err != nil {
@@ -384,6 +466,8 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 		"goroutines_after":         goroutinesAfter,
 		"fd_before":                fdBefore,
 		"fd_after":                 fdAfter,
+		"netem_rtt_ms":             netemRTTMS,
+		"netem_loss_percent":       netemLossPct,
 		"scope":                    scope,
 	})
 
@@ -404,7 +488,7 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 // session survival across one abrupt Carrier cut. All probe TCP connections
 // remain the same application flows; reopening a target socket is a failure.
 func TestStageEMeasureRecovery(t *testing.T) {
-	const flows = 8
+	flows := stageEIntEnv(t, "BAFT_STAGE_E_RECOVERY_FLOWS", 8, 1, 512)
 	p := startRecoveryRuntimePair(t, 1)
 	defer p.close(t)
 
@@ -527,6 +611,12 @@ func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
+	netemRTTMS, netemLossPct, cleanupNetem := stageEMaybeApplyNetem(t, ln.Addr())
+	defer cleanupNetem()
+	clientDeadline := 20 * time.Second
+	if netemRTTMS > 0 || netemLossPct > 0 {
+		clientDeadline = 4 * time.Minute
+	}
 
 	var serverWG sync.WaitGroup
 	acceptErr := make(chan error, 1)
@@ -584,7 +674,7 @@ func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
 			}
 			c := raw.(*net.TCPConn)
 			defer c.Close()
-			_ = c.SetDeadline(time.Now().Add(20 * time.Second))
+			_ = c.SetDeadline(time.Now().Add(clientDeadline))
 
 			prelude := []byte{0x42, byte(i), 0x45}
 			if _, err := c.Write(prelude); err != nil {
@@ -696,6 +786,8 @@ func TestStageEMeasureDirectTCPThroughput(t *testing.T) {
 		"goroutines_after":         goroutinesAfter,
 		"fd_before":                fdBefore,
 		"fd_after":                 fdAfter,
+		"netem_rtt_ms":             netemRTTMS,
+		"netem_loss_percent":       netemLossPct,
 		"scope":                    "direct loopback TCP control; same warmed-flow payload profile as B06",
 	})
 }
