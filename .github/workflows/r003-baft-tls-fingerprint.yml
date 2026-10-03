@@ -1,0 +1,56 @@
+name: r003-baft-tls-fingerprint
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e-foundation
+    paths:
+      - '.github/workflows/r003-baft-tls-fingerprint.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install capture tooling
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tshark tcpdump
+          tshark --version | head -1
+      - name: Capture BAFT Go TLS ClientHello
+        run: |
+          mkdir -p "$RUNNER_TEMP/r003"
+          sudo tcpdump -i lo -nn -s 0 -U -w "$RUNNER_TEMP/r003/baft-loopback.pcap" tcp >/dev/null 2>&1 &
+          CAP_PID=$!
+          sleep 1
+          set +e
+          go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 5m -v > "$RUNNER_TEMP/r003/test.log" 2>&1
+          TEST_RC=$?
+          set -e
+          sleep 1
+          sudo kill -INT "$CAP_PID" || true
+          wait "$CAP_PID" || true
+          cat "$RUNNER_TEMP/r003/test.log"
+          exit "$TEST_RC"
+      - name: Extract JA3 JA4
+        if: always()
+        run: |
+          bash studies/r003/scripts/fingerprint.sh "$RUNNER_TEMP/r003/baft-loopback.pcap" "$RUNNER_TEMP/r003/clienthello.tsv" || true
+          cat "$RUNNER_TEMP/r003/clienthello.tsv" || true
+          tshark -r "$RUNNER_TEMP/r003/baft-loopback.pcap" -Y 'tls.handshake.type == 2' -T fields -e tls.handshake.ja3s -e tls.handshake.version 2>/dev/null | sort -u > "$RUNNER_TEMP/r003/serverhello.tsv" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r003-baft-tls-fingerprint-${{ github.sha }}
+          path: ${{ runner.temp }}/r003
+          if-no-files-found: error
+          retention-days: 30
