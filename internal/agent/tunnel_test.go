@@ -2,8 +2,13 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,5 +108,57 @@ func TestTunnelActionsAreSignedAndStrictlyShaped(t *testing.T) {
 	ir.Params["route_listen"] = "127.0.0.1:1443"
 	if err := ir.Validate(); err != nil {
 		t.Errorf("valid IR job rejected: %v", err)
+	}
+}
+
+// A result BCC did not receive (rate limited) is offered again on the next
+// poll, unchanged, and dropped once BCC refuses it as already completed.
+func TestLostAckIsOfferedAgain(t *testing.T) {
+	var mu sync.Mutex
+	acks, fail := []map[string]string{}, 1
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/agent/jobs":
+			w.Write([]byte("[]"))
+		case "/api/agent/ack":
+			var m map[string]string
+			json.NewDecoder(r.Body).Decode(&m)
+			acks = append(acks, m)
+			if fail > 0 {
+				fail--
+				http.Error(w, "too many requests", http.StatusTooManyRequests)
+				return
+			}
+			if len(acks) > 2 {
+				http.Error(w, "job already completed", http.StatusBadRequest)
+				return
+			}
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+	pub, _, _ := ed25519.GenerateKey(nil)
+	a, err := New(Config{BCCURL: srv.URL, NodeID: "n1", Token: "t", BCCJobKey: pub, StateDir: t.TempDir(), HTTP: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := a.ack(ctx, "job-1", "succeeded", `{"evidence":1}`, "secret-out"); err == nil {
+		t.Fatal("first ack should fail")
+	} else {
+		a.unacked = append(a.unacked, pendingAck{jobID: "job-1", status: "succeeded", message: `{"evidence":1}`, output: "secret-out"})
+	}
+	if _, err := a.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(acks) != 2 || acks[1]["Message"] != `{"evidence":1}` || acks[1]["Output"] != "secret-out" || len(a.unacked) != 0 {
+		t.Fatalf("acks %v, pending %v", acks, a.unacked)
+	}
+	a.unacked = []pendingAck{{jobID: "job-1", status: "succeeded", message: "x"}}
+	a.RunOnce(ctx)
+	if len(a.unacked) != 0 {
+		t.Fatal("a refused result is offered forever")
 	}
 }

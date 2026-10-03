@@ -253,13 +253,14 @@ trusted() {
 wait_rotation() { # id seconds wanted-phases... ; checks the invariant every poll
   local id="$1" secs="$2"; shift 2
   local phase="" i
-  for ((i = 0; i < secs; i++)); do
+  # Every 3 s: BCC rate-limits /api/ per address and the agents share it.
+  for ((i = 0; i < secs / 3; i++)); do
     trusted || fail "the IR could not verify the EX during rotation (phase $phase)"
     phase="$(api "$BCC/api/cert-rotations?id=$id" | jfield '["phase"]')"
     # wait_rotation runs in a command substitution: record in a file.
     [[ "$(grep -c 'BEGIN CERTIFICATE' "$IR_CA")" == 2 ]] && touch "$WORK/saw-window"
     for want in "$@"; do [[ "$phase" == "$want" ]] && { echo "$phase"; return 0; }; done
-    sleep 1
+    sleep 3
   done
   echo "$phase"; return 1
 }
