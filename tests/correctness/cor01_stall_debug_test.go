@@ -302,9 +302,10 @@ func TestCOR01OneGiBBidirectionalInstrumented(t *testing.T) {
 				if !dumped && (stalledFor >= 30*time.Second || totalElapsed >= 60*time.Second) {
 					t.Logf("COR-01 STALL trigger stalled_for=%s total_elapsed=%s", stalledFor, totalElapsed)
 					logCOR01FullStallEvidence(t, ir, exPeer, irTap, exTap, s, r, stalledFor)
-					t.Log("COR-01 STALL watchdog: canceling debug context after evidence dump")
+					t.Log("COR-01 STALL watchdog: aborting debug process after evidence dump")
 					cancel()
 					dumped = true
+					panic("COR-01 STALL evidence captured")
 				}
 			}
 		}
