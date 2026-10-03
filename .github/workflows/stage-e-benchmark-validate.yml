@@ -39,7 +39,5 @@ jobs:
       - name: Smoke measured Stage E paths
         run: |
           go test ./tests/integration \
-            -run '^(TestStageEMeasureMultiFlowThroughput|TestStageEMeasureRecovery|TestStageEMeasureDirectTCPThroughput) \
-            -count=1 -timeout 12m -v
- \
+            -run '^(TestStageEMeasureMultiFlowThroughput|TestStageEMeasureRecovery|TestStageEMeasureDirectTCPThroughput)$' \
             -count=1 -timeout 12m -v
