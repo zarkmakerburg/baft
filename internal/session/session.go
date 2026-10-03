@@ -420,7 +420,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 	p.mu.Lock()
 	p.runCtx = runCtx
 	p.mu.Unlock()
-	if !p.admitWorker(){return errors.New("session worker admission closed")}
+	if !p.admitWorker(){cancel();return errors.New("session worker admission closed")}
 	go func() {
 		defer p.wg.Done()
 		p.senderNow().run(runCtx)
