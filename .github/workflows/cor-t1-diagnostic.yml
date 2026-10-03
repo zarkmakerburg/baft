@@ -4,11 +4,26 @@ on:
   push:
     branches:
       - diag/cor-t1-stall-evidence
+      - diag/cor-t1-ab
     paths:
       - 'tests/correctness/**'
       - 'internal/session/**'
       - '.github/workflows/cor-t1-diagnostic.yml'
   workflow_dispatch:
+    inputs:
+      target_buf_kib:
+        description: 'Target echo buffer size in KiB (BAFT mode)'
+        required: true
+        default: '128'
+        type: string
+      mode:
+        description: 'COR-T1 mode'
+        required: true
+        default: baft
+        type: choice
+        options:
+          - baft
+          - direct
 
 concurrency:
   group: cor-t1-diagnostic-${{ github.ref }}
@@ -20,7 +35,7 @@ permissions:
 jobs:
   stall-evidence:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -32,11 +47,27 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: COR-T1 repeated 1 GiB stall evidence
+      - name: COR-T1 1 GiB A/B evidence
         env:
           BAFT_COR01_1GIB: "1"
+          BAFT_COR01_TARGET_BUF_KIB: ${{ inputs.target_buf_kib || '128' }}
+          COR_T1_MODE: ${{ inputs.mode || 'baft' }}
         run: |
-          for i in $(seq 1 10); do
-            echo "===== COR-T1 diagnostic iteration $i/10 ====="
-            go test ./tests/correctness -run '^TestCOR01OneGiBBidirectional$' -count=1 -timeout 90s -v
-          done
+          case "$COR_T1_MODE" in
+            baft)
+              TEST_RE='^TestCOR01OneGiBBidirectional$'
+              ;;
+            direct)
+              TEST_RE='^TestCOR01DirectTCPControl$'
+              if [ "$BAFT_COR01_TARGET_BUF_KIB" != "128" ]; then
+                echo "direct control is fixed at 128 KiB; got target_buf_kib=$BAFT_COR01_TARGET_BUF_KIB"
+                exit 2
+              fi
+              ;;
+            *)
+              echo "unknown mode: $COR_T1_MODE"
+              exit 2
+              ;;
+          esac
+          echo "COR-T1 mode=$COR_T1_MODE target_buf_kib=$BAFT_COR01_TARGET_BUF_KIB"
+          go test ./tests/correctness -run "$TEST_RE" -count=1 -timeout 20m -v
