@@ -32,6 +32,25 @@ func TestLoadManifestDefaultsAndSelection(t *testing.T) {
 	}
 }
 
+func TestParseMetricFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.log")
+	data := "noise\n    BAFT_BENCH_METRIC {\"scenario\":\"B07\",\"recovery_ms_p95\":12.5}\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := parseMetricFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metrics) != 1 {
+		t.Fatalf("metrics=%d want 1", len(metrics))
+	}
+	if got := metrics[0]["scenario"]; got != "B07" {
+		t.Fatalf("scenario=%v want B07", got)
+	}
+}
+
 func TestDuplicateScenarioRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")
