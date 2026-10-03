@@ -40,7 +40,7 @@ Run the complete initial set:
 go run ./cmd/baft-bench -scenario all
 ```
 
-Results are written under `bench/results/<UTC>-<git-sha>/` with per-attempt stdout/stderr plus `summary.json` metadata.
+Results are written under `bench/results/<UTC>-<git-sha>/` with per-attempt stdout/stderr, `summary.json`, and a machine-readable `metrics.json`. Tests emit structured `BAFT_BENCH_METRIC` records which the runner extracts without changing production code.
 
 ## Initial scenario set
 
@@ -51,12 +51,14 @@ Results are written under `bench/results/<UTC>-<git-sha>/` with per-attempt stdo
 | B03 | multi-flow carrier replacement | duplicate/loss regression evidence |
 | B04 | Topology x ECRL authority matrix | correctness stress evidence |
 | B05 | runtime pair FD/resource lifetime | leak/resource evidence |
+| B06 | warmed multi-flow loopback BAFT throughput | measured TX/RX/aggregate Mbps + resource snapshot |
+| B07 | abrupt Carrier cut on existing flows | session survival + recovery p50/p95/p99 + resource snapshot |
 
 ## Evidence rules
 
 A passing scenario means only that the named scenario passed on the recorded commit and machine. It does **not** prove production readiness, Internet-wide throughput, universal detectability properties, or restart/reboot resume.
 
-The runner records command output and environment metadata rather than inventing derived numbers. Full-path throughput, latency percentiles, recovery-time percentiles, profiler capture, and baseline regression thresholds should be added only when their measurement path is explicit and reproducible.
+The runner records command output and environment metadata rather than inventing derived numbers. B06 measures application payload after all flows are warmed, through the real Session + H2/mTLS loopback path. B07 measures application-visible recovery from the instant the active Carrier is cut until each existing flow completes a probe. These are local repeatable measurements, not public-network claims. Profiler capture and baseline regression thresholds remain future work.
 
 ## Workflow policy
 
