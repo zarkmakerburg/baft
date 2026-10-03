@@ -129,6 +129,33 @@ func TestRecoverableSenderReturnsCarrierUnavailableToCaller(t *testing.T){
 }
 
 
+func TestRecoverableSenderContextCancellationReturnsCarrierUnavailable(t *testing.T){
+	var buf bytes.Buffer
+	s:=newOutboundSender(&frameWriter{w:&buf},true)
+	ctx,cancel:=context.WithCancel(context.Background())
+	go s.run(ctx)
+	deadline:=time.Now().Add(time.Second)
+	for{
+		s.mu.Lock();started:=s.started;s.mu.Unlock()
+		if started{break}
+		if time.Now().After(deadline){t.Fatal("sender did not start")}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	deadline=time.Now().Add(time.Second)
+	for{
+		s.mu.Lock();stopped:=s.stopped;s.mu.Unlock()
+		if stopped{break}
+		if time.Now().After(deadline){t.Fatal("sender did not stop after context cancellation")}
+		time.Sleep(time.Millisecond)
+	}
+	err:=s.sendControl(protocol.Frame{Type:protocol.TypePing,Payload:make([]byte,8)})
+	if !errors.Is(err,ErrCarrierUnavailable){
+		t.Fatalf("recoverable physical context cancellation leaked as logical-session error: %v",err)
+	}
+}
+
+
 type recoveryHandlerBlockingWriter struct {
 	once sync.Once
 	entered chan struct{}
