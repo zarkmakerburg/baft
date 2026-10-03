@@ -275,7 +275,7 @@ func buildScript(req Request) []byte {
 	}
 	// install.sh reads its own arguments; hand it over as a function so the
 	// script text stays exactly what the operator shipped.
-	fmt.Fprintf(&b, "set -- --agent-only --bcc-url %s --node-id %s\n", shQuote(req.BCCURL), shQuote(req.NodeID))
+	fmt.Fprintf(&b, "set -- --agent-only --yes --bcc-url %s --node-id %s\n", shQuote(req.BCCURL), shQuote(req.NodeID))
 	b.WriteString(`bash -s -- "$@" <<'BAFT_INSTALL_SCRIPT_EOF'` + "\n")
 	b.Write(req.InstallScript)
 	if !bytes.HasSuffix(req.InstallScript, []byte("\n")) {

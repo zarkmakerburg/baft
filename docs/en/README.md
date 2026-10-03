@@ -51,3 +51,4 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 30. [30 — BCC layered health with hysteresis](30-bcc-layered-health.md)
 31. [31 — Discovery of existing tunnels (report only)](31-tunnel-discovery.md)
 32. [32 — The `baft` menu and the terminal header](32-baft-menu.md)
+33. [33 — The rerunnable installer](33-rerunnable-installer.md)
