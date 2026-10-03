@@ -269,6 +269,25 @@ jobs:
             BAFT_ROOT_PUB="$(cat "$RUNNER_TEMP/rel/root.pub")" \
             tests/e2e/install_two_roles.sh
 
+  installer-faults:
+    # install.sh on a fake tree (stateful systemctl stub, recording apt-get):
+    # nothing on the host changes before the plan is confirmed, and an injected
+    # failure restores files AND service state (active/enabled) for the role
+    # and agent installs, fresh and existing, active and inactive.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Let root read this checkout
+        run: sudo git config --system --add safe.directory '*'
+      - name: Failure-injection and pre-confirmation checks
+        run: sudo env "PATH=$PATH" "HOME=$HOME" tests/e2e/installer_faults.sh
+
   e2e-install-release:
     # The production path: install.sh downloads a signed release (built here
     # with throwaway keys), verifies it, and installs without Go or git.

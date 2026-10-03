@@ -226,7 +226,7 @@ plan_add() {
 STATE=""; STATE_WHY=""; INSTALLED_REL=""
 F_BIN=0; F_PAIR=0; F_AGENT_BIN=0; F_RELSTATE=0; F_UNIT=0; F_UNIT_MANAGED=0; F_CFG=0; F_CFG_VALID=0
 F_KEY=0; F_KEY_OK=0; F_PKI=0; F_PENDING=0; F_USER=0; F_ACTIVE=0; F_ENABLED=0; F_DIRS=0
-F_AGENT_UNIT=0; F_AGENT_ACTIVE=0; F_TOKEN=0; F_JOBKEY=0
+F_AGENT_UNIT=0; F_AGENT_ACTIVE=0; F_AGENT_ENABLED=0; F_TOKEN=0; F_JOBKEY=0
 
 inspect_install() {
   [[ -x "$BAFT_BIN" ]] && F_BIN=1
@@ -251,6 +251,7 @@ inspect_install() {
   if svc_enabled "$BAFT_SERVICE.service"; then F_ENABLED=1; fi
   [[ -f "$AGENT_UNIT_FILE" ]] && F_AGENT_UNIT=1
   if svc_active "$BAFT_AGENT_UNIT.service"; then F_AGENT_ACTIVE=1; fi
+  if svc_enabled "$BAFT_AGENT_UNIT.service"; then F_AGENT_ENABLED=1; fi
   [[ -f "$BAFT_AGENT_DIR/token" ]] && F_TOKEN=1
   [[ -f "$BAFT_AGENT_DIR/bcc-job.pub" ]] && F_JOBKEY=1
   return 0
@@ -297,6 +298,7 @@ classify_state() {
 # STAGED=1 once a release was downloaded and verified; before that (--plan) the
 # comparison can only use the requested version.
 STAGED=0; TARGET_REL=""
+STAGE_BIN=""; STAGE_PAIR=""; STAGE_AGENT=""
 DO_BIN=0
 plan_binary() { # item installed-path staged-path flag
   local item="$1" path="$2" staged="$3" present="$4"
@@ -322,12 +324,12 @@ plan_relstate() {
   else plan_add "release state" keep "recorded${INSTALLED_REL:+: $INSTALLED_REL}; only moves forward, never reset"; fi
 }
 DO_UNIT=0; DO_PKI=0; DO_KEYGEN=0; DO_PAIRING=0; DO_RESTART=0; DO_START=0; DO_ENABLE=0; DO_FIXPERM=0
-DO_AGENT_UNIT=0; DO_TOKEN=0; DO_JOBKEY=0; DO_ROOTPIN=0
+DO_AGENT_UNIT=0; DO_AGENT_ENABLE=0; DO_TOKEN=0; DO_JOBKEY=0; DO_ROOTPIN=0
 REFUSED=""
 
 build_role_plan() {
-  plan_binary "baft binary" "$BAFT_BIN" "$BAFT_BIN.new" "$F_BIN"
-  plan_binary "baft-pair binary" "$BAFT_PAIR_BIN" "$BAFT_PAIR_BIN.new" "$F_PAIR"
+  plan_binary "baft binary" "$BAFT_BIN" "$STAGE_BIN" "$F_BIN"
+  plan_binary "baft-pair binary" "$BAFT_PAIR_BIN" "$STAGE_PAIR" "$F_PAIR"
   plan_relstate
   if [[ "$STATE" == "BROKEN_INSTALL" ]]; then
     plan_add "install" refuse "$STATE_WHY"
@@ -373,9 +375,9 @@ build_role_plan() {
 }
 
 build_agent_plan() {
-  plan_binary "baft binary" "$BAFT_BIN" "$BAFT_BIN.new" "$F_BIN"
-  plan_binary "baft-pair binary" "$BAFT_PAIR_BIN" "$BAFT_PAIR_BIN.new" "$F_PAIR"
-  plan_binary "baft-agent binary" "$BAFT_AGENT_BIN" "$BAFT_AGENT_BIN.new" "$F_AGENT_BIN"
+  plan_binary "baft binary" "$BAFT_BIN" "$STAGE_BIN" "$F_BIN"
+  plan_binary "baft-pair binary" "$BAFT_PAIR_BIN" "$STAGE_PAIR" "$F_PAIR"
+  plan_binary "baft-agent binary" "$BAFT_AGENT_BIN" "$STAGE_AGENT" "$F_AGENT_BIN"
   plan_relstate
   # The given token / job key / root pin are compared with what is installed.
   if [[ "$F_TOKEN" == 0 ]]; then plan_add "agent token" create "$BAFT_AGENT_DIR/token"; DO_TOKEN=1
@@ -393,6 +395,7 @@ build_agent_plan() {
   if [[ "$F_AGENT_UNIT" == 0 ]]; then plan_add "agent unit" create "$AGENT_UNIT_FILE"; DO_AGENT_UNIT=1
   elif same_file "$AGENT_UNIT_TMP" "$AGENT_UNIT_FILE"; then plan_add "agent unit" keep "identical"
   else plan_add "agent unit" update "arguments differ from the installed unit (BCC URL, node id, paths or interval)"; DO_AGENT_UNIT=1; fi
+  if [[ "$F_AGENT_UNIT" == 1 && "$F_AGENT_ENABLED" == 0 ]]; then plan_add "agent service enable" update "enable $BAFT_AGENT_UNIT.service"; DO_AGENT_ENABLE=1; fi
   if [[ "$DO_BIN" == 1 || "$DO_TOKEN" == 1 || "$DO_JOBKEY" == 1 || "$DO_ROOTPIN" == 1 || "$DO_AGENT_UNIT" == 1 ]]; then
     plan_add "agent service" restart "to pick up the change"; DO_RESTART=1
   elif [[ "$F_AGENT_ACTIVE" == 0 ]]; then plan_add "agent service" start "installed but not running"; DO_START=1
@@ -456,24 +459,31 @@ prune_backups() {
     if (( n > 3 )); then rm -rf -- "$d"; fi
   done < <(ls -1dt "$BAFT_PREFIX"/backups/rerun-* 2>/dev/null)
 }
+ENABLED_BY_RUN=0; WAS_ENABLED=0; WAS_AGENT_ENABLED=0
+fail_point() { # test hook: BAFT_TEST_FAIL_AT=<point> makes the run fail there
+  if [[ "${BAFT_TEST_FAIL_AT:-}" == "$1" ]]; then die "injected failure at $1 (test hook)"; fi
+  return 0
+}
+# Rollback puts back the files AND the service state: a unit this run enabled
+# is disabled again, a service that was not running before is stopped, and a
+# service that was running is restarted on the old files. All of that happens
+# in an order that works while the unit file still exists.
 rollback_apply() {
   APPLYING=0
   log "apply failed: rolling back"
-  local f
+  local f unit was_active
+  if [[ "$AGENT_ONLY" == "1" ]]; then unit="$BAFT_AGENT_UNIT.service"; was_active="$WAS_AGENT_ACTIVE"
+  else unit="$BAFT_SERVICE.service"; was_active="$WAS_ACTIVE"; fi
+  if [[ "$TOUCHED_SERVICE" == 1 && "$was_active" == 0 ]]; then systemctl stop "$unit" || true; fi
+  if [[ "$ENABLED_BY_RUN" == 1 ]]; then systemctl disable "$unit" || true; fi
   for f in "${BACKUP_MAP[@]}"; do
     cp -p -- "$BACKUP_DIR/$(backup_name "$f")" "$f" || log "could not restore $f (copy kept in $BACKUP_DIR)"
   done
   for f in "${CREATED[@]}"; do rm -f -- "$f"; done
   systemctl daemon-reload || true
   # A service this run never stopped or restarted is left alone.
-  if [[ "$TOUCHED_SERVICE" == 1 ]]; then
-    if [[ "$AGENT_ONLY" == "1" ]]; then
-      if [[ "$WAS_AGENT_ACTIVE" == 1 ]]; then systemctl restart "$BAFT_AGENT_UNIT.service" || true; fi
-    elif [[ "$WAS_ACTIVE" == 1 ]]; then
-      systemctl restart "$BAFT_SERVICE.service" || true
-    fi
-  fi
-  log "rolled back to the previous binaries and files; the release state was not recorded"
+  if [[ "$TOUCHED_SERVICE" == 1 && "$was_active" == 1 ]]; then systemctl restart "$unit" || true; fi
+  log "rolled back to the previous binaries, files and service state; the release state was not recorded"
 }
 
 # verify_release DIR REVOCATIONS UPDATE(0|1) ARTIFACT... checks a downloaded
@@ -935,7 +945,26 @@ inspect_install
 classify_state
 log "inspecting: $STATE ($STATE_WHY)"
 
+# A broken install is refused before anything on the host is touched.
+if [[ "$STATE" == "BROKEN_INSTALL" ]]; then
+  plan_everything
+  show_plan
+  log "refusing to touch a broken install: $STATE_WHY"
+  log "nothing was changed; repair it by hand (see docs/en/33-rerunnable-installer.md) or restore from a backup"
+  exit 3
+fi
+
+reset_plan() {
+  PLAN_ITEM=(); PLAN_ACT=(); PLAN_DETAIL=(); PLAN_CHANGES=0; REFUSED=""
+  DO_BIN=0; DO_UNIT=0; DO_PKI=0; DO_KEYGEN=0; DO_PAIRING=0; DO_RESTART=0; DO_START=0; DO_ENABLE=0
+  DO_FIXPERM=0; DO_AGENT_UNIT=0; DO_AGENT_ENABLE=0; DO_TOKEN=0; DO_JOBKEY=0; DO_ROOTPIN=0; DO_RELSTATE=0
+}
+
+# Prerequisites (apt packages, the Go toolchain for --from-source) are the only
+# host changes made before the final plan. On an install that already exists
+# they are listed in a preliminary plan and need the same confirmation.
 export DEBIAN_FRONTEND=noninteractive
+NEED_APT=0; NEED_GO=0
 if [[ -n "$BAFT_OFFLINE_DIR" ]]; then
   [[ "$BAFT_INSTALL_FROM" == "release" ]] || die "--offline installs a signed release; it cannot be combined with --from-source"
   [[ -d "$BAFT_OFFLINE_DIR" ]] || die "offline directory $BAFT_OFFLINE_DIR does not exist"
@@ -943,26 +972,17 @@ if [[ -n "$BAFT_OFFLINE_DIR" ]]; then
     command -v "$c" >/dev/null 2>&1 || die "offline install needs $c, which is not installed (install it from your OS media or mirror first)"
   done
   log "offline install from $BAFT_OFFLINE_DIR (no network, no apt)"
-elif [[ "$BAFT_INSTALL_FROM" == "release" ]] && command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 \
-  && command -v python3 >/dev/null 2>&1 && [[ -s /etc/ssl/certs/ca-certificates.crt ]]; then
-  log "curl, openssl and python3 are already installed; apt is not run"
+elif [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
+  for c in curl openssl python3; do command -v "$c" >/dev/null 2>&1 || NEED_APT=1; done
+  [[ -s /etc/ssl/certs/ca-certificates.crt ]] || NEED_APT=1
 else
-  apt-get update
-  if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
-    apt-get install -y --no-install-recommends ca-certificates curl openssl python3
-  else
-    apt-get install -y --no-install-recommends ca-certificates curl git jq python3 build-essential
-  fi
+  for c in curl git jq python3 cc make; do command -v "$c" >/dev/null 2>&1 || NEED_APT=1; done
+  [[ -s /etc/ssl/certs/ca-certificates.crt ]] || NEED_APT=1
+  if command -v go >/dev/null 2>&1 && [[ "$(go version | awk '{print $3}' | sed 's/^go//')" == "$BAFT_GO_VERSION" ]]; then NEED_GO=0; else NEED_GO=1; fi
 fi
 
 install_go() {
-  if command -v go >/dev/null 2>&1; then
-    current="$(go version | awk '{print $3}' | sed 's/^go//')"
-    if [[ "$current" == "$BAFT_GO_VERSION" ]]; then
-      log "Go $current already installed"
-      return
-    fi
-  fi
+  [[ "$NEED_GO" == 1 ]] || { log "Go $BAFT_GO_VERSION already installed"; return; }
   local manifest file sha tmp
   manifest="$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all')" || die "cannot read Go release manifest"
   file="go${BAFT_GO_VERSION}.linux-${GOARCH}.tar.gz"
@@ -977,14 +997,34 @@ install_go() {
   ln -sf /usr/local/go/bin/go /usr/local/bin/go
   ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 }
-if [[ "$BAFT_INSTALL_FROM" == "source" ]]; then
-  install_go
+
+if [[ "$NEED_APT" == 1 || "$NEED_GO" == 1 ]]; then
+  if [[ "$STATE" != "FRESH_INSTALL" ]]; then
+    plan_everything
+    [[ "$NEED_APT" == 1 ]] && plan_add "packages" create "install the missing tools with apt (ca-certificates, curl, openssl, python3$([[ "$BAFT_INSTALL_FROM" == source ]] && printf ', git, jq, build-essential'))"
+    [[ "$NEED_GO" == 1 ]] && plan_add "go toolchain" create "install Go $BAFT_GO_VERSION into /usr/local/go"
+    show_plan
+    confirm_plan
+    reset_plan
+  fi
+  if [[ "$NEED_APT" == 1 ]]; then
+    apt-get update
+    if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
+      apt-get install -y --no-install-recommends ca-certificates curl openssl python3
+    else
+      apt-get install -y --no-install-recommends ca-certificates curl git jq python3 build-essential
+    fi
+  fi
+  if [[ "$NEED_GO" == 1 ]]; then install_go; fi
+else
+  [[ -n "$BAFT_OFFLINE_DIR" ]] || log "the required tools are already installed; apt is not run"
 fi
 
-# Staging only: nothing outside temp files and *.new is written here, and the
-# *.new files are removed on every exit.
-CLEANUP+=("$BAFT_BIN.new" "$BAFT_PAIR_BIN.new" "$BAFT_AGENT_BIN.new")
-install -d -m 0755 -o root -g root "$(dirname "$BAFT_BIN")"
+# Staging only: downloads, verification and builds happen in a private temp
+# directory. Nothing is written to a final path before the plan is confirmed.
+STAGE="$(mktemp -d)"
+CLEANUP+=("$STAGE")
+STAGE_BIN="$STAGE/baft"; STAGE_PAIR="$STAGE/baft-pair"; STAGE_AGENT="$STAGE/baft-agent"
 REL_DIR=""
 REL_REV=""
 REL_ARTIFACTS=("baft-linux-$GOARCH" "baft-pair-linux-$GOARCH")
@@ -1018,22 +1058,20 @@ fetch_release() {
   got="$(verify_release "$REL_DIR" "$REL_REV" 0 "${REL_ARTIFACTS[@]}")" || die "the downloaded release did not verify; nothing was installed"
   TARGET_REL="${got%% *}"
   log "verified signed release $got"
-  install -m 0755 "$REL_DIR/baft-linux-$GOARCH" "$BAFT_BIN.new"
-  install -m 0755 "$REL_DIR/baft-pair-linux-$GOARCH" "$BAFT_PAIR_BIN.new"
-  if [[ "$AGENT_ONLY" == "1" ]]; then install -m 0755 "$REL_DIR/baft-agent-linux-$GOARCH" "$BAFT_AGENT_BIN.new"; fi
+  install -m 0755 "$REL_DIR/baft-linux-$GOARCH" "$STAGE_BIN"
+  install -m 0755 "$REL_DIR/baft-pair-linux-$GOARCH" "$STAGE_PAIR"
+  if [[ "$AGENT_ONLY" == "1" ]]; then install -m 0755 "$REL_DIR/baft-agent-linux-$GOARCH" "$STAGE_AGENT"; fi
 }
 
 build_from_source() {
-  SRC="$BAFT_PREFIX/src"
+  SRC="$STAGE/src"
   rm -rf "$SRC.tmp"
-  install -d -m 0755 -o root -g root "$BAFT_PREFIX"
   if ! git clone --filter=blob:none --no-checkout "$BAFT_REPO_URL" "$SRC.tmp"; then
     [[ -n "$BAFT_MIRROR_URL" ]] || die "primary repository unavailable and BAFT_MIRROR_URL is unset"
     log "trying configured mirror"
     git clone --filter=blob:none --no-checkout "$BAFT_MIRROR_URL" "$SRC.tmp"
   fi
   git -C "$SRC.tmp" checkout --detach "$BAFT_REF"
-  rm -rf "$SRC"
   mv "$SRC.tmp" "$SRC"
 
   (
@@ -1042,9 +1080,9 @@ build_from_source() {
     if [[ "$BAFT_RUN_TESTS" == "1" ]]; then
       go test ./internal/recordshape ./internal/securityinternal ./internal/carrier/h2 ./internal/config ./cmd/baft ./cmd/baft-pair ./tests/integration -count=1
     fi
-    go build -trimpath -ldflags="-s -w -X main.version=${BAFT_REF}" -o "$BAFT_BIN.new" ./cmd/baft
-    go build -trimpath -ldflags="-s -w" -o "$BAFT_PAIR_BIN.new" ./cmd/baft-pair
-    if [[ "$AGENT_ONLY" == "1" ]]; then go build -trimpath -ldflags="-s -w" -o "$BAFT_AGENT_BIN.new" ./cmd/baft-agent; fi
+    go build -trimpath -ldflags="-s -w -X main.version=${BAFT_REF}" -o "$STAGE_BIN" ./cmd/baft
+    go build -trimpath -ldflags="-s -w" -o "$STAGE_PAIR" ./cmd/baft-pair
+    if [[ "$AGENT_ONLY" == "1" ]]; then go build -trimpath -ldflags="-s -w" -o "$STAGE_AGENT" ./cmd/baft-agent; fi
   )
   TARGET_REL="$BAFT_REF"
 }
@@ -1071,10 +1109,10 @@ if [[ "$STEALTH_PRO" == "1" ]]; then
     --jitter-min-us "${BAFT_JITTER_MIN_US:-25}"
     --jitter-max-us "${BAFT_JITTER_MAX_US:-250}"
   )
-  "$BAFT_BIN.new" config stealth-pro "${SHAPE_ARGS[@]}" >"$SHAPE_CONFIG_TMP"
-  "$BAFT_BIN.new" config validate --file "$SHAPE_CONFIG_TMP"
-  install -m 0755 -o root -g root "$BAFT_BIN.new" "$BAFT_BIN"
-  install -m 0755 -o root -g root "$BAFT_PAIR_BIN.new" "$BAFT_PAIR_BIN"
+  "$STAGE_BIN" config stealth-pro "${SHAPE_ARGS[@]}" >"$SHAPE_CONFIG_TMP"
+  "$STAGE_BIN" config validate --file "$SHAPE_CONFIG_TMP"
+  install -m 0755 -o root -g root "$STAGE_BIN" "$BAFT_BIN"
+  install -m 0755 -o root -g root "$STAGE_PAIR" "$BAFT_PAIR_BIN"
   if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
     verify_release "$REL_DIR" "$REL_REV" 1 "${REL_ARTIFACTS[@]}" >/dev/null || die "could not record the installed release"
   fi
@@ -1100,7 +1138,7 @@ confirm_plan
 # APPLY. From here a failure rolls back the files and restarts the service
 # that was running before.
 APPLYING=1
-WAS_ACTIVE="$F_ACTIVE"; WAS_AGENT_ACTIVE="$F_AGENT_ACTIVE"
+WAS_ACTIVE="$F_ACTIVE"; WAS_AGENT_ACTIVE="$F_AGENT_ACTIVE"; WAS_ENABLED="$F_ENABLED"; WAS_AGENT_ENABLED="$F_AGENT_ENABLED"
 
 ensure_base() {
   if [[ "$F_USER" == 0 ]]; then
@@ -1109,6 +1147,11 @@ ensure_base() {
   [[ -d "$BAFT_CONFIG_DIR" ]] || install -d -m 0750 -o root -g "$BAFT_USER" "$BAFT_CONFIG_DIR"
   [[ -d "$BAFT_STATE_DIR" ]] || install -d -m 0700 -o "$BAFT_USER" -g "$BAFT_USER" "$BAFT_STATE_DIR"
   [[ -d "$BAFT_PREFIX" ]] || install -d -m 0755 -o root -g root "$BAFT_PREFIX"
+  [[ -d "$(dirname "$BAFT_BIN")" ]] || install -d -m 0755 -o root -g root "$(dirname "$BAFT_BIN")"
+  if [[ "$BAFT_INSTALL_FROM" == "source" && -d "$STAGE/src" ]]; then
+    rm -rf "$BAFT_PREFIX/src"
+    mv "$STAGE/src" "$BAFT_PREFIX/src"
+  fi
 }
 
 # install_changed NEW PATH: replaces PATH only when the bytes differ.
@@ -1121,11 +1164,12 @@ install_changed() {
 }
 
 install_binaries() {
-  install_changed "$BAFT_BIN.new" "$BAFT_BIN"
-  install_changed "$BAFT_PAIR_BIN.new" "$BAFT_PAIR_BIN"
-  if [[ "$AGENT_ONLY" == "1" ]]; then install_changed "$BAFT_AGENT_BIN.new" "$BAFT_AGENT_BIN"; fi
+  install_changed "$STAGE_BIN" "$BAFT_BIN"
+  install_changed "$STAGE_PAIR" "$BAFT_PAIR_BIN"
+  if [[ "$AGENT_ONLY" == "1" ]]; then install_changed "$STAGE_AGENT" "$BAFT_AGENT_BIN"; fi
   # A new binary that does not run is caught before any service is touched.
   "$BAFT_BIN" version >/dev/null 2>&1 || die "verify: the installed $BAFT_BIN does not run"
+  fail_point post-binaries
 }
 
 # wait_active UNIT SECONDS: active, and still the same process a few seconds
@@ -1150,6 +1194,14 @@ finalize_apply() {
   if [[ "$AGENT_ONLY" != "1" && -f "$CONFIG" ]]; then
     "$BAFT_BIN" config validate --file "$CONFIG" >/dev/null 2>&1 || die "verify: $CONFIG does not validate"
   fi
+  # Enablement is the last service change before the commit point; rollback
+  # undoes it (ENABLED_BY_RUN) if anything after it fails.
+  if [[ "$AGENT_ONLY" == "1" && ( "$DO_AGENT_UNIT" == 1 || "$DO_AGENT_ENABLE" == 1 ) && "$WAS_AGENT_ENABLED" == 0 ]]; then
+    ENABLED_BY_RUN=1; systemctl enable "$BAFT_AGENT_UNIT.service"
+  elif [[ "$AGENT_ONLY" != "1" && ( "$DO_UNIT" == 1 || "$DO_ENABLE" == 1 ) && "$WAS_ENABLED" == 0 ]]; then
+    ENABLED_BY_RUN=1; systemctl enable "$BAFT_SERVICE.service"
+  fi
+  fail_point pre-commit
   if [[ "$BAFT_INSTALL_FROM" == "release" && "$DO_RELSTATE" == 1 ]]; then
     backup_file "$BAFT_RELEASE_STATE"
     verify_release "$REL_DIR" "$REL_REV" 1 "${REL_ARTIFACTS[@]}" >/dev/null || die "could not record the installed release"
@@ -1180,7 +1232,6 @@ install_agent() {
     backup_file "$AGENT_UNIT_FILE"
     install -m 0644 -o root -g root "$AGENT_UNIT_TMP" "$AGENT_UNIT_FILE"
     systemctl daemon-reload
-    systemctl enable "$BAFT_AGENT_UNIT.service"
   fi
   if [[ "$DO_RESTART" == 1 || "$DO_START" == 1 ]]; then TOUCHED_SERVICE=1; fi
   if [[ "$DO_RESTART" == 1 ]]; then systemctl restart "$BAFT_AGENT_UNIT.service"
@@ -1229,9 +1280,6 @@ if [[ "$DO_UNIT" == 1 ]]; then
   render_service_unit >"$UNIT_FILE"
   chmod 0644 "$UNIT_FILE"
   systemctl daemon-reload
-  systemctl enable "$BAFT_SERVICE.service"
-elif [[ "$DO_ENABLE" == 1 ]]; then
-  systemctl enable "$BAFT_SERVICE.service"
 fi
 
 # The config is root-owned and group-readable by the service, and must pass
