@@ -71,6 +71,9 @@ func cor01SocketState(port int) string {
 		out,err:=exec.Command("ss","-tinmoeH","state","all",filter).CombinedOutput()
 		fmt.Fprintf(&b,"--- ss sample %d (err=%v)\n%s\n",i,err,out)
 	}
+	if out,err:=exec.Command("nstat","-az","TcpExtTCPRcvQDrop","TcpExtTCPBacklogDrop","TcpExtPruneCalled","TcpExtRcvPruned","TcpExtTCPZeroWindowDrop","TcpExtTCPOFODrop","TcpExtTCPRcvCollapsed","TcpExtTCPTimeouts","TcpExtTCPLossProbes","TcpRetransSegs").CombinedOutput();true{
+		fmt.Fprintf(&b,"--- nstat (err=%v)\n%s\n",err,out)
+	}
 	for _,f:=range []string{"/proc/net/sockstat","/proc/sys/net/ipv4/tcp_mem","/proc/sys/net/ipv4/tcp_rmem","/proc/sys/net/ipv4/tcp_wmem"}{
 		out,err:=os.ReadFile(f)
 		fmt.Fprintf(&b,"--- %s (err=%v)\n%s\n",f,err,out)
