@@ -453,10 +453,18 @@ func (s *outboundSender) stopAndFenceWriter(source SenderStopSource, err error) 
 }
 
 func (s *outboundSender) stopErrorLocked() error {
-	if s.stopErr != nil {
-		return s.stopErr
+	err := s.stopErr
+	if err == nil {
+		err = errors.New("outbound sender stopped")
 	}
-	return errors.New("outbound sender stopped")
+	// A recoverable sender belongs to a disposable physical carrier. The
+	// carrier's private context may be canceled while the logical Session
+	// context remains alive. Never leak that raw cancellation to Peer.run:
+	// classify it as carrier loss so recovery/rebind owns the transition.
+	if s.recoverable && !errors.Is(err, ErrCarrierUnavailable) {
+		return fmt.Errorf("%w: %v", ErrCarrierUnavailable, err)
+	}
+	return err
 }
 
 func (s *outboundSender) signal() {
