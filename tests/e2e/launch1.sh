@@ -256,7 +256,8 @@ wait_rotation() { # id seconds wanted-phases... ; checks the invariant every pol
   for ((i = 0; i < secs; i++)); do
     trusted || fail "the IR could not verify the EX during rotation (phase $phase)"
     phase="$(api "$BCC/api/cert-rotations?id=$id" | jfield '["phase"]')"
-    [[ "$(grep -c 'BEGIN CERTIFICATE' "$IR_CA")" == 2 ]] && SAW_WINDOW=1
+    # wait_rotation runs in a command substitution: record in a file.
+    [[ "$(grep -c 'BEGIN CERTIFICATE' "$IR_CA")" == 2 ]] && touch "$WORK/saw-window"
     for want in "$@"; do [[ "$phase" == "$want" ]] && { echo "$phase"; return 0; }; done
     sleep 1
   done
@@ -264,11 +265,11 @@ wait_rotation() { # id seconds wanted-phases... ; checks the invariant every pol
 }
 trusted || fail "the IR does not verify the EX before rotation"
 OLD_LEAF="$(served_sha)"
-SAW_WINDOW=0
+rm -f "$WORK/saw-window"
 R1="$(api -d "{\"tunnel_id\":\"$T1\"}" "$BCC/api/tunnels/rotate-cert" | jfield '["id"]')"
 phase="$(wait_rotation "$R1" 300 complete rolled_back rollback_failed retire_failed)" || true
 [[ "$phase" == "complete" ]] || fail "rotation ended as '$phase': $(api "$BCC/api/cert-rotations?id=$R1")"
-[[ "$SAW_WINDOW" == 1 ]] || fail "the IR never trusted old + new during the window"
+[[ -e "$WORK/saw-window" ]] || fail "the IR never trusted old + new during the window"
 NEW_LEAF="$(served_sha)"
 [[ "$NEW_LEAF" != "$OLD_LEAF" ]] || fail "the EX still serves the old certificate"
 [[ "$(grep -c 'BEGIN CERTIFICATE' "$IR_CA")" == 1 ]] || fail "the IR still trusts more than the new CA"
@@ -292,7 +293,7 @@ traffic || fail "no traffic through tunnel 1 after the rotation"
 log "rotation complete: new certificate served and trusted alone; traffic passes"
 
 log "a cancelled rotation (after CONFIRM, during HOLD) rolls back EX then IR to the working certificate"
-SAW_WINDOW=0
+rm -f "$WORK/saw-window"
 R2="$(api -d "{\"tunnel_id\":\"$T1\",\"hold_seconds\":3600}" "$BCC/api/tunnels/rotate-cert" | jfield '["id"]')"
 phase="$(wait_rotation "$R2" 300 holding rolled_back rollback_failed)" || true
 [[ "$phase" == "holding" ]] || fail "rotation 2 ended as '$phase'"
