@@ -1234,9 +1234,10 @@ func (p *Peer) ackRemoteFin(fl *flow) error {
 	err := p.senderNow().sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: fl.id, Offset: final})
 	fl.mu.Lock()
 	fl.finAckWriteInFlight=false
-	if err!=nil && !fl.finAckConfirmed {
-		// No peer proof exists for this emission. Keep the terminal obligation
-		// retryable instead of pretending a failed local write was delivered.
+	if err!=nil && !fl.finAckConfirmed && !p.recoveryEnabled {
+		// Baseline non-recovery sessions may retry from local write failure.
+		// Recovery-enabled sessions keep finAckSent monotonic: a carrier error
+		// after emission is not proof that the peer missed the FIN_ACK.
 		fl.finAckSent=false
 	}
 	fl.mu.Unlock()
@@ -1356,7 +1357,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 		}
 		fl.rxWritten += uint64(len(segment))
 		delivered := fl.rxWritten
-		finalReady := fl.finRecv && !fl.finAckSent && delivered == fl.finRecvFinal
+		finalReady := fl.finRecv && !fl.finAckConfirmed && delivered == fl.finRecvFinal
 		closed := fl.closed
 		fl.mu.Unlock()
 
@@ -1376,7 +1377,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			// must absorb that late credit intent instead of emitting RESET.
 			fl.mu.Lock()
 			closed = fl.closed
-			finalReady = fl.finRecv && !fl.finAckSent && fl.rxWritten == fl.finRecvFinal
+			finalReady = fl.finRecv && !fl.finAckConfirmed && fl.rxWritten == fl.finRecvFinal
 			fl.mu.Unlock()
 			if closed{return}
 			if finalReady{_ = p.ackRemoteFin(fl);return}

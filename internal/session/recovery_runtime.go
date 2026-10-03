@@ -1288,7 +1288,7 @@ func (p *Peer) PrepareRecoveryCommit(ctx context.Context,candidateID string,c Ca
 		effectiveFinAcked:=fl.finAcked||fp.LocalFinAckCanAdvance
 		resendFIN:=fl.finSent&&!effectiveFinAcked
 		final:=fl.txNext
-		ackPeerFIN:=fl.finRecv&&!fl.finAckSent&&fl.rxWritten==fl.finRecvFinal
+		ackPeerFIN:=fl.finRecv&&!fl.finAckConfirmed&&fl.rxWritten==fl.finRecvFinal
 		fl.mu.Unlock()
 		if release>0 {
 			if err:=fl.allocator.CanRelease(fl.resourceID,resources.Replay,release);err!=nil{a.recordFailure("replay_unavailable");return RecoveryControl{},err}
