@@ -1,0 +1,41 @@
+name: stage-e-coalesce-ab
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e-foundation
+    paths:
+      - '.github/workflows/stage-e-coalesce-ab.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Baseline BAFT B06
+        run: go run ./cmd/baft-bench -scenario B06 -out '${{ runner.temp }}/stage-e-ab'
+      - name: Frame-coalesced BAFT B09
+        run: go run ./cmd/baft-bench -scenario B09 -out '${{ runner.temp }}/stage-e-ab'
+      - name: Direct TCP control B08
+        run: go run ./cmd/baft-bench -scenario B08 -out '${{ runner.temp }}/stage-e-ab'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baft-stage-e-coalesce-ab-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-ab
+          if-no-files-found: error
+          retention-days: 30
