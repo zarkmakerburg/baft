@@ -50,3 +50,4 @@ A feature described by the Blueprint but not recorded as implemented in STATUS i
 29. [29 — BCC backups and restore preview](29-bcc-backup-restore-preview.md)
 30. [30 — BCC layered health with hysteresis](30-bcc-layered-health.md)
 31. [31 — Discovery of existing tunnels (report only)](31-tunnel-discovery.md)
+32. [32 — The `baft` menu and the terminal header](32-baft-menu.md)

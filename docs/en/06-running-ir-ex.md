@@ -62,6 +62,8 @@ If verification fails nothing is installed. Until the owner's key ceremony pins 
 
 Three read-only commands; none of them changes the host.
 
+On a terminal, `baft` (or `baft menu`) opens an interactive menu over these commands, with the BAFT header; see [32](32-baft-menu.md). The direct commands below never print a splash or an escape sequence.
+
 ```bash
 sudo baft status            # version, installed release, role and peer, routes, service state, flows, recovery counters
 sudo baft doctor            # verdict, layers, and Problem / Evidence / Impact / Fix for each finding; exit 1 on FAIL

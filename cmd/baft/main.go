@@ -26,7 +26,31 @@ type versionInfo struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	os.Exit(runContext(ctx, os.Args[1:], os.Stdout, os.Stderr))
+	args := os.Args[1:]
+	// `baft` alone, or `baft menu`, opens the interactive menu on a terminal.
+	// Without one, `baft` prints usage exactly as before and every other
+	// command stays script-friendly: no splash, no escape sequences.
+	if len(args) == 0 || args[0] == "menu" {
+		os.Exit(menuEntry(args, os.Stdin, os.Stdout, os.Stderr))
+	}
+	os.Exit(runContext(ctx, args, os.Stdout, os.Stderr))
+}
+
+func menuEntry(args []string, stdin, stdout *os.File, stderr io.Writer) int {
+	if !isTerminal(stdin) || !isTerminal(stdout) {
+		if len(args) == 0 {
+			usage(stderr)
+		} else {
+			fmt.Fprintln(stderr, "baft menu needs an interactive terminal; use baft status, baft doctor or baft logs in scripts")
+		}
+		return 2
+	}
+	var rest []string
+	if len(args) > 0 {
+		rest = args[1:]
+	}
+	caps := detectTerm(os.Getenv, true, terminalWidth(stdout))
+	return runMenu(rest, stdin, stdout, stderr, hostOps, caps, time.Now)
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -164,6 +188,7 @@ func reloadOnHUP(ctx context.Context, rt *node.Runtime, stderr io.Writer) func()
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "BAFT research software")
 	fmt.Fprintln(w, "usage:")
+	fmt.Fprintln(w, "  baft                     # interactive menu (on a terminal)")
 	fmt.Fprintln(w, "  baft version [--json]")
 	fmt.Fprintln(w, "  baft config validate --file <config.yaml>")
 	fmt.Fprintln(w, "  baft config stealth-pro --file <config.yaml> [padding/jitter flags]")
