@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - triage/cor-t1-issue65
+      - triage/cor-t1-debug-a3
     paths:
       - 'tests/correctness/cor01_stall_debug_test.go'
       - 'internal/session/cor01_debug.go'
