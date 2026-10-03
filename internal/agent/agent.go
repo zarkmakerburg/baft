@@ -67,7 +67,24 @@ type Agent struct {
 	cfg  Config
 	mu   sync.Mutex
 	seen map[string]time.Time
+	// unacked holds results BCC did not receive (network error, rate limit,
+	// BCC restarting). They are sent again on the next poll so a finished
+	// step does not wait for BCC's step timeout. Memory only: an output may
+	// be a one-time secret.
+	unacked []pendingAck
 }
+
+type pendingAck struct {
+	jobID, status, message, output string
+	tries                          int
+}
+
+// maxAckTries bounds how often one result is offered again.
+const maxAckTries = 30
+
+// errAckRefused is BCC answering that it will not take the result (the job
+// is unknown or already completed): offering it again cannot help.
+var errAckRefused = errors.New("BCC refused the result")
 
 const seenRetention = 7 * 24 * time.Hour
 
@@ -200,10 +217,27 @@ func (a *Agent) ack(ctx context.Context, jobID, status, message, output string) 
 		return err
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ack %s: HTTP %d", jobID, resp.StatusCode)
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return nil
+	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound:
+		return fmt.Errorf("ack %s: HTTP %d: %w", jobID, resp.StatusCode, errAckRefused)
 	}
-	return nil
+	return fmt.Errorf("ack %s: HTTP %d", jobID, resp.StatusCode)
+}
+
+// flushAcks offers the results BCC has not received yet again.
+func (a *Agent) flushAcks(ctx context.Context) {
+	var keep []pendingAck
+	for _, p := range a.unacked {
+		err := a.ack(ctx, p.jobID, p.status, p.message, p.output)
+		if err == nil || errors.Is(err, errAckRefused) || p.tries+1 >= maxAckTries {
+			continue
+		}
+		p.tries++
+		keep = append(keep, p)
+	}
+	a.unacked = keep
 }
 
 // Result is one job's outcome, for logs and tests.
@@ -216,6 +250,7 @@ type Result struct {
 
 // RunOnce pulls and handles the pending jobs once.
 func (a *Agent) RunOnce(ctx context.Context) ([]Result, error) {
+	a.flushAcks(ctx)
 	jobs, err := a.pull(ctx)
 	if err != nil {
 		return nil, err
@@ -251,8 +286,13 @@ func (a *Agent) RunOnce(ctx context.Context) ([]Result, error) {
 		if err != nil {
 			r.Status, r.Detail, output = "failed", err.Error(), ""
 		}
-		if aerr := a.ack(ctx, job.JobID, r.Status, r.Detail, output); aerr != nil && err == nil {
-			r.Detail += " (ack failed: " + aerr.Error() + ")"
+		if aerr := a.ack(ctx, job.JobID, r.Status, r.Detail, output); aerr != nil {
+			if !errors.Is(aerr, errAckRefused) {
+				a.unacked = append(a.unacked, pendingAck{jobID: job.JobID, status: r.Status, message: r.Detail, output: output})
+			}
+			if err == nil {
+				r.Detail += " (ack failed: " + aerr.Error() + "; offered again next poll)"
+			}
 		}
 		out = append(out, r)
 	}

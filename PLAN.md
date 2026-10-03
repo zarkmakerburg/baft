@@ -88,7 +88,7 @@
 - [ ] installer idempotent
 - [ ] config transaction + rollback
 - [ ] drain/stop semantics
-- [ ] certificate rotation
+- [x] certificate rotation (A4: docs/en/35-cert-rotation.md)
 - [ ] support bundle بدون payload/secret
 - [ ] packaging
 

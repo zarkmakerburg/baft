@@ -166,6 +166,8 @@ type state struct {
 	Health          map[string]NodeHealthRecord  `json:"health,omitempty"`
 	// Discovery is the last report-only inventory of each node.
 	Discovery       map[string]NodeDiscovery     `json:"discovery,omitempty"`
+	// CertRotations are the certificate rotations of built tunnels (A4).
+	CertRotations   map[string]CertRotation      `json:"cert_rotations,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`

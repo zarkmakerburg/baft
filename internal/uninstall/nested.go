@@ -159,6 +159,60 @@ func pkiBackupRule(rel, path string, fi os.FileInfo) (Class, string, bool) {
 	return ClassBackups, "the tunnel builder's copy of the previous certificates", problem == "" && check(b)
 }
 
+var hostMarkerRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?\n?$`)
+
+// isHostMarker: pki/host, the certificate name the tunnel builder writes.
+func isHostMarker(b []byte) bool { return hostMarkerRe.Match(b) }
+
+// pkiRotationRule: pki.next-<rotation> / pki.prev-<rotation> hold a staged or
+// previous certificate set of a certificate rotation (internal/tunnelnode):
+// the four files `baft-pair pki` writes plus the host marker.
+func pkiRotationRule(rel, path string, fi os.FileInfo) (Class, string, bool) {
+	var check func([]byte) bool
+	switch filepath.ToSlash(rel) {
+	case "ca.pem", "server.pem":
+		check = isPEM("CERTIFICATE")
+	case "ca.key", "server.key":
+		check = isPEMKey
+	case "host":
+		check = isHostMarker
+	default:
+		return "", "", false
+	}
+	b, problem := readRegular(path, maxSmallBytes)
+	return ClassCertificates, "a certificate set of a BAFT certificate rotation", problem == "" && check(b)
+}
+
+// rotationsRule: certificate rotation records (internal/tunnelnode): the
+// active pointer, the certificate epoch, and per rotation
+// <id>/{rot.json, new-ca.pem, new-cert.pem, bundle.pem, backup/ca.pem}.
+func rotationsRule(rel, path string, fi os.FileInfo) (Class, string, bool) {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	read := func(check func([]byte) bool) bool {
+		b, problem := readRegular(path, maxSmallBytes)
+		return problem == "" && check(b)
+	}
+	const ev = "a BAFT certificate rotation record"
+	switch {
+	case len(parts) == 1 && parts[0] == "epoch":
+		return ClassCertificates, ev, read(func(b []byte) bool { return regexp.MustCompile(`^[0-9]+\n?$`).Match(b) })
+	case len(parts) == 1 && parts[0] == "active":
+		return ClassCertificates, ev, read(func(b []byte) bool { return tunnelIDRe.Match(bytes.TrimSpace(b)) })
+	case len(parts) == 2 && tunnelIDRe.MatchString(parts[0]):
+		switch parts[1] {
+		case "rot.json":
+			return ClassCertificates, ev, read(func(b []byte) bool {
+				return isJSONObject(b) && bytes.Contains(b, []byte(`"phase"`)) && bytes.Contains(b, []byte(`"epoch"`))
+			})
+		case "new-ca.pem", "new-cert.pem", "bundle.pem":
+			return ClassCertificates, ev, read(isPEM("CERTIFICATE"))
+		}
+	case len(parts) == 3 && tunnelIDRe.MatchString(parts[0]) && parts[1] == "backup" && parts[2] == "ca.pem":
+		return ClassCertificates, ev, read(isPEM("CERTIFICATE"))
+	}
+	return "", "", false
+}
+
 // rerunRule proves rerun-* entries by the manifest the installer writes as it
 // copies (MANIFEST.sha256): a file it lists with the same digest is the
 // installer's copy. A rerun directory without a manifest proves nothing.

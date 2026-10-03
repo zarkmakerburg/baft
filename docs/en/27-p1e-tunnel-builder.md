@@ -89,3 +89,5 @@ The tunnel's state is the worst of its nodes. `POST /api/tunnels/drift?id=<tunne
 ## Not yet
 
 BCC itself does not check traffic beyond "service up and listening"; `tests/e2e/launch1.sh` (CI job `e2e-launch1`) pushes real traffic through a built tunnel. The dashboard has the controls (Tunnels card).
+
+The outer TLS certificate of a built tunnel is rotated transactionally, without ever leaving the IR unable to verify the EX: see [35 — Transactional certificate rotation](35-cert-rotation.md).
