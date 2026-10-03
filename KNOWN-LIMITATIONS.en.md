@@ -11,11 +11,15 @@
 - endpoint-pool/relay production paths are incomplete.
 - H3 and Worker paths are not enabled in the baseline core.
 - formal 60s × 5 benchmarking and profiling are incomplete.
-- final systemd/installer/config rollback/certificate rotation/support-bundle operations are incomplete.
+- final systemd/installer/config rollback/support-bundle operations remain incomplete; A4 transactional certificate rotation is implemented and tested.
 - no real Iran↔EX pilot has been run.
 - no universal throughput, undetectability, or guaranteed-connectivity claim has been established.
 - the IR public listener does not authenticate end users automatically; if it is exposed beyond loopback, separate service-layer security is required.
 
+
+## Step 5.7 qualification status
+
+Baseline `29125392566021a286af20ff8f3a4907c28dbee8` passed five independent Recovery Soak attempts, Stage-C soak, and full CI. This is a freeze candidate; formal ACCEPT/FREEZE remains an HQ decision, and the scope limitations below are unchanged.
 
 ## Step 5.7 recovery scope
 ECRL runtime recovery is limited to **same-process carrier replacement** for an already-live session. Same-process epoch fencing and bounded replay from validated ECRL plans are implemented and tested. Recovery commit uses explicit pre-commit preparation, a canonical plan digest, a two-sided readiness/commit barrier, idempotent commit identity, and separate post-commit failure handling. It does not persist ECRL session snapshots across process restart or machine reboot, and it does not claim process-restart resume. A peer BootID change during recovery fails closed. Subscription Engine work is out of scope. Record Shaping and Morphing behavior are unchanged by Step 5.7.

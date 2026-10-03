@@ -1,9 +1,9 @@
 # Project Status
 
 > Persian: [STATUS.md](STATUS.md)  
-> Report date: 2026-09-28
+> Report date: 2026-10-03
 
-Repository: `zarkmakerburg/baft`, branch `main`. Code head before the documentation overhaul: `b1ddb44512fa0f48ff4629e1faf2f37523a9fe85`.
+Repository: `zarkmakerburg/baft`, branch `main`. Current qualification baseline: `29125392566021a286af20ff8f3a4907c28dbee8`.
 
 ## Summary
 
@@ -11,6 +11,22 @@ Repository: `zarkmakerburg/baft`, branch `main`. Code head before the documentat
 - Stage B: complete for the defined secure vertical slice.
 - Stage C: the current multi-Flow/slow-receiver soak gate is green; this does not mean a public benchmark or production readiness.
 - Stage D: same-process ECRL recovery through Step 5.7 is implemented and tested, but Stage D is not complete or production-ready; process-restart/machine-reboot resume and durable ECRL session snapshots remain unimplemented.
+
+
+## P0-I — Step 5.7 final qualification (2026-10-03)
+
+Exact qualification baseline on `main`:
+
+- SHA: `29125392566021a286af20ff8f3a4907c28dbee8`
+- PR #60: merged; logical-session cancellation-cause instrumentation retained and the temporary diagnostic workflow removed.
+- Full CI on this SHA: **PASS**, including unit/integration, race detector, vet, and protocol fuzz smoke.
+- Stage-C soak on this SHA: **PASS**.
+- Step 5.7 Recovery Soak: **PASS in 5 independent attempts on the same SHA**.
+- Each Recovery Soak covers unresolved Class-A exact transactions, hard Class-A live-data recut, Class-B fresh epoch, ambiguous replay contract, Topology × ECRL authority isolation, HTTP handler lifecycle, P0-C lifetime/race, exact-rebind lifecycle, FD/resource lifetime, multi-flow replacement, distributed finalization/replay/FIN matrix, and concurrent Flow churn + race.
+
+Engineering result: the recent rare Class-A evidence gap did not reproduce on this baseline and current qualification is green. This records a **Step 5.7 freeze candidate**; formal ACCEPT/FREEZE remains an HQ governance decision.
+
+Scope remains limited to **same-process live-session carrier replacement**. This does not add claims for process-restart resume, machine-reboot resume, durable session snapshots, or production readiness.
 
 ## Stage B evidence
 

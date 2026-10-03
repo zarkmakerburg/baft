@@ -3,7 +3,7 @@
 # نتایج آزمون
 
 > English: [TEST-RESULTS.en.md](TEST-RESULTS.en.md)  
-> تاریخ: 2026-09-29
+> تاریخ: 2026-10-03
 
 ## محیط CI
 
@@ -26,6 +26,19 @@ go test ./internal/protocol -run '^$' -fuzz '^FuzzDecode$' -fuzztime 10s
 ```
 
 </div>
+
+
+## P0-I / Step 5.7 freeze-candidate evidence — 2026-10-03
+
+Baseline: `29125392566021a286af20ff8f3a4907c28dbee8` روی `main`.
+
+- CI run `37125867545`: **PASS**؛ همه jobهای استاندارد سبز، شامل test/race/vet/fuzz و e2eهای نصب/اجرا.
+- Stage-C soak run `37125867530`: **PASS**.
+- Step 5.7 Recovery Soak run `37125867525`: **PASS در 5 run attempt مستقل روی همان SHA**.
+- در هر attempt، Topology × ECRL authority isolation و گیت‌های Class-A/Class-B/replay/finalization/lifetime/resource/flow-churn اجرا و پاس شدند.
+- PR #60 روی merge SHA فوق، instrumentation cancellation cause را برای تشخیص failureهای بعدی حفظ می‌کند.
+
+این شواهد qualification فعلی را سبز می‌کند و Step 5.7 را به وضعیت **freeze candidate pending HQ acceptance** می‌رساند. Scope همان same-process recovery است؛ restart/reboot resume همچنان خارج از scope است.
 
 ## Stage B — شواهد اصلی
 

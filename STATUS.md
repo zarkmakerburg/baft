@@ -3,13 +3,13 @@
 # وضعیت پروژه
 
 > نسخه انگلیسی: [STATUS.en.md](STATUS.en.md)  
-> تاریخ این گزارش: 2026-09-29
+> تاریخ این گزارش: 2026-10-03
 
 ## مخزن
 
 - مخزن: `zarkmakerburg/baft`
 - شاخه اصلی: `main`
-- آخرین commit کد قبل از بازنویسی مستندات: `b1ddb44512fa0f48ff4629e1faf2f37523a9fe85`
+- baseline زنده qualification: `29125392566021a286af20ff8f3a4907c28dbee8`
 
 ## خلاصه
 
@@ -17,6 +17,22 @@
 - **Stage B:** کامل برای secure vertical slice تعریف‌شده.
 - **Stage C:** گیت فعلی multi-Flow/slow-receiver soak سبز است؛ این به معنی benchmark عمومی یا production-ready بودن نیست.
 - **Stage D:** بخش same-process ECRL تا Step 5.7 وارد Runtime شده و تست شده است، اما Stage D کامل یا production-ready اعلام نشده است؛ process-restart/machine-reboot resume و snapshot پایدار ECRL همچنان پیاده نشده‌اند.
+
+
+## P0-I — qualification نهایی Step 5.7 (2026-10-03)
+
+Baseline دقیق qualification روی `main`:
+
+- SHA: `29125392566021a286af20ff8f3a4907c28dbee8`
+- PR #60: merge شده؛ instrumentation علت cancellation برای logical Session حفظ شده و workflow تشخیصی موقت حذف شده است.
+- Full CI روی همین SHA: **PASS**؛ شامل unit/integration، race detector، vet و protocol fuzz smoke.
+- Stage-C soak روی همین SHA: **PASS**.
+- Step 5.7 Recovery Soak: **PASS در 5 attempt مستقل روی همین SHA**.
+- هر Recovery Soak شامل Class-A unresolved exact transaction، hard Class-A live-data recut، Class-B fresh epoch، ambiguous replay contract، Topology × ECRL authority isolation، HTTP handler lifecycle، P0-C lifetime/race، exact-rebind lifecycle، FD/resource lifetime، multi-flow replacement، distributed finalization/replay/FIN matrix و concurrent Flow churn + race بوده است.
+
+نتیجه مهندسی: شکاف evidence مربوط به failure نادر Class-A اخیر روی این baseline بازتولید نشد و qualification فعلی سبز است. این بخش **Step 5.7 freeze candidate** را ثبت می‌کند؛ تصمیم رسمی ACCEPT/FREEZE طبق governance متعلق به HQ است.
+
+Scope همچنان محدود به **same-process live-session carrier replacement** است و هیچ ادعایی درباره process-restart resume، machine-reboot resume، durable session snapshot یا production readiness اضافه نمی‌کند.
 
 ## Stage A
 
