@@ -7,7 +7,7 @@ on:
     paths:
       - 'cmd/baft-bench/**'
       - 'bench/**'
-      - 'tests/integration/stage_e_benchmark_test.go'
+      - 'tests/integration/stage_e_*.go'
       - '.github/workflows/stage-e-benchmark-validate.yml'
 
 permissions:
@@ -39,5 +39,5 @@ jobs:
       - name: Smoke measured Stage E paths
         run: |
           go test ./tests/integration \
-            -run '^(TestStageEMeasureMultiFlowThroughput|TestStageEMeasureRecovery|TestStageEMeasureDirectTCPThroughput)$' \
+            -run '^(TestStageEMeasureMultiFlowThroughput|TestStageEMeasureRecovery|TestStageEMeasureDirectTCPThroughput|TestStageEMeasurePlainTCPSessionThroughput|TestStageEMeasureProtocolDecodeAllocation)$' \
             -count=1 -timeout 12m -v
