@@ -1,0 +1,39 @@
+name: r003-harness-validate
+
+on:
+  push:
+    branches:
+      - bench/stage-e-foundation
+    paths:
+      - 'bench/r003/**'
+      - '.github/workflows/r003-harness-validate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r003-harness-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Validate Python and shell collectors
+        run: |
+          python3 -m py_compile bench/r003/iran_probe.py bench/r003/summarize.py bench/r003/cert_observe.py bench/r003/test_summarize.py bench/r003/make_light_schedule.py bench/r003/traffic_driver.py
+          bash -n bench/r003/foreign_capture.sh
+          bash -n bench/r003/fingerprint_tshark.sh
+          python3 bench/r003/test_summarize.py
+          python3 bench/r003/make_light_schedule.py --seed 3003 --hours 0.02 --min-gap 1 --max-gap 2 --out /tmp/r003-schedule.json
+      - name: Verify BAFT pre-auth cover invariant
+        run: |
+          go test ./internal/carrier/h2 -run '^(TestNoiseHTMLFallbackAndAuthenticatedHTTP2|TestNoiseSlowProbeBounded)$' -count=1 -v
