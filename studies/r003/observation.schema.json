@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BAFT R-003 observation",
+  "type": "object",
+  "required": ["time", "tunnel_id", "kind", "status"],
+  "properties": {
+    "time": {"type": "string", "format": "date-time"},
+    "tunnel_id": {"enum": ["T1","T2","T3","T4","T5","T6","T7","T8","T9","T10"]},
+    "isp_id": {"type": "string"},
+    "traffic_profile": {"enum": ["light","sustained","none"]},
+    "kind": {"enum": ["health","diagnostic","traffic","probe_inbound","fingerprint","certificate","ip_rotation"]},
+    "status": {"enum": ["ok","degraded","disrupted","blocked","observed"]},
+    "block_type": {"enum": ["ip-wide","port-only","sni","protocol-reset","throttling","unknown"]},
+    "bytes_total": {"type": "integer", "minimum": 0},
+    "latency_ms": {"type": "number", "minimum": 0},
+    "foreign_ip_token": {"type": "string", "description": "Opaque study-local token, never a literal IP address."},
+    "remote_source_hash": {"type": "string"},
+    "remote_asn": {"type": "string"},
+    "note": {"type": "string"}
+  },
+  "additionalProperties": false
+}
