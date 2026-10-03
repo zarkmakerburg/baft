@@ -426,6 +426,7 @@ func (p *Peer) bindRecoverySenderDiagnostic(s *outboundSender,ctl RecoveryContro
 		PreparedIncarnation:incarnation,CarrierGeneration:generation,PhysicalCarrierInstanceID:physical,
 	})
 	s.setStopObserver(p.onRecoverySenderStop)
+	s.mu.Lock();s.writeFault=p.carrierWriteFault;s.mu.Unlock()
 	s.setDataWriteObserver(func(dw DataWriteDiagnostic){
 		p.recovery.appendDiagnostic(RecoveryDiagnosticEvent{
 			Event:dw.Event,ProducerKind:dw.ProducerKind,StreamID:dw.StreamID,FrameType:protocol.TypeData,
@@ -1494,7 +1495,12 @@ func (p *Peer) activatePreparedCarrier(prep *preparedRecovery,ctl RecoveryContro
 		// activatePreparedCarrierOwned holds the Run lifecycle read lease, so
 		// teardown cannot begin until this Add has completed.
 		p.wg.Add(1)
-		go func(s *outboundSender,rc context.Context){defer p.wg.Done();s.run(rc)}(prep.sender,runCtx)
+		hold:=p.senderStartHold(activatedGeneration)
+		go func(s *outboundSender,rc context.Context){
+			defer p.wg.Done()
+			if hold!=nil{select{case <-hold:case <-rc.Done():}}
+			s.run(rc)
+		}(prep.sender,runCtx)
 	}
 	return activatedGeneration,nil
 }
