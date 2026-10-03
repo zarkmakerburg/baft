@@ -37,6 +37,7 @@ const (
 	JobTunnelHealth    = agentjob.ActionTunnelHealth
 	JobTunnelObserve   = agentjob.ActionTunnelObserve
 	JobTunnelInspect   = agentjob.ActionTunnelInspect
+	JobTunnelDiscover  = agentjob.ActionTunnelDiscover
 	JobTunnelFinalize  = agentjob.ActionTunnelFinalize
 	JobTunnelRollback  = agentjob.ActionTunnelRollback
 )
@@ -635,6 +636,9 @@ func (s *Store) advanceRollbackLocked(t *Tunnel, now time.Time) *TunnelEvent {
 
 // AdvanceTunnels steps tunnels and records final outcomes in the audit log.
 func (s *Server) AdvanceTunnels() {
+	if devs, err := s.store.AdvanceDiscovery(s.now()); err == nil {
+		s.auditDiscovery(devs)
+	}
 	events, err := s.store.AdvanceTunnels(s.now())
 	if err != nil {
 		return

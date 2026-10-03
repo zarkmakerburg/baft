@@ -44,11 +44,13 @@ type hostSys struct {
 	active      bool
 	enabled     bool
 	failRestart bool
+	calls       []string
 }
 
 func (h *hostSys) Systemctl(_ context.Context, args ...string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.calls = append(h.calls, strings.Join(args, " "))
 	switch args[0] {
 	case "restart":
 		h.active = !h.failRestart
@@ -549,4 +551,147 @@ func TestPlanIsReviewedThenDeployedByItsHash(t *testing.T) {
 	if !strings.Contains(string(entries), "tunnel.plan") || !strings.Contains(string(entries), ok1.Hash) {
 		t.Error("planning and the plan hash are not in the audit log")
 	}
+}
+
+// discover runs a discovery of every node through signed jobs and returns the
+// stored inventory.
+func (f *flow) discover() map[string]bcc.NodeDiscovery {
+	f.t.Helper()
+	if code, body := f.api("POST", "/api/discovery?all=1", nil); code != http.StatusAccepted {
+		f.t.Fatalf("start discovery = %d %s", code, body)
+	}
+	for i := 0; i < 20; i++ {
+		for _, n := range []*flowNode{f.ex, f.ir} {
+			if _, err := n.agent.RunOnce(context.Background()); err != nil {
+				f.t.Fatalf("%s RunOnce: %v", n.id, err)
+			}
+		}
+		_, body := f.api("GET", "/api/discovery", nil)
+		var out struct {
+			Nodes []bcc.NodeDiscovery `json:"nodes"`
+		}
+		json.Unmarshal(body, &out)
+		done, m := true, map[string]bcc.NodeDiscovery{}
+		for _, d := range out.Nodes {
+			done = done && !d.Pending && !d.At.IsZero()
+			m[d.NodeID] = d
+		}
+		if done {
+			return m
+		}
+	}
+	f.t.Fatal("discovery did not finish")
+	return nil
+}
+
+func primaryState(t *testing.T, d bcc.NodeDiscovery) bcc.DiscoveredView {
+	t.Helper()
+	for _, v := range d.Instances {
+		if v.Primary {
+			return v
+		}
+	}
+	t.Fatalf("no primary instance: %+v", d)
+	return bcc.DiscoveredView{}
+}
+
+func treeOf(t *testing.T, roots ...string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, r := range roots {
+		filepath.Walk(r, func(p string, info os.FileInfo, err error) error {
+			if err == nil && info.Mode().IsRegular() {
+				b, _ := os.ReadFile(p)
+				out[p] = info.Mode().String() + string(b)
+			}
+			return nil
+		})
+	}
+	return out
+}
+
+func TestDiscoveryThroughSignedJobsIsReadOnlyAndFollowsBCCsInventory(t *testing.T) {
+	f := newFlow(t)
+	tn := f.create(f.plan())
+	if done := f.run(tn.ID); done.Phase != bcc.TunnelActive {
+		t.Fatalf("tunnel ended %s: %s", done.Phase, done.Error)
+	}
+	// Drift detection first, so BCC has its own verified digests for both nodes
+	// (they are stored at activation).
+	got := f.discover()
+	for _, id := range []string{"ex-1", "ir-1"} {
+		v := primaryState(t, got[id])
+		if v.State != bcc.DiscManaged || v.Tunnel != tn.ID {
+			t.Fatalf("%s: %+v", id, v)
+		}
+	}
+
+	// An operator hand-edits the EX config and a legacy BAFT unit exists next to it.
+	cfgPath := filepath.Join(f.ex.etc, "baft.yaml")
+	old, _ := os.ReadFile(cfgPath)
+	os.WriteFile(cfgPath, append(append([]byte{}, old...), []byte("\n# hand edit\n")...), 0o640)
+	legacyDir := filepath.Join(f.dir, "legacy")
+	os.MkdirAll(legacyDir, 0o755)
+	os.WriteFile(filepath.Join(legacyDir, "baft.yaml"), old, 0o640)
+	os.WriteFile(filepath.Join(f.dir, "ex-1", "units", "baft-legacy.service"),
+		[]byte("[Service]\nExecStart="+flowBaft+" run --file "+filepath.Join(legacyDir, "baft.yaml")+"\n"), 0o644)
+
+	before := treeOf(t, filepath.Join(f.dir, "ex-1"), filepath.Join(f.dir, "ir-1"), legacyDir)
+	callsBefore := len(f.ex.sys.calls)
+	activeBefore := f.ex.sys.active
+	got = f.discover()
+	after := treeOf(t, filepath.Join(f.dir, "ex-1"), filepath.Join(f.dir, "ir-1"), legacyDir)
+
+	// Only BAFT's own bookkeeping of the discovery jobs (agent state) may differ;
+	// the unit, config, marker, txn and legacy files must be byte-identical.
+	for p, v := range before {
+		if strings.Contains(p, string(filepath.Separator)+"agent"+string(filepath.Separator)) {
+			continue
+		}
+		if after[p] != v {
+			t.Fatalf("discovery modified %s", p)
+		}
+	}
+	for p := range after {
+		if _, ok := before[p]; !ok && !strings.Contains(p, string(filepath.Separator)+"agent"+string(filepath.Separator)) {
+			t.Fatalf("discovery created %s", p)
+		}
+	}
+	for _, c := range f.ex.sys.calls[callsBefore:] {
+		if !strings.HasPrefix(c, "is-active ") {
+			t.Fatalf("discovery ran `systemctl %s`", c)
+		}
+	}
+	if f.ex.sys.active != activeBefore {
+		t.Fatal("discovery changed the service state")
+	}
+
+	ex := got["ex-1"]
+	if v := primaryState(t, ex); v.State != bcc.DiscDrifted {
+		t.Fatalf("hand-edited primary: %+v", v)
+	}
+	var legacy *bcc.DiscoveredView
+	for i := range ex.Instances {
+		if ex.Instances[i].Unit == "baft-legacy.service" {
+			legacy = &ex.Instances[i]
+		}
+	}
+	if legacy == nil || legacy.State != bcc.DiscUnmanaged {
+		t.Fatalf("legacy unit: %+v (%+v)", legacy, ex.Instances)
+	}
+	if v := primaryState(t, got["ir-1"]); v.State != bcc.DiscManaged {
+		t.Fatalf("untouched node: %+v", v)
+	}
+
+	// The marker is the authority and discovery does not touch it: still the
+	// tunnel's, still BAFT's, byte for byte.
+	mk, _ := os.ReadFile(filepath.Join(f.ex.etc, "baft.managed.json"))
+	if !strings.Contains(string(mk), `"managed_by":"baft"`) && !strings.Contains(string(mk), `"managed_by": "baft"`) {
+		t.Fatalf("marker: %s", mk)
+	}
+	entries, _ := os.ReadFile(f.store.Path() + ".audit.jsonl")
+	if !strings.Contains(string(entries), "discovery.start") || !strings.Contains(string(entries), "discovery.completed") {
+		t.Fatal("discovery is not in the audit log")
+	}
+	f.noSecretsInBCC()
 }

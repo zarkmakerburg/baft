@@ -192,6 +192,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/finance/report",s.financeReport)
 	m.HandleFunc("/api/monitoring",s.monitoring)
 	m.HandleFunc("/api/health",s.healthAPI)
+	m.HandleFunc("/api/discovery",s.discoveryAPI)
 	m.HandleFunc("/api/history",s.history)
 	m.HandleFunc("/api/audit",s.auditEntries)
 	m.HandleFunc("/api/nodes/revoke",s.revokeNode)

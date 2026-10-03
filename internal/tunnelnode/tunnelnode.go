@@ -1151,9 +1151,9 @@ type Live struct {
 	MarkerUnitMatches   bool   `json:"marker_unit_matches"`
 	// Live digests of the unit and marker files themselves. BCC keeps them
 	// as its own reference; the marker's recorded hashes are not trusted.
-	UnitSHA256   string `json:"unit_sha256,omitempty"`
-	MarkerSHA256 string `json:"marker_sha256,omitempty"`
-	NodeGeneration      int    `json:"node_generation"`
+	UnitSHA256     string `json:"unit_sha256,omitempty"`
+	MarkerSHA256   string `json:"marker_sha256,omitempty"`
+	NodeGeneration int    `json:"node_generation"`
 
 	ServiceActive bool   `json:"service_active"`
 	ConfigRole    string `json:"config_role,omitempty"`

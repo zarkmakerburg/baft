@@ -50,8 +50,10 @@ const (
 	ActionTunnelHealth    = "tunnel_health"
 	ActionTunnelObserve   = "tunnel_observe"
 	ActionTunnelInspect   = "tunnel_inspect"
-	ActionTunnelFinalize  = "tunnel_finalize"
-	ActionTunnelRollback  = "tunnel_rollback"
+	// ActionTunnelDiscover is a read-only inventory of the BAFT units on a node.
+	ActionTunnelDiscover = "tunnel_discover"
+	ActionTunnelFinalize = "tunnel_finalize"
+	ActionTunnelRollback = "tunnel_rollback"
 )
 
 var (
@@ -83,6 +85,7 @@ var paramRules = map[string]map[string]*regexp.Regexp{
 	ActionTunnelHealth:    {"tunnel_id": tunnelIDRe},
 	ActionTunnelObserve:   {"tunnel_id": tunnelIDRe},
 	ActionTunnelInspect:   {},
+	ActionTunnelDiscover:  {},
 	ActionTunnelFinalize:  {"tunnel_id": tunnelIDRe},
 	ActionTunnelRollback:  {"tunnel_id": tunnelIDRe},
 }

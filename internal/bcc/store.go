@@ -164,6 +164,8 @@ type state struct {
 	Tunnels         map[string]Tunnel            `json:"tunnels,omitempty"`
 	// Health is the layered health of each node (state machines + history).
 	Health          map[string]NodeHealthRecord  `json:"health,omitempty"`
+	// Discovery is the last report-only inventory of each node.
+	Discovery       map[string]NodeDiscovery     `json:"discovery,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`
