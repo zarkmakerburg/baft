@@ -55,5 +55,6 @@
 31. [31 — کشف تونل‌های موجود (فقط گزارش)](31-tunnel-discovery.md)
 32. [32 — منوی `baft` و هدر ترمینال](32-baft-menu.md)
 33. [33 — نصب‌کننده‌ی قابل اجرای مجدد](33-rerunnable-installer.md)
+34. [34 — حذف امن](34-safe-uninstall.md)
 
 </div>

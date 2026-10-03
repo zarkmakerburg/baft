@@ -20,14 +20,18 @@ import (
 
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/tunnelnode"
+	"github.com/zarkmakerburg/baft/internal/uninstall"
 )
 
 // The interactive BAFT menu (HQ A3): `baft` on a terminal. It is a front for
 // what already exists, over plain numbered lines (no raw mode, so it works over
 // SSH and on a phone). It is READ-ONLY apart from the support bundle, which
-// writes one archive after an explicit yes. Anything that is not built yet is
-// marked "(planned)" and says so when chosen; nothing here installs, repairs,
-// updates or removes anything.
+// writes one archive after an explicit yes, and Uninstall (13), which runs the
+// same flow as `baft uninstall`: an exact preview, separate confirmations
+// (each data class defaults to NO, active tunnels, then typing "uninstall"),
+// and a journaled, verified removal. Anything that is not built yet is marked
+// "(planned)" and says so when chosen; nothing here installs, repairs or
+// updates anything.
 
 type menuCfg struct {
 	file, service, releaseState string
@@ -245,7 +249,7 @@ func (m *menu) mainItems() []menuItem {
 		{label: "Support bundle", run: (*menu).supportBundle},
 		{label: "Update", planned: true},
 		{label: "Repair", planned: true},
-		{label: "Uninstall", planned: true},
+		{label: "Uninstall", run: (*menu).uninstallMenu},
 		{label: "Advanced", run: func(m *menu) { m.advancedMenu() }},
 	}
 }
@@ -484,6 +488,31 @@ func (m *menu) backup() {
 	m.printf("Backups are made by BCC (encrypted, daily and weekly) and restored on the BCC host.\n\n")
 	m.printf("Preview a restore (read-only, BCC must be stopped):\n  baft-bcc restore-preview --backup FILE.baftbak --state-file bcc-state.json\n\n")
 	m.printf("A real restore command is %s; today restore exists only inside BCC as a tested library operation.\n", m.st.dim("planned"))
+}
+
+// uninstallMenu is HQ's uninstall submenu; every entry shows the exact plan
+// first and changes nothing without the explicit confirmations.
+func (m *menu) uninstallMenu() {
+	run := func(s uninstall.Scope, preview bool) func(*menu) {
+		return func(m *menu) {
+			env := &uninstall.Env{System: uninstallSystem, MainPkg: uninstallMainPkg, RequireRoot: uninstallRoot, Log: m.errw,
+				UnitDir: m.cfg.unitDir, StateDir: m.cfg.stateDir, ConfigDir: filepath.Dir(m.cfg.file),
+				RefUnitDirs: []string{"/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"}}
+			if uninstallEnvHook != nil {
+				uninstallEnvHook(env)
+			}
+			o := uninstall.Options{Scope: s, Delete: map[uninstall.Class]bool{}}
+			runUninstallFlow(context.Background(), env, o, preview, false, uninstallIO{in: m.in, out: m.out, errw: m.errw, interactive: true})
+		}
+	}
+	m.submenu("BAFT Uninstall", []menuItem{
+		{label: "Remove BAFT binaries only", run: run(uninstall.Scope{Binaries: true}, false)},
+		{label: "Remove Agent only", run: run(uninstall.Scope{Agent: true}, false)},
+		{label: "Remove BCC only", run: run(uninstall.Scope{BCC: true}, false)},
+		{label: "Remove BAFT services + binaries", run: run(uninstall.Scope{Services: true}, false)},
+		{label: "Full uninstall", run: run(uninstall.Scope{Full: true}, false)},
+		{label: "Preview uninstall", run: run(uninstall.Scope{}, true)},
+	})
 }
 
 func (m *menu) supportBundle() {

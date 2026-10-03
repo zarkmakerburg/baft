@@ -196,7 +196,10 @@ func TestMenuShowsTheHeaderAndTheListInTheHQOrder(t *testing.T) {
 		}
 		last = i
 	}
-	for _, planned := range []string{"Update (planned)", "Repair (planned)", "Uninstall (planned)"} {
+	if strings.Contains(o, "Uninstall (planned)") {
+		t.Error("Uninstall is built now; it must not be marked planned")
+	}
+	for _, planned := range []string{"Update (planned)", "Repair (planned)"} {
 		if !strings.Contains(o, planned) {
 			t.Errorf("%s is not marked as planned", planned)
 		}
@@ -221,9 +224,9 @@ func TestMenuRunsTheRealCommands(t *testing.T) {
 func TestPlannedItemsDoNothing(t *testing.T) {
 	r := newMenuRig(t)
 	before := len(r.commands)
-	r.run(t, monoCaps, "11\n\n12\n\n13\n\n0\n")
+	r.run(t, monoCaps, "11\n\n12\n\n0\n")
 	o := r.out.String()
-	for _, name := range []string{"Update", "Repair", "Uninstall"} {
+	for _, name := range []string{"Update", "Repair"} {
 		if !strings.Contains(o, name+" is not available in this version yet.") {
 			t.Errorf("%s: no honest message", name)
 		}

@@ -269,6 +269,31 @@ jobs:
             BAFT_ROOT_PUB="$(cat "$RUNNER_TEMP/rel/root.pub")" \
             tests/e2e/install_two_roles.sh
 
+  e2e-uninstall:
+    # Safe uninstall acceptance on a systemd runner: EX + IR from a signed
+    # release, a labelled BCC, an enrolled agent and units the operator wrote.
+    # Conflict blocks, active tunnels need consent, interrupted runs restore
+    # and resume, keep-data uninstall + reinstall without re-pairing, upgrade
+    # then reinstall keeps anti-rollback, BCC state goes only after a verified
+    # emergency backup, full uninstall removes only confirmed data, verify
+    # clean, fresh reinstall; the operator's units survive throughout.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Build two signed releases with one throwaway root
+        run: |
+          export BAFT_LOCAL_RELEASE_ROOT="$RUNNER_TEMP/root"
+          scripts/release/local_release.sh "$RUNNER_TEMP/rel1" v0.0.1-ci
+          scripts/release/local_release.sh "$RUNNER_TEMP/rel2" v0.0.2-ci
+      - name: Uninstall acceptance
+        run: sudo env GITHUB_ACTIONS=true tests/e2e/uninstall.sh "$RUNNER_TEMP/rel1" "$RUNNER_TEMP/rel2"
+
   installer-faults:
     # install.sh on a fake tree (stateful systemctl stub, recording apt-get):
     # nothing on the host changes before the plan is confirmed, and an injected
