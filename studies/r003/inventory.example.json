@@ -1,0 +1,19 @@
+{
+  "study_id": "R-003",
+  "foreign_provider": "RECORD_PRIVATELY",
+  "foreign_asn_class": "RECORD_PRIVATELY",
+  "region": "SAME_REGION_FOR_ALL",
+  "iran_isps": ["ISP-A", "ISP-B", "ISP-C"],
+  "tunnels": {
+    "T1": {"label": "GRE/IPIP", "variant": "RECORD_EXACT_VARIANT"},
+    "T2": {"label": "plain reverse TCP"},
+    "T3": {"label": "WS no TLS"},
+    "T4": {"label": "WSS direct IP self-signed"},
+    "T5": {"label": "WSS domain + CDN"},
+    "T6": {"label": "Rathole/FRP/Backhaul", "variant": "RECORD_IMPL_TLS_NOISE"},
+    "T7": {"label": "VLESS Reality"},
+    "T8": {"label": "Hashem", "variant": "GRE + FRP reverse TLS"},
+    "T9": {"label": "BAFT default", "variant": "Noise over H2/TLS1.3 :8443 shaping=off"},
+    "T10": {"label": "BAFT shaped", "variant": "same as T9 shaping=on"}
+  }
+}
