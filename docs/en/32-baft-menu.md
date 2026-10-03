@@ -15,7 +15,7 @@ Direct commands (`baft status`, `baft doctor --json`, `baft logs`, `baft version
 | 5 | BCC | the BCC service state here and the BCC commands to run on the BCC host |
 | 6 | Monitoring | the node's local metrics; fleet monitoring and health are in BCC |
 | 7 | Certificates | the CA and certificate files named in the config: subject, expiry, days left (`WARNING` under 30, `FAILED` when expired) |
-| 8 | Backup / Restore | how backups work and the read-only `baft-bcc restore-preview` command (a real restore command is planned) |
+| 8 | Backup / Restore | backup guidance, read-only `baft-bcc restore-preview`, and the offline local `baft-bcc restore ... --yes` command |
 | 9 | Logs | last 100 or 500 lines (follow live with `baft logs -f`) |
 | 10 | Support bundle | after an explicit yes, writes the secret-safe diagnostics archive |
 | 11 | Update | **planned** |
