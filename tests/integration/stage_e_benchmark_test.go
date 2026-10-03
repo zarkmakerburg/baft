@@ -404,7 +404,9 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 // session survival across one abrupt Carrier cut. All probe TCP connections
 // remain the same application flows; reopening a target socket is a failure.
 func TestStageEMeasureRecovery(t *testing.T) {
-	const flows = 8
+	// maxFlowsPerShard is currently 64 in production. Stage E intentionally
+	// exercises that existing ceiling without changing production limits.
+	const flows = 64
 	p := startRecoveryRuntimePair(t, 1)
 	defer p.close(t)
 
@@ -479,6 +481,11 @@ func TestStageEMeasureRecovery(t *testing.T) {
 
 	survived := len(latencies)
 	survivalPercent := 100 * float64(survived) / float64(flows)
+	recoverySamplesMS := make([]float64, 0, len(latencies))
+	for _, d := range latencies {
+		recoverySamplesMS = append(recoverySamplesMS, float64(d)/float64(time.Millisecond))
+	}
+	sort.Float64s(recoverySamplesMS)
 	emitStageEMetric(t, map[string]any{
 		"scenario":                 "B07",
 		"measurement":              "carrier_cut_recovery",
@@ -489,6 +496,8 @@ func TestStageEMeasureRecovery(t *testing.T) {
 		"recovery_ms_p50":          percentileMillis(latencies, 0.50),
 		"recovery_ms_p95":          percentileMillis(latencies, 0.95),
 		"recovery_ms_p99":          percentileMillis(latencies, 0.99),
+		"sample_count":              len(recoverySamplesMS),
+		"recovery_samples_ms":       recoverySamplesMS,
 		"carrier_connections_cut":  len(cutIDs),
 		"target_accepts_before":     targetBefore,
 		"target_accepts_after":      targetAfter,
