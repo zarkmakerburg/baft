@@ -16,6 +16,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +28,48 @@ import (
 )
 
 const oneGiB int64 = 1 << 30
+
+type progressWriter struct {
+	w io.Writer
+	n *atomic.Int64
+}
+
+func (p progressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	if n > 0 {
+		p.n.Add(int64(n))
+	}
+	return n, err
+}
+
+type progressReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (p progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.n.Add(int64(n))
+	}
+	return n, err
+}
+
+func logCOR01StallEvidence(t *testing.T, ir, ex *session.Peer, sent, recv int64, stalledFor time.Duration) {
+	t.Helper()
+	t.Logf("COR-01 STALL watchdog stalled_for=%s sent_bytes=%d recv_bytes=%d delta=%d", stalledFor, sent, recv, sent-recv)
+	if ir != nil {
+		s := ir.ConservationSnapshot()
+		t.Logf("COR-01 STALL IR conservation=%+v", s)
+	}
+	if ex != nil {
+		s := ex.ConservationSnapshot()
+		t.Logf("COR-01 STALL EX conservation=%+v", s)
+	}
+	buf := make([]byte, 8<<20)
+	n := runtime.Stack(buf, true)
+	t.Logf("COR-01 STALL goroutines:\n%s", string(buf[:n]))
+}
 
 type patternReader struct {
 	remaining int64
@@ -154,12 +198,14 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	serverTLS,err:=identity.ServerTLS(certs.roots,certs.server,map[string]struct{}{"urn:baft:node:ir-01":{}})
 	if err!=nil { t.Fatal(err) }
 	serverErr:=make(chan error,1)
+	exReady:=make(chan *session.Peer,1)
 	hs:=httptest.NewUnstartedServer(carrierh2.Handler(func(hctx context.Context,in io.Reader,out io.Writer,peer carrierh2.PeerInfo) error {
 		ex,err:=session.New(session.Listener,session.Carrier{In:in,Out:out},peer.Identity,table,session.Options{
 			NodeID:"ex-01",ExpectedPeerNodeID:"ir-01",ShardID:0,
 			ProfileID:"secure-fast",ProfileVersion:1,ConfigRevision:"cor01",
 		})
 		if err!=nil { return err }
+		select { case exReady<-ex: default: }
 		err=ex.Run(hctx)
 		select { case serverErr<-err: default: }
 		return err
@@ -199,6 +245,44 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	user:=raw.(*net.TCPConn)
 	defer user.Close()
 
+	var exPeer *session.Peer
+	select {
+	case exPeer = <-exReady:
+	case <-time.After(5*time.Second):
+		t.Log("COR-01 watchdog: EX peer not observed before watchdog start")
+	}
+
+	var sentProgress atomic.Int64
+	var recvProgress atomic.Int64
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		lastSent, lastRecv := int64(-1), int64(-1)
+		lastProgress := time.Now()
+		dumped := false
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-ticker.C:
+				s, r := sentProgress.Load(), recvProgress.Load()
+				if s != lastSent || r != lastRecv {
+					lastSent, lastRecv = s, r
+					lastProgress = time.Now()
+					dumped = false
+					continue
+				}
+				stalledFor := time.Since(lastProgress)
+				if stalledFor >= 30*time.Second && !dumped {
+					logCOR01StallEvidence(t, ir, exPeer, s, r, stalledFor)
+					dumped = true
+				}
+			}
+		}
+	}()
+
 	type sendResult struct{
 		n int64
 		sum [32]byte
@@ -208,7 +292,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	go func(){
 		h:=sha256.New()
 		src:=io.TeeReader(&patternReader{remaining:oneGiB},h)
-		n,err:=io.CopyBuffer(user,src,make([]byte,256*1024))
+		n,err:=io.CopyBuffer(progressWriter{w:user,n:&sentProgress},src,make([]byte,256*1024))
 		if err==nil { err=user.CloseWrite() }
 		var sum [32]byte
 		copy(sum[:],h.Sum(nil))
@@ -216,7 +300,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 	}()
 
 	recvHash:=sha256.New()
-	recvN,recvErr:=io.CopyBuffer(recvHash,user,make([]byte,256*1024))
+	recvN,recvErr:=io.CopyBuffer(recvHash,progressReader{r:user,n:&recvProgress},make([]byte,256*1024))
 	sendRes:=<-sent
 	if sendRes.err!=nil { t.Fatal(sendRes.err) }
 	if recvErr!=nil { t.Fatal(recvErr) }
