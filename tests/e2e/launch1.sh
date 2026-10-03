@@ -20,7 +20,12 @@ PIDS=()
 BCC=http://127.0.0.1:18200
 UNITS=(baft-agent-ex baft-agent-ir baft-ex baft-ir)
 log() { printf '[launch1] %s\n' "$*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  # GitHub keeps only the first 10 error annotations of a step: the reason first.
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && printf '%s\n' "$*" | head -c 3000 | tr '\n' ' ' | sed 's/%/%25/g; s/^/::error title=FAIL::/; s/$/\n/'
+  exit 1
+}
 
 cleanup() {
   local rc=$?
@@ -29,6 +34,10 @@ cleanup() {
     for u in "${UNITS[@]}"; do echo "== journal $u"; journalctl -u "$u" -n 40 --no-pager 2>/dev/null || true; done
     curl -fsS -H 'Authorization: Bearer admintok' "$BCC/api/tunnels" 2>/dev/null || true
     if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      curl -fsS -H 'Authorization: Bearer admintok' "$BCC/api/cert-rotations" 2>/dev/null | head -c 6000 | sed 's/%/%25/g; s/^/::error title=rotations::/' || true
+      for u in baft-agent-ir baft-agent-ex; do
+        journalctl -u "$u" --no-pager 2>/dev/null | grep -E 'tunnel_cert' | tail -n 3 | cut -c1-1500 | sed "s/%/%25/g; s|^|::error title=$u-cert::|" || true
+      done
       for u in "${UNITS[@]}"; do journalctl -u "$u" -n 12 --no-pager 2>/dev/null | sed "s/%/%25/g; s|^|::error title=$u::|" || true; done
       for f in "$WORK"/*.log; do [[ -f "$f" ]] && tail -n 8 "$f" | sed "s/%/%25/g; s|^|::error title=$(basename "$f")::|"; done
       curl -fsS -H 'Authorization: Bearer admintok' "$BCC/api/tunnels" 2>/dev/null | sed 's/%/%25/g; s/^/::error title=tunnels::/' || true
