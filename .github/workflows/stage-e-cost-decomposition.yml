@@ -1,0 +1,70 @@
+name: stage-e-cost-decomposition
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e
+    paths:
+      - 'tests/integration/stage_e_cost_test.go'
+      - 'bench/analyze_cost.py'
+      - '.github/workflows/stage-e-cost-decomposition.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage-e-cost-decomposition-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  decompose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: B08 direct control
+        run: go run ./cmd/baft-bench -scenario B08 -out '${{ runner.temp }}/stage-e-cost'
+      - name: B10 BAFT over raw TCP
+        run: go run ./cmd/baft-bench -scenario B10 -out '${{ runner.temp }}/stage-e-cost'
+      - name: B06 BAFT over H2 TLS
+        run: go run ./cmd/baft-bench -scenario B06 -out '${{ runner.temp }}/stage-e-cost'
+      - name: B11 Decode allocation
+        run: go run ./cmd/baft-bench -scenario B11 -out '${{ runner.temp }}/stage-e-cost'
+      - name: Fresh B06 profiles
+        run: |
+          mkdir -p '${{ runner.temp }}/stage-e-cost/profile'
+          go test ./tests/integration \
+            -run '^TestStageEMeasureMultiFlowThroughput$' \
+            -count=1 -timeout 10m -v \
+            -cpuprofile='${{ runner.temp }}/stage-e-cost/profile/cpu.pprof' \
+            -memprofile='${{ runner.temp }}/stage-e-cost/profile/heap.pprof' \
+            -blockprofile='${{ runner.temp }}/stage-e-cost/profile/block.pprof' \
+            > '${{ runner.temp }}/stage-e-cost/profile/test.log' 2>&1
+          go tool pprof -top -nodecount=80 '${{ runner.temp }}/stage-e-cost/profile/heap.pprof' > '${{ runner.temp }}/stage-e-cost/profile/heap-top.txt'
+          go tool pprof -top -nodecount=80 '${{ runner.temp }}/stage-e-cost/profile/block.pprof' > '${{ runner.temp }}/stage-e-cost/profile/block-top.txt'
+          go tool pprof -top -nodecount=80 '${{ runner.temp }}/stage-e-cost/profile/cpu.pprof' > '${{ runner.temp }}/stage-e-cost/profile/cpu-top.txt'
+      - name: Analyze cost shares
+        run: |
+          python3 bench/analyze_cost.py '${{ runner.temp }}/stage-e-cost' \
+            --heap-top '${{ runner.temp }}/stage-e-cost/profile/heap-top.txt' \
+            --block-top '${{ runner.temp }}/stage-e-cost/profile/block-top.txt' \
+            --json-out '${{ runner.temp }}/stage-e-cost/cost-decomposition.json' \
+            --md-out '${{ runner.temp }}/stage-e-cost/cost-decomposition.md'
+          cat '${{ runner.temp }}/stage-e-cost/cost-decomposition.md'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baft-stage-e-cost-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-cost
+          if-no-files-found: error
+          retention-days: 30
