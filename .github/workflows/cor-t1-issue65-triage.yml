@@ -6,7 +6,8 @@ on:
     branches:
       - triage/cor-t1-issue65
     paths:
-      - 'tests/correctness/cor01_test.go'
+      - 'tests/correctness/cor01_stall_debug_test.go'
+      - 'internal/session/cor01_debug.go'
       - '.github/workflows/cor-t1-issue65-triage.yml'
 
 permissions:
@@ -34,5 +35,7 @@ jobs:
       - name: COR-T1 instrumented 1 GiB run
         env:
           BAFT_COR01_1GIB: '1'
-        run: go test -tags cor01debug ./tests/correctness -run '^TestCOR01OneGiBBidirectionalInstrumented
- -count=1 -timeout 20m -v
+        run: >-
+          go test -tags cor01debug ./tests/correctness
+          -run '^TestCOR01OneGiBBidirectionalInstrumented$'
+          -count=1 -timeout 20m -v
