@@ -10,14 +10,17 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -58,6 +61,23 @@ func (w countingWriter) Write(p []byte) (int,error) {
 	return n,err
 }
 
+// cor01SocketState captures kernel TCP state for the target connection at a
+// stall: both endpoints, sampled twice so window probes/updates are visible.
+func cor01SocketState(port int) string {
+	var b strings.Builder
+	filter:=fmt.Sprintf("( sport = :%d or dport = :%d )",port,port)
+	for i:=0;i<2;i++{
+		if i==1{time.Sleep(3*time.Second)}
+		out,err:=exec.Command("ss","-tinmoeH","state","all",filter).CombinedOutput()
+		fmt.Fprintf(&b,"--- ss sample %d (err=%v)\n%s\n",i,err,out)
+	}
+	for _,f:=range []string{"/proc/net/sockstat","/proc/sys/net/ipv4/tcp_mem","/proc/sys/net/ipv4/tcp_rmem","/proc/sys/net/ipv4/tcp_wmem"}{
+		out,err:=os.ReadFile(f)
+		fmt.Fprintf(&b,"--- %s (err=%v)\n%s\n",f,err,out)
+	}
+	return b.String()
+}
+
 type cor01StallEvidence struct {
 	SentBytes int64
 	RecvBytes int64
@@ -70,6 +90,7 @@ type cor01StallEvidence struct {
 	EXWindowSent uint64
 	EXWindowRecv uint64
 	Goroutines string
+	Sockets string
 }
 
 func (r *patternReader) Read(p []byte) (int, error) {
@@ -310,6 +331,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 					IRWindowSent:irWindowSent.Load(),IRWindowRecv:irWindowRecv.Load(),
 					EXWindowSent:exWindowSent.Load(),EXWindowRecv:exWindowRecv.Load(),
 					Goroutines:string(buf[:n]),
+					Sockets:cor01SocketState(targetLn.Addr().(*net.TCPAddr).Port),
 				}
 				select{case stallCh<-ev:default:}
 				_ = user.Close()
@@ -328,6 +350,7 @@ func TestCOR01OneGiBBidirectional(t *testing.T) {
 		t.Logf("COR-T1 STALL sent=%d recv=%d target_read=%d target_written=%d target_inflight=%d ir_windows_sent=%d ir_windows_recv=%d ex_windows_sent=%d ex_windows_recv=%d IR=%+v EX=%+v",
 			ev.SentBytes,ev.RecvBytes,ev.TargetReadBytes,ev.TargetWrittenBytes,ev.TargetReadBytes-ev.TargetWrittenBytes,
 			ev.IRWindowSent,ev.IRWindowRecv,ev.EXWindowSent,ev.EXWindowRecv,ev.IR,ev.EX)
+		t.Logf("COR-T1 SOCKETS:\n%s",ev.Sockets)
 		t.Logf("COR-T1 GOROUTINES:\n%s",ev.Goroutines)
 		t.Fatalf("COR-01 liveness stall: no byte progress for 15s")
 	default:
