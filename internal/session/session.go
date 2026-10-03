@@ -98,8 +98,9 @@ type Peer struct {
 	finishedFins       map[uint64]uint64
 	nextID             uint64
 	closed             bool
-	workerMu           sync.Mutex
-	workersClosing     bool
+	runLifecycleMu     sync.RWMutex
+	runActive          bool
+	runExiting         bool
 	wg                 sync.WaitGroup
 	trafficObserver    TrafficObserver
 	latencyObserver    LatencyObserver
@@ -354,18 +355,30 @@ func (p *Peer) logicalSessionRetentionReason() string {
 	return ""
 }
 
-func (p *Peer) admitWorker() bool {
-	p.workerMu.Lock()
-	defer p.workerMu.Unlock()
-	if p.workersClosing{return false}
-	p.wg.Add(1)
+func (p *Peer) beginRunLifecycle() bool {
+	p.runLifecycleMu.Lock()
+	defer p.runLifecycleMu.Unlock()
+	if p.runActive||p.runExiting{return false}
+	p.runActive=true
 	return true
 }
 
-func (p *Peer) closeWorkerAdmission() {
-	p.workerMu.Lock()
-	p.workersClosing=true
-	p.workerMu.Unlock()
+func (p *Peer) beginRunTeardown() {
+	// Taking the exclusive lifecycle lock waits for any in-flight recovery
+	// activation lease to finish. Once runExiting is published, no later
+	// activation or worker admission may mutate this Session.
+	p.runLifecycleMu.Lock()
+	p.runExiting=true
+	p.runActive=false
+	p.runLifecycleMu.Unlock()
+}
+
+func (p *Peer) admitWorker() bool {
+	p.runLifecycleMu.RLock()
+	defer p.runLifecycleMu.RUnlock()
+	if !p.runActive||p.runExiting{return false}
+	p.wg.Add(1)
+	return true
 }
 
 func (p *Peer) Run(ctx context.Context) error { return p.run(ctx,nil) }
@@ -375,6 +388,7 @@ func (p *Peer) RunWithFirstFrame(ctx context.Context, first protocol.Frame) erro
 }
 
 func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
+	if !p.beginRunLifecycle(){return errors.New("session Run lifecycle already active or exiting")}
 	runCtx, cancel := context.WithCancel(ctx)
 	p.mu.Lock()
 	p.runCtx = runCtx
@@ -387,7 +401,7 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 	defer func() {
 		// Once Run exits, no recovery/pump path may add another goroutine while
 		// teardown is waiting for the existing worker set.
-		p.closeWorkerAdmission()
+		p.beginRunTeardown()
 		// Test-only lifecycle proof is emitted before destructive cleanup so it
 		// observes the logical Session authority/flows that existed at Run exit.
 		p.notifyRunExitForTest(retErr)
