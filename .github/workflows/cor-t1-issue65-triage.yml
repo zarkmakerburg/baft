@@ -1,0 +1,37 @@
+name: cor-t1-issue65-triage
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - triage/cor-t1-issue65
+    paths:
+      - 'tests/correctness/cor01_test.go'
+      - '.github/workflows/cor-t1-issue65-triage.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cor-t1-issue65-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  correctness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: COR-T1 instrumented 1 GiB run
+        env:
+          BAFT_COR01_1GIB: '1'
+        run: go test ./tests/correctness -run '^TestCOR01OneGiBBidirectional$' -count=1 -timeout 20m -v
