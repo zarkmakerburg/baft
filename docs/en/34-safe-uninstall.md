@@ -21,7 +21,7 @@ baft uninstall --full               # everything above
 baft uninstall --resume | --restore # finish, or undo, an interrupted uninstall
 ```
 
-On a terminal the command shows the plan and asks; in scripts it needs `--yes`, plus `--stop-active-tunnels` when a running tunnel would stop. Path flags (`--unit-dir`, `--bin-dir`, `--prefix`, `--config-dir`, `--state-dir`, `--agent-dir`, `--agent-state-dir`, `--bcc-state-file`, `--journal-dir`, `--backup-dir`) default to the installer's paths.
+On a terminal the command shows the plan and asks, and applies exactly the plan it showed; in scripts it needs `--yes`, plus `--stop-active-tunnels` when a running tunnel would stop. Path flags (`--unit-dir`, `--bin-dir`, `--prefix`, `--config-dir`, `--state-dir`, `--agent-dir`, `--agent-state-dir`, `--bcc-state-file`, `--journal-dir`, `--backup-dir`) default to the installer's paths.
 
 | Exit | Meaning |
 |---|---|
@@ -77,7 +77,7 @@ Before BCC state is deleted, BCC is stopped and an **emergency backup** is taken
 
 ## Transactional, recoverable
 
-Nothing is deleted directly. Each file is first checked against the digest the plan saw, then moved into a journaled quarantine (`/var/lib/baft-uninstall/run-<time>/`); services are stopped and disabled with their previous state recorded; binaries go last. Verification then proves that every removed path is gone, every kept artifact is byte-identical and every unit that stays and was running still runs. Only then is the quarantine purged (the commit) and BAFT directories that became empty removed. A failure before the commit restores everything (files back, units enabled and started as they were). If the process is killed, the next run refuses until `baft uninstall --restore` undoes it or `baft uninstall --resume` finishes it (if the binary was already moved, run the copy in the run's quarantine). The journal holds paths, digests and states only, never file contents, and stays as the record of what was removed.
+Nothing is deleted directly. Each file is first checked against the digest the plan saw, then moved into a journaled quarantine (`/var/lib/baft-uninstall/run-<time>/`); services are stopped and disabled with their previous state recorded; binaries go last. Verification then proves that every removed path is gone, every kept unit, binary, key, certificate, config and backup is byte-identical (files a service that keeps running writes itself, such as BCC's audit log, are not compared), and every unit that stays and was running still runs. Runs are one at a time (a lock in the journal directory). Only then is the quarantine purged (the commit) and BAFT directories that became empty removed. A failure before the commit restores everything (files back, units enabled and started as they were). If the process is killed, the next run refuses until `baft uninstall --restore` undoes it or `baft uninstall --resume` finishes it (if the binary was already moved, run the copy in the run's quarantine). The journal holds paths, digests and states only, never file contents, and stays as the record of what was removed.
 
 ## Reinstall
 

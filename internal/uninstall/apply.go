@@ -76,6 +76,14 @@ func (e *Env) Apply(ctx context.Context, p *Plan) (*Result, error) {
 	if !p.HasWork() {
 		return &Result{Status: "nothing to do", Stopped: []string{}, Removed: []string{}, RemovedDirs: []string{}}, nil
 	}
+	release, err := e.lockRuns()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if pj, err := e.pendingJournal(); err != nil || pj != nil {
+		return nil, ErrPending
+	}
 	j, err := e.newRun(p)
 	if err != nil {
 		return nil, err
@@ -89,6 +97,18 @@ func (e *Env) Apply(ctx context.Context, p *Plan) (*Result, error) {
 		return nil, fmt.Errorf("%v; everything was restored (journal: %s)", err, j.Dir())
 	}
 	return res, nil
+}
+
+// lockRuns makes uninstall runs on one host strictly one at a time.
+func (e *Env) lockRuns() (func(), error) {
+	if err := os.MkdirAll(e.JournalDir, 0o700); err != nil {
+		return nil, err
+	}
+	release, err := lockFile(filepath.Join(e.JournalDir, ".lock"))
+	if err != nil {
+		return nil, fmt.Errorf("another baft uninstall is running (%v)", err)
+	}
+	return release, nil
 }
 
 func (e *Env) newRun(p *Plan) (*Journal, error) {
@@ -140,8 +160,8 @@ func (e *Env) newRun(p *Plan) (*Journal, error) {
 			}
 			switch a.Class {
 			case ClassUnit, ClassBinary, ClassCertificates, ClassTunnelConfigs, ClassBackups, ClassInstall:
-				if a.owner != nil && a.owner.active() && a.Class != ClassUnit && a.Class != ClassBinary {
-					continue // a running service may change its own files
+				if a.owner != nil && a.owner.active() && !p.removedU[a.owner.Name] && a.Class != ClassUnit && a.Class != ClassBinary {
+					continue // a service that keeps running may change its own files
 				}
 				j.Kept = append(j.Kept, JKept{Path: a.Path, SHA256: a.SHA256, Dir: a.Dir})
 			}
@@ -424,6 +444,14 @@ func (e *Env) verify(ctx context.Context, j *Journal) error {
 // as they were.
 func (e *Env) Restore(ctx context.Context) (*Journal, error) {
 	e.defaults()
+	if e.RequireRoot && os.Geteuid() != 0 {
+		return nil, errors.New("uninstall must run as root")
+	}
+	release, err := e.lockRuns()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	j, err := e.pendingJournal()
 	if err != nil {
 		return nil, err
@@ -497,6 +525,11 @@ func (e *Env) Resume(ctx context.Context) (*Result, error) {
 	if e.RequireRoot && os.Geteuid() != 0 {
 		return nil, errors.New("uninstall must run as root")
 	}
+	release, err := e.lockRuns()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	j, err := e.pendingJournal()
 	if err != nil {
 		return nil, err

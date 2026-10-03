@@ -281,12 +281,11 @@ func confirmUninstall(ctx context.Context, env *uninstall.Env, o *uninstall.Opti
 	if !ok || a != "uninstall" {
 		return p, false
 	}
+	// Exactly the plan that was shown is applied; the answers above are the
+	// consents it needed. (Apply still checks every file against the
+	// digest this plan saw.)
 	o.Yes = true
-	p = env.BuildPlan(ctx, *o)
-	if len(p.Blocked) > 0 || len(p.Needs) > 0 {
-		p.Render(ui.out)
-		return p, false
-	}
+	p.Needs = []string{}
 	return p, true
 }
 

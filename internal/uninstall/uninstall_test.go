@@ -751,3 +751,49 @@ func TestRecoveryNoteNamesTheQuarantinedBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Runs are one at a time: a second one waits for nothing and refuses.
+func TestOneRunAtATime(t *testing.T) {
+	r := newRig(t)
+	r.installerEX(false)
+	os.MkdirAll(r.p("journal"), 0o700)
+	release, err := lockFile(r.p("journal/.lock"))
+	if err != nil {
+		t.Skip("no flock")
+	}
+	before := r.snapshot()
+	_, err = r.env.Apply(ctx, r.plan(yes(Options{})))
+	release()
+	if err == nil || !strings.Contains(err.Error(), "another baft uninstall is running") {
+		t.Fatalf("apply: %v", err)
+	}
+	if d := diffSnap(before, r.snapshot()); len(d) > 0 {
+		t.Fatalf("changed: %v", d)
+	}
+}
+
+// Kept data of a service the run stops is verified unchanged too.
+func TestKeptDataOfStoppedServiceIsVerified(t *testing.T) {
+	r := newRig(t)
+	r.installerEX(true)
+	p := r.plan(yes(Options{}))
+	// Something rewrites the kept config while the run is between stop and verify.
+	hook := &rewriter{fakeSys: r.sys, path: r.p("etc/baft.yaml")}
+	r.env.System = hook
+	_, err := r.env.Apply(ctx, p)
+	if err == nil || !strings.Contains(err.Error(), "baft.yaml changed or disappeared") {
+		t.Fatalf("apply: %v", err)
+	}
+}
+
+type rewriter struct {
+	*fakeSys
+	path string
+}
+
+func (w *rewriter) Systemctl(cx context.Context, args ...string) (string, error) {
+	if args[0] == "daemon-reload" {
+		os.WriteFile(w.path, []byte("tampered"), 0o640)
+	}
+	return w.fakeSys.Systemctl(cx, args...)
+}
