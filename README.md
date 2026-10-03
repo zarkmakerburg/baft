@@ -1,9 +1,5 @@
 <p align="center">
-  <img src="docs/assets/baft-logo-transparent.png" alt="BAFT" width="190">
-</p>
-
-<p align="center">
-  <img src="docs/assets/baft-readme-poster.png" alt="BAFT — resilient infrastructure for multi-path routing" width="100%">
+  <img src="docs/assets/baft-readme-poster.webp" alt="BAFT — resilient infrastructure for multi-path routing" width="100%">
 </p>
 
 <h1 align="center">BAFT</h1>
