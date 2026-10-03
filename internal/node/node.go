@@ -122,6 +122,7 @@ type LogicalSessionLifecycleEvent struct {
 	Sequence uint64
 	Event string
 	Reason string
+	RunContextCause string
 	SessionID string
 	PeerIdentity string
 	SessionEpoch uint64
@@ -174,7 +175,7 @@ func (r *Runtime) recordLogicalSessionLifecycleForID(event,reason,id string,p *s
 	prep:=p.RecoveryPreparedOwnershipForTest()
 	tx,ok:=p.RecoveryTransactionIdentity()
 	ev:=LogicalSessionLifecycleEvent{
-		Event:event,Reason:reason,SessionID:p.SessionID(),PeerIdentity:p.PeerIdentity(),
+		Event:event,Reason:reason,RunContextCause:lifecycleErrorString(p.RunContextCauseForTest()),SessionID:p.SessionID(),PeerIdentity:p.PeerIdentity(),
 		SessionEpoch:p.RecoveryEpoch(),CarrierGeneration:p.RecoveryCarrierGeneration(),
 		PreparedIncarnation:prep.PreparedIncarnation,TxnState:p.RecoveryTransactionState(),
 		ApplicationReady:st.ApplicationReady,TransactionStable:st.TransactionStable,
@@ -524,13 +525,13 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
 		}
 		r.FlowSlots = s
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancelCause(ctx)
 	var backgroundWG sync.WaitGroup
 	// Runtime must not return while telemetry/probe writers can still mutate
 	// persistent state. This makes shutdown a deterministic lifecycle boundary
 	// for the durable spool and its atomic temp files.
 	defer func(){
-		cancel()
+		cancel(nil)
 		backgroundWG.Wait()
 	}()
 
@@ -579,16 +580,22 @@ func (r *Runtime) Run(ctx context.Context, cfg config.Config) (retErr error) {
 
 	select {
 	case err := <-roleDone:
-		cancel()
+		if err==nil {
+			cancel(errors.New("runtime role exited"))
+		} else {
+			cancel(fmt.Errorf("runtime role exited: %w",err))
+		}
 		return err
 	case err := <-metricsDone:
-		cancel()
 		if err == nil {
 			err = errors.New("metrics server stopped unexpectedly")
 		}
+		cancel(fmt.Errorf("runtime metrics exit: %w",err))
 		return fmt.Errorf("metrics: %w", err)
 	case <-ctx.Done():
-		cancel()
+		cause:=context.Cause(ctx)
+		if cause==nil{cause=ctx.Err()}
+		cancel(fmt.Errorf("runtime parent canceled: %w",cause))
 		<-roleDone
 		return nil
 	}
