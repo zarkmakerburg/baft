@@ -1,0 +1,55 @@
+name: stage-e-b07-statistics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e
+    paths:
+      - 'tests/integration/stage_e_benchmark_test.go'
+      - 'bench/manifest.json'
+      - 'bench/analyze_b07.py'
+      - '.github/workflows/stage-e-b07-statistics.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage-e-b07-statistics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  b07:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Validate benchmark runner
+        run: go test ./cmd/baft-bench -count=1
+      - name: Run B07 25 cuts x 64 flows
+        run: |
+          go run ./cmd/baft-bench -scenario B07 -out '${{ runner.temp }}/stage-e-b07'
+      - name: Aggregate B07 confidence
+        run: |
+          METRICS=$(find '${{ runner.temp }}/stage-e-b07' -name metrics.json -type f | head -1)
+          test -n "$METRICS"
+          python3 bench/analyze_b07.py "$METRICS" \
+            --json-out '${{ runner.temp }}/stage-e-b07/b07-statistics.json' \
+            --md-out '${{ runner.temp }}/stage-e-b07/b07-statistics.md'
+          cat '${{ runner.temp }}/stage-e-b07/b07-statistics.md'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baft-stage-e-b07-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-b07
+          if-no-files-found: error
+          retention-days: 30
