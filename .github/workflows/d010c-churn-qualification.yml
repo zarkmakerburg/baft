@@ -1,0 +1,64 @@
+name: d010c-churn-qualification
+
+on:
+  push:
+    branches:
+      - triage/d010c-churn-qualification
+    paths:
+      - '.github/workflows/d010c-churn-qualification.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  churn-qualification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact D-010C fix SHA
+        uses: actions/checkout@v7
+        with:
+          ref: d1ea97999e328472aa975690213fdfe72a0d6889
+          fetch-depth: 1
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Verify exact target
+        run: |
+          got="$(git rev-parse HEAD)"
+          echo "TARGET_SHA=$got"
+          test "$got" = "d1ea97999e328472aa975690213fdfe72a0d6889"
+
+      - name: Churn acceptance 200x normal + 50x race
+        shell: bash
+        run: |
+          set +e
+
+          go test ./tests/integration             -run '^TestRecoveryConvergesWhileShortFlowsOpenAndClose$'             -count=200 -timeout 60m -v 2>&1 | tee /tmp/churn-normal.log
+          normal_rc=${PIPESTATUS[0]}
+          normal_failures=$(grep -c -- '--- FAIL: TestRecoveryConvergesWhileShortFlowsOpenAndClose' /tmp/churn-normal.log || true)
+          normal_ports=$(grep -c -- "can't assign requested address" /tmp/churn-normal.log || true)
+
+          go test -race ./tests/integration             -run '^TestRecoveryConvergesWhileShortFlowsOpenAndClose$'             -count=50 -timeout 60m -v 2>&1 | tee /tmp/churn-race.log
+          race_rc=${PIPESTATUS[0]}
+          race_failures=$(grep -c -- '--- FAIL: TestRecoveryConvergesWhileShortFlowsOpenAndClose' /tmp/churn-race.log || true)
+          race_reports=$(grep -Ec 'WARNING: DATA RACE|race detected during execution' /tmp/churn-race.log || true)
+          race_ports=$(grep -c -- "can't assign requested address" /tmp/churn-race.log || true)
+
+          echo "D010C_NORMAL_COUNT=200"
+          echo "D010C_NORMAL_FAILURES=$normal_failures"
+          echo "D010C_NORMAL_PORT_ERRORS=$normal_ports"
+          echo "D010C_NORMAL_RC=$normal_rc"
+          echo "D010C_RACE_COUNT=50"
+          echo "D010C_RACE_FAILURES=$race_failures"
+          echo "D010C_RACE_REPORTS=$race_reports"
+          echo "D010C_RACE_PORT_ERRORS=$race_ports"
+          echo "D010C_RACE_RC=$race_rc"
+
+          if [ "$normal_rc" -ne 0 ] || [ "$normal_failures" -ne 0 ] || [ "$normal_ports" -ne 0 ] ||              [ "$race_rc" -ne 0 ] || [ "$race_failures" -ne 0 ] || [ "$race_reports" -ne 0 ] || [ "$race_ports" -ne 0 ]; then
+            exit 1
+          fi
