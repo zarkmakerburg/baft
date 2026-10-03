@@ -1,6 +1,6 @@
 # BAFT Documentation Guide
 
-[مستندات فارسی](../fa/README.md) | [English root README](../../README.en.md)
+[مستندات فارسی](../fa/README.md) | [English root README](../../README.md)
 
 This documentation is written for readers with no prior BAFT context. Recommended order:
 

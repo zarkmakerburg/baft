@@ -2,7 +2,7 @@
 
 # راهنمای مستندات BAFT
 
-[English documentation](../en/README.md) | [README اصلی فارسی](../../README.md)
+[English documentation](../en/README.md) | [README اصلی فارسی](../../README.fa.md)
 
 این مجموعه برای خواننده‌ای نوشته شده که ممکن است هیچ شناخت قبلی از BAFT نداشته باشد. ترتیب پیشنهادی مطالعه:
 
