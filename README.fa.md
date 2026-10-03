@@ -1,7 +1,13 @@
 <div dir="rtl" align="right" lang="fa">
 
 <p align="center">
-  <img src="docs/assets/baft-readme-poster.webp" alt="BAFT — زیرساخت تاب‌آور برای مسیرهای چندگانه" width="100%">
+  <img src="docs/assets/baft-readme-poster-fa.webp" alt="BAFT — زیرساخت تاب‌آور برای مسیرهای چندگانه" width="100%">
+</p>
+
+<p align="center">
+  <a href="#quick-install"><img src="docs/assets/btn-quick-start-fa.png" alt="شروع سریع" width="240"></a>
+  &nbsp;
+  <a href="docs/fa/README.md"><img src="docs/assets/btn-docs-fa.png" alt="مستندات فنی" width="240"></a>
 </p>
 
 <h1 align="center">BAFT — بافت</h1>
@@ -205,7 +211,27 @@ BCC رابط مدیریتی پروژه است و برای عملیات fleet و 
 
 هویت بصری BCC در مستند [سیستم بصری BCC](docs/fa/28-bcc-visual-system.md) ثبت شده است؛ **لوگوی اصلی BAFT مستقل از تم BCC باقی می‌ماند و تغییر نمی‌کند.**
 
+<a id="quick-install"></a>
+
 ## نصب سریع
+
+### نصب یک‌خطی
+
+روی هر سرور یک خط کافی است (Debian/Ubuntu، با دسترسی root). اول EX را نصب کنید؛ EX یک pairing code با پیشوند `BAFTPAIR1:` برای IR چاپ می‌کند.
+
+<div dir="ltr" align="left">
+
+```bash
+# EX (سرور خارج)
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash -s -- --role ex --public-address EX_HOST_OR_IP
+
+# IR (سرور داخل)، با pairing code چاپ‌شده توسط EX
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash -s -- --role ir --pairing-code 'BAFTPAIR1:...'
+```
+
+</div>
+
+هر release که installer دریافت می‌کند با کلید ریشهٔ pin‌شده تأیید می‌شود. اگر ترجیح می‌دهید installer را اول بخوانید، روش مرحله‌به‌مرحلهٔ زیر را دنبال کنید.
 
 ### دریافت installer
 
