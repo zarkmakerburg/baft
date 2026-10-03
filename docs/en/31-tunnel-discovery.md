@@ -14,6 +14,8 @@ Only the node's systemd unit directory and the files its units point to, read-on
 - for a unit whose `ExecStart` is exactly `baft run --file <absolute .yaml/.yml/.json path>`: that config (regular file, at most 1 MiB, loaded with BAFT's own strict loader) and the `baft.managed.json` next to it (at most 16 KiB);
 - `systemctl is-active` for each unit; no other command.
 
+Every file is opened **once**, without following a symlink in its final component (`O_NOFOLLOW`, non-blocking so a FIFO cannot hang it; discovery fails closed on a platform without it), and the regular-file and size checks and the bounded read are done on that same descriptor. Swapping the path afterwards, to a symlink or another file, cannot change what is read. The config is parsed (BAFT's own strict decoder, chosen by its extension) from the very bytes that were hashed, never reopened, so a report's digest and facts always describe the same version of the file. Only the final path component is checked: a directory that is itself a symlink is followed, as an administrator's own layout.
+
 It reports facts, not contents: the unit and config SHA-256, service state, the unit's `# baft-tunnel:` header, the config's role, listen, peer, route and target, and the marker's own fields. File contents, `Environment=` lines, keys and secrets never leave the node. The report is bounded (48 KiB, long values clipped, units capped), carries no timestamp and is byte-identical for an unchanged node.
 
 ## States (classified by BCC from its own inventory)

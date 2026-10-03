@@ -221,3 +221,150 @@ func TestDiscoverOnAnEmptyNodeReportsNothingAndMissingUnitIsAbsent(t *testing.T)
 		t.Fatalf("empty node: %+v", rep.Instances)
 	}
 }
+
+// ---- no TOCTOU, no mixed versions (HQ review of A2) ----
+
+func withHook(t *testing.T, h func(path string)) {
+	t.Helper()
+	testHookAfterOpen = h
+	t.Cleanup(func() { testHookAfterOpen = nil })
+}
+
+func setupLegacy(t *testing.T) (*node, string, string) {
+	t.Helper()
+	p := newPair(t)
+	listen(t, p.exPort)
+	p.build(t, "toctou")
+	n := p.ex
+	cfg := copyConfig(t, n, filepath.Join(n.dir, "legacy"))
+	writeUnit(t, n, "baft-legacy.service", n.BaftBin+" run --file "+cfg, "")
+	return n, cfg, filepath.Join(n.UnitDir, "baft-legacy.service")
+}
+
+func TestDiscoverNeverFollowsASymlinkAtOpen(t *testing.T) {
+	n, cfg, unit := setupLegacy(t)
+	secret := filepath.Join(n.dir, "secret.yaml")
+	os.WriteFile(secret, []byte("TOP-SECRET-CONTENT-12345\n"), 0o600)
+
+	// The config path is a symlink to a secret file: not followed, not hashed, not parsed.
+	os.Remove(cfg)
+	os.Symlink(secret, cfg)
+	in := instance(t, n.Discover(context.Background()), "baft-legacy.service")
+	if in.ConfigPresent || in.ConfigLoads || in.ConfigSHA256 != "" || !strings.Contains(in.Problem, "symlink") {
+		t.Fatalf("symlinked config was followed: %+v", in)
+	}
+	b, _ := json.Marshal(in)
+	if strings.Contains(string(b), "TOP-SECRET") {
+		t.Fatal("the target of a symlink leaked")
+	}
+
+	// Same for the unit file and for the marker beside the config.
+	copyConfig(t, n, filepath.Dir(cfg)) // restore a real config (replaces the link? writes through it)
+	os.Remove(cfg)
+	copyConfig(t, n, filepath.Dir(cfg))
+	os.Symlink(secret, filepath.Join(filepath.Dir(cfg), "baft.managed.json"))
+	in = instance(t, n.Discover(context.Background()), "baft-legacy.service")
+	if in.Marker != nil || !strings.Contains(in.MarkerProblem, "symlink") {
+		t.Fatalf("symlinked marker was followed: %+v", in)
+	}
+	os.Remove(unit)
+	os.Symlink(secret, unit)
+	in = instance(t, n.Discover(context.Background()), "baft-legacy.service")
+	if in.Recognized || !strings.Contains(in.Problem, "symlink") {
+		t.Fatalf("symlinked unit was followed: %+v", in)
+	}
+}
+
+func TestSwappingAPathAfterItWasOpenedChangesNothingThatIsReported(t *testing.T) {
+	n, cfg, unit := setupLegacy(t)
+	secret := filepath.Join(n.dir, "secret.yaml")
+	os.WriteFile(secret, []byte("TOP-SECRET-CONTENT-12345\n"), 0o600)
+	orig, _ := os.ReadFile(cfg)
+	want := shaHex(orig)
+
+	// While the config is being read, its path is replaced by a symlink to a
+	// secret and then by a huge file. The descriptor already opened is what is
+	// read: same digest, same facts, nothing from the replacements.
+	swapped := 0
+	withHook(t, func(path string) {
+		if path != cfg {
+			return
+		}
+		swapped++
+		os.Remove(path)
+		os.Symlink(secret, path)
+	})
+	in := instance(t, n.Discover(context.Background()), "baft-legacy.service")
+	if swapped == 0 {
+		t.Fatal("the hook never ran")
+	}
+	if !in.ConfigLoads || in.ConfigSHA256 != want || in.ConfigRole != "listener" {
+		t.Fatalf("a swap changed the report: %+v", in)
+	}
+	b, _ := json.Marshal(in)
+	if strings.Contains(string(b), "TOP-SECRET") {
+		t.Fatal("a swapped-in symlink was followed")
+	}
+
+	// The unit file is replaced by a 10 MiB file after it was opened: the read
+	// stays bounded by what was opened.
+	os.Remove(cfg)
+	copyConfig(t, n, filepath.Dir(cfg))
+	withHook(t, func(path string) {
+		if path != unit {
+			return
+		}
+		os.Remove(path)
+		os.WriteFile(path, make([]byte, 10<<20), 0o644)
+	})
+	in = instance(t, n.Discover(context.Background()), "baft-legacy.service")
+	if !in.Recognized || in.UnitSHA256 == shaHex(make([]byte, 10<<20)) {
+		t.Fatalf("the replacement of the unit was read: %+v", in)
+	}
+}
+
+func TestDigestAndFactsAlwaysDescribeTheSameBytesAndTheConfigIsOpenedOnce(t *testing.T) {
+	n, cfg, _ := setupLegacy(t)
+	opens := 0
+	// The file is rewritten in place (same inode) with a different valid config
+	// right after it was opened: whatever is read, the digest and the parsed
+	// facts must come from that one read.
+	other, _ := os.ReadFile(filepath.Join(n.dir, "etc", "baft.yaml"))
+	otherRole := "listener"
+	withHook(t, func(path string) {
+		if path != cfg {
+			return
+		}
+		opens++
+		// A dialer config in place of the listener one.
+		ir := newNode(t)
+		_ = ir
+		os.WriteFile(path, other, 0o640)
+	})
+	in := instance(t, n.Discover(context.Background()), "baft-legacy.service")
+	read, _ := os.ReadFile(cfg)
+	if in.ConfigSHA256 != shaHex(read) || in.ConfigRole != otherRole {
+		t.Fatalf("digest %s vs %s, role %q: mixed versions", in.ConfigSHA256, shaHex(read), in.ConfigRole)
+	}
+	if opens != 1 {
+		t.Fatalf("the config path was opened %d times in one discovery; it must be once (no reopen for parsing)", opens)
+	}
+}
+
+func TestAFifoOrDeviceInPlaceOfAFileIsRefusedWithoutBlocking(t *testing.T) {
+	n, cfg, _ := setupLegacy(t)
+	os.Remove(cfg)
+	if err := syscallMkfifo(cfg); err != nil {
+		t.Skipf("cannot create a fifo here: %v", err)
+	}
+	done := make(chan DiscoveredInstance, 1)
+	go func() { done <- instance(t, n.Discover(context.Background()), "baft-legacy.service") }()
+	select {
+	case in := <-done:
+		if in.ConfigPresent || !strings.Contains(in.Problem, "not a regular file") {
+			t.Fatalf("fifo: %+v", in)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("discovery blocked on a fifo")
+	}
+}

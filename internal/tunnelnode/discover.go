@@ -1,8 +1,11 @@
 package tunnelnode
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -93,22 +96,46 @@ func clip(s string) string {
 	return s
 }
 
-// regularFile reads a bounded regular file without following a symlink.
+var errSymlink = errors.New("is a symlink; not followed")
+
+// testHookAfterOpen lets tests swap a path right after it was opened. It is nil
+// in production.
+var testHookAfterOpen func(path string)
+
+// regularFile reads a bounded regular file. The file is opened ONCE, without
+// following a symlink in its final component, and everything after that is done
+// on that descriptor: the regular-file and size checks (fstat) and the bounded
+// read. Swapping the path afterwards, to a symlink or to another file, cannot
+// change what is read, so "symlinks are not followed" and "the read is bounded"
+// hold. Only the final path component is checked; a directory that is itself a
+// symlink is followed, as an administrator's own layout.
 func regularFile(path string, max int64) ([]byte, string) {
-	st, err := os.Lstat(path)
+	f, err := openNoFollow(path)
+	if err != nil {
+		if errors.Is(err, errSymlink) {
+			return nil, "is a symlink; not followed"
+		}
+		return nil, "not readable: " + clip(err.Error())
+	}
+	defer f.Close()
+	if testHookAfterOpen != nil {
+		testHookAfterOpen(path)
+	}
+	st, err := f.Stat()
 	switch {
 	case err != nil:
 		return nil, "not readable: " + clip(err.Error())
-	case st.Mode()&os.ModeSymlink != 0:
-		return nil, "is a symlink; not followed"
 	case !st.Mode().IsRegular():
 		return nil, "is not a regular file"
 	case st.Size() > max:
 		return nil, "is larger than the discovery limit"
 	}
-	b, err := os.ReadFile(path)
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
 	if err != nil {
 		return nil, "not readable: " + clip(err.Error())
+	}
+	if int64(len(b)) > max {
+		return nil, "is larger than the discovery limit"
 	}
 	return b, ""
 }
@@ -199,7 +226,7 @@ func (m *Manager) discoverUnit(ctx context.Context, name string, primary bool) D
 	} else {
 		in.ConfigPresent = true
 		in.ConfigSHA256 = shaHex(cfgRaw)
-		if cfg, err := config.LoadFile(f[3]); err != nil {
+		if cfg, err := decodeConfig(f[3], cfgRaw); err != nil {
 			in.Problem = "config does not load as a BAFT configuration"
 		} else {
 			in.ConfigLoads = true
@@ -233,4 +260,14 @@ func (m *Manager) discoverUnit(ctx context.Context, name string, primary bool) D
 		}
 	}
 	return in
+}
+
+// decodeConfig parses the exact bytes that were hashed, with BAFT's own strict
+// decoders chosen by the (already validated) extension, so the digest and the
+// parsed facts always describe the same version of the file.
+func decodeConfig(path string, raw []byte) (config.Config, error) {
+	if strings.HasSuffix(path, ".json") {
+		return config.DecodeJSON(bytes.NewReader(raw))
+	}
+	return config.DecodeYAML(bytes.NewReader(raw))
 }
