@@ -1,0 +1,71 @@
+name: stage-e-wan-netem
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bench/stage-e
+    paths:
+      - '.github/workflows/stage-e-wan-netem.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage-e-wan-netem-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify host and module lock
+        run: |
+          sudo -n true
+          tc -V
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Run 18 carrier-only netem profiles
+        env:
+          BAFT_STAGE_E_FLOW_COUNT: '8'
+          BAFT_STAGE_E_BYTES_PER_FLOW: '1048576'
+          BAFT_STAGE_E_RECOVERY_FLOWS: '32'
+        run: |
+          set -euo pipefail
+          ROOT='${{ runner.temp }}/stage-e-wan'
+          mkdir -p "$ROOT"
+          trap 'sudo -n tc qdisc del dev lo root 2>/dev/null || true' EXIT
+          for RTT in 50 100 150; do
+            for LOSS in 0 0.5 2; do
+              for RATE in 10 50; do
+                ID="rtt${RTT}-loss${LOSS}-rate${RATE}"
+                echo "=== $ID ==="
+                export BAFT_STAGE_E_NETEM_RTT_MS="$RTT"
+                export BAFT_STAGE_E_NETEM_LOSS_PCT="$LOSS"
+                export BAFT_STAGE_E_NETEM_RATE_MBIT="$RATE"
+                go run ./cmd/baft-bench -scenario B12 -out "$ROOT/$ID/throughput"
+                go run ./cmd/baft-bench -scenario B13 -out "$ROOT/$ID/recovery"
+                sudo -n tc qdisc del dev lo root 2>/dev/null || true
+              done
+            done
+          done
+      - name: Analyze WAN matrix
+        run: |
+          python3 bench/analyze_wan.py '${{ runner.temp }}/stage-e-wan' \
+            --json-out '${{ runner.temp }}/stage-e-wan/wan-matrix.json' \
+            --md-out '${{ runner.temp }}/stage-e-wan/wan-matrix.md'
+          cat '${{ runner.temp }}/stage-e-wan/wan-matrix.md'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baft-stage-e-wan-${{ github.sha }}
+          path: ${{ runner.temp }}/stage-e-wan
+          if-no-files-found: error
+          retention-days: 30
