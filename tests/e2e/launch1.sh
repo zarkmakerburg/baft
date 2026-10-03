@@ -165,6 +165,46 @@ cat "$WORK/ex.yaml.keep" > /etc/baft-ex/baft.yaml
 cat "$WORK/ex.marker.keep" > /etc/baft-ex/baft.managed.json
 [[ "$(drift_check "$T1")" == "IN_SYNC" ]] || fail "the restored config is not IN_SYNC"
 
+log "baft menu on a real terminal; direct commands stay plain"
+python3 - <<'PY' || fail "the baft menu did not behave on a terminal"
+import os, pty, re, select, struct, fcntl, termios, subprocess, time
+def run_menu(env, cols):
+    pid, fd = pty.fork()
+    if pid == 0:
+        e = {"PATH": os.environ["PATH"], "HOME": "/tmp"}; e.update(env)
+        os.execve("/usr/local/bin/baft", ["baft", "menu", "--file", "/etc/baft-ex/baft.yaml", "--service", "baft-ex", "--release-state", "/opt/baft/release-state.json"], e)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, cols, 0, 0))
+    out = b""
+    def drain(t):
+        nonlocal out
+        end = time.time() + t
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if r:
+                try: d = os.read(fd, 65536)
+                except OSError: return
+                if not d: return
+                out += d
+    drain(1.5)
+    for line in (b"11\n", b"\n", b"0\n"):
+        os.write(fd, line); drain(0.7)
+    _, status = os.waitpid(pid, 0)
+    return out.decode(errors="replace"), os.WEXITSTATUS(status)
+colored, rc = run_menu({"TERM": "xterm-256color", "COLORTERM": "truecolor", "LANG": "C.UTF-8"}, 120)
+assert rc == 0, rc
+assert "\x1b[" in colored and "B  A  F  T" in re.sub(r"\x1b\[[0-9;]*m", "", colored), "no gold header on a color terminal"
+seen = re.sub(r"\x1b\[[0-9;]*m", "", colored)
+assert "Update (planned)" in seen and "not available in this version yet" in seen, seen[:500]
+plain, rc = run_menu({"TERM": "xterm", "NO_COLOR": "1", "LANG": "C"}, 60)
+assert rc == 0 and "\x1b[" not in plain, "NO_COLOR was not respected"
+assert "BAFT | v" in plain, plain[:300]
+# Direct commands print no splash and no escape sequence, even when asked on a terminal-capable host.
+for args in (["status", "--json"], ["doctor", "--json"], ["version", "--json"]):
+    out = subprocess.run(["/usr/local/bin/baft"] + args + (["--file", "/etc/baft-ex/baft.yaml", "--service", "baft-ex"] if args[0] != "version" else []),
+                         capture_output=True, text=True).stdout
+    assert "\x1b" not in out and "Resilient Network Fabric" not in out, args
+PY
+
 log "discovery (report only): both nodes MANAGED, nothing on the hosts changes"
 dc_sum() { sha256sum /etc/baft-ex/baft.yaml /etc/baft-ir/baft.yaml /etc/baft-ex/baft.managed.json /etc/baft-ir/baft.managed.json \
   /etc/systemd/system/baft-ex.service /etc/systemd/system/baft-ir.service | sha256sum; }

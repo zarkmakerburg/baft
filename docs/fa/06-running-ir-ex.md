@@ -193,6 +193,8 @@ sudo bash install.sh --role ir --pairing-code BAFTPAIR1:...
 
 ## کار با نود نصب‌شده
 
+روی ترمینال، `baft` (یا `baft menu`) یک منوی تعاملی روی همین فرمان‌ها با هدر BAFT باز می‌کند؛ [۳۲](../en/32-baft-menu.md) را ببینید. فرمان‌های مستقیم زیر هرگز splash یا escape sequence چاپ نمی‌کنند.
+
 سه فرمان فقط‌خواندنی؛ هیچ‌کدام چیزی روی سرور تغییر نمی‌دهد.
 
 <div dir="ltr" align="left">
