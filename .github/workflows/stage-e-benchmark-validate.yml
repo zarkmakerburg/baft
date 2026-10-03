@@ -1,0 +1,43 @@
+name: stage-e-benchmark-validate
+
+on:
+  push:
+    branches:
+      - bench/stage-e-foundation
+    paths:
+      - 'cmd/baft-bench/**'
+      - 'bench/**'
+      - 'tests/integration/stage_e_benchmark_test.go'
+      - '.github/workflows/stage-e-benchmark-validate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage-e-benchmark-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Validate benchmark runner
+        run: |
+          go test ./cmd/baft-bench -count=1
+          go vet ./cmd/baft-bench
+      - name: Smoke measured Stage E paths
+        run: |
+          go test ./tests/integration \
+            -run '^(TestStageEMeasureMultiFlowThroughput|TestStageEMeasureRecovery|TestStageEMeasureDirectTCPThroughput)$' \
+            -count=1 -timeout 12m -v
