@@ -161,6 +161,28 @@ func TestRecoverablePendingRequestStopClassifiesCarrierError(t *testing.T){
 	}
 }
 
+func TestRecoverableRemoveFlowPhysicalCancellationClassifiesCarrierError(t *testing.T){
+	var buf bytes.Buffer
+	s:=newOutboundSender(&frameWriter{w:&buf},true)
+	fl:=newFlow(1,"route","00112233445566778899aabbccddeeff",nil,defaultAllocator())
+	req:=&outboundRequest{
+		flow:fl,
+		frame:protocol.Frame{Type:protocol.TypeData,StreamID:1,Payload:[]byte("x")},
+		done:make(chan error,1),
+	}
+	if err:=s.data.AddFlow(1,dataChunk);err!=nil{t.Fatal(err)}
+	if err:=s.data.Enqueue(scheduler.Item{FlowID:1,Bytes:1,Value:req});err!=nil{t.Fatal(err)}
+	s.removeFlow(1,context.Canceled)
+	select{
+	case err:=<-req.done:
+		if !errors.Is(err,ErrCarrierUnavailable){t.Fatalf("removeFlow leaked raw carrier cancellation: %v",err)}
+		if !errors.Is(err,context.Canceled){t.Fatalf("removeFlow lost original cancellation chain: %v",err)}
+	case <-time.After(time.Second):
+		t.Fatal("removeFlow did not release pending request")
+	}
+}
+
+
 
 func TestRecoverableSenderContextCancellationReturnsCarrierUnavailable(t *testing.T){
 	var buf bytes.Buffer
