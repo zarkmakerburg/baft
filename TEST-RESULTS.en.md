@@ -1,11 +1,24 @@
 # Test Results
 
 > Persian: [TEST-RESULTS.md](TEST-RESULTS.md)  
-> Date: 2026-09-27
+> Date: 2026-10-03
 
 CI uses GitHub Actions on Linux amd64 with Go 1.27.1 and locked module metadata.
 
 The standard gate runs module tidy/diff verification, unit/integration tests, race detector, vet, and a protocol fuzz smoke.
+
+
+## P0-I / Step 5.7 freeze-candidate evidence — 2026-10-03
+
+Baseline: `29125392566021a286af20ff8f3a4907c28dbee8` on `main`.
+
+- CI run `37125867545`: **PASS**, including the standard test/race/vet/fuzz coverage and install/run E2E jobs.
+- Stage-C soak run `37125867530`: **PASS**.
+- Step 5.7 Recovery Soak run `37125867525`: **PASS in 5 independent run attempts on the same SHA**.
+- Every attempt covers Topology × ECRL authority isolation plus Class-A/Class-B/replay/finalization/lifetime/resource/flow-churn gates.
+- PR #60 retains cancellation-cause instrumentation for future rare-failure attribution.
+
+This evidence makes the current qualification green and records Step 5.7 as a **freeze candidate pending HQ acceptance**. Scope remains same-process recovery; restart/reboot resume remains out of scope.
 
 ## COR-01
 
