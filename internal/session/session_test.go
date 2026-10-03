@@ -486,3 +486,32 @@ func TestFrozenListenerRefusesOpenWithoutEndingSession(t *testing.T) {
 	if len(frs)!=1||frs[0].Type!=protocol.TypeOpenErr||frs[0].StreamID!=1{t.Fatalf("frames %+v, want one OPEN_ERR on stream 1",frs)}
 	if dials.Load()!=0{t.Fatal("refused OPEN dialed the target")}
 }
+
+
+func TestSessionWorkerAdmissionRejectsAfterTeardownGate(t *testing.T){
+	p:=&Peer{}
+	if !p.admitWorker(){t.Fatal("initial worker admission unexpectedly rejected")}
+
+	closed:=make(chan struct{})
+	go func(){
+		p.closeWorkerAdmission()
+		p.wg.Wait()
+		close(closed)
+	}()
+
+	deadline:=time.Now().Add(time.Second)
+	for {
+		p.workerMu.Lock();closing:=p.workersClosing;p.workerMu.Unlock()
+		if closing{break}
+		if time.Now().After(deadline){t.Fatal("worker admission gate never closed")}
+		time.Sleep(time.Millisecond)
+	}
+	if p.admitWorker(){t.Fatal("worker admitted after Session teardown gate closed")}
+	p.wg.Done()
+
+	select{
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("worker wait did not complete after existing worker exited")
+	}
+}
