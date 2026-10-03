@@ -119,10 +119,8 @@ func TestStageEMeasureFrameCoalescedThroughput(t *testing.T) {
 }
 
 func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, measurement, scope string) {
-	const (
-		flowCount    = 8
-		bytesPerFlow = 4 * 1024 * 1024
-	)
+	flowCount := stageEEnvInt("BAFT_STAGE_E_FLOW_COUNT", 8)
+	bytesPerFlow := stageEEnvInt("BAFT_STAGE_E_BYTES_PER_FLOW", 4*1024*1024)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
@@ -204,6 +202,7 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 	hs.TLS = serverTLS
 	hs.StartTLS()
 	defer hs.Close()
+	netemProfile, _ := stageEApplyNetem(t, hs.Listener.Addr().String())
 
 	clientTLS, err := identity.ClientTLS(certs.roots, certs.client, "ex.test")
 	if err != nil {
@@ -250,6 +249,7 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 	}()
 
 	ready := make(chan error, flowCount)
+	ttfbCh := make(chan time.Duration, flowCount)
 	startBulk := make(chan struct{})
 	clientErr := make(chan error, flowCount)
 	var clients sync.WaitGroup
@@ -270,6 +270,7 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 			_ = c.SetDeadline(time.Now().Add(35 * time.Second))
 
 			prelude := []byte{0x42, byte(i), 0x45}
+			ttfbStart := time.Now()
 			if _, err := c.Write(prelude); err != nil {
 				ready <- err
 				clientErr <- err
@@ -287,6 +288,7 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 				clientErr <- err
 				return
 			}
+			ttfbCh <- time.Since(ttfbStart)
 			// Prepare payload and expected hash before the timed region so B06
 			// measures transport work rather than fixture allocation/generation.
 			payload := make([]byte, bytesPerFlow)
@@ -332,6 +334,8 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 			t.Fatalf("warmup %d: %v", i, err)
 		}
 	}
+	ttfb := make([]time.Duration, 0, flowCount)
+	for i := 0; i < flowCount; i++ { ttfb = append(ttfb, <-ttfbCh) }
 
 	var before runtime.MemStats
 	runtime.ReadMemStats(&before)
@@ -378,6 +382,11 @@ func runStageEMeasureMultiFlowThroughput(t *testing.T, coalesce bool, scenario, 
 		"tx_mbps":                  txMbps,
 		"rx_mbps":                  txMbps,
 		"aggregate_mbps":           aggregateMbps,
+		"ttfb_ms_p50":              percentileMillis(ttfb, 0.50),
+		"ttfb_ms_p99":              percentileMillis(ttfb, 0.99),
+		"netem_rtt_ms":              netemProfile.RTTMS,
+		"netem_loss_pct":            netemProfile.LossPct,
+		"netem_rate_mbit":           netemProfile.RateMbit,
 		"heap_alloc_before_bytes":  before.HeapAlloc,
 		"heap_alloc_after_bytes":   after.HeapAlloc,
 		"goroutines_before":        goroutinesBefore,
