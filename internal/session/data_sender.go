@@ -193,6 +193,11 @@ func (s *outboundSender) removeFlow(flowID uint64, cause error) {
 	}
 }
 
+// errFlowClosed reports that the Flow ended while a frame for it was queued or
+// about to be written. It is a Flow outcome, never evidence that the carrier
+// failed.
+var errFlowClosed = errors.New("flow closed")
+
 func (s *outboundSender) sendControl(frame protocol.Frame) error {
 	if frame.Type == protocol.TypeData {
 		return errors.New("DATA must use PADL data path")
@@ -250,7 +255,7 @@ func (s *outboundSender) sendDataWithProducer(ctx context.Context, fl *flow, fra
 	closed := fl.closed
 	fl.mu.Unlock()
 	if closed {
-		return errors.New("flow closed")
+		return errFlowClosed
 	}
 
 	req := &outboundRequest{flow: fl, frame: frame, done: make(chan error, 1), producer:producer}
@@ -328,7 +333,7 @@ func (s *outboundSender) run(ctx context.Context) {
 			closed := req.flow.closed
 			req.flow.mu.Unlock()
 			if closed {
-				req.done <- errors.New("flow closed")
+				req.done <- errFlowClosed
 				continue
 			}
 		}

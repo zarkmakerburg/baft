@@ -1116,7 +1116,7 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 	fl.mu.Lock()
 	if fl.closed {
 		fl.mu.Unlock()
-		return 0, errors.New("flow closed")
+		return 0, errFlowClosed
 	}
 	need := int64(defaultWindow)
 	if fl.receiveReserved >= need && fl.rxRing != nil {
@@ -1152,7 +1152,7 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 		fl.mu.Unlock()
 		ring.Close()
 		_ = fl.allocator.Release(fl.resourceID, resources.Receive, need)
-		return 0, errors.New("flow closed")
+		return 0, errFlowClosed
 	}
 	fl.receiveReserved = need
 	fl.rxRing = ring
@@ -1422,7 +1422,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			closed = fl.closed
 			finalReady = fl.finRecv && !fl.finAckConfirmed && fl.rxWritten == fl.finRecvFinal
 			fl.mu.Unlock()
-			if closed{return}
+			if closed||errors.Is(err,errFlowClosed){return}
 			if finalReady{_ = p.ackRemoteFin(fl);return}
 			if p.recoveryEnabled {
 				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
@@ -1490,6 +1490,10 @@ func (p *Peer) runExactLiveDelivery(ctx context.Context,fl *flow) {
 				if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,item.producer,item.frame.Offset,item.frame.Offset+uint64(len(item.frame.Payload)),generation)}
 				err=sender.sendDataWithProducer(ctx,fl,item.frame,item.producer)
 			}
+			// A Flow that ended while this frame waited is not a carrier failure;
+			// on a listener, reporting one leaves the carrier marked unusable
+			// with nothing to replace it.
+			if errors.Is(err,errFlowClosed){return}
 			if err!=nil&&p.recoveryEnabled{
 				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
 				if werr:=p.waitForCarrierSwitch(ctx,epoch,owner,generation);werr==nil{continue}
@@ -1592,6 +1596,7 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 					}
 					if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,producer,off,off+uint64(len(payload)),generation)}
 					sendErr=sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer)
+					if errors.Is(sendErr,errFlowClosed){return}
 					if sendErr!=nil&&p.recoveryEnabled {
 						p.onCarrierFailureForGeneration(sendErr,generation,SenderStopFrameProcessing)
 						// A failed direct write belongs to the retired physical carrier.
@@ -1655,7 +1660,7 @@ func (f *flow) reserveReadCapacity(ctx context.Context, max int) (int, error) {
 		f.mu.Lock()
 		if f.closed {
 			f.mu.Unlock()
-			return 0, errors.New("flow closed")
+			return 0, errFlowClosed
 		}
 		available := f.peerMax - f.txNext
 		wait := f.creditWait
@@ -1679,7 +1684,7 @@ func (f *flow) reserveReadCapacity(ctx context.Context, max int) (int, error) {
 		if f.closed {
 			f.mu.Unlock()
 			_ = f.allocator.Release(f.resourceID, resources.Replay, int64(want))
-			return 0, errors.New("flow closed")
+			return 0, errFlowClosed
 		}
 		f.mu.Unlock()
 		return int(want), nil
@@ -1690,7 +1695,7 @@ func (f *flow) commitSend(data []byte) (uint64, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
-		return 0, nil, errors.New("flow closed")
+		return 0, nil, errFlowClosed
 	}
 	n := uint64(len(data))
 	if n > ^uint64(0)-f.txNext || f.txNext+n > f.peerMax {
@@ -1935,7 +1940,7 @@ func (p *Peer) removeFlow(id uint64) {
 	}
 	p.mu.Unlock()
 	if s:=p.senderNow();s!=nil {
-		s.removeFlow(id, errors.New("flow closed"))
+		s.removeFlow(id, errFlowClosed)
 	}
 }
 
