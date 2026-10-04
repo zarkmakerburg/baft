@@ -6,9 +6,10 @@
 // streams, which a long-lived HTTP/2 POST body is not; this package is what
 // lets a BAFT carrier run behind Cloudflare.
 //
-// The upper layers never observe WebSocket message boundaries: Conn.Read
-// concatenates the payloads of binary/continuation data frames, and Conn.Write
-// emits one or more binary frames. Control frames (ping/pong/close) are handled
+// The upper layers never depend on WebSocket message boundaries: Conn.Read
+// exposes binary/continuation payload bytes as one ordered byte stream without
+// assembling an entire fragmented message in memory, and Conn.Write emits one
+// or more binary frames. Control frames (ping/pong/close) are handled
 // transparently and never surface as payload bytes.
 //
 // Only the subset the carrier uses is implemented. Text frames are rejected (a
@@ -59,8 +60,9 @@ type Conn struct {
 	isClient bool
 
 	// read side (single reader goroutine)
-	br      *bufio.Reader
-	readBuf []byte // leftover payload bytes from the last data frame
+	br         *bufio.Reader
+	readBuf    []byte // leftover payload bytes from the last data frame
+	fragmented bool   // a binary message is awaiting continuation frames
 
 	// write side
 	wmu sync.Mutex
@@ -117,34 +119,20 @@ func (c *Conn) readDataOrControl() (byte, []byte, error) {
 		return 0, nil, err
 	}
 	switch op {
-	case opBinary, opContinuation:
-		// Reassemble fragmented data frames into one logical payload so the
-		// byte stream is contiguous regardless of how a proxy fragments.
-		for !fin {
-			var fop byte
-			var cont []byte
-			fin, fop, cont, err = c.readFrame()
-			if err != nil {
-				return 0, nil, err
-			}
-			switch fop {
-			case opContinuation:
-				payload = append(payload, cont...)
-			case opPing:
-				if err := c.writeControl(opPong, cont); err != nil {
-					return 0, nil, err
-				}
-			case opPong:
-				// ignore
-			case opClose:
-				_ = c.writeControl(opClose, nil)
-				c.closeUnderlying()
-				return 0, nil, io.EOF
-			default:
-				return 0, nil, fmt.Errorf("ws: unexpected opcode %#x mid-fragment", fop)
-			}
+	case opBinary:
+		if c.fragmented {
+			return 0, nil, errors.New("ws: new binary frame before fragmented message completed")
 		}
+		c.fragmented = !fin
 		return opBinary, payload, nil
+	case opContinuation:
+		if !c.fragmented {
+			return 0, nil, errors.New("ws: continuation without fragmented message")
+		}
+		if fin {
+			c.fragmented = false
+		}
+		return opContinuation, payload, nil
 	case opPing:
 		if err := c.writeControl(opPong, payload); err != nil {
 			return 0, nil, err

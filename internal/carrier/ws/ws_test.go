@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -235,4 +236,78 @@ func TestWSRejectsBadScheme(t *testing.T) {
 	if _, err := d.Dial(context.Background()); err == nil {
 		t.Fatal("expected scheme rejection")
 	}
+}
+
+func maskedTestFrame(fin bool, opcode byte, payload []byte) []byte {
+	if len(payload) > 125 {
+		panic("maskedTestFrame only supports short test payloads")
+	}
+	first := opcode
+	if fin {
+		first |= 0x80
+	}
+	key := [4]byte{1, 2, 3, 4}
+	out := []byte{first, 0x80 | byte(len(payload)), key[0], key[1], key[2], key[3]}
+	for i, b := range payload {
+		out = append(out, b^key[i&3])
+	}
+	return out
+}
+
+func TestWSFragmentedMessageStreamsWithoutAggregateAssembly(t *testing.T) {
+	// Only the first fragment is present. A byte-stream Conn must return those
+	// bytes immediately instead of waiting for (and accumulating) every
+	// continuation frame in the logical WebSocket message.
+	raw := maskedTestFrame(false, opBinary, []byte("first"))
+	c := newConn(&fakeConn{r: bytes.NewReader(raw)}, nil, false)
+	buf := make([]byte, 16)
+	n, err := c.Read(buf)
+	if err != nil {
+		t.Fatalf("first fragment read: %v", err)
+	}
+	if got := string(buf[:n]); got != "first" {
+		t.Fatalf("first fragment = %q", got)
+	}
+	if !c.fragmented {
+		t.Fatal("fragmentation state was not retained for the continuation")
+	}
+	if len(c.readBuf) != 0 {
+		t.Fatalf("unexpected aggregate/read buffer: %d bytes", len(c.readBuf))
+	}
+}
+
+func TestWSContinuationStateIsValidated(t *testing.T) {
+	t.Run("orphan continuation", func(t *testing.T) {
+		raw := maskedTestFrame(true, opContinuation, []byte("x"))
+		c := newConn(&fakeConn{r: bytes.NewReader(raw)}, nil, false)
+		if _, err := c.Read(make([]byte, 8)); err == nil || !strings.Contains(err.Error(), "continuation without") {
+			t.Fatalf("orphan continuation err=%v", err)
+		}
+	})
+
+	t.Run("new binary mid fragment", func(t *testing.T) {
+		raw := append(maskedTestFrame(false, opBinary, []byte("a")), maskedTestFrame(true, opBinary, []byte("b"))...)
+		c := newConn(&fakeConn{r: bytes.NewReader(raw)}, nil, false)
+		if n, err := c.Read(make([]byte, 8)); err != nil || n != 1 {
+			t.Fatalf("first read n=%d err=%v", n, err)
+		}
+		if _, err := c.Read(make([]byte, 8)); err == nil || !strings.Contains(err.Error(), "new binary frame") {
+			t.Fatalf("mid-fragment binary err=%v", err)
+		}
+	})
+
+	t.Run("valid continuation completes state", func(t *testing.T) {
+		raw := append(maskedTestFrame(false, opBinary, []byte("a")), maskedTestFrame(true, opContinuation, []byte("b"))...)
+		c := newConn(&fakeConn{r: bytes.NewReader(raw)}, nil, false)
+		buf := make([]byte, 1)
+		if n, err := c.Read(buf); err != nil || n != 1 || buf[0] != 'a' {
+			t.Fatalf("first read n=%d err=%v byte=%q", n, err, buf[0])
+		}
+		if n, err := c.Read(buf); err != nil || n != 1 || buf[0] != 'b' {
+			t.Fatalf("continuation read n=%d err=%v byte=%q", n, err, buf[0])
+		}
+		if c.fragmented {
+			t.Fatal("fragmentation state remained set after final continuation")
+		}
+	})
 }

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zarkmakerburg/baft/internal/carrier/utlsdial"
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/recovery"
@@ -121,4 +122,11 @@ func TestRuntimeFailureImmediatelyBeforeCommitKeepsOldOwner(t *testing.T){
 	err:=rt.recoverDialerShard(context.Background(),cfg,tlsCfg,0,&dialerShard{peer:p})
 	if err==nil||!strings.Contains(err.Error(),"before commit"){t.Fatalf("err=%v",err)}
 	assertOldRecoveryOwner(t,p)
+}
+
+
+func TestWSCarrierHeadersMatchDefaultUTLSChromeMajor(t *testing.T) {
+	ua:=wsCarrierHeaders("example.com").Get("User-Agent")
+	want:="Chrome/"+utlsdial.DefaultChromeMajor+"."
+	if !strings.Contains(ua,want){t.Fatalf("User-Agent %q does not match default uTLS Chrome major %s",ua,utlsdial.DefaultChromeMajor)}
 }

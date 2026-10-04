@@ -24,6 +24,10 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
+// DefaultChromeMajor is the browser major version mirrored by the default
+// pinned ClientHello profile. Carrier HTTP headers should use the same value.
+const DefaultChromeMajor = "120"
+
 // Config configures a uTLS dial.
 type Config struct {
 	// ServerName is the SNI and the name verified against the server cert.
@@ -40,8 +44,8 @@ type Config struct {
 	// aborts the connection. Use it to pin the responder certificate for the
 	// direct carrier.
 	Pin func(leaf *x509.Certificate) error
-	// Hello selects the browser ClientHello profile. The zero value parrots the
-	// current Chrome.
+	// Hello selects the browser ClientHello profile. The zero value uses the
+	// pinned Chrome 120 profile.
 	Hello utls.ClientHelloID
 	// HandshakeTimeout bounds TCP + TLS. Zero means 15s.
 	HandshakeTimeout time.Duration
@@ -110,6 +114,9 @@ func Handshake(ctx context.Context, conn net.Conn, cfg Config) (net.Conn, error)
 		return nil, errors.New("utlsdial: server name and root CAs are required")
 	}
 	uconn := utls.UClient(conn, utlsConfig(cfg), cfg.hello())
+	if err := applyExplicitALPN(uconn, cfg.NextProtos); err != nil {
+		return nil, err
+	}
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("utlsdial: handshake: %w", err)
 	}
@@ -125,6 +132,50 @@ func Handshake(ctx context.Context, conn net.Conn, cfg Config) (net.Conn, error)
 		}
 	}
 	return uconn, nil
+}
+
+func applyExplicitALPN(uconn *utls.UConn, protos []string) error {
+	if len(protos) == 0 {
+		return nil
+	}
+	if err := uconn.BuildHandshakeState(); err != nil {
+		return fmt.Errorf("utlsdial: build ClientHello: %w", err)
+	}
+	want := append([]string(nil), protos...)
+	hasH2 := false
+	for _, p := range want {
+		if p == "h2" {
+			hasH2 = true
+		}
+	}
+	foundALPN := false
+	exts := make([]utls.TLSExtension, 0, len(uconn.Extensions))
+	for _, ext := range uconn.Extensions {
+		switch e := ext.(type) {
+		case *utls.ALPNExtension:
+			e.AlpnProtocols = append([]string(nil), want...)
+			foundALPN = true
+			exts = append(exts, ext)
+		case *utls.ApplicationSettingsExtension:
+			if hasH2 {
+				e.SupportedProtocols = []string{"h2"}
+				exts = append(exts, ext)
+			}
+		case *utls.ApplicationSettingsExtensionNew:
+			if hasH2 {
+				e.SupportedProtocols = []string{"h2"}
+				exts = append(exts, ext)
+			}
+		default:
+			exts = append(exts, ext)
+		}
+	}
+	if !foundALPN {
+		exts = append(exts, &utls.ALPNExtension{AlpnProtocols: append([]string(nil), want...)})
+	}
+	uconn.Extensions = exts
+	uconn.HandshakeState.Hello.AlpnProtocols = append([]string(nil), want...)
+	return nil
 }
 
 func utlsConfig(cfg Config) *utls.Config {
@@ -172,6 +223,11 @@ func CaptureClientHello(cfg Config) ([]byte, error) {
 		ucfg.InsecureSkipVerify = true
 	}
 	uconn := utls.UClient(c1, ucfg, cfg.hello())
+	if err := applyExplicitALPN(uconn, cfg.NextProtos); err != nil {
+		return nil, err
+	}
+	// applyExplicitALPN builds once to materialize the preset before editing it;
+	// build again so Raw reflects the edited extension set exactly as Dial does.
 	if err := uconn.BuildHandshakeState(); err != nil {
 		return nil, err
 	}
