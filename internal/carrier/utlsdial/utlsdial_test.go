@@ -3,6 +3,7 @@ package utlsdial
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 func serverPool(t *testing.T, s *httptest.Server) *x509.CertPool {
@@ -127,5 +130,40 @@ func TestCaptureClientHelloNonEmpty(t *testing.T) {
 			}
 			return 0
 		}())
+	}
+}
+
+func TestUTLSDialExplicitALPNOverridesBrowserPreset(t *testing.T) {
+	s := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	s.EnableHTTP2 = true
+	s.TLS = &tls.Config{NextProtos: []string{"h2", "http/1.1"}}
+	s.StartTLS()
+	defer s.Close()
+
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "websocket-http1", want: "http/1.1"},
+		{name: "http2", want: "h2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, err := Dial(ctx, "tcp", s.Listener.Addr().String(), Config{
+				ServerName: "example.com",
+				RootCAs:    serverPool(t, s),
+				NextProtos: []string{tc.want},
+				Hello:      utls.HelloChrome_120,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			got := conn.(*utls.UConn).ConnectionState().NegotiatedProtocol
+			if got != tc.want {
+				t.Fatalf("negotiated ALPN %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
