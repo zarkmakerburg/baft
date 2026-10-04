@@ -93,19 +93,26 @@ func primaryTransport(cfg config.Config) string {
 // logical Session/ECRL authority. With no fallback, recovery preserves the
 // historical behavior. With one configured, a failed current carrier moves to
 // the alternate physical path; a later failure can move back.
-func nextRecoveryTransport(cfg config.Config, current string) string {
+func nextRecoveryTransport(cfg config.Config, current, lastAttempt string) string {
 	primary := primaryTransport(cfg)
 	fallback := cfg.Transport.Fallback
 	if fallback == "" {
 		return primary
 	}
-	if current == "" || current == primary {
+	basis := lastAttempt
+	if basis == "" {
+		basis = current
+	}
+	if basis == "" {
+		basis = primary
+	}
+	if basis == primary {
 		return fallback
 	}
-	if current == fallback {
+	if basis == fallback {
 		return primary
 	}
-	return primary
+	return fallback
 }
 
 func (r *Runtime) openRuntimeCarrier(ctx context.Context,cfg config.Config,tlsCfg *tls.Config,transport string)(*openedRuntimeCarrier,error){
@@ -192,7 +199,7 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	defer func(){if !published{sh.peer.AbortRecovery(candidate)}}()
 	if err:=r.recoveryFail("candidate_setup");err!=nil{sh.peer.RecordRecoveryFailure("candidate_setup");return fmt.Errorf("candidate setup: %w",err)}
 
-	transport:=nextRecoveryTransport(cfg,sh.currentTransport())
+	transport:=sh.recoveryTransport(cfg)
 	o,err:=r.openRuntimeCarrier(ctx,cfg,tlsCfg,transport)
 	if err!=nil{sh.peer.RecordRecoveryFailure("candidate_setup");return fmt.Errorf("candidate setup (%s): %w",transport,err)}
 	keepCarrier:=false
@@ -358,7 +365,7 @@ func (r *Runtime) resolveDialerCommitUncertainty(ctx context.Context,cfg config.
 		release:=sh.peer.FreezeForExactResolution()
 		defer release()
 	}
-	transport:=nextRecoveryTransport(cfg,sh.currentTransport())
+	transport:=sh.recoveryTransport(cfg)
 	o,err:=r.openRuntimeCarrier(ctx,cfg,tlsCfg,transport)
 	if err!=nil{return false,fmt.Errorf("%w: status carrier (%s): %v",session.ErrCommitUncertain,transport,err)}
 	keepCarrier:=false
