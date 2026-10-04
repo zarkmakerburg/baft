@@ -53,9 +53,22 @@ Cloudflare's edge termination prevents. Pick one transport per carrier. BAFT is
 moving toward registering more than one carrier and failing over between them
 (see `reports/CARRIER-CAMOUFLAGE.md`).
 
+## Browser-fidelity TLS fingerprint (uTLS)
+
+Add `--utls` to the pairing commands (or set `transport.utls: true`) to make the
+IR→Cloudflare dial present a browser (Chrome) ClientHello instead of Go's
+distinctive one, closing the passive-fingerprint gap from
+`reports/CARRIER-CAMOUFLAGE.md`. The server is still verified and the inner
+Noise handshake remains the end-to-end authenticator.
+
+**uTLS requires an ECDSA (P-256) or RSA server certificate.** Browsers do not
+support Ed25519 server certificates, so a browser-fidelity ClientHello cannot
+negotiate with one. A Cloudflare Origin Certificate is ECDSA/RSA, so this is
+automatic behind Cloudflare. If you issue the EX certificate with BAFT's own
+`baft-pair pki`, pass `--key-type ecdsa` (the default is Ed25519, which works
+for the `h2` and non-uTLS `ws` paths but not for uTLS). `transport.utls` is only
+valid with `transport.primary: ws`.
+
 ## Notes
 
-- The ws dial currently uses Go's TLS ClientHello. The uTLS browser-fingerprint
-  dial (`internal/carrier/utlsdial`) will be wired under it to further blend the
-  IR→Cloudflare TLS into browser traffic.
 - Everything is unchanged for the default `transport.primary: h2`.

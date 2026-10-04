@@ -173,6 +173,8 @@ jobs:
         run: BIN_DIR="$RUNNER_TEMP/bin" E2E_RECORD_SHAPING=1 tests/e2e/pair_and_run.sh
       - name: WebSocket carrier (transport=ws, Cloudflare path)
         run: tests/e2e/ws_carrier.sh
+      - name: WebSocket carrier with uTLS fingerprint (ECDSA cert)
+        run: BAFT_WS_UTLS=1 tests/e2e/ws_carrier.sh
       - name: Pair and pass traffic under CPU load
         run: |
           for i in $(seq "$(nproc)"); do (while :; do :; done) & done

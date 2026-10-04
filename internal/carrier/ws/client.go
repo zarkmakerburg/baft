@@ -36,6 +36,11 @@ type Dialer struct {
 	HandshakeTimeout time.Duration
 	// NetDial, when set, dials the raw TCP connection (tests inject this).
 	NetDial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// TLSHandshake, when set, performs the TLS handshake over the raw
+	// connection instead of crypto/tls (e.g. a uTLS browser-fingerprint
+	// handshake). It must authenticate the server for serverName and return the
+	// established TLS connection; on error the caller closes the raw conn.
+	TLSHandshake func(ctx context.Context, conn net.Conn, serverName string) (net.Conn, error)
 }
 
 // Dial performs the WebSocket handshake and returns a client Conn.
@@ -83,13 +88,24 @@ func (d *Dialer) Dial(ctx context.Context) (*Conn, error) {
 		_ = raw.SetDeadline(dl)
 	}
 
-	tlsCfg := d.TLSConfig.Clone()
-	if tlsCfg.ServerName == "" {
-		tlsCfg.ServerName = u.Hostname()
+	serverName := d.TLSConfig.ServerName
+	if serverName == "" {
+		serverName = u.Hostname()
 	}
-	tlsConn := tls.Client(raw, tlsCfg)
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		return nil, err
+	var tlsConn net.Conn
+	if d.TLSHandshake != nil {
+		tlsConn, err = d.TLSHandshake(ctx, raw, serverName)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		tlsCfg := d.TLSConfig.Clone()
+		tlsCfg.ServerName = serverName
+		tc := tls.Client(raw, tlsCfg)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			return nil, err
+		}
+		tlsConn = tc
 	}
 
 	keyBytes := make([]byte, 16)

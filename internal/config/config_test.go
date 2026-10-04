@@ -43,6 +43,14 @@ func TestValidateWSRequiresNoise(t *testing.T) {
 	}
 }
 
+func TestValidateUTLSRequiresWS(t *testing.T) {
+	c := validIR()
+	c.Transport.UTLS = true // Primary is still h2
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "utls") {
+		t.Fatalf("utls on non-ws transport must be rejected, got %v", err)
+	}
+}
+
 func TestValidateRejectsUnknownTransport(t *testing.T) {
 	c := validIR()
 	c.Transport.Primary = "quic"

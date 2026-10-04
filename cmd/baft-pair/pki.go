@@ -1,11 +1,15 @@
 package main
 
 import (
+	"crypto"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"math/big"
@@ -22,17 +26,40 @@ func pki(args []string) {
 	fs := flag.NewFlagSet("pki", flag.ExitOnError)
 	dir := fs.String("dir", "", "output directory (ca.pem, ca.key, server.pem, server.key)")
 	host := fs.String("host", "", "server name or IP placed in the certificate SAN")
+	keyType := fs.String("key-type", "ed25519", "certificate key type: ed25519 (default) or ecdsa (P-256; required for the uTLS/browser-fingerprint carrier, since browsers do not support Ed25519 certificates)")
 	_ = fs.Parse(args)
 	if *dir == "" || *host == "" {
 		die("--dir and --host are required")
 	}
-	if err := writePKI(*dir, *host, time.Now()); err != nil {
+	if err := writePKIType(*dir, *host, *keyType, time.Now()); err != nil {
 		die(err.Error())
 	}
 }
 
+// genCertKey makes a key pair of the requested type for a certificate.
+func genCertKey(keyType string) (crypto.PublicKey, crypto.Signer, error) {
+	switch keyType {
+	case "", "ed25519":
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		return pub, priv, err
+	case "ecdsa":
+		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &k.PublicKey, k, nil
+	default:
+		return nil, nil, errors.New("key-type must be ed25519 or ecdsa")
+	}
+}
+
+// writePKI keeps the historical Ed25519 default for callers (and tests).
 func writePKI(dir, host string, now time.Time) error {
-	caPub, caKey, err := ed25519.GenerateKey(rand.Reader)
+	return writePKIType(dir, host, "ed25519", now)
+}
+
+func writePKIType(dir, host, keyType string, now time.Time) error {
+	caPub, caKey, err := genCertKey(keyType)
 	if err != nil {
 		return err
 	}
@@ -54,7 +81,7 @@ func writePKI(dir, host string, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	srvPub, srvKey, err := ed25519.GenerateKey(rand.Reader)
+	srvPub, srvKey, err := genCertKey(keyType)
 	if err != nil {
 		return err
 	}
