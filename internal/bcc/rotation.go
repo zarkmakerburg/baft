@@ -60,13 +60,14 @@ const (
 
 // CertRotation is one rotation of a tunnel's outer TLS certificate.
 type CertRotation struct {
-	ID       string `json:"id"`
-	TunnelID string `json:"tunnel_id"`
-	EXNode   string `json:"ex_node"`
-	IRNode   string `json:"ir_node"`
-	Epoch    int    `json:"epoch"`
-	Phase    string `json:"phase"`
-	Error    string `json:"error,omitempty"`
+	ID         string `json:"id"`
+	TunnelID   string `json:"tunnel_id"`
+	InstanceID string `json:"instance_id,omitempty"`
+	EXNode     string `json:"ex_node"`
+	IRNode     string `json:"ir_node"`
+	Epoch      int    `json:"epoch"`
+	Phase      string `json:"phase"`
+	Error      string `json:"error,omitempty"`
 
 	// Public material from PREPARE.
 	Host          string `json:"host,omitempty"`
@@ -177,7 +178,7 @@ func (s *Store) StartCertRotation(req CertRotationRequest, now time.Time) (CertR
 		return CertRotation{}, errors.New("the hold must be shorter than the overlap")
 	}
 	r := CertRotation{
-		ID: newRotationID(), TunnelID: t.ID, EXNode: t.EXNode, IRNode: t.IRNode, Epoch: t.CertEpoch + 1,
+		ID: newRotationID(), TunnelID: t.ID, InstanceID: t.InstanceID, EXNode: t.EXNode, IRNode: t.IRNode, Epoch: t.CertEpoch + 1,
 		Phase: CertRotPreparing, HoldSeconds: req.HoldSeconds, OverlapDeadline: now.UTC().Add(overlap),
 		CreatedAt: now.UTC(), UpdatedAt: now.UTC(),
 	}
@@ -194,6 +195,9 @@ func (s *Store) rotJobLocked(r *CertRotation, node, typ string, params map[strin
 		params = map[string]string{}
 	}
 	params["tunnel_id"], params["rotation_id"] = r.TunnelID, r.ID
+	if r.InstanceID != "" {
+		params["instance_id"] = r.InstanceID
+	}
 	j := s.newJobLocked(Job{Type: typ, NodeID: node, Params: params})
 	r.Jobs = append(r.Jobs, j.ID)
 	r.JobID = j.ID

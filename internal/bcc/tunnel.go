@@ -69,15 +69,18 @@ const (
 
 // Tunnel is one planned or running change.
 type Tunnel struct {
-	ID            string `json:"id"`
-	EXNode        string `json:"ex_node"`
-	IRNode        string `json:"ir_node"`
-	PublicAddress string `json:"public_address"`
-	Port          int    `json:"port"`
-	Target        string `json:"target"`
-	RouteID       string `json:"route_id"`
-	RouteListen   string `json:"route_listen"`
-	RecordShaping bool   `json:"record_shaping,omitempty"`
+	ID              string `json:"id"`
+	InstanceID      string `json:"instance_id,omitempty"`
+	EXNode          string `json:"ex_node"`
+	IRNode          string `json:"ir_node"`
+	PublicAddress   string `json:"public_address"`
+	Port            int    `json:"port"`
+	Target          string `json:"target"`
+	RouteID         string `json:"route_id"`
+	RouteListen     string `json:"route_listen"`
+	EXMetricsListen string `json:"ex_metrics_listen,omitempty"`
+	IRMetricsListen string `json:"ir_metrics_listen,omitempty"`
+	RecordShaping   bool   `json:"record_shaping,omitempty"`
 
 	PlanHash string           `json:"plan_hash,omitempty"`
 	Evidence []TunnelEvidence `json:"evidence,omitempty"`
@@ -135,14 +138,17 @@ type TunnelEvent struct {
 
 // TunnelRequest is what an operator asks for; zero fields take defaults.
 type TunnelRequest struct {
-	EXNode        string `json:"ex_node"`
-	IRNode        string `json:"ir_node"`
-	PublicAddress string `json:"public_address"`
-	Port          int    `json:"port"`
-	Target        string `json:"target"`
-	RouteListen   string `json:"route_listen"`
-	RouteID       string `json:"route_id"`
-	RecordShaping bool   `json:"record_shaping"`
+	InstanceID      string `json:"instance_id,omitempty"`
+	EXNode          string `json:"ex_node"`
+	IRNode          string `json:"ir_node"`
+	PublicAddress   string `json:"public_address"`
+	Port            int    `json:"port"`
+	Target          string `json:"target"`
+	RouteListen     string `json:"route_listen"`
+	RouteID         string `json:"route_id"`
+	EXMetricsListen string `json:"ex_metrics_listen,omitempty"`
+	IRMetricsListen string `json:"ir_metrics_listen,omitempty"`
+	RecordShaping   bool   `json:"record_shaping"`
 	// PlanHash, when set, must equal the hash of the plan BCC computes now.
 	PlanHash string `json:"plan_hash,omitempty"`
 }
@@ -153,6 +159,66 @@ func terminalTunnel(p string) bool {
 		return true
 	}
 	return false
+}
+
+func tunnelsShareNode(a, b Tunnel) bool {
+	return a.EXNode == b.EXNode || a.IRNode == b.IRNode || a.EXNode == b.IRNode || a.IRNode == b.EXNode
+}
+
+// sameManagedSlot means two tunnel records own the same host-local BAFT
+// instance. Legacy singleton and scoped instances are deliberately different
+// slots; resolveTunnelLocked rejects mixing them on a live shared node until an
+// explicit migration path exists.
+func sameManagedSlot(a, b Tunnel) bool {
+	if !tunnelsShareNode(a, b) {
+		return false
+	}
+	if a.InstanceID == "" && b.InstanceID == "" {
+		return true
+	}
+	if a.InstanceID == "" || b.InstanceID == "" {
+		return false
+	}
+	return a.InstanceID == b.InstanceID
+}
+
+func mixedLegacyScope(a, b Tunnel) bool {
+	return tunnelsShareNode(a, b) && (a.InstanceID == "") != (b.InstanceID == "")
+}
+
+func tunnelResourceConflict(a, b Tunnel) string {
+	if !tunnelsShareNode(a, b) || sameManagedSlot(a, b) {
+		return ""
+	}
+	if a.EXNode == b.EXNode {
+		if a.Port == b.Port {
+			return fmt.Sprintf("EX listener port %d is already used by tunnel %s", a.Port, b.ID)
+		}
+		if a.EXMetricsListen != "" && a.EXMetricsListen == b.EXMetricsListen {
+			return fmt.Sprintf("EX metrics listener %s is already used by tunnel %s", a.EXMetricsListen, b.ID)
+		}
+	}
+	if a.IRNode == b.IRNode {
+		if a.RouteListen == b.RouteListen {
+			return fmt.Sprintf("IR route listener %s is already used by tunnel %s", a.RouteListen, b.ID)
+		}
+		if a.IRMetricsListen != "" && a.IRMetricsListen == b.IRMetricsListen {
+			return fmt.Sprintf("IR metrics listener %s is already used by tunnel %s", a.IRMetricsListen, b.ID)
+		}
+	}
+	return ""
+}
+
+func validateLoopbackEndpoint(v, field string) error {
+	host, port, err := net.SplitHostPort(v)
+	if err != nil || port == "" || port == "0" {
+		return fmt.Errorf("%s must be an explicit loopback IP:port", field)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%s must use a loopback IP", field)
+	}
+	return nil
 }
 
 // secretParams are job parameters that must not outlive the job.
@@ -190,6 +256,9 @@ func (s *Store) tunnelJobLocked(t *Tunnel, node, typ string, params map[string]s
 		params = map[string]string{}
 	}
 	params["tunnel_id"] = t.ID
+	if t.InstanceID != "" {
+		params["instance_id"] = t.InstanceID
+	}
 	j := s.newJobLocked(Job{Type: typ, NodeID: node, Params: params})
 	t.Jobs = append(t.Jobs, j.ID)
 	t.JobID = j.ID
@@ -231,21 +300,10 @@ func (s *Store) resolveTunnelLocked(req TunnelRequest, now time.Time) (Tunnel, N
 	if ex.Revoked || ir.Revoked {
 		return Tunnel{}, Node{}, Node{}, errors.New("a revoked node cannot be part of a tunnel")
 	}
-	for _, other := range s.st.Tunnels {
-		shares := other.EXNode == req.EXNode || other.IRNode == req.IRNode || other.EXNode == req.IRNode || other.IRNode == req.EXNode
-		if shares && !terminalTunnel(other.Phase) {
-			return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s is still being built on one of these nodes", other.ID)
-		}
-		if shares && other.Phase == TunnelRollbackFailed {
-			return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s could not be rolled back on one of these nodes; fix that first", other.ID)
-		}
-	}
-	if r := s.rotationOnNodesLocked(req.EXNode, req.IRNode); r != nil {
-		return Tunnel{}, Node{}, Node{}, fmt.Errorf("certificate rotation %s is %s on one of these nodes", r.ID, r.Phase)
-	}
 	t := Tunnel{
-		ID: newTunnelID(), EXNode: req.EXNode, IRNode: req.IRNode, PublicAddress: req.PublicAddress, Port: req.Port,
-		Target: req.Target, RouteID: req.RouteID, RouteListen: req.RouteListen, RecordShaping: req.RecordShaping,
+		ID: newTunnelID(), InstanceID: strings.TrimSpace(req.InstanceID), EXNode: req.EXNode, IRNode: req.IRNode,
+		PublicAddress: req.PublicAddress, Port: req.Port, Target: req.Target, RouteID: req.RouteID, RouteListen: req.RouteListen,
+		EXMetricsListen: req.EXMetricsListen, IRMetricsListen: req.IRMetricsListen, RecordShaping: req.RecordShaping,
 		CreatedAt: now.UTC(), UpdatedAt: now.UTC(),
 	}
 	if t.PublicAddress == "" {
@@ -267,6 +325,44 @@ func (s *Store) resolveTunnelLocked(req TunnelRequest, now time.Time) (Tunnel, N
 	if t.RouteID == "" {
 		t.RouteID = "service-main"
 	}
+	if t.InstanceID == "default" {
+		return Tunnel{}, Node{}, Node{}, errors.New("instance_id default is reserved for the legacy singleton")
+	}
+	if t.InstanceID != "" {
+		if t.EXMetricsListen == "" || t.IRMetricsListen == "" {
+			return Tunnel{}, Node{}, Node{}, errors.New("instance-scoped tunnels require ex_metrics_listen and ir_metrics_listen")
+		}
+		if err := validateLoopbackEndpoint(t.EXMetricsListen, "ex_metrics_listen"); err != nil {
+			return Tunnel{}, Node{}, Node{}, err
+		}
+		if err := validateLoopbackEndpoint(t.IRMetricsListen, "ir_metrics_listen"); err != nil {
+			return Tunnel{}, Node{}, Node{}, err
+		}
+	}
+	for _, other := range s.st.Tunnels {
+		if !tunnelsShareNode(t, other) {
+			continue
+		}
+		if mixedLegacyScope(t, other) && (other.Phase == TunnelActive || !terminalTunnel(other.Phase) || other.Phase == TunnelRollbackFailed) {
+			return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s uses the legacy singleton on a shared node; migrate it explicitly before creating scoped instances", other.ID)
+		}
+		if sameManagedSlot(t, other) {
+			if !terminalTunnel(other.Phase) {
+				return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s is still being built in the same BAFT instance", other.ID)
+			}
+			if other.Phase == TunnelRollbackFailed {
+				return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s could not be rolled back in the same BAFT instance; fix that first", other.ID)
+			}
+		}
+		if other.Phase == TunnelActive || !terminalTunnel(other.Phase) || other.Phase == TunnelRollbackFailed {
+			if why := tunnelResourceConflict(t, other); why != "" {
+				return Tunnel{}, Node{}, Node{}, errors.New(why)
+			}
+		}
+	}
+	if r := s.rotationOnNodesLocked(req.EXNode, req.IRNode); r != nil {
+		return Tunnel{}, Node{}, Node{}, fmt.Errorf("certificate rotation %s is %s on one of these nodes", r.ID, r.Phase)
+	}
 	// The same rules the agents apply, checked up front so a bad plan never
 	// starts.
 	exParams := t.prepareEXParams()
@@ -277,6 +373,10 @@ func (s *Store) resolveTunnelLocked(req TunnelRequest, now time.Time) (Tunnel, N
 	}
 	probe.Action = JobTunnelPrepareIR
 	probe.Params = map[string]string{"tunnel_id": t.ID, "code": "BAFTPAIR1:AAAAAAAAAAAAAAAAAAAAAAAAAA", "route_listen": t.RouteListen, "route_id": t.RouteID}
+	if t.InstanceID != "" {
+		probe.Params["instance_id"] = t.InstanceID
+		probe.Params["metrics_listen"] = t.IRMetricsListen
+	}
 	if err := probe.Validate(); err != nil {
 		return Tunnel{}, Node{}, Node{}, fmt.Errorf("invalid tunnel plan: %w", err)
 	}
@@ -318,7 +418,7 @@ func (s *Store) CreateTunnelFromPlan(req TunnelRequest, planHash string, now tim
 		return Tunnel{}, Plan{}, err
 	}
 	t.PlanHash = planHash
-	t.ExpectedGen = map[string]GenExpect{ex.ID: expectedGeneration(ex), ir.ID: expectedGeneration(ir)}
+	t.ExpectedGen = map[string]GenExpect{ex.ID: expectedGeneration(ex, t.InstanceID), ir.ID: expectedGeneration(ir, t.InstanceID)}
 	exParams := t.prepareEXParams()
 	t.Phase = TunnelPreparingEX
 	touch(&t, t.EXNode)
@@ -331,10 +431,15 @@ func (s *Store) CreateTunnelFromPlan(req TunnelRequest, planHash string, now tim
 }
 
 func (t Tunnel) prepareEXParams() map[string]string {
-	return map[string]string{
+	p := map[string]string{
 		"tunnel_id": t.ID, "public_address": t.PublicAddress, "port": strconv.Itoa(t.Port), "target": t.Target,
 		"route_id": t.RouteID, "record_shaping": strconv.FormatBool(t.RecordShaping),
 	}
+	if t.InstanceID != "" {
+		p["instance_id"] = t.InstanceID
+		p["metrics_listen"] = t.EXMetricsListen
+	}
+	return p
 }
 
 func (s *Store) GetTunnel(id string) (Tunnel, bool) {
@@ -525,7 +630,11 @@ func (s *Store) advanceLocked(t *Tunnel, now time.Time) *TunnelEvent {
 		}
 		touch(t, t.IRNode)
 		t.Phase = TunnelPreparingIR
-		s.tunnelJobLocked(t, t.IRNode, JobTunnelPrepareIR, map[string]string{"code": secret, "route_listen": t.RouteListen, "route_id": t.RouteID}, now)
+		params := map[string]string{"code": secret, "route_listen": t.RouteListen, "route_id": t.RouteID}
+		if t.InstanceID != "" {
+			params["metrics_listen"] = t.IRMetricsListen
+		}
+		s.tunnelJobLocked(t, t.IRNode, JobTunnelPrepareIR, params, now)
 	case TunnelPreparingIR:
 		if secret == "" {
 			s.failLocked(t, "IR returned no reply code", now)
@@ -598,12 +707,12 @@ func (s *Store) nextAfterFinalizeLocked(t *Tunnel, now time.Time) *TunnelEvent {
 	t.Phase, t.JobID, t.UpdatedAt = TunnelActive, "", now
 	for node, gen := range t.ObservedGen {
 		if n, ok := s.st.Nodes[node]; ok {
-			n.AppliedGeneration = gen
+			setAppliedGeneration(&n, t.InstanceID, gen)
 			s.st.Nodes[node] = n
 		}
 	}
 	for id, other := range s.st.Tunnels {
-		if id != t.ID && other.Phase == TunnelActive && (other.EXNode == t.EXNode || other.IRNode == t.IRNode || other.EXNode == t.IRNode || other.IRNode == t.EXNode) {
+		if id != t.ID && other.Phase == TunnelActive && sameManagedSlot(*t, other) {
 			other.Phase, other.UpdatedAt = TunnelSuperseded, now
 			s.st.Tunnels[id] = other
 		}
@@ -775,6 +884,9 @@ func verifyObserved(t Tunnel, node, role string, o tunnelnode.Observed) []string
 	bad := func(format string, a ...any) { p = append(p, fmt.Sprintf(format, a...)) }
 	if o.TunnelID != t.ID {
 		bad("change id is %q, want %q", o.TunnelID, t.ID)
+	}
+	if o.InstanceID != t.InstanceID {
+		bad("instance id is %q, want %q", o.InstanceID, t.InstanceID)
 	}
 	if o.Role != role {
 		bad("node role is %q, want %q", o.Role, role)

@@ -74,6 +74,7 @@ var (
 	versionRe = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 
 	tunnelIDRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	instanceIDRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`)
 	addressRe       = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$`)
 	portRe          = regexp.MustCompile(`^[0-9]{1,5}$`)
 	fixedTargetR    = regexp.MustCompile(`^(([0-9]{1,3}\.){3}[0-9]{1,3}|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}$`)
@@ -116,6 +117,30 @@ var paramRules = map[string]map[string]*regexp.Regexp{
 	ActionCertRollback:   {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe, "ex_never_activated": boolRe},
 }
 
+// optionalParamRules extends an action without weakening its required shape.
+// Legacy BCCs may omit these fields; new BCCs use them for multi-instance
+// tunnel isolation.
+var optionalParamRules = map[string]map[string]*regexp.Regexp{
+	ActionTunnelPrepareEX: {"instance_id": instanceIDRe, "metrics_listen": loopbackListenR},
+	ActionTunnelPrepareIR: {"instance_id": instanceIDRe, "metrics_listen": loopbackListenR},
+	ActionTunnelCommitEX:  {"instance_id": instanceIDRe},
+	ActionTunnelCommitIR:  {"instance_id": instanceIDRe},
+	ActionTunnelHealth:    {"instance_id": instanceIDRe},
+	ActionTunnelObserve:   {"instance_id": instanceIDRe},
+	ActionTunnelInspect:   {"instance_id": instanceIDRe},
+	ActionTunnelFinalize:  {"instance_id": instanceIDRe},
+	ActionTunnelRollback:  {"instance_id": instanceIDRe},
+	ActionCertPrepareEX:   {"instance_id": instanceIDRe},
+	ActionCertTrustIR:     {"instance_id": instanceIDRe},
+	ActionCertVerifyEX:    {"instance_id": instanceIDRe},
+	ActionCertVerifyIR:    {"instance_id": instanceIDRe},
+	ActionCertActivateEX:  {"instance_id": instanceIDRe},
+	ActionCertConfirmIR:   {"instance_id": instanceIDRe},
+	ActionCertRetireIR:    {"instance_id": instanceIDRe},
+	ActionCertRetireEX:    {"instance_id": instanceIDRe},
+	ActionCertRollback:    {"instance_id": instanceIDRe},
+}
+
 // Actions returns the allowlist, sorted.
 func Actions() []string {
 	out := make([]string, 0, len(paramRules))
@@ -152,7 +177,10 @@ func (j Job) Validate() error {
 	for k, v := range j.Params {
 		re, ok := rules[k]
 		if !ok {
-			return fmt.Errorf("action %s does not take parameter %q", j.Action, k)
+			re, ok = optionalParamRules[j.Action][k]
+			if !ok {
+				return fmt.Errorf("action %s does not take parameter %q", j.Action, k)
+			}
 		}
 		if len(v) > maxParamLen || !re.MatchString(v) {
 			return fmt.Errorf("parameter %s is malformed", k)
