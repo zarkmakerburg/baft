@@ -39,6 +39,8 @@ Final systemd hardening, installer/package flow, admin transactions, certificate
 
 `install.sh` now provisions a runnable pair without hand-written YAML:
 
+Without `--role` the installer asks whether the server is outside Iran (EX) or inside Iran (IR), and for EX the public address, then continues as below. The questions are read from the terminal, so they also work with `curl ... | sudo bash`.
+
 1. EX: `sudo bash install.sh --role ex --public-address HOST` installs the binaries (see "Where the binaries come from" below), creates the Noise key and the outer TLS PKI (`baft-pair pki`, no OpenSSL needed), and prints a one-time `BAFTPAIR1:` code. It then waits for the IR's reply (or prints the `baft-pair ex-accept` command to run later when `BAFT_NONINTERACTIVE=1`).
 2. IR: `sudo bash install.sh --role ir --pairing-code BAFTPAIR1:...` runs `baft-pair ir-apply --config-out`, which writes `/etc/baft/baft.yaml` (a Noise dialer pinned to the EX key, no client certificate), starts the service, and prints a `BAFTREPLY1:` code.
 3. EX: paste the reply. `baft-pair ex-accept` checks it with an HMAC keyed by the pairing code's one-time PSK (a reply from anyone without the code is rejected), writes the listener config pinned to the IR key, deletes the PSK, and the service starts.

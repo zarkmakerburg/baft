@@ -217,19 +217,23 @@ BCC رابط مدیریتی پروژه است و برای عملیات fleet و 
 
 ### نصب یک‌خطی
 
-روی هر سرور یک خط کافی است (Debian/Ubuntu، با دسترسی root). اول EX را نصب کنید؛ EX یک pairing code با پیشوند `BAFTPAIR1:` برای IR چاپ می‌کند.
+روی هر دو سرور همین یک خط را اجرا کنید (Debian/Ubuntu، با دسترسی root):
 
 <div dir="ltr" align="left">
 
 ```bash
-# EX (سرور خارج)
-curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash -s -- --role ex --public-address EX_HOST_OR_IP
-
-# IR (سرور داخل)، با pairing code چاپ‌شده توسط EX
-curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash -s -- --role ir --pairing-code 'BAFTPAIR1:...'
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash
 ```
 
 </div>
+
+نصب‌کننده می‌پرسد سرور کجاست و مراحل همان نقش را دنبال می‌کند:
+
+1. **خارج از ایران (EX)**: اول روی این سرور اجرا کنید. آدرس عمومی را می‌پرسد (آدرس تشخیص‌داده‌شده پیش‌فرض است) و یک pairing code یک‌بارمصرف با پیشوند `BAFTPAIR1:` چاپ می‌کند و منتظر می‌ماند.
+2. **داخل ایران (IR)**: همان خط را اجرا کنید و pairing code را وارد کنید. IR راه می‌افتد و یک کد پاسخ با پیشوند `BAFTREPLY1:` چاپ می‌کند.
+3. کد پاسخ را در سرور EX وارد کنید. EX راه می‌افتد و تونل برقرار است.
+
+برای اسکریپت و خودکارسازی می‌توانید پرسش‌ها را با پارامتر رد کنید: `--role ex --public-address EX_HOST_OR_IP` یا `--role ir --pairing-code 'BAFTPAIR1:...'` بعد از `sudo bash -s --`. بدون ترمینال (یا با `BAFT_NONINTERACTIVE=1`) چیزی پرسیده نمی‌شود و `--role` الزامی است.
 
 هر release که installer دریافت می‌کند با کلید ریشهٔ pin‌شده تأیید می‌شود. اگر ترجیح می‌دهید installer را اول بخوانید، روش مرحله‌به‌مرحلهٔ زیر را دنبال کنید.
 

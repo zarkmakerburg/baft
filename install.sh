@@ -118,6 +118,7 @@ LOGO
 usage() {
   cat <<EOF
 Usage:
+  sudo bash install.sh            # asks: outside Iran (EX) or inside Iran (IR)
   sudo bash install.sh --role ex --public-address HOST_OR_IP [--reply-code BAFTREPLY1:...]
   sudo bash install.sh --role ir [--pairing-code BAFTPAIR1:...]
   sudo bash install.sh --role ex --stealth-pro  # existing pinned Noise config
@@ -199,6 +200,22 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# Questions are read from the terminal, not stdin: with
+# `curl ... | sudo bash` stdin is this script itself. Without a terminal, or
+# with BAFT_NONINTERACTIVE=1, nothing is asked and missing answers are errors.
+TTY_FD=""
+if [[ "$NONINTERACTIVE" != "1" ]] && ( : </dev/tty ) 2>/dev/null; then
+  exec 3</dev/tty
+  TTY_FD=3
+fi
+# ask VAR PROMPT [read flags...]: fails when there is no terminal or no answer.
+ask() {
+  local __var=$1 __prompt=$2
+  shift 2
+  [[ -n "$TTY_FD" ]] || return 1
+  IFS= read -r "$@" -p "$__prompt" "$__var" <&3
+}
 
 # ---------------------------------------------------------------------------
 # Inspect, plan, apply (rerunnable installer).
@@ -438,9 +455,9 @@ confirm_plan() {
   [[ -n "$REFUSED" ]] && return 0
   [[ "$STATE" == "FRESH_INSTALL" || "$PLAN_CHANGES" == 0 ]] && return 0
   [[ "$ASSUME_YES" == "1" ]] && return 0
-  if [[ -t 0 && "$NONINTERACTIVE" != "1" ]]; then
-    local a
-    read -r -p "[baft-install] Apply this plan? [y/N] " a
+  if [[ -n "$TTY_FD" ]]; then
+    local a=""
+    ask a "[baft-install] Apply this plan? [y/N] " || true
     [[ "$a" == "y" || "$a" == "Y" || "$a" == "yes" ]] || die "not applied; nothing was changed"
     return 0
   fi
@@ -805,6 +822,28 @@ if [[ "$AGENT_ONLY" == "1" ]]; then
   [[ -n "${BAFT_BCC_JOB_KEY:-}" ]] || die "BAFT_BCC_JOB_KEY (baft-bcc jobkey show) is required"
   [[ -n "${BAFT_AGENT_TOKEN_FILE:-}" || -n "${BAFT_AGENT_TOKEN:-}" ]] || die "BAFT_AGENT_TOKEN_FILE or BAFT_AGENT_TOKEN is required"
 else
+  # One install command for both servers: without --role, ask where this
+  # server is and continue with that role's steps.
+  if [[ -z "$ROLE" && -n "$TTY_FD" ]]; then
+    printf '\nWhere is this server?  /  این سرور کجاست؟\n' >&2
+    printf '  1) Outside Iran (EX, exit server) - install this one first  /  خارج از ایران\n' >&2
+    printf '  2) Inside Iran (IR) - needs the pairing code printed by EX  /  داخل ایران\n' >&2
+    while [[ -z "$ROLE" ]]; do
+      _choice=""
+      ask _choice "Choose 1 or 2: " || die "no answer; pass --role ex or --role ir"
+      case "$_choice" in
+        1|ex|EX) ROLE=ex ;;
+        2|ir|IR) ROLE=ir ;;
+        *) printf 'Please type 1 or 2.\n' >&2 ;;
+      esac
+    done
+    if [[ "$ROLE" == "ex" && -z "$PUBLIC_ADDR" && "$PLAN_ONLY" != "1" ]]; then
+      _detected="$(hostname -I 2>/dev/null | awk '{print $1}')"
+      ask PUBLIC_ADDR "Public IP or hostname IR will connect to [${_detected:-none}]: " || true
+      PUBLIC_ADDR="${PUBLIC_ADDR:-$_detected}"
+    fi
+  fi
+  [[ -n "$ROLE" ]] || die "--role ex or --role ir is required when there is no terminal to ask"
   [[ "$ROLE" == "ex" || "$ROLE" == "ir" ]] || die "--role must be ex or ir"
 fi
 
@@ -1355,8 +1394,8 @@ if [[ "$DO_PAIRING" == 1 ]]; then
       --metrics-listen "$BAFT_METRICS_LISTEN" --unix-socket "$BAFT_STATE_DIR/admin.sock"
       --config-out "$CONFIG")
     printf '\nPAIRING CODE (secret, one-time, 15 minute lifetime):\n%s\n\n' "$PAIRING"
-    if [[ -z "$REPLY_CODE" && "$NONINTERACTIVE" != "1" ]]; then
-      read -r -p "Run the IR installer with this code, then paste its BAFTREPLY1 code here: " REPLY_CODE
+    if [[ -z "$REPLY_CODE" ]]; then
+      ask REPLY_CODE "Run the installer on the IR server with this code, then paste its BAFTREPLY1 code here: " || true
     fi
     if [[ -z "$REPLY_CODE" ]]; then
       printf 'When the IR prints its reply code, finish pairing on this host with:\n  sudo %s --reply BAFTREPLY1:...\n  sudo chown root:%s %s && sudo chmod 0640 %s && sudo systemctl restart %s\n\n' \
@@ -1373,9 +1412,9 @@ if [[ "$DO_PAIRING" == 1 ]]; then
     log "$BAFT_SERVICE.service started; listening on 0.0.0.0:${BAFT_PORT}, exiting to $BAFT_TARGET"
   else
     if [[ -z "$PAIRING_CODE" ]]; then
-      [[ "$NONINTERACTIVE" == "1" ]] && die "BAFT_PAIRING_CODE is required in non-interactive mode"
-      read -r -s -p "Paste BAFT pairing code: " PAIRING_CODE
-      printf '\n'
+      ask PAIRING_CODE "Paste the BAFTPAIR1 pairing code printed by EX: " -s || die "a pairing code is required: pass --pairing-code (or BAFT_PAIRING_CODE) when there is no terminal"
+      printf '\n' >&2
+      [[ -n "$PAIRING_CODE" ]] || die "no pairing code entered"
     fi
     REPLY="$("$BAFT_PAIR_BIN" ir-apply --code "$PAIRING_CODE" --key "$NOISE_KEY" --state-dir "$BAFT_STATE_DIR" \
       --config-out "$CONFIG" --route-listen "$BAFT_ROUTE_LISTEN" --metrics-listen "$BAFT_METRICS_LISTEN" \

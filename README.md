@@ -36,17 +36,21 @@ The repository is developed from content Blueprint v1.4 and Implementation Maste
 
 ## Quick install
 
-One line on each server (Debian/Ubuntu, run as root). Install EX first; it prints a `BAFTPAIR1:...` pairing code for IR.
+The same line on both servers (Debian/Ubuntu, run as root):
 
 ```bash
-# EX (outside server)
-curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash -s -- --role ex --public-address EX_HOST_OR_IP
-
-# IR (inside server), with the pairing code printed by EX
-curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash -s -- --role ir --pairing-code 'BAFTPAIR1:...'
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash
 ```
 
-Prefer to read the installer first? `curl -fsSLO https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh && less install.sh`, then run `sudo bash install.sh` with the same flags. Every release the installer fetches is verified against the pinned root key. Full guide: [Running IR and EX](docs/en/06-running-ir-ex.md).
+The installer asks where the server is and follows that path:
+
+1. **Outside Iran (EX)**: run it here first. It asks for the public address (the detected one is the default) and prints a one-time `BAFTPAIR1:...` pairing code, then waits.
+2. **Inside Iran (IR)**: run the same line and paste the pairing code. IR starts and prints a `BAFTREPLY1:...` code.
+3. Paste that reply code into the EX prompt. EX starts, and the tunnel is up.
+
+For scripts and automation, skip the questions with flags: `... | sudo bash -s -- --role ex --public-address EX_HOST_OR_IP` or `--role ir --pairing-code 'BAFTPAIR1:...'`. Without a terminal (or with `BAFT_NONINTERACTIVE=1`) nothing is asked and `--role` is required.
+
+Prefer to read the installer first? `curl -fsSLO https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh && less install.sh`, then run `sudo bash install.sh`. Every release the installer fetches is verified against the pinned root key. Full guide: [Running IR and EX](docs/en/06-running-ir-ex.md).
 
 
 ## Project status
