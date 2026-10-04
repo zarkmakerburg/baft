@@ -201,20 +201,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Questions are read from the terminal, not stdin: with
-# `curl ... | sudo bash` stdin is this script itself. Without a terminal, or
-# with BAFT_NONINTERACTIVE=1, nothing is asked and missing answers are errors.
-TTY_FD=""
-if [[ "$NONINTERACTIVE" != "1" ]] && ( : </dev/tty ) 2>/dev/null; then
-  exec 3</dev/tty
-  TTY_FD=3
+# Where questions are read from. Run from a file (`bash install.sh`), stdin
+# answers them as before: a terminal, or a pipe/FIFO that scripts feed the
+# reply code through. Run piped (`curl ... | sudo bash`), stdin is this script
+# itself, so questions go to the controlling terminal instead. With
+# BAFT_NONINTERACTIVE=1, or piped without a terminal, nothing is asked and
+# missing answers are errors.
+ASK_FD=""
+ASK_TTY=0
+if [[ "$NONINTERACTIVE" != "1" ]]; then
+  if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    ASK_FD=0
+    [[ -t 0 ]] && ASK_TTY=1
+  elif ( : </dev/tty ) 2>/dev/null; then
+    exec 3</dev/tty
+    ASK_FD=3
+    ASK_TTY=1
+  fi
 fi
-# ask VAR PROMPT [read flags...]: fails when there is no terminal or no answer.
+# ask VAR PROMPT [read flags...]: fails when there is nothing to ask or no answer.
 ask() {
   local __var=$1 __prompt=$2
   shift 2
-  [[ -n "$TTY_FD" ]] || return 1
-  IFS= read -r "$@" -p "$__prompt" "$__var" <&3
+  [[ -n "$ASK_FD" ]] || return 1
+  IFS= read -r "$@" -p "$__prompt" "$__var" <&"$ASK_FD"
 }
 
 # ---------------------------------------------------------------------------
@@ -455,7 +465,7 @@ confirm_plan() {
   [[ -n "$REFUSED" ]] && return 0
   [[ "$STATE" == "FRESH_INSTALL" || "$PLAN_CHANGES" == 0 ]] && return 0
   [[ "$ASSUME_YES" == "1" ]] && return 0
-  if [[ -n "$TTY_FD" ]]; then
+  if [[ "$ASK_TTY" == 1 ]]; then
     local a=""
     ask a "[baft-install] Apply this plan? [y/N] " || true
     [[ "$a" == "y" || "$a" == "Y" || "$a" == "yes" ]] || die "not applied; nothing was changed"
@@ -824,7 +834,7 @@ if [[ "$AGENT_ONLY" == "1" ]]; then
 else
   # One install command for both servers: without --role, ask where this
   # server is and continue with that role's steps.
-  if [[ -z "$ROLE" && -n "$TTY_FD" ]]; then
+  if [[ -z "$ROLE" && -n "$ASK_FD" ]]; then
     printf '\nWhere is this server?  /  این سرور کجاست؟\n' >&2
     printf '  1) Outside Iran (EX, exit server) - install this one first  /  خارج از ایران\n' >&2
     printf '  2) Inside Iran (IR) - needs the pairing code printed by EX  /  داخل ایران\n' >&2

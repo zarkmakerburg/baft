@@ -84,7 +84,7 @@ func TestInstallerWithoutRoleOrTerminalFails(t *testing.T) {
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // no controlling terminal
 	out, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "--role ex or --role ir is required when there is no terminal") {
+	if err == nil || !strings.Contains(string(out), "--role ex or --role ir") {
 		t.Fatalf("want a clear error without a terminal, got err=%v\n%s", err, out)
 	}
 	cmd = exec.Command("bash", filepath.Join("..", "..", "install.sh"), "--plan")
