@@ -91,7 +91,7 @@ func (r *Runtime) openRuntimeCarrier(ctx context.Context,cfg config.Config,tlsCf
 // traffic (a Chrome-like User-Agent and an Origin for the configured host).
 func wsCarrierHeaders(serverName string) http.Header {
 	h := http.Header{}
-	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	if serverName != "" {
 		h.Set("Origin", "https://"+serverName)
 	}
