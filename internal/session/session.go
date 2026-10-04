@@ -461,9 +461,14 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 		epoch,carrierID,generation:=p.currentCarrierIdentity()
 		if err:=p.handleFrameFrom(runCtx,epoch,carrierID,*first,generation);err!=nil{return err}
 	}
+	// DATA payloads are decoded into one reused buffer: handleData copies
+	// them into the receive ring before the next frame is read, and nothing
+	// on the DATA path keeps the slice. Race builds poison the buffer after
+	// each DATA frame so any code that does keep it fails tests loudly.
+	var dataBuf []byte
 	for {
 		carrier,epoch,carrierID,generation:=p.currentCarrier()
-		f, err := protocol.Decode(carrier.In)
+		f, err := protocol.DecodeReuse(carrier.In, &dataBuf)
 		if err != nil {
 			if ctx.Err() != nil { return ctx.Err() }
 			if !p.recoveryEnabled {
@@ -474,7 +479,11 @@ func (p *Peer) run(ctx context.Context, first *protocol.Frame) (retErr error) {
 			if err:=p.waitForCarrierSwitch(runCtx,epoch,carrierID,generation);err!=nil{return err}
 			continue
 		}
-		if err := p.handleFrameFrom(runCtx,epoch,carrierID,f,generation); err != nil {
+		herr := p.handleFrameFrom(runCtx,epoch,carrierID,f,generation)
+		if poisonReusedData && f.Type == protocol.TypeData {
+			for i := range f.Payload { f.Payload[i] = 0xEE }
+		}
+		if err := herr; err != nil {
 			if p.recoveryEnabled && errors.Is(err,recovery.ErrStaleEpoch) {
 				// A delayed frame from a fenced carrier is expected during
 				// replacement. Reject it without mutating flow state, then
