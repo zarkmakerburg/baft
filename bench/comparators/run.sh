@@ -115,8 +115,19 @@ J
 RESULTS="$OUT/results.jsonl"; : >"$RESULTS"
 for t in $TOOLS; do
   log "== $t"
-  "start_$t"
-  python3 bench/comparators/tput.py run "$ENTRY" 4 1 >/dev/null || { log "$t warm-up failed"; tail -n 20 "$WORK"/*.log >&2; exit 1; }
+  if ! "start_$t"; then log "$t did not start"; tail -n 20 "$WORK"/*.log >&2; stop_all; continue; fi
+  # Some tunnels (FRP) accept on the entry port before their work connection
+  # is ready; retry the warm-up briefly, then skip the tool if it never works.
+  warm=0
+  for _ in $(seq 1 30); do
+    if python3 bench/comparators/tput.py run "$ENTRY" 4 1 >/dev/null 2>&1; then warm=1; break; fi
+    sleep 1
+  done
+  if [[ "$warm" != 1 ]]; then
+    log "$t warm-up failed"; tail -n 20 "$WORK"/*.log >&2
+    printf '{"tool":"%s","rtt_ms":0,"loss_pct":0,"rep":0,"result":{"ok": false, "error": "warm-up failed"}}\n' "$t" >>"$RESULTS"
+    stop_all; continue
+  fi
   for cell in $CELLS; do
     rtt=${cell%%:*}; loss=${cell##*:}
     netem_on "$CARRIER" "$rtt" "$loss"
