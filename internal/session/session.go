@@ -94,8 +94,14 @@ type Peer struct {
 	pendingOpens       map[uint64]protocol.OpenRequest
 	closedOrder        []uint64
 	// finishedFins maps a Flow that finished gracefully to the final offset
-	// of this side's FIN; bounded and evicted together with closedOrder.
+	// of this side's FIN, and finishedPeerFins to the final offset of the
+	// peer's FIN; both are bounded and evicted together with closedOrder.
 	finishedFins       map[uint64]uint64
+	finishedPeerFins   map[uint64]uint64
+	// resetFlows maps a Flow this side RESET to its code, so a peer that
+	// missed the RESET (lost with a failed carrier) and keeps finishing the
+	// Flow is told again; bounded and evicted together with closedOrder.
+	resetFlows         map[uint64]protocol.ErrorCode
 	nextID             uint64
 	closed             bool
 	runLifecycleMu     sync.RWMutex
@@ -248,7 +254,7 @@ func New(role Role, c Carrier, peerID string, table *routes.Table, opts Options)
 	p := &Peer{
 		role: role, carrier: c, writer: frameWriter{w: c.Out}, peerID: peerID,
 		routes: table, allocator: opts.Resources, flowSlots: opts.FlowSlots, flows: make(map[uint64]*flow),
-		closedFlows: make(map[uint64]struct{}), finishedFins: make(map[uint64]uint64), pendingOpens: make(map[uint64]protocol.OpenRequest),
+		closedFlows: make(map[uint64]struct{}), finishedFins: make(map[uint64]uint64), finishedPeerFins: make(map[uint64]uint64), resetFlows: make(map[uint64]protocol.ErrorCode), pendingOpens: make(map[uint64]protocol.OpenRequest),
 		nodeID: opts.NodeID, expectedPeerNodeID: opts.ExpectedPeerNodeID,
 		bootID: bootID, shardID: opts.ShardID, profileID: opts.ProfileID,
 		profileVersion: opts.ProfileVersion, configRevision: opts.ConfigRevision,
@@ -716,7 +722,10 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
 			if p.isClosedFlow(fr.StreamID) {
-				return nil
+				if p.resendLostReset(fr.StreamID) {
+					return nil
+				}
+				return p.reackFinishedFin(fr.StreamID, fr.Offset)
 			}
 			return err
 		}
@@ -725,6 +734,9 @@ func (p *Peer) handleFrame(ctx context.Context, fr protocol.Frame) error {
 		fl, err := p.getOpenFlow(fr.StreamID)
 		if err != nil {
 			if p.isClosedFlow(fr.StreamID) {
+				if p.resendLostReset(fr.StreamID) {
+					return nil
+				}
 				return p.reconfirmFinishedFinAck(fr.StreamID, fr.Offset)
 			}
 			return err
@@ -1092,6 +1104,11 @@ func (p *Peer) sendReset(fl *flow, code protocol.ErrorCode) error {
 	fl.mu.Unlock()
 	fl.close()
 	p.removeFlow(fl.id)
+	p.mu.Lock()
+	if _, ok := p.closedFlows[fl.id]; ok {
+		p.resetFlows[fl.id] = code
+	}
+	p.mu.Unlock()
 	return nil
 }
 
@@ -1099,7 +1116,7 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 	fl.mu.Lock()
 	if fl.closed {
 		fl.mu.Unlock()
-		return 0, errors.New("flow closed")
+		return 0, errFlowClosed
 	}
 	need := int64(defaultWindow)
 	if fl.receiveReserved >= need && fl.rxRing != nil {
@@ -1135,7 +1152,7 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 		fl.mu.Unlock()
 		ring.Close()
 		_ = fl.allocator.Release(fl.resourceID, resources.Receive, need)
-		return 0, errors.New("flow closed")
+		return 0, errFlowClosed
 	}
 	fl.receiveReserved = need
 	fl.rxRing = ring
@@ -1279,6 +1296,7 @@ func (p *Peer) finishIfComplete(fl *flow) {
 	// receipt of the FIN_ACK we sent for its FIN.
 	done := fl.finAcked && fl.finAckSent && fl.finAckConfirmed
 	final := fl.txNext
+	peerFinal := fl.finRecvFinal
 	fl.mu.Unlock()
 	if !done {
 		return
@@ -1288,6 +1306,7 @@ func (p *Peer) finishIfComplete(fl *flow) {
 	p.mu.Lock()
 	if _, ok := p.closedFlows[fl.id]; ok {
 		p.finishedFins[fl.id] = final
+		p.finishedPeerFins[fl.id] = peerFinal
 	}
 	p.mu.Unlock()
 }
@@ -1403,7 +1422,7 @@ func (p *Peer) pumpTarget(ctx context.Context, fl *flow) {
 			closed = fl.closed
 			finalReady = fl.finRecv && !fl.finAckConfirmed && fl.rxWritten == fl.finRecvFinal
 			fl.mu.Unlock()
-			if closed{return}
+			if closed||errors.Is(err,errFlowClosed){return}
 			if finalReady{_ = p.ackRemoteFin(fl);return}
 			if p.recoveryEnabled {
 				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
@@ -1471,6 +1490,10 @@ func (p *Peer) runExactLiveDelivery(ctx context.Context,fl *flow) {
 				if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,item.producer,item.frame.Offset,item.frame.Offset+uint64(len(item.frame.Payload)),generation)}
 				err=sender.sendDataWithProducer(ctx,fl,item.frame,item.producer)
 			}
+			// A Flow that ended while this frame waited is not a carrier failure;
+			// on a listener, reporting one leaves the carrier marked unusable
+			// with nothing to replace it.
+			if errors.Is(err,errFlowClosed){return}
 			if err!=nil&&p.recoveryEnabled{
 				p.onCarrierFailureForGeneration(err,generation,SenderStopFrameProcessing)
 				if werr:=p.waitForCarrierSwitch(ctx,epoch,owner,generation);werr==nil{continue}
@@ -1573,6 +1596,7 @@ func (p *Peer) pumpLocal(ctx context.Context, fl *flow) {
 					}
 					if p.recoveryEnabled{p.traceLiveDataAttempt(fl,sender,producer,off,off+uint64(len(payload)),generation)}
 					sendErr=sender.sendDataWithProducer(ctx, fl, protocol.Frame{Type: protocol.TypeData, StreamID: fl.id, Offset: off, Payload: payload},producer)
+					if errors.Is(sendErr,errFlowClosed){return}
 					if sendErr!=nil&&p.recoveryEnabled {
 						p.onCarrierFailureForGeneration(sendErr,generation,SenderStopFrameProcessing)
 						// A failed direct write belongs to the retired physical carrier.
@@ -1636,7 +1660,7 @@ func (f *flow) reserveReadCapacity(ctx context.Context, max int) (int, error) {
 		f.mu.Lock()
 		if f.closed {
 			f.mu.Unlock()
-			return 0, errors.New("flow closed")
+			return 0, errFlowClosed
 		}
 		available := f.peerMax - f.txNext
 		wait := f.creditWait
@@ -1660,7 +1684,7 @@ func (f *flow) reserveReadCapacity(ctx context.Context, max int) (int, error) {
 		if f.closed {
 			f.mu.Unlock()
 			_ = f.allocator.Release(f.resourceID, resources.Replay, int64(want))
-			return 0, errors.New("flow closed")
+			return 0, errFlowClosed
 		}
 		f.mu.Unlock()
 		return int(want), nil
@@ -1671,7 +1695,7 @@ func (f *flow) commitSend(data []byte) (uint64, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
-		return 0, nil, errors.New("flow closed")
+		return 0, nil, errFlowClosed
 	}
 	n := uint64(len(data))
 	if n > ^uint64(0)-f.txNext || f.txNext+n > f.peerMax {
@@ -1909,12 +1933,14 @@ func (p *Peer) removeFlow(id uint64) {
 				p.closedOrder = p.closedOrder[1:]
 				delete(p.closedFlows, evict)
 				delete(p.finishedFins, evict)
+				delete(p.finishedPeerFins, evict)
+				delete(p.resetFlows, evict)
 			}
 		}
 	}
 	p.mu.Unlock()
 	if s:=p.senderNow();s!=nil {
-		s.removeFlow(id, errors.New("flow closed"))
+		s.removeFlow(id, errFlowClosed)
 	}
 }
 
@@ -1995,6 +2021,49 @@ func (p *Peer) handlePong(fr protocol.Frame) error {
 	rtt:=time.Duration(now-sent)
 	if rtt>time.Minute{return errors.New("implausible PONG RTT")}
 	if p.latencyObserver!=nil{p.latencyObserver(rtt)}
+	return nil
+}
+
+// resendLostReset answers a FIN or FIN_ACK for a Flow this side RESET by
+// sending the RESET again. Those frames mean the peer is still finishing the
+// Flow, so it has not seen the RESET: it was lost with a failed carrier, and
+// recovery replays FIN state but not a RESET of a Flow that no longer exists
+// here. Absorbing them silently left the peer holding the Flow forever. A
+// duplicate RESET is harmless: the peer absorbs it for a closed Flow.
+func (p *Peer) resendLostReset(id uint64) bool {
+	p.mu.Lock()
+	code, ok := p.resetFlows[id]
+	p.mu.Unlock()
+	if !ok {
+		return false
+	}
+	payload, err := protocol.EncodeControl(protocol.Reset{Code: code})
+	if err != nil {
+		return true
+	}
+	if s := p.senderNow(); s != nil {
+		_ = s.sendControl(protocol.Frame{Type: protocol.TypeReset, StreamID: id, Payload: payload})
+	}
+	return true
+}
+
+// reackFinishedFin answers a FIN for a Flow this side already finished. As
+// with a late FIN_ACK below, recovery can finish this side's Flow from the
+// peer's snapshot evidence while the FIN_ACK we wrote for the peer's FIN was
+// lost with the failed carrier. The peer then replays its FIN and keeps its
+// Flow open until a FIN_ACK arrives; absorbing the replay silently left it
+// waiting forever. Only a graceful finish whose peer FIN ended at the same
+// offset is acknowledged.
+func (p *Peer) reackFinishedFin(id, off uint64) error {
+	p.mu.Lock()
+	final, ok := p.finishedPeerFins[id]
+	p.mu.Unlock()
+	if !ok || final != off {
+		return nil
+	}
+	if s := p.senderNow(); s != nil {
+		_ = s.sendControl(protocol.Frame{Type: protocol.TypeFinAck, StreamID: id, Offset: off})
+	}
 	return nil
 }
 

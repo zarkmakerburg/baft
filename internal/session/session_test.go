@@ -399,6 +399,31 @@ func TestInFlightDataAndFinAfterLocalResetAreAbsorbed(t *testing.T) {
 	}
 }
 
+// The peer keeps finishing a Flow only if it never saw our RESET (lost with a
+// failed carrier); answer its FIN and FIN_ACK with the RESET again.
+func TestLateFinForLocallyResetFlowResendsReset(t *testing.T) {
+	var out bytes.Buffer
+	p,err:=New(Dialer,Carrier{In:bytes.NewReader(nil),Out:&out},"urn:baft:node:ex-01",nil,Options{NodeID:"ir-01",ExpectedPeerNodeID:"ex-01"});if err!=nil{t.Fatal(err)}
+	local,remote:=net.Pipe();defer remote.Close()
+	f:=newFlow(1,"main","00112233445566778899aabbccddeeff",local,p.allocator);f.openOK=true
+	p.mu.Lock();p.flows[1]=f;p.localReady=true;p.peerReady=true;p.markReadyLocked();p.mu.Unlock()
+	if err:=p.sendReset(f,protocol.ErrorTargetUnreachable);err!=nil{t.Fatal(err)}
+	if _,err:=protocol.Decode(&out);err!=nil{t.Fatalf("first RESET not written: %v",err)}
+	for _,typ:=range []protocol.FrameType{protocol.TypeFin,protocol.TypeFinAck}{
+		if err:=p.handleFrame(context.Background(),protocol.Frame{Type:typ,StreamID:1,Offset:5});err!=nil{t.Fatal(err)}
+		fr,err:=protocol.Decode(&out);if err!=nil{t.Fatalf("no RESET resent for late %v: %v",typ,err)}
+		rst,err:=protocol.DecodeReset(fr.Payload)
+		if fr.Type!=protocol.TypeReset||fr.StreamID!=1||err!=nil||rst.Code!=protocol.ErrorTargetUnreachable{t.Fatalf("late %v answered with %v stream=%d code=%v err=%v",typ,fr.Type,fr.StreamID,rst.Code,err)}
+	}
+	// A Flow closed because the peer RESET it is not answered.
+	g:=newFlow(3,"main","00112233445566778899aabbccddeeff",nil,p.allocator);g.openOK=true
+	p.mu.Lock();p.flows[3]=g;p.mu.Unlock()
+	payload,_:=protocol.EncodeControl(protocol.Reset{Code:protocol.ErrorAdminDrain})
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeReset,StreamID:3,Payload:payload});err!=nil{t.Fatal(err)}
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeFin,StreamID:3,Offset:0});err!=nil{t.Fatal(err)}
+	if out.Len()!=0{t.Fatal("answered a FIN for a Flow the peer reset")}
+}
+
 type resetReadConn struct{ net.Conn }
 
 func (resetReadConn) Read([]byte) (int, error) { return 0, errors.New("read: connection reset by peer") }
@@ -454,12 +479,21 @@ func TestFinishedFlowReconfirmsLateFinAck(t *testing.T) {
 	fr,err:=protocol.Decode(&out);if err!=nil{t.Fatalf("no FIN_ACK_CONFIRM sent: %v",err)}
 	if fr.Type!=protocol.TypeFinAckConfirm||fr.StreamID!=5||fr.Offset!=40{t.Fatalf("sent %v stream=%d offset=%d",fr.Type,fr.StreamID,fr.Offset)}
 
+	// A replayed FIN of the peer is acknowledged again, at its own offset only.
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeFin,StreamID:5,Offset:6});err!=nil{t.Fatal(err)}
+	if out.Len()!=0{t.Fatal("acknowledged a FIN for a different final offset")}
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeFin,StreamID:5,Offset:7});err!=nil{t.Fatal(err)}
+	fr,err=protocol.Decode(&out);if err!=nil{t.Fatalf("no FIN_ACK sent for a replayed FIN: %v",err)}
+	if fr.Type!=protocol.TypeFinAck||fr.StreamID!=5||fr.Offset!=7{t.Fatalf("sent %v stream=%d offset=%d",fr.Type,fr.StreamID,fr.Offset)}
+
 	// A Flow closed any other way (here: reset) is never confirmed.
 	g:=newFlow(7,"main","00112233445566778899aabbccddeeff",nil,p.allocator);g.openOK=true;g.txNext=9
 	p.mu.Lock();p.flows[7]=g;p.mu.Unlock()
 	g.close();p.removeFlow(7)
 	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeFinAck,StreamID:7,Offset:9});err!=nil{t.Fatal(err)}
 	if out.Len()!=0{t.Fatal("confirmed a FIN_ACK for a Flow that did not finish gracefully")}
+	if err:=p.handleFrame(context.Background(),protocol.Frame{Type:protocol.TypeFin,StreamID:7,Offset:0});err!=nil{t.Fatal(err)}
+	if out.Len()!=0{t.Fatal("acknowledged a FIN for a Flow that did not finish gracefully")}
 }
 
 // A Flow is closed before it is removed from the Session, so a WINDOW can
