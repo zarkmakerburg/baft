@@ -121,6 +121,34 @@ func newNode(t *testing.T) *node {
 	return &node{Manager: m, host: h, dir: dir}
 }
 
+func TestInstanceManagerScopesHostOwnership(t *testing.T) {
+	n := newNode(t)
+	a, err := n.Manager.ForInstance("ir-main-de", "127.0.0.1:9201")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := n.Manager.ForInstance("ir-backup-de", "127.0.0.1:9202")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ConfigDir == b.ConfigDir || a.StateDir == b.StateDir || a.Service == b.Service {
+		t.Fatalf("instances are not isolated: a=%+v b=%+v", a.Env, b.Env)
+	}
+	if a.Service != "baft-ir-main-de" || b.Service != "baft-ir-backup-de" {
+		t.Fatalf("unexpected scoped services: %q %q", a.Service, b.Service)
+	}
+	if !strings.Contains(a.ManagedUnit(8443, "t1", 1), "# baft-instance: ir-main-de") {
+		t.Fatal("managed unit does not identify its instance")
+	}
+	legacy, err := n.Manager.ForInstance("default", "")
+	if err != nil || legacy != n.Manager {
+		t.Fatalf("legacy manager changed: %p %p %v", legacy, n.Manager, err)
+	}
+	if _, err := n.Manager.ForInstance("../bad", ""); err == nil {
+		t.Fatal("unsafe instance id accepted")
+	}
+}
+
 // freePort returns a port that is free now and is bound again later by the
 // code under test. It is picked below the kernel's ephemeral range (Linux
 // default 32768-60999): a port from ":0" comes from that range, so an

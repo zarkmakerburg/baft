@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -51,11 +52,13 @@ var stateMigrations = []string{
 	`CREATE TABLE node_discovery (node_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 	// 5: certificate rotations of built tunnels (A4 Stage F).
 	`CREATE TABLE cert_rotations (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
+	// 6: declarative topology for the IR pool and explicit EX routes (M-014).
+	`CREATE TABLE topology (kind TEXT NOT NULL, id TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (kind, id));`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "topology",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -201,6 +204,9 @@ func writeStateTx(tx *sql.Tx, st state) error {
 			return err
 		}
 	}
+	for id, v := range st.IRPool { if err := put(`INSERT INTO topology VALUES (?, ?, ?)`, "ir", id, v); err != nil { return err } }
+	for id, v := range st.EXRoutes { if err := put(`INSERT INTO topology VALUES (?, ?, ?)`, "route", id, v); err != nil { return err } }
+	for id, v := range st.TopologyBindings { if err := put(`INSERT INTO topology VALUES (?, ?, ?)`, "binding", id, v); err != nil { return err } }
 	for id, v := range st.Finance {
 		if err := put(`INSERT INTO finance VALUES (?, ?)`, id, v); err != nil {
 			return err
@@ -375,6 +381,15 @@ func readStateDB(path string) (state, error) {
 			err := decode("cert_rotations", d, &v)
 			st.CertRotations[k] = v
 			return err
+		}},
+		{`SELECT kind || ':' || id, 0, doc FROM topology`, func(k string, _ int64, d []byte) error {
+			kind,id,ok:=strings.Cut(k,":");if !ok{return fmt.Errorf("BCC state topology key %q is invalid",k)}
+			switch kind{
+			case "ir": var v IRPoolMember;if err:=decode("topology",d,&v);err!=nil{return err};st.IRPool[id]=v
+			case "route": var v ExplicitEXRoute;if err:=decode("topology",d,&v);err!=nil{return err};st.EXRoutes[id]=v
+			case "binding": var v TopologyBinding;if err:=decode("topology",d,&v);err!=nil{return err};st.TopologyBindings[id]=v
+			default:return fmt.Errorf("BCC state topology kind %q is invalid",kind)}
+			return nil
 		}},
 		{`SELECT node_id, 0, doc FROM finance`, func(k string, _ int64, d []byte) error {
 			var v NodeFinance

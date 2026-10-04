@@ -26,11 +26,19 @@ func (a *Agent) executeFull(ctx context.Context, j agentjob.Job) (detail, output
 }
 
 func (a *Agent) tunnel(ctx context.Context, j agentjob.Job) (string, string, error) {
-	t := a.cfg.Tunnel
-	if t == nil {
+	base := a.cfg.Tunnel
+	if base == nil {
 		return "", "", errors.New("tunnel changes are not enabled on this agent")
 	}
 	p, id := j.Params, j.Params["tunnel_id"]
+	t := base
+	if j.Action != agentjob.ActionTunnelDiscover {
+		var err error
+		t, err = base.ForInstance(p["instance_id"], p["metrics_listen"])
+		if err != nil {
+			return "", "", err
+		}
+	}
 	switch j.Action {
 	case agentjob.ActionTunnelPrepareEX:
 		port, _ := strconv.Atoi(p["port"])
@@ -83,12 +91,12 @@ func (a *Agent) tunnel(ctx context.Context, j agentjob.Job) (string, string, err
 func exParams(p map[string]string, port int) tunnelnode.ExParams {
 	return tunnelnode.ExParams{
 		PublicAddress: p["public_address"], Port: port, Target: p["target"],
-		RouteID: p["route_id"], RecordShaping: p["record_shaping"] == "true",
+		RouteID: p["route_id"], RecordShaping: p["record_shaping"] == "true", MetricsListen: p["metrics_listen"],
 	}
 }
 
 func irParams(p map[string]string) tunnelnode.IRParams {
-	return tunnelnode.IRParams{RouteListen: p["route_listen"], RouteID: p["route_id"]}
+	return tunnelnode.IRParams{RouteListen: p["route_listen"], RouteID: p["route_id"], MetricsListen: p["metrics_listen"]}
 }
 
 // certRotation runs one step of a certificate rotation. Every step answers

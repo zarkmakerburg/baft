@@ -51,6 +51,9 @@ type Env struct {
 	StateDir  string // /var/lib/baft
 	UnitDir   string // /etc/systemd/system
 	Service   string // baft
+	// Instance scopes one independent BAFT transport on a host. Empty keeps
+	// the legacy singleton paths/service exactly as before.
+	Instance string
 	// User owns the service's keys and state; "" skips ownership changes
 	// (tests).
 	User    string
@@ -81,11 +84,12 @@ const (
 )
 
 var (
-	idRe       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	hostRe     = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$`)
-	fixedIPv4  = regexp.MustCompile(`^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$`)
-	fixedIPv6  = regexp.MustCompile(`^\[[0-9A-Fa-f:]+\]:[0-9]{1,5}$`)
-	loopbackRe = regexp.MustCompile(`^(127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|\[::1\]):[0-9]{1,5}$`)
+	idRe         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	instanceIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`)
+	hostRe       = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$`)
+	fixedIPv4    = regexp.MustCompile(`^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$`)
+	fixedIPv6    = regexp.MustCompile(`^\[[0-9A-Fa-f:]+\]:[0-9]{1,5}$`)
+	loopbackRe   = regexp.MustCompile(`^(127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|\[::1\]):[0-9]{1,5}$`)
 )
 
 // Txn is the persisted state of one change on this node.
@@ -132,6 +136,17 @@ func New(env Env) (*Manager, error) {
 	if env.Service == "" {
 		env.Service = "baft"
 	}
+	if env.Instance != "" {
+		if !instanceIDRe.MatchString(env.Instance) {
+			return nil, errors.New("tunnelnode: invalid instance id")
+		}
+		env.ConfigDir = filepath.Join(env.ConfigDir, "instances", env.Instance)
+		env.StateDir = filepath.Join(env.StateDir, "instances", env.Instance)
+		env.Service = env.Service + "-" + env.Instance
+		if len(env.Service) > 58 {
+			return nil, errors.New("tunnelnode: scoped service name is too long")
+		}
+	}
 	if env.MetricsListen == "" {
 		env.MetricsListen = "127.0.0.1:9191"
 	}
@@ -142,6 +157,28 @@ func New(env Env) (*Manager, error) {
 		env.Now = time.Now
 	}
 	return &Manager{Env: env}, nil
+}
+
+// ForInstance returns a manager whose config, state, service, generation,
+// ownership marker and admin socket are isolated from sibling instances.
+// Empty/default preserves the historical singleton manager.
+func (m *Manager) ForInstance(instance, metricsListen string) (*Manager, error) {
+	instance = strings.TrimSpace(instance)
+	if instance == "" || instance == "default" {
+		return m, nil
+	}
+	if m.Instance != "" {
+		if m.Instance == instance {
+			return m, nil
+		}
+		return nil, errors.New("tunnelnode: cannot rescope an instance manager")
+	}
+	env := m.Env
+	env.Instance = instance
+	if metricsListen != "" {
+		env.MetricsListen = metricsListen
+	}
+	return New(env)
 }
 
 // ---- parameters ----
@@ -492,7 +529,7 @@ func (m *Manager) install(ctx context.Context, t Txn, port int) (string, error) 
 	}
 	markerBytes, err := json.MarshalIndent(Marker{
 		ManagedBy: "baft", Version: 1, TunnelID: t.ID, Generation: t.Generation, Role: t.Role,
-		ConfigSHA256: t.InstalledConfigSHA, UnitSHA256: t.InstalledUnitSHA, Updated: m.Now().UTC(),
+		InstanceID: m.Instance, ConfigSHA256: t.InstalledConfigSHA, UnitSHA256: t.InstalledUnitSHA, Updated: m.Now().UTC(),
 	}, "", "  ")
 	if err == nil {
 		markerBytes = append(markerBytes, '\n')
@@ -1003,6 +1040,7 @@ func redact(s string, secrets ...string) string {
 // it with what it asked for; a command's exit status is never the evidence.
 type Observed struct {
 	TunnelID           string `json:"tunnel_id"`
+	InstanceID         string `json:"instance_id,omitempty"`
 	Role               string `json:"role"`
 	Phase              string `json:"phase"`
 	Generation         int    `json:"generation"`
@@ -1040,7 +1078,7 @@ func (m *Manager) Observe(ctx context.Context, id string) (Observed, error) {
 		return Observed{}, fmt.Errorf("unknown tunnel change %s", id)
 	}
 	o := Observed{
-		TunnelID: t.ID, Role: t.Role, Phase: t.Phase, Generation: t.Generation,
+		TunnelID: t.ID, InstanceID: m.Instance, Role: t.Role, Phase: t.Phase, Generation: t.Generation,
 		PreviousGeneration: t.PreviousGeneration, NodeGeneration: m.readGeneration(),
 	}
 	raw, err := os.ReadFile(m.liveConfig())
@@ -1095,6 +1133,7 @@ type Marker struct {
 	ManagedBy    string    `json:"managed_by"`
 	Version      int       `json:"version"`
 	TunnelID     string    `json:"tunnel_id"`
+	InstanceID   string    `json:"instance_id,omitempty"`
 	Generation   int       `json:"generation"`
 	Role         string    `json:"role"`
 	ConfigSHA256 string    `json:"config_sha256"`
@@ -1109,7 +1148,11 @@ func shaHex(b []byte) string {
 
 // ManagedUnit is the unit with ownership markers in its header.
 func (m *Manager) ManagedUnit(port int, tunnelID string, generation int) string {
-	return fmt.Sprintf("# baft-managed: true\n# baft-tunnel: %s\n# baft-generation: %d\n", tunnelID, generation) + m.Unit(port)
+	header := fmt.Sprintf("# baft-managed: true\n# baft-tunnel: %s\n# baft-generation: %d\n", tunnelID, generation)
+	if m.Instance != "" {
+		header += "# baft-instance: " + m.Instance + "\n"
+	}
+	return header + m.Unit(port)
 }
 
 // ownershipViolations lists files this change installed that are no longer
@@ -1145,6 +1188,7 @@ func (m *Manager) ownershipViolations(t Txn) []string {
 // is the input of drift detection: BCC compares it with the tunnel it
 // believes is active on this node.
 type Live struct {
+	InstanceID    string `json:"instance_id,omitempty"`
 	ConfigPresent bool   `json:"config_present"`
 	UnitPresent   bool   `json:"unit_present"`
 	ConfigSHA256  string `json:"config_sha256,omitempty"`
@@ -1176,7 +1220,7 @@ type Live struct {
 func (m *Manager) Inspect(ctx context.Context) Live {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	l := Live{NodeGeneration: m.readGeneration()}
+	l := Live{InstanceID: m.Instance, NodeGeneration: m.readGeneration()}
 	raw, err := os.ReadFile(m.liveConfig())
 	if err == nil {
 		l.ConfigPresent = true

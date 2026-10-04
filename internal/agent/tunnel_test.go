@@ -81,6 +81,16 @@ func TestTunnelActionsAreSignedAndStrictlyShaped(t *testing.T) {
 	if err := bad.Validate(); err != nil {
 		t.Fatalf("valid job rejected: %v", err)
 	}
+	withInstance := bad
+	withInstance.Params = map[string]string{}
+	for k, v := range bad.Params {
+		withInstance.Params[k] = v
+	}
+	withInstance.Params["instance_id"] = "ir-main-de"
+	withInstance.Params["metrics_listen"] = "127.0.0.1:9201"
+	if err := withInstance.Validate(); err != nil {
+		t.Fatalf("valid instance-scoped job rejected: %v", err)
+	}
 	for name, mutate := range map[string]func(map[string]string){
 		"hostname target":   func(p map[string]string) { p["target"] = "example.com:443" },
 		"shell in address":  func(p map[string]string) { p["public_address"] = "1.2.3.4;id" },
