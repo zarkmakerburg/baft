@@ -80,6 +80,28 @@ func (a *Allocator) Reserve(flowID uint64, kind Kind, n int64) error {
 	return a.reserveLocked(flowID,kind,n)
 }
 
+// ReserveIfFree reserves n bytes only if at least keepFree bytes of the pool
+// for kind (and of the total budget) stay unreserved afterwards. It is for
+// optional, opportunistic growth that must never crowd out the baseline
+// reservations of new Flows; it fails with ErrResourceExhausted otherwise.
+func (a *Allocator) ReserveIfFree(flowID uint64, kind Kind, n, keepFree int64) error {
+	if err:=a.validateRequest(flowID,kind,n);err!=nil { return err }
+	if keepFree<0 { return errors.New("keepFree must not be negative") }
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if n+keepFree>a.limit.Total-(a.recv+a.replay) { return ErrResourceExhausted }
+	switch kind {
+	case Receive:
+		if n+keepFree>a.limit.Receive-a.recv { return ErrResourceExhausted }
+	case Replay:
+		if n+keepFree>a.limit.Replay-a.replay { return ErrResourceExhausted }
+	}
+	return a.reserveLocked(flowID,kind,n)
+}
+
+// Limits returns the configured caps.
+func (a *Allocator) Limits() Limits { return a.limit }
+
 func (a *Allocator) ReserveContext(ctx context.Context, flowID uint64, kind Kind, n int64) error {
 	if err:=a.validateRequest(flowID,kind,n);err!=nil { return err }
 	for {

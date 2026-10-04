@@ -26,7 +26,37 @@ func newReceiveRing(capacity int) (*receiveRing, error) {
 	return &receiveRing{buf: make([]byte, capacity), wake: make(chan struct{})}, nil
 }
 
-func (r *receiveRing) Capacity() int { return len(r.buf) }
+func (r *receiveRing) Capacity() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.buf)
+}
+
+// Grow enlarges the ring to capacity bytes, keeping the buffered bytes and
+// their order. A slice returned by an earlier Peek still refers to the old
+// buffer, whose contents are not modified, and a later Consume of that slice's
+// length releases exactly those bytes from the new buffer.
+func (r *receiveRing) Grow(capacity int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return io.ErrClosedPipe
+	}
+	if capacity <= len(r.buf) {
+		return errors.New("receive ring can only grow")
+	}
+	buf := make([]byte, capacity)
+	first := r.size
+	if remain := len(r.buf) - r.head; first > remain {
+		first = remain
+	}
+	copy(buf, r.buf[r.head:r.head+first])
+	copy(buf[first:], r.buf[:r.size-first])
+	r.buf = buf
+	r.head = 0
+	r.tail = r.size % len(buf)
+	return nil
+}
 
 func (r *receiveRing) Len() int {
 	r.mu.Lock()
