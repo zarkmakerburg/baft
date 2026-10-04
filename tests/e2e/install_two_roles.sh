@@ -50,32 +50,70 @@ trap cleanup EXIT
 
 python3 tests/e2e/echo.py serve 2443 >"$WORK/target.out" 2>&1 & TARGET_PID=$!
 
-log "EX install (waits for the IR reply on stdin)"
-mkfifo "$WORK/reply"
-exec 3<>"$WORK/reply"
-env BAFT_SERVICE=baft-ex BAFT_CONFIG_DIR=/etc/baft-ex BAFT_STATE_DIR=/var/lib/baft-ex \
-  BAFT_PREFIX=/opt/baft-ex BAFT_PORT=8443 BAFT_METRICS_LISTEN=127.0.0.1:9191 \
-  BAFT_TARGET=127.0.0.1:2443 \
-  bash install.sh --role ex --public-address 127.0.0.1 <"$WORK/reply" >"$WORK/ex.out" 2>"$WORK/ex.err" &
-EX_PID=$!
-for _ in $(seq 1 1800); do
-  grep -q '^BAFTPAIR1:' "$WORK/ex.out" 2>/dev/null && break
-  kill -0 "$EX_PID" 2>/dev/null || { echo "EX installer exited early"; exit 1; }
-  sleep 1
-done
-CODE="$(grep -m1 '^BAFTPAIR1:' "$WORK/ex.out")" || { echo "no pairing code"; exit 1; }
+IR_ENV=(BAFT_SERVICE=baft-ir BAFT_CONFIG_DIR=/etc/baft-ir BAFT_STATE_DIR=/var/lib/baft-ir
+  BAFT_PREFIX=/opt/baft-ir BAFT_METRICS_LISTEN=127.0.0.1:9192 BAFT_ROUTE_LISTEN=127.0.0.1:1443)
+if [[ "${BAFT_E2E_IR_VIA_SSH:-0}" == 1 ]]; then
+  # One command on the EX installs and pairs the IR over SSH (a real sshd on
+  # this host stands in for the IR server); nobody runs anything on the IR.
+  command -v sshd >/dev/null || { apt-get update -qq && apt-get install -y -qq openssh-server >/dev/null; }
+  mkdir -p /run/sshd
+  ssh-keygen -q -t ed25519 -N '' -f "$WORK/hostkey"
+  ssh-keygen -q -t ed25519 -N '' -f "$WORK/clientkey"
+  cp "$WORK/clientkey.pub" "$WORK/authorized_keys"
+  cat >"$WORK/sshd_config" <<CFG
+Port 22022
+ListenAddress 127.0.0.1
+HostKey $WORK/hostkey
+PidFile $WORK/sshd.pid
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile $WORK/authorized_keys
+StrictModes no
+UsePAM no
+CFG
+  "$(command -v sshd || echo /usr/sbin/sshd)" -f "$WORK/sshd_config" -E "$WORK/sshd.err"
+  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/22022) 2>/dev/null && break; sleep 0.5; done
+  FP="$(ssh-keygen -lf "$WORK/hostkey.pub" -E sha256 | awk '{print $2}')"
 
-log "IR install with the pairing code"
-env BAFT_SERVICE=baft-ir BAFT_CONFIG_DIR=/etc/baft-ir BAFT_STATE_DIR=/var/lib/baft-ir \
-  BAFT_PREFIX=/opt/baft-ir BAFT_METRICS_LISTEN=127.0.0.1:9192 BAFT_ROUTE_LISTEN=127.0.0.1:1443 \
-  BAFT_NONINTERACTIVE=1 BAFT_PAIRING_CODE="$CODE" \
-  bash install.sh --role ir >"$WORK/ir.out" 2>"$WORK/ir.err"
-REPLY_CODE="$(grep -m1 '^BAFTREPLY1:' "$WORK/ir.out")" || { echo "no reply code"; exit 1; }
+  log "EX install that sets up the IR over SSH"
+  env BAFT_SERVICE=baft-ex BAFT_CONFIG_DIR=/etc/baft-ex BAFT_STATE_DIR=/var/lib/baft-ex \
+    BAFT_PREFIX=/opt/baft-ex BAFT_PORT=8443 BAFT_METRICS_LISTEN=127.0.0.1:9191 \
+    BAFT_TARGET=127.0.0.1:2443 BAFT_NONINTERACTIVE=1 BAFT_IR_ENV="${IR_ENV[*]}" \
+    bash install.sh --role ex --public-address 127.0.0.1 \
+      --ir-ssh root@127.0.0.1:22022 --ir-ssh-key "$WORK/clientkey" --ir-ssh-fingerprint "$FP" \
+      </dev/null >"$WORK/ex.out" 2>"$WORK/ex.err"
+  kill "$(cat "$WORK/sshd.pid")" 2>/dev/null || true
+  grep -q 'BAFTPAIR1:\|BAFTREPLY1:' "$WORK/ex.out" "$WORK/ex.err" && { echo "a pairing secret was printed"; exit 1; }
+else
+  log "EX install (waits for the IR reply on stdin)"
+  mkfifo "$WORK/reply"
+  exec 3<>"$WORK/reply"
+  env BAFT_SERVICE=baft-ex BAFT_CONFIG_DIR=/etc/baft-ex BAFT_STATE_DIR=/var/lib/baft-ex \
+    BAFT_PREFIX=/opt/baft-ex BAFT_PORT=8443 BAFT_METRICS_LISTEN=127.0.0.1:9191 \
+    BAFT_TARGET=127.0.0.1:2443 \
+    bash install.sh --role ex --public-address 127.0.0.1 <"$WORK/reply" >"$WORK/ex.out" 2>"$WORK/ex.err" &
+  EX_PID=$!
+  for _ in $(seq 1 1800); do
+    grep -q '^BAFTPAIR1:' "$WORK/ex.out" 2>/dev/null && break
+    kill -0 "$EX_PID" 2>/dev/null || { echo "EX installer exited early"; exit 1; }
+    sleep 1
+  done
+  CODE="$(grep -m1 '^BAFTPAIR1:' "$WORK/ex.out")" || { echo "no pairing code"; exit 1; }
 
-log "hand the reply to the EX installer"
-printf '%s\n' "$REPLY_CODE" >&3
-wait "$EX_PID"; EX_PID=""
-exec 3>&-
+  log "IR install with the pairing code"
+  env BAFT_SERVICE=baft-ir BAFT_CONFIG_DIR=/etc/baft-ir BAFT_STATE_DIR=/var/lib/baft-ir \
+    BAFT_PREFIX=/opt/baft-ir BAFT_METRICS_LISTEN=127.0.0.1:9192 BAFT_ROUTE_LISTEN=127.0.0.1:1443 \
+    BAFT_NONINTERACTIVE=1 BAFT_PAIRING_CODE="$CODE" \
+    bash install.sh --role ir >"$WORK/ir.out" 2>"$WORK/ir.err"
+  REPLY_CODE="$(grep -m1 '^BAFTREPLY1:' "$WORK/ir.out")" || { echo "no reply code"; exit 1; }
+
+  log "hand the reply to the EX installer"
+  printf '%s\n' "$REPLY_CODE" >&3
+  wait "$EX_PID"; EX_PID=""
+  exec 3>&-
+fi
 
 [[ ! -e /var/lib/baft-ex/pairing.psk && ! -e /var/lib/baft-ex/pairing.ex.json ]] || { echo "one-time PSK left behind"; exit 1; }
 for f in /etc/baft-ex/baft.yaml /etc/baft-ir/baft.yaml; do

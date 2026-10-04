@@ -197,6 +197,24 @@ jobs:
           sudo env GITHUB_ACTIONS=true BAFT_RUN_TESTS=0 BAFT_INSTALL_FROM=source \
             BAFT_REPO_URL="file://$GITHUB_WORKSPACE" BAFT_REF="$GITHUB_SHA" tests/e2e/install_two_roles.sh
 
+  e2e-install-ssh:
+    # The EX installer installs and pairs the IR over SSH (a real sshd on the
+    # same runner stands in for the IR server): one command, nobody on the IR.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Let root clone this checkout with a blob filter
+        run: |
+          git config uploadpack.allowFilter true
+          sudo git config --system --add safe.directory '*'
+      - name: Install EX, which installs the IR over SSH, pair, pass traffic
+        run: |
+          sudo env GITHUB_ACTIONS=true BAFT_RUN_TESTS=0 BAFT_INSTALL_FROM=source BAFT_E2E_IR_VIA_SSH=1 \
+            BAFT_REPO_URL="file://$GITHUB_WORKSPACE" BAFT_REF="$GITHUB_SHA" tests/e2e/install_two_roles.sh
+
   e2e-agent-enroll:
     # Server enrollment as SSH bootstrap will do it: install.sh --agent-only
     # from a signed release, then a real BCC deploy job the systemd agent runs.

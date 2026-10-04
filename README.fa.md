@@ -233,6 +233,8 @@ curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh 
 2. **داخل ایران (IR)**: همان خط را اجرا کنید و pairing code را وارد کنید. IR راه می‌افتد و یک کد پاسخ با پیشوند `BAFTREPLY1:` چاپ می‌کند.
 3. کد پاسخ را در سرور EX وارد کنید. EX راه می‌افتد و تونل برقرار است.
 
+یا بگذارید EX همه‌کار را بکند: روی EX گزینهٔ **راه‌اندازی IR از همین‌جا با SSH** را انتخاب کنید و `user@host` سرور IR و کلید یا رمز آن را بدهید. EX خودش IR را نصب و جفت می‌کند (اول کلید میزبان SSH آن را برای تأیید نشان می‌دهد)، پس اصلاً لازم نیست وارد سرور IR شوید. شرطش این است که SSH از EX به IR باز باشد. در اسکریپت: `--ir-ssh root@IR_HOST --ir-ssh-key FILE --ir-ssh-fingerprint SHA256:...`. با BCC همین کار از داشبورد انجام می‌شود: هر دو سرور را با SSH اضافه کنید و بعد تونل را بسازید ([SSH bootstrap](docs/fa/26-p1d-ssh-bootstrap.md)، [tunnel builder](docs/fa/27-p1e-tunnel-builder.md)).
+
 برای اسکریپت و خودکارسازی می‌توانید پرسش‌ها را با پارامتر رد کنید: `--role ex --public-address EX_HOST_OR_IP` یا `--role ir --pairing-code 'BAFTPAIR1:...'` بعد از `sudo bash -s --`. بدون ترمینال (یا با `BAFT_NONINTERACTIVE=1`) چیزی پرسیده نمی‌شود و `--role` الزامی است.
 
 هر release که installer دریافت می‌کند با کلید ریشهٔ pin‌شده تأیید می‌شود. اگر ترجیح می‌دهید installer را اول بخوانید، روش مرحله‌به‌مرحلهٔ زیر را دنبال کنید.
