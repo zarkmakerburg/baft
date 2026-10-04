@@ -40,8 +40,10 @@ def one(port, size, out, idx):
     got = [0]
 
     def reader():
-        while True:
-            b = s.recv(CHUNK)
+        # Read back exactly what was sent. No half-close: some tunnels (FRP)
+        # do not forward a FIN, so the probe must not depend on one.
+        while got[0] < size:
+            b = s.recv(min(CHUNK, size - got[0]))
             if not b:
                 return
             h.update(b)
@@ -53,7 +55,6 @@ def one(port, size, out, idx):
     view = memoryview(data)
     for off in range(0, size, CHUNK):
         s.sendall(view[off:off + CHUNK])
-    s.shutdown(socket.SHUT_WR)
     t.join(900)
     elapsed = time.monotonic() - start
     s.close()
