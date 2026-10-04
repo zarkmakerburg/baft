@@ -1,16 +1,22 @@
 name: adversary-soak
 
 # Periodic adversarial resilience soak (measurement + survival assertions only;
-# loopback only, never targets any third-party host). Daily and on demand.
+# loopback only, never targets any third-party host). Daily and on demand. The
+# tester leaves a consolidated report: in the job summary, as an artifact, and
+# (on scheduled/manual runs) committed to the adversarial-reports branch.
 on:
   schedule:
     - cron: '41 3 * * *'
   workflow_dispatch:
   push:
-    branches: [feat/adversary-suite]
+    branches: [feat/adversary-suite, feat/adversary-report]
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: adversary-report
+  cancel-in-progress: false
 
 jobs:
   adversary:
@@ -23,15 +29,22 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Run adversary soak (bounded profile)
+        id: soak
+        continue-on-error: true
         run: ADV_PROFILE=bounded tests/adversary/run.sh "$RUNNER_TEMP/out"
       - name: Run intrusion scenarios
+        id: intr
+        continue-on-error: true
         run: tests/adversary/intrude.sh "$RUNNER_TEMP/intr"
-      - name: Summary
+      - name: Generate consolidated report
         if: always()
         run: |
-          { echo '### Adversary soak'; cat "$RUNNER_TEMP/out/summary.md" 2>/dev/null; echo; echo '### Intrusion scenarios'; cat "$RUNNER_TEMP/intr/summary.md" 2>/dev/null; echo; echo '```'; cat "$RUNNER_TEMP/out/provenance.txt" 2>/dev/null; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
-          while IFS= read -r l; do echo "::notice title=adversary::$l"; done <"$RUNNER_TEMP/out/summary.md" || true
-          while IFS= read -r l; do echo "::notice title=intrusion::$l"; done <"$RUNNER_TEMP/intr/summary.md" || true
+          python3 tests/adversary/report.py \
+            "$RUNNER_TEMP/out/results.jsonl" \
+            "$RUNNER_TEMP/intr/results.jsonl" \
+            "$RUNNER_TEMP/out/provenance.txt" > "$RUNNER_TEMP/report.md" || true
+          cp "$RUNNER_TEMP/report.md" "$RUNNER_TEMP/out/report.md" 2>/dev/null || true
+          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -39,4 +52,41 @@ jobs:
           path: |
             ${{ runner.temp }}/out
             ${{ runner.temp }}/intr
+            ${{ runner.temp }}/report.md
           retention-days: 30
+      - name: Publish report to adversarial-reports branch
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          ts=$(date -u +%Y%m%dT%H%M%SZ)
+          day=$(date -u +%Y-%m-%d)
+          work=$(mktemp -d)
+          url="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git clone --depth 1 --branch adversarial-reports "$url" "$work" 2>/dev/null; then
+            :
+          else
+            git clone --depth 1 "$url" "$work"
+            git -C "$work" checkout --orphan adversarial-reports
+            git -C "$work" rm -rf . >/dev/null 2>&1 || true
+          fi
+          mkdir -p "$work/history"
+          cp "$RUNNER_TEMP/report.md" "$work/latest.md"
+          cp "$RUNNER_TEMP/report.md" "$work/history/${ts}.md"
+          git -C "$work" config user.name "baft-adversary-bot"
+          git -C "$work" config user.email "noreply@anthropic.com"
+          git -C "$work" add -A
+          if git -C "$work" commit -m "chore(adversary): resilience report ${day} [skip ci]"; then
+            git -C "$work" push origin adversarial-reports
+          else
+            echo "no report change to publish"
+          fi
+      - name: Fail the job if the tester found a problem
+        if: always()
+        run: |
+          if [ "${{ steps.soak.outcome }}" != "success" ] || [ "${{ steps.intr.outcome }}" != "success" ]; then
+            echo "resilience/intrusion tester reported a failure (see the report above)"
+            exit 1
+          fi
+          echo "tester verdict: PASS"
