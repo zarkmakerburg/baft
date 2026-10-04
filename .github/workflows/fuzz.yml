@@ -37,6 +37,8 @@ jobs:
             fn: FuzzDecodePairingReply
           - pkg: ./internal/config
             fn: FuzzDecodeConfig
+          - pkg: ./internal/securityinternal
+            fn: FuzzReadHandshakeFrame
           - pkg: ./internal/session
             fn: FuzzFlowReceivePath
           - pkg: ./internal/recordshape
