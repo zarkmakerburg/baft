@@ -110,6 +110,9 @@ func Handshake(ctx context.Context, conn net.Conn, cfg Config) (net.Conn, error)
 		return nil, errors.New("utlsdial: server name and root CAs are required")
 	}
 	uconn := utls.UClient(conn, utlsConfig(cfg), cfg.hello())
+	if err := applyRequestedALPN(uconn, cfg.NextProtos); err != nil {
+		return nil, fmt.Errorf("utlsdial: build client hello: %w", err)
+	}
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("utlsdial: handshake: %w", err)
 	}
@@ -125,6 +128,35 @@ func Handshake(ctx context.Context, conn net.Conn, cfg Config) (net.Conn, error)
 		}
 	}
 	return uconn, nil
+}
+
+// applyRequestedALPN keeps the selected browser preset but replaces only its
+// ALPN extension when BAFT explicitly requests a protocol list. uTLS presets
+// apply their own ALPN and write it back into Config.NextProtos, so setting
+// Config.NextProtos alone is not sufficient.
+func applyRequestedALPN(uconn *utls.UConn, next []string) error {
+	if err := uconn.BuildHandshakeState(); err != nil {
+		return err
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	want := append([]string(nil), next...)
+	found := false
+	for _, ext := range uconn.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			alpn.AlpnProtocols = want
+			found = true
+			break
+		}
+	}
+	if !found {
+		return errors.New("utlsdial: selected ClientHello preset has no ALPN extension")
+	}
+	// Re-apply the edited extension to both the public ClientHello and the
+	// internal TLS config. HandshakeContext may call BuildHandshakeState again;
+	// the edited extension remains authoritative on subsequent calls.
+	return uconn.BuildHandshakeState()
 }
 
 func utlsConfig(cfg Config) *utls.Config {
@@ -172,7 +204,7 @@ func CaptureClientHello(cfg Config) ([]byte, error) {
 		ucfg.InsecureSkipVerify = true
 	}
 	uconn := utls.UClient(c1, ucfg, cfg.hello())
-	if err := uconn.BuildHandshakeState(); err != nil {
+	if err := applyRequestedALPN(uconn, cfg.NextProtos); err != nil {
 		return nil, err
 	}
 	raw := uconn.HandshakeState.Hello.Raw

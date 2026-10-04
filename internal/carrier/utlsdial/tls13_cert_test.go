@@ -14,6 +14,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 // selfSigned makes a TLS 1.3 server certificate of the given key type.
@@ -114,5 +116,43 @@ func TestUTLSFailsTLS13Ed25519(t *testing.T) {
 		ServerName: "example.com", RootCAs: pool, NextProtos: []string{"http/1.1"},
 	}); err == nil {
 		t.Fatal("expected uTLS to fail against an Ed25519 server certificate")
+	}
+}
+
+func TestUTLSHonorsExplicitALPNOverChromePreset(t *testing.T) {
+	cert, pool := selfSigned(t, "ecdsa")
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"h2", "http/1.1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.(*tls.Conn).Handshake()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := Dial(ctx, "tcp", ln.Addr().String(), Config{
+		ServerName: "example.com", RootCAs: pool, NextProtos: []string{"http/1.1"},
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	uconn, ok := conn.(*utls.UConn)
+	if !ok {
+		t.Fatalf("conn type %T, want *utls.UConn", conn)
+	}
+	if got := uconn.ConnectionState().NegotiatedProtocol; got != "http/1.1" {
+		t.Fatalf("negotiated ALPN=%q, want http/1.1; Chrome preset overrode requested protocol", got)
 	}
 }
