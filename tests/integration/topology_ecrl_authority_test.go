@@ -94,7 +94,10 @@ func assertRecoveryIdentityEqual(t *testing.T,before,after node.RecoveryAuthorit
         before.CandidateID!=after.CandidateID||before.NextEpoch!=after.NextEpoch||
         before.PlanDigest!=after.PlanDigest||before.PreparedIncarnation!=after.PreparedIncarnation||
         before.CarrierGeneration!=after.CarrierGeneration||before.TxnState!=after.TxnState||
-        before.ReplayHighWatermark!=after.ReplayHighWatermark||
+        // The application pump may keep admitting bytes into the exact
+        // transaction's replay high-watermark while credit allows, so it can
+        // only grow; everything that identifies the transaction is fixed.
+        after.ReplayHighWatermark<before.ReplayHighWatermark||
         before.ReplayPeerAccepted!=after.ReplayPeerAccepted||
         before.ReplayOutstanding!=after.ReplayOutstanding||
         before.FinalizationStable!=after.FinalizationStable||
