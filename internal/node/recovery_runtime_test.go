@@ -51,21 +51,36 @@ func assertOldRecoveryOwner(t *testing.T,p *session.Peer){
 
 func TestNextRecoveryTransportPreservesLegacyPrimary(t *testing.T) {
 	cfg := config.Config{Transport: config.Transport{Primary: "h2"}}
-	if got := nextRecoveryTransport(cfg, "h2"); got != "h2" {
+	if got := nextRecoveryTransport(cfg, "h2", ""); got != "h2" {
 		t.Fatalf("without fallback recovery transport=%q want h2", got)
 	}
 }
 
 func TestNextRecoveryTransportAlternatesConfiguredCarriers(t *testing.T) {
 	cfg := config.Config{Transport: config.Transport{Primary: "h2", Fallback: "ws"}}
-	if got := nextRecoveryTransport(cfg, "h2"); got != "ws" {
+	if got := nextRecoveryTransport(cfg, "h2", ""); got != "ws" {
 		t.Fatalf("from primary got %q want ws", got)
 	}
-	if got := nextRecoveryTransport(cfg, "ws"); got != "h2" {
+	if got := nextRecoveryTransport(cfg, "ws", ""); got != "h2" {
 		t.Fatalf("from fallback got %q want h2", got)
 	}
-	if got := nextRecoveryTransport(cfg, ""); got != "ws" {
+	if got := nextRecoveryTransport(cfg, "", ""); got != "ws" {
 		t.Fatalf("unknown current transport should treat initial carrier as primary; got %q", got)
+	}
+}
+
+func TestRecoveryTransportRetriesAlternateAfterCandidateFailure(t *testing.T) {
+	cfg := config.Config{Transport: config.Transport{Primary: "h2", Fallback: "ws"}}
+	sh := &dialerShard{transport: "h2"}
+	if got := sh.recoveryTransport(cfg); got != "ws" {
+		t.Fatalf("first recovery attempt=%q want ws", got)
+	}
+	if got := sh.recoveryTransport(cfg); got != "h2" {
+		t.Fatalf("second recovery attempt=%q want h2", got)
+	}
+	sh.replaceCarrier(&openedRuntimeCarrier{transport: "ws"})
+	if got := sh.recoveryTransport(cfg); got != "h2" {
+		t.Fatalf("after committing ws, next failure should try h2 first; got %q", got)
 	}
 }
 
