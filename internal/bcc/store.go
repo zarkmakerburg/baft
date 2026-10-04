@@ -39,11 +39,13 @@ type Node struct {
 	Revoked                  bool      `json:"revoked,omitempty"`
 	RevokedAt                time.Time `json:"revoked_at,omitempty"`
 	RevokeReason             string    `json:"revoke_reason,omitempty"`
-	// AgentSeen is the last time the node's agent authenticated to BCC;
-	// AppliedGeneration is the configuration generation BCC last verified on it.
-	AgentSeen                time.Time `json:"agent_seen,omitempty"`
-	AppliedGeneration        int       `json:"applied_generation,omitempty"`
-	Health                   string    `json:"health"`
+	// AgentSeen is the last time the node's agent authenticated to BCC.
+	// AppliedGeneration is the legacy singleton generation. Multi-instance
+	// tunnels keep independent generation baselines in AppliedGenerations.
+	AgentSeen                time.Time      `json:"agent_seen,omitempty"`
+	AppliedGeneration        int            `json:"applied_generation,omitempty"`
+	AppliedGenerations       map[string]int `json:"applied_generations,omitempty"`
+	Health                   string         `json:"health"`
 	LastChecked    time.Time `json:"last_checked,omitempty"`
 	LatencyMS      int64     `json:"latency_ms"`
 	UpdatedAt      time.Time `json:"updated_at"`
@@ -242,6 +244,12 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 		n.Revoked=old.Revoked
 		n.RevokedAt=old.RevokedAt
 		n.RevokeReason=old.RevokeReason
+		if n.AgentSeen.IsZero(){n.AgentSeen=old.AgentSeen}
+		n.AppliedGeneration=old.AppliedGeneration
+		if len(old.AppliedGenerations)>0{
+			n.AppliedGenerations=make(map[string]int,len(old.AppliedGenerations))
+			for k,v:=range old.AppliedGenerations{n.AppliedGenerations[k]=v}
+		}
 	}
 	if n.Health=="" { if exists { n.Health=old.Health } else { n.Health="unknown" } }
 	if n.LastChecked.IsZero()&&exists{n.LastChecked=old.LastChecked;n.LatencyMS=old.LatencyMS}

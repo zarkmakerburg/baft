@@ -57,11 +57,29 @@ type GenExpect struct {
 	Bootstrap bool `json:"bootstrap,omitempty"`
 }
 
-func expectedGeneration(n Node) GenExpect {
-	if n.AppliedGeneration > 0 {
-		return GenExpect{From: n.AppliedGeneration, To: n.AppliedGeneration + 1}
+func appliedGeneration(n Node, instance string) int {
+	if instance == "" {
+		return n.AppliedGeneration
+	}
+	return n.AppliedGenerations[instance]
+}
+
+func expectedGeneration(n Node, instance string) GenExpect {
+	if g := appliedGeneration(n, instance); g > 0 {
+		return GenExpect{From: g, To: g + 1}
 	}
 	return GenExpect{From: 0, To: 1, Bootstrap: true}
+}
+
+func setAppliedGeneration(n *Node, instance string, generation int) {
+	if instance == "" {
+		n.AppliedGeneration = generation
+		return
+	}
+	if n.AppliedGenerations == nil {
+		n.AppliedGenerations = map[string]int{}
+	}
+	n.AppliedGenerations[instance] = generation
 }
 
 // BuildPlan describes the change; it never writes.
@@ -77,7 +95,7 @@ func (s *Store) buildPlanLocked(req TunnelRequest, now time.Time) (Plan, error) 
 		return Plan{}, err
 	}
 	gen := func(n Node) (from, to int, note string) {
-		g := expectedGeneration(n)
+		g := expectedGeneration(n, t.InstanceID)
 		if g.Bootstrap {
 			return g.From, g.To, "bootstrap: BCC has not verified a generation for this node yet; the node's own counter must be one step ahead and is recorded"
 		}
@@ -88,8 +106,9 @@ func (s *Store) buildPlanLocked(req TunnelRequest, now time.Time) (Plan, error) 
 	peer := net.JoinHostPort(t.PublicAddress, strconv.Itoa(t.Port))
 	p := Plan{
 		Request: TunnelRequest{
-			EXNode: t.EXNode, IRNode: t.IRNode, PublicAddress: t.PublicAddress, Port: t.Port, Target: t.Target,
-			RouteListen: t.RouteListen, RouteID: t.RouteID, RecordShaping: t.RecordShaping,
+			InstanceID: t.InstanceID, EXNode: t.EXNode, IRNode: t.IRNode, PublicAddress: t.PublicAddress, Port: t.Port, Target: t.Target,
+			RouteListen: t.RouteListen, RouteID: t.RouteID, EXMetricsListen: t.EXMetricsListen, IRMetricsListen: t.IRMetricsListen,
+			RecordShaping: t.RecordShaping,
 		},
 		Nodes: []PlanNode{
 			{NodeID: ex.ID, Role: "ex", GenerationFrom: exFrom, GenerationTo: exTo, GenerationNote: exNote, Changes: []string{
@@ -109,6 +128,7 @@ func (s *Store) buildPlanLocked(req TunnelRequest, now time.Time) (Plan, error) 
 		},
 		Verify: []string{
 			"service active and not restarting for a settle window",
+			"instance identity and instance-scoped config/state/service ownership match this plan",
 			"EX listener and IR local route accept connections",
 			"observed role, route, listener/peer/target and unit equal this plan",
 			"each node's generation equals the reviewed plan (previous = from, current = to; bootstrap nodes: one step ahead of their own previous) and its own counter",
@@ -133,12 +153,12 @@ func (s *Store) buildPlanLocked(req TunnelRequest, now time.Time) (Plan, error) 
 		}
 	}
 	gate("node roles", "PASS", "EX is foreign, IR is worker or master, neither is revoked")
-	gate("no change in progress on these nodes", "PASS", "no unfinished tunnel change and no failed rollback")
+	gate("no conflicting change", "PASS", "no unfinished or failed change owns the same BAFT instance or conflicts with its listeners")
 	gate("parameters", "PASS", "validated with the rules the agents apply: fixed-IP target, loopback route listener, strict patterns")
 	for id, other := range s.st.Tunnels {
-		if other.Phase == TunnelActive && (other.EXNode == t.EXNode || other.IRNode == t.IRNode || other.EXNode == t.IRNode || other.IRNode == t.EXNode) {
+		if other.Phase == TunnelActive && sameManagedSlot(t, other) {
 			p.Replaces = id
-			gate("replaces active tunnel", "WARN", id+" becomes superseded when this one is active; it is restored if this change fails")
+			gate("replaces active tunnel", "WARN", id+" owns the same BAFT instance and becomes superseded when this one is active; sibling instances remain active")
 		}
 	}
 	p.OK = true

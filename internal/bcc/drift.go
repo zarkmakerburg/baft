@@ -74,6 +74,9 @@ func classifyLive(t Tunnel, node, role string, l tunnelnode.Live) DriftNode {
 		return DriftNode{State: DriftUnmanaged, Problems: []string{"files carry no BAFT ownership marker"}}
 	}
 	bad := func(format string, a ...any) { p = append(p, fmt.Sprintf(format, a...)) }
+	if l.InstanceID != t.InstanceID {
+		bad("instance id is %q, want %q", l.InstanceID, t.InstanceID)
+	}
 	if l.MarkerTunnelID != t.ID {
 		bad("marker belongs to tunnel %q, want %q", l.MarkerTunnelID, t.ID)
 	}
@@ -168,7 +171,11 @@ func (s *Store) startDriftLocked(t *Tunnel, now time.Time) error {
 		return fmt.Errorf("a drift check of %s is already running", t.ID)
 	}
 	for _, node := range []string{t.IRNode, t.EXNode} {
-		j := s.newJobLocked(Job{Type: JobTunnelInspect, NodeID: node, Params: map[string]string{}})
+		params := map[string]string{}
+		if t.InstanceID != "" {
+			params["instance_id"] = t.InstanceID
+		}
+		j := s.newJobLocked(Job{Type: JobTunnelInspect, NodeID: node, Params: params})
 		t.DriftJobs = append(t.DriftJobs, j.ID)
 	}
 	t.DriftStarted = now
