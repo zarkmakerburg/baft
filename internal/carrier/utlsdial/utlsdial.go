@@ -51,7 +51,11 @@ type Config struct {
 
 func (c Config) hello() utls.ClientHelloID {
 	if c.Hello.Client == "" {
-		return utls.HelloChrome_Auto
+		// Chrome 120's classic ClientHello (GREASE + full browser cipher/extension
+		// set, X25519 key share) negotiates cleanly with a TLS 1.3 server. The
+		// newest Auto profile sends post-quantum key shares that a TLS 1.3-only
+		// Go server rejects, so it is not the default.
+		return utls.HelloChrome_120
 	}
 	return c.Hello
 }
@@ -87,8 +91,25 @@ func Dial(ctx context.Context, network, addr string, cfg Config) (net.Conn, erro
 		_ = raw.SetDeadline(dl)
 	}
 
-	ucfg := utlsConfig(cfg)
-	uconn := utls.UClient(raw, ucfg, cfg.hello())
+	tconn, err := Handshake(ctx, raw, cfg)
+	if err != nil {
+		return nil, err
+	}
+	_ = raw.SetDeadline(time.Time{})
+	ok = true
+	return tconn, nil
+}
+
+// Handshake performs the uTLS (browser-fidelity ClientHello) handshake over an
+// existing connection and returns the TLS connection once the server is
+// authenticated. The caller owns conn and must close it on error. This lets a
+// transport that already holds a raw connection (such as the WebSocket carrier)
+// reshape its TLS fingerprint without utlsdial doing the dialing.
+func Handshake(ctx context.Context, conn net.Conn, cfg Config) (net.Conn, error) {
+	if cfg.ServerName == "" || cfg.RootCAs == nil {
+		return nil, errors.New("utlsdial: server name and root CAs are required")
+	}
+	uconn := utls.UClient(conn, utlsConfig(cfg), cfg.hello())
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("utlsdial: handshake: %w", err)
 	}
@@ -103,8 +124,6 @@ func Dial(ctx context.Context, network, addr string, cfg Config) (net.Conn, erro
 			return nil, fmt.Errorf("utlsdial: pin: %w", err)
 		}
 	}
-	_ = raw.SetDeadline(time.Time{})
-	ok = true
 	return uconn, nil
 }
 

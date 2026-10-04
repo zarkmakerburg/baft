@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"crypto/tls"
 	"time"
 
 	carrierh2 "github.com/zarkmakerburg/baft/internal/carrier/h2"
 	carrierws "github.com/zarkmakerburg/baft/internal/carrier/ws"
+	"github.com/zarkmakerburg/baft/internal/carrier/utlsdial"
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/recovery"
@@ -109,6 +111,15 @@ func (r *Runtime) dialCarrier(ctx context.Context,cfg config.Config,tlsCfg *tls.
 		// the HTTP/2 the shared client config carries.
 		wsTLS:=tlsCfg.Clone();wsTLS.NextProtos=[]string{"http/1.1"}
 		d:=&carrierws.Dialer{Endpoint:"wss://"+cfg.Peer.Address,TLSConfig:wsTLS,Header:wsCarrierHeaders(cfg.Peer.ServerName)}
+		if cfg.Transport.UTLS{
+			// Present a browser-fidelity ClientHello to blend the IR->carrier TLS
+			// into ordinary HTTPS; the server is still verified (and the inner
+			// Noise handshake remains the end-to-end authenticator).
+			roots:=tlsCfg.RootCAs
+			d.TLSHandshake=func(hctx context.Context,conn net.Conn,serverName string)(net.Conn,error){
+				return utlsdial.Handshake(hctx,conn,utlsdial.Config{ServerName:serverName,RootCAs:roots,NextProtos:[]string{"http/1.1"}})
+			}
+		}
 		conn,secure,err:=d.OpenNoise(ctx,nc)
 		if err!=nil{r.handshakeErrors.Add(1);return nil,err}
 		return &openedRuntimeCarrier{carrier:session.Carrier{In:secure,Out:secure},closeFn:func(){_ = conn.Close()}},nil

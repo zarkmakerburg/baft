@@ -55,6 +55,10 @@ type Transport struct {
 	H3Enabled bool   `json:"h3_enabled"`
 	Shards    int    `json:"shards"`
 	Profile   string `json:"profile"`
+	// UTLS makes the carrier dial present a browser-fidelity (Chrome) TLS
+	// ClientHello instead of Go's distinctive one, closing the passive
+	// fingerprint gap. Supported on the ws transport.
+	UTLS bool `json:"utls,omitempty"`
 }
 type Limits struct {
 	MaxFlows          int `json:"max_flows"`
@@ -144,6 +148,9 @@ func Validate(c Config) error {
 	}
 	if c.Transport.Primary != "h2" && c.Transport.Primary != "ws" {
 		return errors.New("transport.primary must be h2 or ws")
+	}
+	if c.Transport.UTLS && c.Transport.Primary != "ws" {
+		return errors.New("transport.utls is only supported with transport.primary ws")
 	}
 	if c.Transport.Primary == "ws" && c.Noise == nil {
 		// Behind Cloudflare the outer TLS is terminated at the edge, so the

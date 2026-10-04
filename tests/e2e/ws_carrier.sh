@@ -30,19 +30,27 @@ wait_port "$TARGET"
 
 log "pair EX/IR with transport=ws"
 "$PAIR" keygen --file "$EX/k.json" >/dev/null
-"$PAIR" pki --dir "$EX/pki" --host 127.0.0.1 >/dev/null
+# BAFT_WS_UTLS=1 additionally presents a browser-fidelity (uTLS) ClientHello.
+# Browsers do not support Ed25519 server certificates, so uTLS requires an
+# ECDSA (or RSA) cert — exactly what a Cloudflare Origin Certificate is.
+UTLS_FLAG=(); PKI_KEYTYPE=()
+if [[ "${BAFT_WS_UTLS:-0}" == 1 ]]; then UTLS_FLAG=(--utls); PKI_KEYTYPE=(--key-type ecdsa); log "uTLS enabled (ECDSA cert)"; fi
+"$PAIR" pki --dir "$EX/pki" --host 127.0.0.1 "${PKI_KEYTYPE[@]}" >/dev/null
 code=$("$PAIR" ex-code --key "$EX/k.json" --address "127.0.0.1:$CARRIER" --server-name 127.0.0.1 \
   --identity urn:baft:node:ex-ws --ca-file "$EX/pki/ca.pem" --psk-out "$EX/p.psk" --pending-out "$EX/p.json" --ttl 10m)
 "$PAIR" keygen --file "$IR/k.json" >/dev/null
 reply=$("$PAIR" ir-apply --code "$code" --key "$IR/k.json" --state-dir "$IR/state" --config-out "$IR/baft.yaml" \
-  --transport ws --route-listen "127.0.0.1:$ENTRY" --metrics-listen "127.0.0.1:$(free_port)")
+  --transport ws "${UTLS_FLAG[@]}" --route-listen "127.0.0.1:$ENTRY" --metrics-listen "127.0.0.1:$(free_port)")
 "$PAIR" ex-accept --reply "$reply" --pending "$EX/p.json" --psk-file "$EX/p.psk" --key "$EX/k.json" \
-  --transport ws --listen "127.0.0.1:$CARRIER" --ca-file "$EX/pki/ca.pem" --cert-file "$EX/pki/server.pem" \
+  --transport ws "${UTLS_FLAG[@]}" --listen "127.0.0.1:$CARRIER" --ca-file "$EX/pki/ca.pem" --cert-file "$EX/pki/server.pem" \
   --cert-key-file "$EX/pki/server.key" --target "127.0.0.1:$TARGET" --metrics-listen "127.0.0.1:$(free_port)" \
   --unix-socket "$EX/admin.sock" --config-out "$EX/baft.yaml" >/dev/null
 
 grep -q '"primary": "ws"' "$EX/baft.yaml" || { log "EX config is not ws"; exit 1; }
 grep -q '"primary": "ws"' "$IR/baft.yaml" || { log "IR config is not ws"; exit 1; }
+if [[ "${BAFT_WS_UTLS:-0}" == 1 ]]; then
+  grep -q '"utls": true' "$IR/baft.yaml" || { log "IR config did not enable utls"; exit 1; }
+fi
 
 "$BAFT" run --file "$EX/baft.yaml" >"$WORK/ex.log" 2>&1 & PIDS+=($!)
 wait_port "$CARRIER" || { log "EX carrier port never opened"; tail -n 40 "$WORK/ex.log" >&2; exit 1; }

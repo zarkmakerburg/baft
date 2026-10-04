@@ -125,10 +125,11 @@
       "type": "object", "additionalProperties": false,
       "required": ["primary", "h3_enabled", "shards", "profile"],
       "properties": {
-        "primary": {"const": "h2"},
+        "primary": {"enum": ["h2", "ws"]},
         "h3_enabled": {"const": false},
         "shards": {"type": "integer", "minimum": 1, "maximum": 8},
-        "profile": {"type": "string", "minLength": 1, "maxLength": 64}
+        "profile": {"type": "string", "minLength": 1, "maxLength": 64},
+        "utls": {"type": "boolean"}
       }
     },
     "limits": {
