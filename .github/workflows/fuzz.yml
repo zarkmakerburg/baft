@@ -43,6 +43,8 @@ jobs:
             fn: FuzzFlowReceivePath
           - pkg: ./internal/recordshape
             fn: FuzzMorphingReadFrame
+          - pkg: ./internal/carrier/ws
+            fn: FuzzReadFrame
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
