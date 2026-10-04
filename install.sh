@@ -492,11 +492,15 @@ confirm_plan() {
 }
 
 # ---- apply with rollback ----
-BACKUP_DIR=""; BACKUP_MAP=(); CREATED=(); WAS_ACTIVE=0; WAS_AGENT_ACTIVE=0; TOUCHED_SERVICE=0
+BACKUP_DIR=""; BACKUP_MAP=(); CREATED=(); BACKED_UP=(); WAS_ACTIVE=0; WAS_AGENT_ACTIVE=0; TOUCHED_SERVICE=0
 backup_name() { printf '%s' "$1" | tr '/' '_'; }
 backup_file() {
   local f="$1"
   if [[ ! -e "$f" ]]; then CREATED+=("$f"); return 0; fi
+  local seen
+  for seen in "${BACKED_UP[@]}"; do
+    [[ "$seen" == "$f" ]] && return 0
+  done
   if [[ -z "$BACKUP_DIR" ]]; then
     BACKUP_DIR="$BAFT_PREFIX/backups/rerun-$(date +%Y%m%dT%H%M%S)-$$"
     install -d -m 0700 -o root -g root "$BAFT_PREFIX/backups" "$BACKUP_DIR"
@@ -506,6 +510,7 @@ backup_file() {
   # removes only files it lists with a matching digest.
   ( cd "$BACKUP_DIR" && sha256sum -- "$(backup_name "$f")" >>MANIFEST.sha256 )
   BACKUP_MAP+=("$f")
+  BACKED_UP+=("$f")
 }
 prune_backups() {
   local d n=0
@@ -531,10 +536,17 @@ rollback_apply() {
   local f unit was_active
   if [[ "$AGENT_ONLY" == "1" ]]; then unit="$BAFT_AGENT_UNIT.service"; was_active="$WAS_AGENT_ACTIVE"
   else unit="$BAFT_SERVICE.service"; was_active="$WAS_ACTIVE"; fi
-  if [[ "$TOUCHED_SERVICE" == 1 && "$was_active" == 0 ]]; then systemctl stop "$unit" || true; fi
+  if [[ "$TOUCHED_SERVICE" == 1 ]]; then systemctl stop "$unit" || true; fi
   if [[ "$ENABLED_BY_RUN" == 1 ]]; then systemctl disable "$unit" || true; fi
   for f in "${BACKUP_MAP[@]}"; do
-    cp -p -- "$BACKUP_DIR/$(backup_name "$f")" "$f" || log "could not restore $f (copy kept in $BACKUP_DIR)"
+    local tmp
+    tmp="$(dirname "$f")/.baft-rollback-$(basename "$f").$$"
+    if cp -p -- "$BACKUP_DIR/$(backup_name "$f")" "$tmp" && mv -f -- "$tmp" "$f"; then
+      :
+    else
+      rm -f -- "$tmp"
+      log "could not restore $f (copy kept in $BACKUP_DIR)"
+    fi
   done
   for f in "${CREATED[@]}"; do rm -f -- "$f"; done
   systemctl daemon-reload || true
