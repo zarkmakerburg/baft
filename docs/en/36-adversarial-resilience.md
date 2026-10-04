@@ -46,6 +46,22 @@ unable to carry traffic.
 | `probe` | censor / DPI | active probes to the carrier: HTTP GET, random bytes, a BAFT-header-shaped prefix, and a replayed identical probe | the carrier exposes no stateful distinguisher (identical input → identical response); all fingerprints are recorded as evidence |
 | `manyflows` | attacker | open many application connections through IR at once | per-flow slot and memory bounds hold; fds return after close |
 
+## Intrusion scenarios (`tests/adversary/intrude.sh`)
+
+These attack BAFT's security boundaries directly. Each passes when the boundary
+**holds** — the intrusion is rejected, the node stays up, and legitimate traffic
+is unaffected.
+
+| Intrusion | Boundary | Proves |
+|---|---|---|
+| `pairing_replay` | authentication | a one-time pairing reply, replayed after it was consumed, is rejected (no second session from a captured code) |
+| `rogue_key` | authentication | a rogue IR whose Noise static key is not the one EX pinned at pairing cannot establish a carrier; EX stays up and the legitimate IR keeps carrying traffic |
+| `onpath_tamper` | integrity | an on-path attacker that flips one ciphertext byte is caught by the AEAD (`bad record MAC`); the carrier fails closed and **no corrupted byte reaches the target** (verified by SHA-256); EX does not crash |
+
+The IR dialer exiting on a tampered carrier is the designed fail-closed
+behaviour (systemd restarts it in production), not a bypass; the test treats a
+node *crash* or any corrupted delivery as the only failures.
+
 Deep active-probe indistinguishability (an unauthenticated authentication
 attempt is answered like an ordinary HTTP request, success withheld until
 message one authenticates) is asserted by the Go unit tests in

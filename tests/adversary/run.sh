@@ -17,7 +17,7 @@ OUT="${1:?usage: run.sh OUT_DIR}"; mkdir -p "$OUT"
 WORK="$(mktemp -d)"; PIDS=()
 log() { printf '[adv] %s\n' "$*" >&2; }
 stop_all() { local p; for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; for p in "${PIDS[@]}"; do wait "$p" 2>/dev/null || true; done; PIDS=(); }
-cleanup() { [[ -n "${ADV_KEEP:-}" ]] && log "workdir $WORK"; stop_all; [[ -n "${TARGET_PID:-}" ]] && kill "$TARGET_PID" 2>/dev/null; [[ -z "${ADV_KEEP:-}" ]] && rm -rf "$WORK"; }
+cleanup() { stop_all; [[ -n "${TARGET_PID:-}" ]] && kill "$TARGET_PID" 2>/dev/null || true; if [[ -z "${ADV_KEEP:-}" ]]; then rm -rf "$WORK"; else log "workdir $WORK"; fi; return 0; }
 trap cleanup EXIT
 
 case "${ADV_PROFILE:-bounded}" in
