@@ -42,6 +42,10 @@ REPLY_CODE="${BAFT_REPLY_CODE:-}"
 ROLE=""
 PAIRING_CODE="${BAFT_PAIRING_CODE:-}"
 PUBLIC_ADDR="${BAFT_PUBLIC_ADDR:-}"
+# EX only: set up the IR server from here over SSH (user@host[:port]).
+IR_SSH="${BAFT_IR_SSH:-}"
+IR_SSH_KEY="${BAFT_IR_SSH_KEY:-}"
+IR_SSH_FINGERPRINT="${BAFT_IR_SSH_FINGERPRINT:-}"
 NONINTERACTIVE="${BAFT_NONINTERACTIVE:-0}"
 RECORD_SHAPING=0
 STEALTH_PRO=0
@@ -120,6 +124,8 @@ usage() {
 Usage:
   sudo bash install.sh            # asks: outside Iran (EX) or inside Iran (IR)
   sudo bash install.sh --role ex --public-address HOST_OR_IP [--reply-code BAFTREPLY1:...]
+  sudo bash install.sh --role ex --ir-ssh root@IR_HOST[:22] [--ir-ssh-key FILE] [--ir-ssh-fingerprint SHA256:...]
+      # also installs and pairs the IR over SSH; nobody logs in to the IR
   sudo bash install.sh --role ir [--pairing-code BAFTPAIR1:...]
   sudo bash install.sh --role ex --stealth-pro  # existing pinned Noise config
   sudo bash install.sh --role ir --stealth-pro  # enable on BOTH peers
@@ -136,6 +142,13 @@ Options:
                       Changes nothing, needs no root and no network (with --json: machine-readable).
   --yes               apply a plan that changes an existing install without asking
                       (also BAFT_ASSUME_YES=1). A fresh install never asks.
+  --ir-ssh USER@HOST[:PORT]
+                      EX only: install the IR over SSH from this server and pair
+                      it, so nobody logs in to the IR. Auth with --ir-ssh-key FILE
+                      or a password (asked, or BAFT_IR_SSH_PASSWORD). The IR host
+                      key is shown for confirmation, or pinned with
+                      --ir-ssh-fingerprint SHA256:... (required without a
+                      terminal). A non-root user needs passwordless sudo.
   --re-pair           start a NEW pairing on an installed node (the current config is
                       backed up first); a rerun never re-pairs on its own
   --offline DIR       install from an unpacked baft-offline-<version>.tar.gz: no
@@ -182,6 +195,9 @@ while [[ $# -gt 0 ]]; do
     --pairing-code) PAIRING_CODE="${2:-}"; shift 2 ;;
     --public-address) PUBLIC_ADDR="${2:-}"; shift 2 ;;
     --reply-code) REPLY_CODE="${2:-}"; shift 2 ;;
+    --ir-ssh) IR_SSH="${2:-}"; shift 2 ;;
+    --ir-ssh-key) IR_SSH_KEY="${2:-}"; shift 2 ;;
+    --ir-ssh-fingerprint) IR_SSH_FINGERPRINT="${2:-}"; shift 2 ;;
     --enable-record-shaping) die "use --stealth-pro with a pinned Noise configuration" ;;
     --stealth-pro) STEALTH_PRO=1; RECORD_SHAPING=1; shift ;;
     --version) BAFT_VERSION="${2:-}"; shift 2 ;;
@@ -855,7 +871,116 @@ else
   fi
   [[ -n "$ROLE" ]] || die "--role ex or --role ir is required when there is no terminal to ask"
   [[ "$ROLE" == "ex" || "$ROLE" == "ir" ]] || die "--role must be ex or ir"
+  [[ -z "$IR_SSH" || "$ROLE" == "ex" ]] || die "--ir-ssh is for the EX installer"
 fi
+
+# ---- EX: install and pair the IR over SSH ----
+# The IR is installed by this same script, sent over SSH with the pairing code
+# in its environment (never on a command line), non-interactively; its reply
+# code is read back from its output. The IR host key is pinned before any
+# credential is sent: confirmed by the operator or given as a fingerprint.
+IR_SSH_ENV_PASS="BAFT_INSTALL_FROM BAFT_VERSION BAFT_RELEASE_URL BAFT_GITHUB_REPO BAFT_REVOCATIONS_URL BAFT_ROOT_PUB BAFT_ALLOW_DOWNGRADE BAFT_REPO_URL BAFT_REF BAFT_MIRROR_URL BAFT_GO_VERSION BAFT_RUN_TESTS"
+setup_ir_over_ssh() { # PAIRING_CODE -> prints the BAFTREPLY1 code on stdout
+  local code=$1 user host port target
+  target="$IR_SSH"
+  [[ "$target" =~ ^(([A-Za-z0-9._-]+)@)?([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:([0-9]{1,5}))?$ ]] || die "--ir-ssh must be user@host[:port]"
+  user="${BASH_REMATCH[2]:-root}"; host="${BASH_REMATCH[3]}"; port="${BASH_REMATCH[5]:-22}"
+  host="${host#[}"; host="${host%]}"
+  for c in ssh ssh-keyscan ssh-keygen; do
+    command -v "$c" >/dev/null 2>&1 && continue
+    log "installing openssh-client for the IR setup"
+    apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends openssh-client >/dev/null || die "cannot install openssh-client"
+    break
+  done
+  local dir; dir="$(mktemp -d)"; CLEANUP+=("$dir")
+  log "reading the IR host key from $host:$port"
+  ssh-keyscan -T 15 -p "$port" "$host" >"$dir/scan" 2>/dev/null || true
+  [[ -s "$dir/scan" ]] || die "cannot reach SSH on $host:$port from this server (firewall?); set up the IR by hand and paste its reply code instead"
+  local line fp ok=0 shown=""
+  : >"$dir/known_hosts"
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    fp="$(printf '%s\n' "$line" | ssh-keygen -lf - -E sha256 2>/dev/null | awk '{print $2" "$NF}')" || continue
+    [[ -n "$fp" ]] || continue
+    shown+="    $fp"$'\n'
+    if [[ -n "$IR_SSH_FINGERPRINT" ]]; then
+      [[ "${fp%% *}" == "$IR_SSH_FINGERPRINT" ]] && { printf '%s\n' "$line" >>"$dir/known_hosts"; ok=1; }
+    else
+      printf '%s\n' "$line" >>"$dir/known_hosts"
+    fi
+  done <"$dir/scan"
+  if [[ -n "$IR_SSH_FINGERPRINT" ]]; then
+    [[ "$ok" == 1 ]] || die "the IR host key does not match --ir-ssh-fingerprint; it presented:"$'\n'"$shown"
+  else
+    printf '\nThe IR server presented these SSH host keys:\n%s' "$shown" >&2
+    printf 'Compare them with the server (provider console: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub).\n' >&2
+    local yes=""
+    ask yes "Do they match? [y/N] " || die "the IR host key must be confirmed; pass --ir-ssh-fingerprint SHA256:... when there is no terminal"
+    [[ "$yes" == "y" || "$yes" == "Y" || "$yes" == "yes" ]] || die "IR host key not confirmed; nothing was sent to it"
+  fi
+
+  local -a opts=(-p "$port" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$dir/known_hosts"
+    -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ServerAliveInterval=30 -o LogLevel=ERROR)
+  local -a envs=()
+  if [[ -n "$IR_SSH_KEY" ]]; then
+    [[ -r "$IR_SSH_KEY" ]] || die "--ir-ssh-key $IR_SSH_KEY is not readable"
+    opts+=(-i "$IR_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes)
+  else
+    local pass="${BAFT_IR_SSH_PASSWORD:-}"
+    if [[ -z "$pass" ]]; then
+      ask pass "SSH password for $user@$host: " -s || die "an IR SSH password or --ir-ssh-key is required"
+      printf '\n' >&2
+    fi
+    [[ -n "$pass" ]] || die "no IR SSH password entered"
+    # The password reaches ssh through SSH_ASKPASS from the environment: never
+    # an argument, never a file.
+    printf '#!/bin/sh\nprintf "%%s\\n" "$BAFT_IR_SSH_ASKPASS_SECRET"\n' >"$dir/askpass"
+    chmod 0700 "$dir/askpass"
+    envs=(SSH_ASKPASS="$dir/askpass" SSH_ASKPASS_REQUIRE=force DISPLAY=baft BAFT_IR_SSH_ASKPASS_SECRET="$pass")
+    opts+=(-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1)
+  fi
+
+  local self="${BASH_SOURCE[0]:-}"
+  if [[ -n "$self" && -r "$self" ]]; then
+    cp -- "$self" "$dir/install.sh"
+  else
+    curl -fsSL --retry 3 "${BAFT_INSTALL_URL:-https://raw.githubusercontent.com/${BAFT_GITHUB_REPO}/${BAFT_REF}/install.sh}" -o "$dir/install.sh" || die "cannot download install.sh to send to the IR"
+  fi
+  grep -q '^BAFT_IR_INSTALL_SH_END$' "$dir/install.sh" && die "install.sh contains the transfer delimiter"
+  local remote="bash -s"
+  [[ "$user" == "root" ]] || remote="sudo -n bash -s"
+  {
+    printf 'set -e\numask 077\nf="$(mktemp)"\ntrap '"'"'rm -f "$f"'"'"' EXIT\n'
+    printf "cat >\"\$f\" <<'BAFT_IR_INSTALL_SH_END'\n"
+    cat "$dir/install.sh"
+    printf 'BAFT_IR_INSTALL_SH_END\n'
+    printf 'export BAFT_NONINTERACTIVE=1 BAFT_PAIRING_CODE=%q\n' "$code"
+    local v
+    local -a pass_vars=() ir_env=()
+    IFS=' ' read -r -a pass_vars <<<"$IR_SSH_ENV_PASS"
+    IFS=' ' read -r -a ir_env <<<"${BAFT_IR_ENV:-}"
+    for v in "${pass_vars[@]}"; do
+      [[ -n "${!v:-}" ]] && printf 'export %s=%q\n' "$v" "${!v}"
+    done
+    # Extra NAME=VALUE settings for the IR only (BAFT_* names).
+    for v in "${ir_env[@]}"; do
+      [[ "$v" =~ ^BAFT_[A-Z0-9_]+=.*$ ]] || die "BAFT_IR_ENV entries must be BAFT_NAME=value"
+      printf 'export %s=%q\n' "${v%%=*}" "${v#*=}"
+    done
+    printf 'bash "$f" --role ir </dev/null\n'
+  } >"$dir/payload"
+  log "installing the IR on $host over SSH (this takes a few minutes)"
+  local rc=0
+  env "${envs[@]}" ssh "${opts[@]}" "$user@$host" "$remote" <"$dir/payload" >"$dir/ir.out" 2>"$dir/ir.err" || rc=$?
+  sed -E 's/BAFT(PAIR|REPLY)1:[^[:space:]]*/BAFT\11:[hidden]/g; s/^/  [IR] /' "$dir/ir.err" | tail -n 25 >&2
+  local reply
+  reply="$(grep -o 'BAFTREPLY1:[^[:space:]]*' "$dir/ir.out" | tail -n 1 || true)"
+  if [[ "$rc" != 0 || -z "$reply" ]]; then
+    log "the IR setup over SSH did not finish (exit $rc)"
+    return 1
+  fi
+  printf '%s\n' "$reply"
+}
 
 # ---- renderers (pure: they print, they never touch the system) ----
 render_service_unit() {
@@ -1403,8 +1528,25 @@ if [[ "$DO_PAIRING" == 1 ]]; then
       --cert-key-file "$BAFT_CONFIG_DIR/pki/server.key" --target "$BAFT_TARGET"
       --metrics-listen "$BAFT_METRICS_LISTEN" --unix-socket "$BAFT_STATE_DIR/admin.sock"
       --config-out "$CONFIG")
-    printf '\nPAIRING CODE (secret, one-time, 15 minute lifetime):\n%s\n\n' "$PAIRING"
+    if [[ -z "$REPLY_CODE" && -z "$IR_SSH" && "$ASK_TTY" == 1 ]]; then
+      printf '\nHow should the Iran (IR) server be set up?\n' >&2
+      printf '  1) From here over SSH: give its address and login, nobody needs to log in to it\n' >&2
+      printf '  2) By hand: run the installer there and paste its reply code here\n' >&2
+      _how=""
+      ask _how "Choose 1 or 2 [1]: " || true
+      if [[ "${_how:-1}" == 1 ]]; then
+        while [[ -z "$IR_SSH" ]]; do ask IR_SSH "IR server SSH (user@host or user@host:port, e.g. root@1.2.3.4): " || break; done
+        _key=""
+        ask _key "Path to an SSH private key (leave empty to use a password): " || true
+        IR_SSH_KEY="${_key:-$IR_SSH_KEY}"
+      fi
+    fi
+    if [[ -z "$REPLY_CODE" && -n "$IR_SSH" ]]; then
+      REPLY_CODE="$(setup_ir_over_ssh "$PAIRING")" || REPLY_CODE=""
+      [[ -n "$REPLY_CODE" ]] || log "falling back to manual pairing with the code below"
+    fi
     if [[ -z "$REPLY_CODE" ]]; then
+      printf '\nPAIRING CODE (secret, one-time, 15 minute lifetime):\n%s\n\n' "$PAIRING"
       ask REPLY_CODE "Run the installer on the IR server with this code, then paste its BAFTREPLY1 code here: " || true
     fi
     if [[ -z "$REPLY_CODE" ]]; then

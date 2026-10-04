@@ -48,6 +48,8 @@ The installer asks where the server is and follows that path:
 2. **Inside Iran (IR)**: run the same line and paste the pairing code. IR starts and prints a `BAFTREPLY1:...` code.
 3. Paste that reply code into the EX prompt. EX starts, and the tunnel is up.
 
+Or let EX do everything: on EX choose **set up the IR from here over SSH** and give the IR's `user@host`, then a key or password. EX installs and pairs the IR itself (its SSH host key is shown for you to confirm first), so you never log in to the IR. This needs SSH from EX to IR to be open. From scripts: `--ir-ssh root@IR_HOST --ir-ssh-key FILE --ir-ssh-fingerprint SHA256:...`. With BCC, the same is done from the dashboard: add both servers over SSH, then build the tunnel ([SSH bootstrap](docs/en/26-p1d-ssh-bootstrap.md), [tunnel builder](docs/en/27-p1e-tunnel-builder.md)).
+
 For scripts and automation, skip the questions with flags: `... | sudo bash -s -- --role ex --public-address EX_HOST_OR_IP` or `--role ir --pairing-code 'BAFTPAIR1:...'`. Without a terminal (or with `BAFT_NONINTERACTIVE=1`) nothing is asked and `--role` is required.
 
 Prefer to read the installer first? `curl -fsSLO https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh && less install.sh`, then run `sudo bash install.sh`. Every release the installer fetches is verified against the pinned root key. Full guide: [Running IR and EX](docs/en/06-running-ir-ex.md).
