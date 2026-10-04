@@ -20,6 +20,7 @@ import (
 	"time"
 
 	carrierh2 "github.com/zarkmakerburg/baft/internal/carrier/h2"
+	carrierws "github.com/zarkmakerburg/baft/internal/carrier/ws"
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/identity"
 	baftmetrics "github.com/zarkmakerburg/baft/internal/metrics"
@@ -27,7 +28,6 @@ import (
 	"github.com/zarkmakerburg/baft/internal/resources"
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/routes"
-	"github.com/zarkmakerburg/baft/internal/securityinternal"
 	"github.com/zarkmakerburg/baft/internal/session"
 	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
@@ -782,24 +782,42 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		if err != nil {
 			return err
 		}
-		handler, err = carrierh2.HandlerWithNoise(stream, carrierh2.NoiseOptions{
+		opts := carrierh2.NoiseOptions{
 			Handshake: nc, PeerIdentity: legacyIdentity, AllowedPeers: allowedPeers,
 			Cover: cover, Revocations: r.Revocations,
 			OnHandshakeError: func(){ r.handshakeErrors.Add(1) },
-		})
-		if err != nil {
-			return err
 		}
 		// Public website TLS; Noise authenticates the pinned peer before session.New.
 		tlsCfg.ClientAuth = tls.NoClientCert
 		tlsCfg.ClientCAs = nil
 		tlsCfg.VerifyConnection = nil
-		tlsCfg.NextProtos = []string{"h2", "http/1.1"}
+		if cfg.Transport.Primary == "ws" {
+			handler, err = carrierws.HandlerWithNoise(stream, opts)
+			if err != nil {
+				return err
+			}
+			// WebSocket upgrades are served over HTTP/1.1 (the handler hijacks
+			// the connection); no h2 ALPN. This is the Cloudflare orange-cloud
+			// carrier path.
+			tlsCfg.NextProtos = []string{"http/1.1"}
+		} else {
+			handler, err = carrierh2.HandlerWithNoise(stream, opts)
+			if err != nil {
+				return err
+			}
+			tlsCfg.NextProtos = []string{"h2", "http/1.1"}
+		}
 	} else {
 		handler = carrierh2.HandlerWithRevocation(stream, r.Revocations)
 	}
 
 	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
+	if cfg.Transport.Primary == "ws" {
+		// The WebSocket carrier serves HTTP/1.1 and hijacks the connection.
+		// ServeTLS otherwise auto-enables HTTP/2 (re-adding "h2" to ALPN); an
+		// empty non-nil TLSNextProto disables that so upgrades can hijack.
+		srv.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
+	}
 	r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.BindAttempted=true})
 	log.Printf("baft listener startup: acquire configured=%s",cfg.Server.Listen)
 	ln, err := r.takeEndpointListenerForTest(EndpointServer, cfg.Node.ID, cfg.Server.Listen)
@@ -838,31 +856,29 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 }
 
 type dialerShard struct {
-	mu     sync.Mutex
-	peer   *session.Peer
-	client *carrierh2.Client
-	pw     *io.PipeWriter
-	body   io.ReadCloser
+	mu      sync.Mutex
+	peer    *session.Peer
+	closeFn func() // tears down the shard's current physical carrier (transport-agnostic)
 }
 
 func (s *dialerShard) close() {
 	s.mu.Lock()
-	client,pw,body:=s.client,s.pw,s.body
-	s.client=nil;s.pw=nil;s.body=nil
+	fn := s.closeFn
+	s.closeFn = nil
 	s.mu.Unlock()
-	if pw!=nil{_ = pw.Close()}
-	if body!=nil{_ = body.Close()}
-	if client!=nil{client.CloseIdleConnections()}
+	if fn != nil {
+		fn()
+	}
 }
 
 func (s *dialerShard) replaceCarrier(o *openedRuntimeCarrier) {
 	s.mu.Lock()
-	oldClient,oldPW,oldBody:=s.client,s.pw,s.body
-	s.client=o.client;s.pw=o.pw;s.body=o.body
+	old := s.closeFn
+	s.closeFn = o.closeFn
 	s.mu.Unlock()
-	if oldPW!=nil{_ = oldPW.Close()}
-	if oldBody!=nil{_ = oldBody.Close()}
-	if oldClient!=nil{oldClient.CloseIdleConnections()}
+	if old != nil {
+		old()
+	}
 }
 
 func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
@@ -885,40 +901,12 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 	shards := make([]*dialerShard, 0, cfg.Transport.Shards)
 	runErr := make(chan error, cfg.Transport.Shards+len(cfg.Routes)+1)
 	for i := 0; i < cfg.Transport.Shards; i++ {
-		client, err := carrierh2.NewClient("https://"+cfg.Peer.Address, tlsCfg)
+		o, err := r.dialCarrier(ctx, cfg, tlsCfg)
 		if err != nil {
-			r.closeShards(shards)
-			return err
-		}
-		var pw *io.PipeWriter
-		var resp *http.Response
-		var secure *securityinternal.Conn
-		if cfg.Noise != nil {
-			nc, e := noiseConfig(cfg)
-			if e != nil {
-				r.closeShards(shards)
-				client.CloseIdleConnections()
-				return e
-			}
-			resp, pw, secure, err = client.OpenNoise(ctx, nc)
-			if err != nil { r.handshakeErrors.Add(1) }
-		} else {
-			pr, writer := io.Pipe()
-			pw = writer
-			resp, err = client.Open(ctx, pr)
-		}
-		if err != nil {
-			if pw != nil {
-				_ = pw.Close()
-			}
-			client.CloseIdleConnections()
 			r.closeShards(shards)
 			return fmt.Errorf("open shard %d: %w", i, err)
 		}
-		carrier := session.Carrier{In: resp.Body, Out: pw}
-		if secure != nil {
-			carrier = session.Carrier{In: secure, Out: secure}
-		}
+		carrier := o.carrier
 		p, err := session.New(session.Dialer, carrier, cfg.Peer.AllowedIdentity, nil, session.Options{
 			NodeID: cfg.Node.ID, ExpectedPeerNodeID: expectedPeerNode, ShardID: uint8(i),
 			ProfileID: cfg.Transport.Profile, ProfileVersion: 1, ConfigRevision: "config-v1",
@@ -930,13 +918,11 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			CarrierID: fmt.Sprintf("shard-%d-carrier-1",i), BootID:r.bootID,
 		})
 		if err != nil {
-			_ = pw.Close()
-			_ = resp.Body.Close()
-			client.CloseIdleConnections()
+			o.close()
 			r.closeShards(shards)
 			return err
 		}
-		sh := &dialerShard{peer: p, client: client, pw: pw, body: resp.Body}
+		sh := &dialerShard{peer: p, closeFn: o.closeFn}
 		r.registerPeer(p)
 		if cfg.Recovery.Enabled {
 			if err:=r.registerSession(p);err!=nil{r.unregisterPeer(p);sh.close();r.closeShards(shards);return err}
