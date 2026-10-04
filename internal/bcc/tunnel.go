@@ -71,6 +71,7 @@ const (
 type Tunnel struct {
 	ID              string `json:"id"`
 	InstanceID      string `json:"instance_id,omitempty"`
+	TopologyKey     string `json:"topology_key,omitempty"`
 	EXNode          string `json:"ex_node"`
 	IRNode          string `json:"ir_node"`
 	PublicAddress   string `json:"public_address"`
@@ -413,11 +414,17 @@ func (s *Store) CreateTunnelFromPlan(req TunnelRequest, planHash string, now tim
 			return Tunnel{}, cur, ErrStalePlan{Current: cur}
 		}
 	}
+	t, err := s.createTunnelLocked(req, planHash, "", now)
+	return t, Plan{}, err
+}
+
+func (s *Store) createTunnelLocked(req TunnelRequest, planHash, topologyKey string, now time.Time) (Tunnel, error) {
 	t, ex, ir, err := s.resolveTunnelLocked(req, now)
 	if err != nil {
-		return Tunnel{}, Plan{}, err
+		return Tunnel{}, err
 	}
 	t.PlanHash = planHash
+	t.TopologyKey = topologyKey
 	t.ExpectedGen = map[string]GenExpect{ex.ID: expectedGeneration(ex, t.InstanceID), ir.ID: expectedGeneration(ir, t.InstanceID)}
 	exParams := t.prepareEXParams()
 	t.Phase = TunnelPreparingEX
@@ -427,7 +434,11 @@ func (s *Store) CreateTunnelFromPlan(req TunnelRequest, planHash string, now tim
 		s.st.Tunnels = map[string]Tunnel{}
 	}
 	s.st.Tunnels[t.ID] = t
-	return t, Plan{}, s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		delete(s.st.Tunnels, t.ID)
+		return Tunnel{}, err
+	}
+	return t, nil
 }
 
 func (t Tunnel) prepareEXParams() map[string]string {

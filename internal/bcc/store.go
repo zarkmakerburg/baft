@@ -170,15 +170,20 @@ type state struct {
 	Discovery       map[string]NodeDiscovery     `json:"discovery,omitempty"`
 	// CertRotations are the certificate rotations of built tunnels (A4).
 	CertRotations   map[string]CertRotation      `json:"cert_rotations,omitempty"`
+	// Desired topology (M-014): IR pool members, explicit EX routes, and stable edge bindings.
+	IRPool           map[string]IRPoolMember       `json:"ir_pool,omitempty"`
+	EXRoutes         map[string]ExplicitEXRoute    `json:"ex_routes,omitempty"`
+	TopologyBindings map[string]TopologyBinding    `json:"topology_bindings,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`
 }
 
 type Store struct {
-	mu   sync.Mutex
-	path string
-	st   state
+	mu          sync.Mutex
+	reconcileMu sync.Mutex
+	path        string
+	st          state
 	// DriftEvery is how often active tunnels are checked for drift; zero
 	// disables the automatic check (a check can still be requested).
 	DriftEvery time.Duration
