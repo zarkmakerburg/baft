@@ -21,6 +21,9 @@ import (
 
 const (
 	defaultWindow           uint64 = 64 * 1024
+	// maxWindow caps receive-window autotuning. It stays at or below
+	// appConnSocketBuffer so the target socket can absorb a full window.
+	maxWindow               uint64 = 4 * 1024 * 1024
 	dataChunk                      = 32 * 1024
 	maxClosedFlowTombstones         = 256
 	maxFlowsPerShard                = 64
@@ -171,6 +174,8 @@ type flow struct {
 	rxMax           uint64
 	receiveReserved int64
 	rxRing          *receiveRing
+	rxCreditLimited bool // the peer sent up to rxMax since the last grant
+	rxGrowing       bool
 	finRecvFinal    uint64
 	finAckSent      bool
 	finAckWriteInFlight bool
@@ -1120,6 +1125,13 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 	}
 	need := int64(defaultWindow)
 	if fl.receiveReserved >= need && fl.rxRing != nil {
+		fl.mu.Unlock()
+		p.growReceiveWindow(fl)
+		fl.mu.Lock()
+		if fl.closed {
+			fl.mu.Unlock()
+			return 0, errors.New("flow closed")
+		}
 		max := fl.rxWritten + uint64(fl.receiveReserved)
 		if max < fl.rxWritten {
 			fl.mu.Unlock()
@@ -1164,6 +1176,59 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 	fl.rxMax = max
 	fl.mu.Unlock()
 	return max, nil
+}
+
+// growReceiveWindow doubles a Flow's receive window, up to maxWindow, when the
+// window rather than the target is what limits the Flow: the peer used all of
+// the credit it had (rxCreditLimited) while the target kept the ring at most
+// half full. A slow target therefore never earns a larger window, and its
+// backpressure behaviour is unchanged. Growth is opportunistic: it reserves
+// memory only while half of the receive pool stays free for new Flows, and a
+// failed reservation just keeps the current window. Windows never shrink while
+// the Flow lives; close releases the whole reservation.
+func (p *Peer) growReceiveWindow(fl *flow) {
+	fl.mu.Lock()
+	ring := fl.rxRing
+	current := fl.receiveReserved
+	if fl.closed || fl.rxGrowing || !fl.rxCreditLimited || ring == nil || uint64(current) >= maxWindow {
+		fl.mu.Unlock()
+		return
+	}
+	fl.rxCreditLimited = false
+	if ring.Len() > int(current/2) {
+		fl.mu.Unlock()
+		return
+	}
+	next := current * 2
+	if uint64(next) > maxWindow {
+		next = int64(maxWindow)
+	}
+	delta := next - current
+	fl.rxGrowing = true
+	fl.mu.Unlock()
+
+	keepFree := fl.allocator.Limits().Receive / 2
+	grown := false
+	if fl.allocator.ReserveIfFree(fl.resourceID, resources.Receive, delta, keepFree) == nil {
+		if ring.Grow(int(next)) == nil {
+			grown = true
+		} else {
+			_ = fl.allocator.Release(fl.resourceID, resources.Receive, delta)
+		}
+	}
+
+	fl.mu.Lock()
+	fl.rxGrowing = false
+	if grown {
+		if fl.closed {
+			// close released the Flow's reservations before this one landed.
+			fl.mu.Unlock()
+			_ = fl.allocator.Release(fl.resourceID, resources.Receive, delta)
+			return
+		}
+		fl.receiveReserved = next
+	}
+	fl.mu.Unlock()
 }
 
 func (p *Peer) grantReceive(fl *flow) error {
@@ -1814,6 +1879,9 @@ func (f *flow) acceptData(offset uint64, payload []byte) (uint64, bool, error) {
 	end := offset + uint64(len(payload))
 	if end > f.rxMax {
 		return 0, false, errors.New("FLOW_CONTROL_ERROR")
+	}
+	if end == f.rxMax {
+		f.rxCreditLimited = true
 	}
 	if offset > f.rxNext {
 		return 0, false, ErrRecoverableDataGap
