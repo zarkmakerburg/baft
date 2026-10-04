@@ -98,6 +98,9 @@
       "properties": {
         "address": {"type": "string", "minLength": 3},
         "server_name": {"type": "string", "minLength": 1},
+        "fallback_address": {"type": "string", "minLength": 3},
+        "fallback_server_name": {"type": "string", "minLength": 1},
+        "fallback_ca_file": {"type": "string", "minLength": 1},
         "allowed_identity": {"type": "string", "minLength": 1}
       }
     },
