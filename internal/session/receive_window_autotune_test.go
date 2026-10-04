@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/zarkmakerburg/baft/internal/resources"
 )
@@ -64,6 +65,15 @@ func TestReceiveRingGrowKeepsWrappedBytesAndHeldPeek(t *testing.T) {
 	}
 }
 
+// fakeWindowClock replaces windowClock for one test; step advances it.
+func fakeWindowClock(t *testing.T) (step func(time.Duration)) {
+	t.Helper()
+	now := time.Unix(1_000_000, 0)
+	windowClock = func() time.Time { return now }
+	t.Cleanup(func() { windowClock = time.Now })
+	return func(d time.Duration) { now = now.Add(d) }
+}
+
 func autotunePeer(t *testing.T, l resources.Limits) (*Peer, *resources.Allocator) {
 	t.Helper()
 	a, err := resources.NewAllocator(l)
@@ -80,8 +90,9 @@ func autotunePeer(t *testing.T, l resources.Limits) (*Peer, *resources.Allocator
 
 // deliverWindow models a peer that sends exactly up to the advertised credit
 // and a target that accepts all of it, then asks for the next grant.
-func deliverWindow(t *testing.T, p *Peer, f *flow) uint64 {
+func deliverWindow(t *testing.T, p *Peer, f *flow, step func(time.Duration), rtt time.Duration) uint64 {
 	t.Helper()
+	step(rtt) // the window's bytes arrive one round trip after its grant
 	f.mu.Lock()
 	start, end := f.rxNext, f.rxMax
 	f.mu.Unlock()
@@ -105,15 +116,20 @@ func deliverWindow(t *testing.T, p *Peer, f *flow) uint64 {
 }
 
 func TestReceiveWindowGrowsWhileCreditLimitedAndDrained(t *testing.T) {
+	step := fakeWindowClock(t)
 	p, a := autotunePeer(t, resources.DefaultLimits())
 	f := newFlow(1, "main", "00112233445566778899aabbccddeeff", nil, a)
 	f.openOK = true
 	if _, err := p.reserveReceiveWindow(f); err != nil {
 		t.Fatal(err)
 	}
+	deliverWindow(t, p, f, step, 100*time.Millisecond) // first turn only samples the RTT
+	if f.receiveReserved != int64(defaultWindow) {
+		t.Fatalf("grew before an RTT sample and a timed turn: %d", f.receiveReserved)
+	}
 	want := int64(defaultWindow)
 	for want < int64(maxWindow) {
-		max := deliverWindow(t, p, f)
+		max := deliverWindow(t, p, f, step, 100*time.Millisecond)
 		want *= 2
 		f.mu.Lock()
 		reserved, written := f.receiveReserved, f.rxWritten
@@ -125,7 +141,7 @@ func TestReceiveWindowGrowsWhileCreditLimitedAndDrained(t *testing.T) {
 			t.Fatalf("allocator receive=%d want %d", s.ReceiveUsed, want)
 		}
 	}
-	deliverWindow(t, p, f)
+	deliverWindow(t, p, f, step, 100*time.Millisecond)
 	if f.receiveReserved != int64(maxWindow) {
 		t.Fatalf("window grew past maxWindow: %d", f.receiveReserved)
 	}
@@ -139,6 +155,8 @@ func TestReceiveWindowGrowsWhileCreditLimitedAndDrained(t *testing.T) {
 }
 
 func TestReceiveWindowDoesNotGrowForSlowTargetOrUnusedCredit(t *testing.T) {
+	step := fakeWindowClock(t)
+	defer step(0)
 	p, a := autotunePeer(t, resources.DefaultLimits())
 	f := newFlow(1, "main", "00112233445566778899aabbccddeeff", nil, a)
 	f.openOK = true
@@ -191,6 +209,7 @@ func TestReceiveWindowDoesNotGrowForSlowTargetOrUnusedCredit(t *testing.T) {
 
 func TestReceiveWindowGrowthKeepsHalfThePoolFree(t *testing.T) {
 	const kib = 1024
+	step := fakeWindowClock(t)
 	l := resources.Limits{Total: 1024 * kib, Receive: 512 * kib, Replay: 512 * kib, PerFlowReceive: 512 * kib, PerFlowReplay: 512 * kib}
 	p, a := autotunePeer(t, l)
 	f := newFlow(1, "main", "00112233445566778899aabbccddeeff", nil, a)
@@ -198,8 +217,8 @@ func TestReceiveWindowGrowthKeepsHalfThePoolFree(t *testing.T) {
 	if _, err := p.reserveReceiveWindow(f); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 6; i++ {
-		deliverWindow(t, p, f)
+	for i := 0; i < 7; i++ {
+		deliverWindow(t, p, f, step, 100*time.Millisecond)
 	}
 	// 64 -> 128 -> 256 KiB; 512 KiB would leave less than 256 KiB free.
 	if f.receiveReserved != 256*kib {
@@ -215,4 +234,29 @@ func TestReceiveWindowGrowthKeepsHalfThePoolFree(t *testing.T) {
 	if s := a.Snapshot(); s.TotalUsed != 0 {
 		t.Fatalf("leak: %#v", s)
 	}
+}
+
+// On a short path the round trip is tiny and a window turns over in more than
+// two round trips: the window is not the limit, so it does not grow.
+func TestReceiveWindowDoesNotGrowWhenTurnsAreSlowerThanTwoRTT(t *testing.T) {
+	step := fakeWindowClock(t)
+	p, a := autotunePeer(t, resources.DefaultLimits())
+	f := newFlow(1, "main", "00112233445566778899aabbccddeeff", nil, a)
+	f.openOK = true
+	if _, err := p.reserveReceiveWindow(f); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		// Bytes arrive 1 ms after each grant (the RTT), but each window
+		// takes 5 ms to turn over: the sender or the path is the limit.
+		deliverWindow(t, p, f, step, time.Millisecond)
+		step(4 * time.Millisecond)
+	}
+	if f.rxMinRTT != time.Millisecond {
+		t.Fatalf("min RTT=%v, want 1ms", f.rxMinRTT)
+	}
+	if f.receiveReserved != int64(defaultWindow) {
+		t.Fatalf("window grew to %d on a path where it is not the limit", f.receiveReserved)
+	}
+	f.close()
 }

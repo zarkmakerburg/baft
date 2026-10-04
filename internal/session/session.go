@@ -174,8 +174,11 @@ type flow struct {
 	rxMax           uint64
 	receiveReserved int64
 	rxRing          *receiveRing
-	rxCreditLimited bool   // a full window arrived since rxTurnStart
-	rxTurnStart     uint64 // rxNext when the current window turn began
+	rxCreditLimited bool      // the last window turned over within 2 x rxMinRTT
+	rxTurnStart     uint64    // rxNext when the current window turn began
+	rxTurnAt        time.Time // when the current window turn began
+	rxMinRTT        time.Duration
+	rxGrants        []creditGrant // recent receive credit raises, oldest first
 	rxGrowing       bool
 	finRecvFinal    uint64
 	finAckSent      bool
@@ -1118,6 +1121,33 @@ func (p *Peer) sendReset(fl *flow, code protocol.ErrorCode) error {
 	return nil
 }
 
+// creditGrant is a receive credit raise and when it was granted. Bytes past
+// the previous credit can only be sent after the peer received a grant that
+// covers them, so the time from that grant to their arrival is never less
+// than the round-trip time; its minimum is a receiver-side min-RTT estimate
+// (TCP measures its receive RTT the same way), with no extra frames.
+type creditGrant struct {
+	max     uint64
+	at      time.Time
+	sampled bool
+}
+
+const maxTrackedGrants = 64
+
+// windowClock is the clock for RTT sampling and window turns; tests replace it.
+var windowClock = time.Now
+
+// noteGrantLocked records a credit raise for RTT sampling. fl.mu is held.
+func (fl *flow) noteGrantLocked(max uint64, now time.Time) {
+	if n := len(fl.rxGrants); n > 0 && fl.rxGrants[n-1].max >= max {
+		return
+	}
+	if len(fl.rxGrants) >= maxTrackedGrants {
+		fl.rxGrants = fl.rxGrants[1:]
+	}
+	fl.rxGrants = append(fl.rxGrants, creditGrant{max: max, at: now})
+}
+
 func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 	fl.mu.Lock()
 	if fl.closed {
@@ -1140,6 +1170,7 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 		}
 		if max > fl.rxMax {
 			fl.rxMax = max
+			fl.noteGrantLocked(max, windowClock())
 		}
 		out := fl.rxMax
 		fl.mu.Unlock()
@@ -1175,16 +1206,15 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 		return 0, errors.New("receive window overflow")
 	}
 	fl.rxMax = max
+	fl.noteGrantLocked(max, windowClock())
 	fl.mu.Unlock()
 	return max, nil
 }
 
 // growReceiveWindow doubles a Flow's receive window, up to maxWindow, when the
-// window rather than the target is what limits the Flow: a full window of
-// bytes arrived since the last turn (rxCreditLimited), so the peer is sending
-// in bulk, while the target kept the ring at most half full. Credit refreshes
-// race the bytes in flight, so the receiver cannot see the peer hit the exact
-// credit edge; a full window turning over is the observable signal. A slow target therefore never earns a larger window, and its
+// window rather than the target is what limits the Flow: the last full window
+// arrived within two round trips (rxCreditLimited, see acceptData), while the
+// target kept the ring at most half full. A slow target therefore never earns a larger window, and its
 // backpressure behaviour is unchanged. Growth is opportunistic: it reserves
 // memory only while half of the receive pool stays free for new Flows, and a
 // failed reservation just keeps the current window. Windows never shrink while
@@ -1883,11 +1913,27 @@ func (f *flow) acceptData(offset uint64, payload []byte) (uint64, bool, error) {
 	if end > f.rxMax {
 		return 0, false, errors.New("FLOW_CONTROL_ERROR")
 	}
+	now := windowClock()
+	// RTT sample: the first arrival covered only by a newer grant.
+	for len(f.rxGrants) > 0 && f.rxGrants[0].max < end {
+		f.rxGrants = f.rxGrants[1:]
+	}
+	if len(f.rxGrants) > 0 && !f.rxGrants[0].sampled && end > f.rxNext {
+		f.rxGrants[0].sampled = true
+		if rtt := now.Sub(f.rxGrants[0].at); rtt > 0 && (f.rxMinRTT == 0 || rtt < f.rxMinRTT) {
+			f.rxMinRTT = rtt
+		}
+	}
 	if end-f.rxTurnStart >= uint64(f.receiveReserved) {
-		// The peer kept a full window's worth of bytes coming: the window,
-		// not the sender, may be what limits this Flow.
-		f.rxCreditLimited = true
+		// A full window arrived. The first turn only starts the clock; after
+		// that, if a turn took less than two round trips the
+		// window, not the sender or the path, limits this Flow (the rule
+		// QUIC stacks use for receive-window autotuning). On a short path the
+		// round trip is tiny and the window turns over slower than that, so
+		// it does not grow there.
+		f.rxCreditLimited = f.rxMinRTT > 0 && !f.rxTurnAt.IsZero() && now.Sub(f.rxTurnAt) < 2*f.rxMinRTT
 		f.rxTurnStart = end
+		f.rxTurnAt = now
 	}
 	if offset > f.rxNext {
 		return 0, false, ErrRecoverableDataGap
