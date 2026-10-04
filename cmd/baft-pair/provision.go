@@ -39,6 +39,7 @@ type commonFlags struct {
 	unixSocket    *string
 	shards        *int
 	transport     *string
+	fallback      *string
 	utls          *bool
 }
 
@@ -49,8 +50,9 @@ func addCommonFlags(fs *flag.FlagSet, defaultSocket string) commonFlags {
 		metricsListen: fs.String("metrics-listen", "127.0.0.1:9191", "loopback metrics listener"),
 		unixSocket:    fs.String("unix-socket", defaultSocket, "management socket path (must be writable by the service)"),
 		shards:        fs.Int("shards", 4, "carrier shards (dialer)"),
-		transport:     fs.String("transport", "h2", "carrier transport: h2 (default) or ws (WebSocket, for behind Cloudflare)"),
-		utls:          fs.Bool("utls", false, "present a browser-fidelity TLS ClientHello on the carrier dial (ws transport)"),
+		transport:     fs.String("transport", "h2", "primary carrier transport: h2 (default) or ws"),
+		fallback:      fs.String("fallback-transport", "", "optional same-process recovery fallback carrier (h2 or ws; must differ from primary)"),
+		utls:          fs.Bool("utls", false, "present a browser-fidelity TLS ClientHello on ws carrier dials"),
 	}
 }
 
@@ -60,9 +62,9 @@ func baseConfig(nodeID, role string, c commonFlags) config.Config {
 		SchemaVersion: config.SchemaVersion,
 		Node:          config.Node{ID: nodeID, Role: role},
 		TLS:           config.TLS{MinVersion: "1.3"},
-		Transport:     config.Transport{Primary: transportOrDefault(c.transport), Shards: *c.shards, Profile: "secure-fast", UTLS: c.utls != nil && *c.utls},
+		Transport:     config.Transport{Primary: transportOrDefault(c.transport), Fallback: optionalString(c.fallback), Shards: *c.shards, Profile: "secure-fast", UTLS: c.utls != nil && *c.utls},
 		Limits:        config.Limits{MaxFlows: 256, DataMemoryMiB: 256, ReceiveInitialKiB: 64, ReceiveMaxMiB: 16, ReplayMaxMiB: 16},
-		Recovery:      config.Recovery{RetentionSeconds: 30},
+		Recovery:      config.Recovery{Enabled: optionalString(c.fallback) != "", Mode: func() string { if optionalString(c.fallback) != "" { return "same_process" }; return "" }(), RetentionSeconds: 30},
 		Management:    config.Management{UnixSocket: *c.unixSocket, MetricsListen: *c.metricsListen},
 		Logging:       config.Logging{Level: "info"},
 	}
@@ -73,6 +75,13 @@ func transportOrDefault(t *string) string {
 		return "h2"
 	}
 	return *t
+}
+
+func optionalString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 func shaping(enabled bool) recordshape.Config {
