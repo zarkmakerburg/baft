@@ -1,0 +1,42 @@
+name: adversary-soak
+
+# Periodic adversarial resilience soak (measurement + survival assertions only;
+# loopback only, never targets any third-party host). Daily and on demand.
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+  push:
+    branches: [feat/adversary-suite]
+
+permissions:
+  contents: read
+
+jobs:
+  adversary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Run adversary soak (bounded profile)
+        run: ADV_PROFILE=bounded tests/adversary/run.sh "$RUNNER_TEMP/out"
+      - name: Run intrusion scenarios
+        run: tests/adversary/intrude.sh "$RUNNER_TEMP/intr"
+      - name: Summary
+        if: always()
+        run: |
+          { echo '### Adversary soak'; cat "$RUNNER_TEMP/out/summary.md" 2>/dev/null; echo; echo '### Intrusion scenarios'; cat "$RUNNER_TEMP/intr/summary.md" 2>/dev/null; echo; echo '```'; cat "$RUNNER_TEMP/out/provenance.txt" 2>/dev/null; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+          while IFS= read -r l; do echo "::notice title=adversary::$l"; done <"$RUNNER_TEMP/out/summary.md" || true
+          while IFS= read -r l; do echo "::notice title=intrusion::$l"; done <"$RUNNER_TEMP/intr/summary.md" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adversary-soak-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/out
+            ${{ runner.temp }}/intr
+          retention-days: 30
