@@ -39,6 +39,7 @@ var discoverUnitRe = regexp.MustCompile(`^baft[A-Za-z0-9._@-]{0,58}\.service$`)
 type DiscoveredMarker struct {
 	ManagedBy    string `json:"managed_by"`
 	TunnelID     string `json:"tunnel_id"`
+	InstanceID   string `json:"instance_id,omitempty"`
 	Generation   int    `json:"generation"`
 	Role         string `json:"role"`
 	ConfigSHA256 string `json:"config_sha256"`
@@ -254,7 +255,7 @@ func (m *Manager) discoverUnit(ctx context.Context, name string, primary bool) D
 			in.MarkerProblem = "marker file is not valid JSON"
 		} else {
 			in.Marker = &DiscoveredMarker{
-				ManagedBy: clip(mk.ManagedBy), TunnelID: clip(mk.TunnelID), Generation: mk.Generation, Role: clip(mk.Role),
+				ManagedBy: clip(mk.ManagedBy), TunnelID: clip(mk.TunnelID), InstanceID: clip(mk.InstanceID), Generation: mk.Generation, Role: clip(mk.Role),
 				ConfigSHA256: clip(mk.ConfigSHA256), UnitSHA256: clip(mk.UnitSHA256), FileSHA256: shaHex(mraw),
 			}
 		}
