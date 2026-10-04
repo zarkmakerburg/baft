@@ -55,6 +55,19 @@ For scripts and automation, skip the questions with flags: `... | sudo bash -s -
 Prefer to read the installer first? `curl -fsSLO https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh && less install.sh`, then run `sudo bash install.sh`. Every release the installer fetches is verified against the pinned root key. Full guide: [Running IR and EX](docs/en/06-running-ir-ex.md).
 
 
+## Support the project
+
+If BAFT is useful to you, please **[give it a star on GitHub](https://github.com/zarkmakerburg/baft/stargazers)** — it helps others find the project.
+
+☕ **Buy me a coffee** — donations in crypto are welcome:
+
+| Network | Wallet address |
+|---|---|
+| TRON (TRC-20) | `TP13BYbfbcFbtomvdLc9rKxAWbWyk195VH` |
+| TON | `UQAN4TZrv29BRagXzFD_4_tkWJvx1wf8mIEeFHymwhlIatLa` |
+
+Please double-check the address and network before sending; transfers cannot be reversed.
+
 ## Project status
 
 BAFT is not declared production-ready.
