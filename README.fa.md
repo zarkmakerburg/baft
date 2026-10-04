@@ -289,6 +289,23 @@ sudo bash install.sh \
 
 راهنمای کامل: [اجرای IR و EX](docs/fa/06-running-ir-ex.md)
 
+## حمایت از پروژه
+
+اگر BAFT برایتان مفید است، لطفاً **[در گیت‌هاب به آن ستاره بدهید](https://github.com/zarkmakerburg/baft/stargazers)**؛ این کار به دیده‌شدن پروژه کمک می‌کند.
+
+☕ **یک قهوه مهمانم کنید**: حمایت مالی با ارز دیجیتال:
+
+<div dir="ltr" align="left">
+
+| Network | Wallet address |
+|---|---|
+| TRON (TRC-20) | `TP13BYbfbcFbtomvdLc9rKxAWbWyk195VH` |
+| TON | `UQAN4TZrv29BRagXzFD_4_tkWJvx1wf8mIEeFHymwhlIatLa` |
+
+</div>
+
+پیش از ارسال، آدرس و شبکه را دوباره بررسی کنید؛ تراکنش‌ها برگشت‌پذیر نیستند.
+
 ## ابزارهای اپراتور
 
 <div dir="ltr" align="left">
