@@ -59,8 +59,9 @@ type Conn struct {
 	isClient bool
 
 	// read side (single reader goroutine)
-	br      *bufio.Reader
-	readBuf []byte // leftover payload bytes from the last data frame
+	br         *bufio.Reader
+	readBuf    []byte // leftover payload bytes from the last data frame
+	fragmented bool   // a fragmented binary message is awaiting continuation frames
 
 	// write side
 	wmu sync.Mutex
@@ -117,34 +118,24 @@ func (c *Conn) readDataOrControl() (byte, []byte, error) {
 		return 0, nil, err
 	}
 	switch op {
-	case opBinary, opContinuation:
-		// Reassemble fragmented data frames into one logical payload so the
-		// byte stream is contiguous regardless of how a proxy fragments.
-		for !fin {
-			var fop byte
-			var cont []byte
-			fin, fop, cont, err = c.readFrame()
-			if err != nil {
-				return 0, nil, err
-			}
-			switch fop {
-			case opContinuation:
-				payload = append(payload, cont...)
-			case opPing:
-				if err := c.writeControl(opPong, cont); err != nil {
-					return 0, nil, err
-				}
-			case opPong:
-				// ignore
-			case opClose:
-				_ = c.writeControl(opClose, nil)
-				c.closeUnderlying()
-				return 0, nil, io.EOF
-			default:
-				return 0, nil, fmt.Errorf("ws: unexpected opcode %#x mid-fragment", fop)
-			}
+	case opBinary:
+		if c.fragmented {
+			return 0, nil, errors.New("ws: new data frame before fragmented message completed")
 		}
+		c.fragmented = !fin
 		return opBinary, payload, nil
+	case opContinuation:
+		if !c.fragmented {
+			return 0, nil, errors.New("ws: continuation without fragmented message")
+		}
+		if fin {
+			c.fragmented = false
+		}
+		// The carrier contract is a byte stream, not a WebSocket-message API.
+		// Return each validated fragment as soon as it arrives instead of
+		// buffering the entire logical message until FIN. This keeps inbound
+		// memory bounded by maxReadFramePayload regardless of fragment count.
+		return opContinuation, payload, nil
 	case opPing:
 		if err := c.writeControl(opPong, payload); err != nil {
 			return 0, nil, err
