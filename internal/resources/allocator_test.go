@@ -49,3 +49,25 @@ func TestReserveContextBackpressuresUntilRelease(t *testing.T) {
 	case <-time.After(time.Second): t.Fatal("blocked reservation was not released")
 	}
 }
+
+func TestReserveIfFreeKeepsHeadroom(t *testing.T) {
+	a, err := NewAllocator(Limits{Total: 200, Receive: 100, Replay: 100, PerFlowReceive: 100, PerFlowReplay: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ReserveIfFree(1, Receive, 40, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ReserveIfFree(1, Receive, 20, 50); !errors.Is(err, ErrResourceExhausted) {
+		t.Fatalf("reservation into headroom: %v", err)
+	}
+	if err := a.Reserve(2, Receive, 60); err != nil {
+		t.Fatalf("plain reservation must still use the headroom: %v", err)
+	}
+	if err := a.ReserveIfFree(1, Receive, 1, -1); err == nil {
+		t.Fatal("negative keepFree accepted")
+	}
+	if s := a.Snapshot(); s.ReceiveUsed != 100 {
+		t.Fatalf("receive used=%d", s.ReceiveUsed)
+	}
+}
