@@ -63,6 +63,13 @@ bundled revocation list (which expires; use a fresh bundle after that).
 Compare the archive with the .sha256 published next to it before use.
 TXT
 
+# Fixed modes, so the archive does not depend on the umask or on whether the
+# inputs carry the executable bit (release assets downloaded from GitHub and
+# files read with git show do not).
+find "$stage" -type d -exec chmod 0755 {} +
+find "$stage" -type f -exec chmod 0644 {} +
+chmod 0755 "$stage/$name/install.sh" "$stage/$name"/release/baft-*
+
 out=$(cd "$out" && pwd)
 epoch=${SOURCE_DATE_EPOCH:-0}
 (cd "$stage" && tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" -cf - "$name") | gzip -n -9 > "$out/$name.tar.gz"
