@@ -103,7 +103,14 @@ func Encode(w io.Writer, f Frame) error {
 	return writeFull(w, buf)
 }
 
-func Decode(r io.Reader) (Frame, error) {
+func Decode(r io.Reader) (Frame, error) { return DecodeReuse(r, nil) }
+
+// DecodeReuse is Decode, except that a DATA payload is read into *dataBuf
+// (grown as needed) instead of a fresh allocation. The returned DATA payload
+// is valid only until the next DecodeReuse with the same buffer, so the caller
+// must not retain it. Other frame types always get their own allocation, so
+// only the DATA path needs to honour that rule. A nil dataBuf allocates.
+func DecodeReuse(r io.Reader, dataBuf *[]byte) (Frame, error) {
 	var f Frame; var hdr [HeaderSize]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil { return f, err }
 	n := binary.BigEndian.Uint32(hdr[0:4]); if n < HeaderSize || n > MaxFrameSize { return f, errors.New("invalid frame length") }
@@ -111,7 +118,15 @@ func Decode(r io.Reader) (Frame, error) {
 	f.Type = FrameType(hdr[4]); if !validType(f.Type) { return f, errors.New("unknown frame type") }
 	f.StreamID = binary.BigEndian.Uint64(hdr[8:16]); f.Offset = binary.BigEndian.Uint64(hdr[16:24])
 	plen := int(n)-HeaderSize; if uint64(plen) > ^uint64(0)-f.Offset { return Frame{}, errors.New("offset overflow") }
-	if plen > 0 { f.Payload = make([]byte, plen); if _, err := io.ReadFull(r, f.Payload); err != nil { return Frame{}, err } }
+	if plen > 0 {
+		if dataBuf != nil && f.Type == TypeData {
+			if cap(*dataBuf) < plen { *dataBuf = make([]byte, MaxPayloadSize) }
+			f.Payload = (*dataBuf)[:plen]
+		} else {
+			f.Payload = make([]byte, plen)
+		}
+		if _, err := io.ReadFull(r, f.Payload); err != nil { return Frame{}, err }
+	}
 	if err := validateFrame(f); err != nil { return Frame{}, err }
 	return f, nil
 }
