@@ -51,6 +51,34 @@ func TestValidateUTLSRequiresWS(t *testing.T) {
 	}
 }
 
+func TestValidateFallbackRequiresRecovery(t *testing.T) {
+	c := validIR()
+	c.Noise = &Noise{KeyFile: "/tmp/key", PeerPublicKey: strings.Repeat("A", 43)}
+	c.Transport.Fallback = "ws"
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "fallback requires recovery") {
+		t.Fatalf("fallback without recovery must be rejected, got %v", err)
+	}
+}
+
+func TestValidateFallbackTransport(t *testing.T) {
+	c := validIR()
+	c.Noise = &Noise{KeyFile: "/tmp/key", PeerPublicKey: strings.Repeat("A", 43)}
+	c.Recovery.Enabled = true
+	c.Recovery.Mode = "same_process"
+	c.Transport.Fallback = "ws"
+	if err := Validate(c); err != nil {
+		t.Fatalf("h2 primary + ws fallback should validate: %v", err)
+	}
+	c.Transport.UTLS = true
+	if err := Validate(c); err != nil {
+		t.Fatalf("utls should be allowed when ws is fallback: %v", err)
+	}
+	c.Transport.Fallback = "h2"
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("duplicate primary/fallback must be rejected, got %v", err)
+	}
+}
+
 func TestValidateRejectsUnknownTransport(t *testing.T) {
 	c := validIR()
 	c.Transport.Primary = "quic"
