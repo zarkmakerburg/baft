@@ -35,6 +35,22 @@ func TestValidateSameProcessRecoveryScope(t *testing.T) {
 	if err:=Validate(c);err==nil{t.Fatal("process-restart recovery mode must be rejected")}
 }
 
+func TestValidateWSRequiresNoise(t *testing.T) {
+	c := validIR()
+	c.Transport.Primary = "ws"
+	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "ws requires noise") {
+		t.Fatalf("ws without noise must be rejected, got %v", err)
+	}
+}
+
+func TestValidateRejectsUnknownTransport(t *testing.T) {
+	c := validIR()
+	c.Transport.Primary = "quic"
+	if err := Validate(c); err == nil {
+		t.Fatal("unknown transport.primary must be rejected")
+	}
+}
+
 func TestDecodeJSONRejectsUnknownField(t *testing.T) {
 	js := `{"schema_version":1,"unexpected":true}`
 	if _, err := DecodeJSON(strings.NewReader(js)); err == nil {

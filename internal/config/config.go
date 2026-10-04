@@ -142,8 +142,14 @@ func Validate(c Config) error {
 	if c.TLS.CertFile == "" && (c.Noise == nil || c.Node.Role != "dialer") {
 		return errors.New("tls ca_file/cert_file/key_file are required")
 	}
-	if c.Transport.Primary != "h2" {
-		return errors.New("transport.primary must be h2 in baseline")
+	if c.Transport.Primary != "h2" && c.Transport.Primary != "ws" {
+		return errors.New("transport.primary must be h2 or ws")
+	}
+	if c.Transport.Primary == "ws" && c.Noise == nil {
+		// Behind Cloudflare the outer TLS is terminated at the edge, so the
+		// WebSocket carrier relies entirely on the inner Noise handshake for
+		// authentication; it must be configured.
+		return errors.New("transport.primary ws requires noise")
 	}
 	if c.Transport.H3Enabled {
 		return errors.New("transport.h3_enabled is unsupported before H2 gate passes")

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	carrierh2 "github.com/zarkmakerburg/baft/internal/carrier/h2"
+	carrierws "github.com/zarkmakerburg/baft/internal/carrier/ws"
 	"github.com/zarkmakerburg/baft/internal/config"
 	"github.com/zarkmakerburg/baft/internal/protocol"
 	"github.com/zarkmakerburg/baft/internal/recovery"
@@ -21,16 +22,14 @@ var errRecoverySnapshotTransient = errors.New("recovery snapshot exchange transi
 
 type openedRuntimeCarrier struct {
 	carrier session.Carrier
-	client  *carrierh2.Client
-	pw      *io.PipeWriter
-	body    io.ReadCloser
+	// closeFn tears down the underlying physical carrier (transport-agnostic:
+	// HTTP/2 client + pipe + body, or a WebSocket connection).
+	closeFn func()
 }
 
 func (o *openedRuntimeCarrier) close() {
 	if o==nil{return}
-	if o.pw!=nil{_ = o.pw.Close()}
-	if o.body!=nil{_ = o.body.Close()}
-	if o.client!=nil{o.client.CloseIdleConnections()}
+	if o.closeFn!=nil{o.closeFn()}
 }
 
 func recoveryRetention(cfg config.Config) time.Duration {
@@ -80,7 +79,40 @@ func (r *Runtime) nextRecoveryCandidate(shard int) string {
 	return fmt.Sprintf("shard-%d-replacement-%d",shard,n)
 }
 
+// openRuntimeCarrier opens a replacement physical carrier during recovery. It
+// uses the same transport selection as the initial dial.
 func (r *Runtime) openRuntimeCarrier(ctx context.Context,cfg config.Config,tlsCfg *tls.Config)(*openedRuntimeCarrier,error){
+	return r.dialCarrier(ctx,cfg,tlsCfg)
+}
+
+// wsCarrierHeaders makes the WebSocket upgrade blend into ordinary browser
+// traffic (a Chrome-like User-Agent and an Origin for the configured host).
+func wsCarrierHeaders(serverName string) http.Header {
+	h := http.Header{}
+	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+	if serverName != "" {
+		h.Set("Origin", "https://"+serverName)
+	}
+	return h
+}
+
+// dialCarrier opens one physical carrier to the peer, selecting the transport
+// from cfg.Transport.Primary ("h2" default, or "ws" for the WebSocket carrier
+// used behind Cloudflare). The returned carrier is the session byte stream and
+// closeFn tears the physical carrier down. For both transports the inner Noise
+// IK handshake is the end-to-end authenticator.
+func (r *Runtime) dialCarrier(ctx context.Context,cfg config.Config,tlsCfg *tls.Config)(*openedRuntimeCarrier,error){
+	if cfg.Transport.Primary=="ws"{
+		if cfg.Noise==nil{return nil,errors.New("ws carrier requires noise")}
+		nc,e:=noiseConfig(cfg);if e!=nil{return nil,e}
+		// The WebSocket carrier speaks HTTP/1.1; offer that in ALPN rather than
+		// the HTTP/2 the shared client config carries.
+		wsTLS:=tlsCfg.Clone();wsTLS.NextProtos=[]string{"http/1.1"}
+		d:=&carrierws.Dialer{Endpoint:"wss://"+cfg.Peer.Address,TLSConfig:wsTLS,Header:wsCarrierHeaders(cfg.Peer.ServerName)}
+		conn,secure,err:=d.OpenNoise(ctx,nc)
+		if err!=nil{r.handshakeErrors.Add(1);return nil,err}
+		return &openedRuntimeCarrier{carrier:session.Carrier{In:secure,Out:secure},closeFn:func(){_ = conn.Close()}},nil
+	}
 	client,err:=carrierh2.NewClient("https://"+cfg.Peer.Address,tlsCfg)
 	if err!=nil{return nil,err}
 	var pw *io.PipeWriter
@@ -101,7 +133,8 @@ func (r *Runtime) openRuntimeCarrier(ctx context.Context,cfg config.Config,tlsCf
 	}
 	carrier:=session.Carrier{In:resp.Body,Out:pw}
 	if secure!=nil{carrier=session.Carrier{In:secure,Out:secure}}
-	return &openedRuntimeCarrier{carrier:carrier,client:client,pw:pw,body:resp.Body},nil
+	body:=resp.Body
+	return &openedRuntimeCarrier{carrier:carrier,closeFn:func(){if pw!=nil{_ = pw.Close()};if body!=nil{_ = body.Close()};client.CloseIdleConnections()}},nil
 }
 
 func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCfg *tls.Config,index int,sh *dialerShard) error {
