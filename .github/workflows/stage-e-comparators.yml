@@ -1,0 +1,39 @@
+name: stage-e-comparators
+
+# Stage E D-008B item 2 (measurement only): BAFT vs FRP vs Rathole vs Xray vs
+# direct TCP on one runner, same echo target and probe, netem on the tunnel's
+# carrier port.
+on:
+  workflow_dispatch:
+  push:
+    branches: [hq/stage-e-comparators]
+
+permissions:
+  contents: read
+
+jobs:
+  comparators:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Run comparators
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bench/comparators/run.sh "$RUNNER_TEMP/out"
+      - name: Summary
+        if: always()
+        run: |
+          { echo '### Stage E comparators'; cat "$RUNNER_TEMP/out/summary.md" 2>/dev/null; echo; echo '```'; cat "$RUNNER_TEMP/out/provenance.txt" 2>/dev/null; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+          # Job logs are not always retrievable; annotations are.
+          while IFS= read -r l; do echo "::notice title=comparators::$l"; done <"$RUNNER_TEMP/out/summary.md" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-comparators-${{ github.sha }}
+          path: ${{ runner.temp }}/out
+          retention-days: 30
