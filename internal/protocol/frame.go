@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 )
 
 const (
@@ -80,15 +81,26 @@ func validateFrame(f Frame) error {
 	return nil
 }
 
+// frameBufs holds encode buffers of MaxFrameSize, so a frame costs no
+// allocation on the hot path.
+var frameBufs = sync.Pool{New: func() any { b := make([]byte, MaxFrameSize); return &b }}
+
+// Encode writes one frame with a single Write call. Header and payload used
+// to be two writes; below an HTTP/2 writer that flushes per write (and a
+// Noise writer that seals per write) that doubled the H2 frames, TLS records,
+// flushes and syscalls per frame. The bytes on the stream are identical.
 func Encode(w io.Writer, f Frame) error {
 	if err := validateFrame(f); err != nil { return err }
 	total := HeaderSize + len(f.Payload)
-	var hdr [HeaderSize]byte
-	binary.BigEndian.PutUint32(hdr[0:4], uint32(total)); hdr[4] = byte(f.Type)
-	binary.BigEndian.PutUint64(hdr[8:16], f.StreamID); binary.BigEndian.PutUint64(hdr[16:24], f.Offset)
-	if err := writeFull(w, hdr[:]); err != nil { return err }
-	if len(f.Payload) > 0 { return writeFull(w, f.Payload) }
-	return nil
+	bp := frameBufs.Get().(*[]byte)
+	defer frameBufs.Put(bp)
+	buf := (*bp)[:total]
+	binary.BigEndian.PutUint32(buf[0:4], uint32(total)); buf[4] = byte(f.Type)
+	buf[5], buf[6], buf[7] = 0, 0, 0
+	binary.BigEndian.PutUint64(buf[8:16], f.StreamID); binary.BigEndian.PutUint64(buf[16:24], f.Offset)
+	copy(buf[HeaderSize:], f.Payload)
+	// io.Writer must not retain buf after Write returns, so it can be reused.
+	return writeFull(w, buf)
 }
 
 func Decode(r io.Reader) (Frame, error) {
