@@ -174,7 +174,8 @@ type flow struct {
 	rxMax           uint64
 	receiveReserved int64
 	rxRing          *receiveRing
-	rxCreditLimited bool // the peer sent up to rxMax since the last grant
+	rxCreditLimited bool   // a full window arrived since rxTurnStart
+	rxTurnStart     uint64 // rxNext when the current window turn began
 	rxGrowing       bool
 	finRecvFinal    uint64
 	finAckSent      bool
@@ -1179,9 +1180,11 @@ func (p *Peer) reserveReceiveWindow(fl *flow) (uint64, error) {
 }
 
 // growReceiveWindow doubles a Flow's receive window, up to maxWindow, when the
-// window rather than the target is what limits the Flow: the peer used all of
-// the credit it had (rxCreditLimited) while the target kept the ring at most
-// half full. A slow target therefore never earns a larger window, and its
+// window rather than the target is what limits the Flow: a full window of
+// bytes arrived since the last turn (rxCreditLimited), so the peer is sending
+// in bulk, while the target kept the ring at most half full. Credit refreshes
+// race the bytes in flight, so the receiver cannot see the peer hit the exact
+// credit edge; a full window turning over is the observable signal. A slow target therefore never earns a larger window, and its
 // backpressure behaviour is unchanged. Growth is opportunistic: it reserves
 // memory only while half of the receive pool stays free for new Flows, and a
 // failed reservation just keeps the current window. Windows never shrink while
@@ -1880,8 +1883,11 @@ func (f *flow) acceptData(offset uint64, payload []byte) (uint64, bool, error) {
 	if end > f.rxMax {
 		return 0, false, errors.New("FLOW_CONTROL_ERROR")
 	}
-	if end == f.rxMax {
+	if end-f.rxTurnStart >= uint64(f.receiveReserved) {
+		// The peer kept a full window's worth of bytes coming: the window,
+		// not the sender, may be what limits this Flow.
 		f.rxCreditLimited = true
+		f.rxTurnStart = end
 	}
 	if offset > f.rxNext {
 		return 0, false, ErrRecoverableDataGap
