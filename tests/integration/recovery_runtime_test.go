@@ -495,6 +495,36 @@ func TestRuntimeCarrierReplacementPreservesActiveFlow(t *testing.T){
 	t.Logf("PASS active flow survived carrier replacement bytes=%d hash=%x",len(got),have)
 }
 
+func TestRuntimeCarrierReplacementAcrossTransportFallbacks(t *testing.T){
+	cases:=[]struct{name,primary,fallback string}{
+		{name:"h2_to_ws",primary:"h2",fallback:"ws"},
+		{name:"ws_to_h2",primary:"ws",fallback:"h2"},
+	}
+	for _,tc:=range cases{
+		t.Run(tc.name,func(t *testing.T){
+			p:=startRuntimePair(t,1,true,func(ex,ir *config.Config){
+				ex.Transport.Primary=tc.primary;ex.Transport.Fallback=tc.fallback
+				ir.Transport.Primary=tc.primary;ir.Transport.Fallback=tc.fallback
+			})
+			defer p.close(t)
+			c:=openRecoveryFlow(t,p);defer c.Close()
+			targetBefore:=p.targetAccepts.Load()
+			p.proxy.CutAll()
+			irAuth,exAuth:=waitAuthorityPair(t,p,2,true)
+			if irAuth.CandidateID==""||irAuth.CandidateID!=exAuth.CandidateID||irAuth.PlanDigest==""||irAuth.PlanDigest!=exAuth.PlanDigest{
+				t.Fatalf("cross-transport recovery identity mismatch ir=%+v ex=%+v",irAuth,exAuth)
+			}
+			payload:=make([]byte,384*1024+211)
+			for i:=range payload{payload[i]=byte((i*31+17)%251)}
+			h:=assertEchoHashOnExistingFlow(t,c,payload)
+			if n:=p.targetAccepts.Load()-targetBefore;n!=0{
+				t.Fatalf("target TCP reopened across %s->%s recovery: delta=%d",tc.primary,tc.fallback,n)
+			}
+			t.Logf("PASS active flow survived %s->%s carrier failover epoch=%d hash=%x",tc.primary,tc.fallback,irAuth.Epoch,h)
+		})
+	}
+}
+
 func TestMultiFlowCarrierReplacementNoDuplicateOrLoss(t *testing.T){
 	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
 	const flows=8
