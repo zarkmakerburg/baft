@@ -871,7 +871,8 @@ type dialerShard struct {
 	mu        sync.Mutex
 	peer      *session.Peer
 	closeFn   func() // tears down the shard's current physical carrier (transport-agnostic)
-	transport string // current physical transport only; never a logical authority identifier
+	transport             string // current physical transport only; never a logical authority identifier
+	lastRecoveryTransport string // attempt cursor; reset after a carrier is committed
 }
 
 func (s *dialerShard) close() {
@@ -889,6 +890,7 @@ func (s *dialerShard) replaceCarrier(o *openedRuntimeCarrier) {
 	old := s.closeFn
 	s.closeFn = o.closeFn
 	s.transport = o.transport
+	s.lastRecoveryTransport = ""
 	s.mu.Unlock()
 	if old != nil {
 		old()
@@ -899,6 +901,14 @@ func (s *dialerShard) currentTransport() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.transport
+}
+
+func (s *dialerShard) recoveryTransport(cfg config.Config) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := nextRecoveryTransport(cfg, s.transport, s.lastRecoveryTransport)
+	s.lastRecoveryTransport = next
+	return next
 }
 
 func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
