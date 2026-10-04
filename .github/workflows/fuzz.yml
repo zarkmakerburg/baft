@@ -1,0 +1,61 @@
+name: fuzz
+
+# Coverage-guided fuzzing of every attacker-reachable parser and the Flow
+# receive-path state machine, hunting for unknown (zero-day) defects: panics,
+# out-of-bounds, hangs, and broken invariants. Daily and on demand. A crasher
+# is written to testdata/fuzz by the engine and uploaded as an artifact; it is
+# then added to the corpus as a regression seed.
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: seconds per target
+        default: '300'
+  push:
+    branches: [feat/zeroday-fuzz]
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: ./internal/protocol
+            fn: FuzzDecode
+          - pkg: ./internal/protocol
+            fn: FuzzDecodeControlPayloads
+          - pkg: ./internal/securityinternal
+            fn: FuzzDecodePairingDescriptor
+          - pkg: ./internal/securityinternal
+            fn: FuzzDecodePairingReply
+          - pkg: ./internal/config
+            fn: FuzzDecodeConfig
+          - pkg: ./internal/session
+            fn: FuzzFlowReceivePath
+          - pkg: ./internal/recordshape
+            fn: FuzzMorphingReadFrame
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Fuzz ${{ matrix.fn }}
+        run: |
+          t="${{ github.event.inputs.fuzztime || '300' }}"
+          go test -run='^$' -fuzz='^${{ matrix.fn }}$' -fuzztime="${t}s" "${{ matrix.pkg }}"
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers-${{ matrix.fn }}-${{ github.sha }}
+          path: '**/testdata/fuzz/**'
+          if-no-files-found: ignore
+          retention-days: 30
