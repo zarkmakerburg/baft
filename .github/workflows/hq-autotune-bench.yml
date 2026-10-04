@@ -1,0 +1,71 @@
+name: hq-autotune-bench
+
+on:
+  push:
+    branches:
+      - hq/autotune-bench
+
+permissions:
+  contents: read
+
+jobs:
+  window-ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, autotune]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Select variant
+        run: |
+          set -euxo pipefail
+          if [ "${{ matrix.variant }}" = base ]; then
+            git checkout origin/main -- internal/
+          fi
+          git diff --stat origin/main -- internal/ || true
+          mkdir -p "$RUNNER_TEMP/out"
+          { echo "variant=${{ matrix.variant }}"; echo "sha=$GITHUB_SHA"; go version; lscpu | grep 'Model name'; } | tee "$RUNNER_TEMP/out/provenance.txt"
+      - name: Single-flow RTT matrix (16 MiB per direction, 5 runs)
+        run: |
+          set -euo pipefail
+          for rtt in 50 150 300; do
+            for kind in MultiFlow DirectTCP; do
+              BAFT_STAGE_E_FLOWS=1 BAFT_STAGE_E_BYTES_PER_FLOW=16777216 \
+              BAFT_STAGE_E_NETEM_RTT_MS=$rtt BAFT_STAGE_E_NETEM_LOSS_PCT=0 \
+                go test ./tests/integration -run "^TestStageEMeasure${kind}Throughput\$" -count=5 -timeout 60m -v \
+                2>&1 | tee "$RUNNER_TEMP/out/${kind}-rtt${rtt}.log" | grep -E 'BAFT_BENCH_METRIC|^(--- |FAIL|ok)' || true
+            done
+          done
+      - name: Loopback multi-flow baseline (no netem, 5 runs)
+        run: |
+          set -euo pipefail
+          go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=5 -timeout 20m -v \
+            2>&1 | tee "$RUNNER_TEMP/out/loopback.log" | grep -E 'BAFT_BENCH_METRIC|^(--- |FAIL|ok)' || true
+      - name: Summary
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/out" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, json, os, statistics, sys
+          d = sys.argv[1]
+          print(f"### ${{ matrix.variant }}")
+          print("| log | runs | median tx Mbps | min | max |")
+          print("|---|---|---|---|---|")
+          for f in sorted(glob.glob(os.path.join(d, "*.log"))):
+              v = []
+              for line in open(f):
+                  if "BAFT_BENCH_METRIC" in line:
+                      v.append(json.loads(line.split("BAFT_BENCH_METRIC", 1)[1])["tx_mbps"])
+              if v:
+                  print(f"| {os.path.basename(f)} | {len(v)} | {statistics.median(v):.2f} | {min(v):.2f} | {max(v):.2f} |")
+              else:
+                  print(f"| {os.path.basename(f)} | 0 | - | - | - |")
+          PY
+          grep -h -- '--- FAIL' "$RUNNER_TEMP"/out/*.log && echo "::error::benchmark test failures" || true
