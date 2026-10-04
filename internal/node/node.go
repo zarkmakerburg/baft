@@ -773,6 +773,9 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		return p.Run(hctx)
 	}
 	var handler http.Handler
+	primary := primaryTransport(cfg)
+	serveH2 := primary == "h2" || cfg.Transport.Fallback == "h2"
+	serveWS := primary == "ws" || cfg.Transport.Fallback == "ws"
 	if cfg.Noise != nil {
 		nc, allowedPeers, legacyIdentity, err := noiseListenerOptions(cfg)
 		if err != nil {
@@ -791,20 +794,30 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		tlsCfg.ClientAuth = tls.NoClientCert
 		tlsCfg.ClientCAs = nil
 		tlsCfg.VerifyConnection = nil
-		if cfg.Transport.Primary == "ws" {
+		switch {
+		case serveH2 && serveWS:
+			h2Handler, e := carrierh2.HandlerWithNoise(stream, opts)
+			if e != nil { return e }
+			wsHandler, e := carrierws.HandlerWithNoise(stream, opts)
+			if e != nil { return e }
+			// Both carriers share one TLS endpoint. ALPN selects HTTP/2 vs
+			// HTTP/1.1; within HTTP/1.1 only a valid WebSocket upgrade is routed
+			// to the ws carrier. Everything else reaches the same benign cover.
+			handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if carrierws.IsUpgrade(req) {
+					wsHandler.ServeHTTP(w, req)
+					return
+				}
+				h2Handler.ServeHTTP(w, req)
+			})
+			tlsCfg.NextProtos = []string{"h2", "http/1.1"}
+		case serveWS:
 			handler, err = carrierws.HandlerWithNoise(stream, opts)
-			if err != nil {
-				return err
-			}
-			// WebSocket upgrades are served over HTTP/1.1 (the handler hijacks
-			// the connection); no h2 ALPN. This is the Cloudflare orange-cloud
-			// carrier path.
+			if err != nil { return err }
 			tlsCfg.NextProtos = []string{"http/1.1"}
-		} else {
+		default:
 			handler, err = carrierh2.HandlerWithNoise(stream, opts)
-			if err != nil {
-				return err
-			}
+			if err != nil { return err }
 			tlsCfg.NextProtos = []string{"h2", "http/1.1"}
 		}
 	} else {
@@ -812,10 +825,9 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 	}
 
 	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
-	if cfg.Transport.Primary == "ws" {
-		// The WebSocket carrier serves HTTP/1.1 and hijacks the connection.
-		// ServeTLS otherwise auto-enables HTTP/2 (re-adding "h2" to ALPN); an
-		// empty non-nil TLSNextProto disables that so upgrades can hijack.
+	if serveWS && !serveH2 {
+		// WebSocket-only mode must prevent ServeTLS from auto-enabling HTTP/2;
+		// combined h2+ws mode deliberately leaves HTTP/2 enabled.
 		srv.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
 	}
 	r.setListenerStartup(cfg.Server.Listen,func(s *ListenerStartupState){s.BindAttempted=true})
@@ -856,9 +868,11 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 }
 
 type dialerShard struct {
-	mu      sync.Mutex
-	peer    *session.Peer
-	closeFn func() // tears down the shard's current physical carrier (transport-agnostic)
+	mu        sync.Mutex
+	peer      *session.Peer
+	closeFn   func() // tears down the shard's current physical carrier (transport-agnostic)
+	transport             string // current physical transport only; never a logical authority identifier
+	lastRecoveryTransport string // attempt cursor; reset after a carrier is committed
 }
 
 func (s *dialerShard) close() {
@@ -875,10 +889,26 @@ func (s *dialerShard) replaceCarrier(o *openedRuntimeCarrier) {
 	s.mu.Lock()
 	old := s.closeFn
 	s.closeFn = o.closeFn
+	s.transport = o.transport
+	s.lastRecoveryTransport = ""
 	s.mu.Unlock()
 	if old != nil {
 		old()
 	}
+}
+
+func (s *dialerShard) currentTransport() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transport
+}
+
+func (s *dialerShard) recoveryTransport(cfg config.Config) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := nextRecoveryTransport(cfg, s.transport, s.lastRecoveryTransport)
+	s.lastRecoveryTransport = next
+	return next
 }
 
 func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
@@ -922,7 +952,7 @@ func (r *Runtime) runDialer(ctx context.Context, cfg config.Config) error {
 			r.closeShards(shards)
 			return err
 		}
-		sh := &dialerShard{peer: p, closeFn: o.closeFn}
+		sh := &dialerShard{peer: p, closeFn: o.closeFn, transport: o.transport}
 		r.registerPeer(p)
 		if cfg.Recovery.Enabled {
 			if err:=r.registerSession(p);err!=nil{r.unregisterPeer(p);sh.close();r.closeShards(shards);return err}

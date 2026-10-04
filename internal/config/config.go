@@ -34,9 +34,14 @@ type Node struct {
 	Role string `json:"role"`
 }
 type Peer struct {
-	Address         string `json:"address"`
-	ServerName      string `json:"server_name"`
-	AllowedIdentity string `json:"allowed_identity"`
+	Address            string `json:"address"`
+	ServerName         string `json:"server_name"`
+	AllowedIdentity    string `json:"allowed_identity"`
+	// Fallback* optionally describe a distinct network path for
+	// Transport.Fallback. Empty values inherit the primary peer/TLS values.
+	FallbackAddress    string `json:"fallback_address,omitempty"`
+	FallbackServerName string `json:"fallback_server_name,omitempty"`
+	FallbackCAFile     string `json:"fallback_ca_file,omitempty"`
 }
 type Server struct {
 	Listen                string   `json:"listen"`
@@ -52,6 +57,10 @@ type TLS struct {
 }
 type Transport struct {
 	Primary   string `json:"primary"`
+	// Fallback is an optional second physical carrier used only by same-process
+	// recovery. It must differ from Primary; switching it never changes logical
+	// Session identity or authority.
+	Fallback  string `json:"fallback,omitempty"`
 	H3Enabled bool   `json:"h3_enabled"`
 	Shards    int    `json:"shards"`
 	Profile   string `json:"profile"`
@@ -149,14 +158,26 @@ func Validate(c Config) error {
 	if c.Transport.Primary != "h2" && c.Transport.Primary != "ws" {
 		return errors.New("transport.primary must be h2 or ws")
 	}
-	if c.Transport.UTLS && c.Transport.Primary != "ws" {
-		return errors.New("transport.utls is only supported with transport.primary ws")
+	if c.Transport.Fallback != "" {
+		if c.Transport.Fallback != "h2" && c.Transport.Fallback != "ws" {
+			return errors.New("transport.fallback must be empty, h2, or ws")
+		}
+		if c.Transport.Fallback == c.Transport.Primary {
+			return errors.New("transport.fallback must differ from transport.primary")
+		}
+		if !c.Recovery.Enabled {
+			return errors.New("transport.fallback requires recovery.enabled")
+		}
 	}
-	if c.Transport.Primary == "ws" && c.Noise == nil {
-		// Behind Cloudflare the outer TLS is terminated at the edge, so the
+	hasWS := c.Transport.Primary == "ws" || c.Transport.Fallback == "ws"
+	if c.Transport.UTLS && !hasWS {
+		return errors.New("transport.utls requires ws as primary or fallback")
+	}
+	if hasWS && c.Noise == nil {
+		// Behind Cloudflare the outer TLS is terminated at the edge, so every
 		// WebSocket carrier relies entirely on the inner Noise handshake for
-		// authentication; it must be configured.
-		return errors.New("transport.primary ws requires noise")
+		// authentication; it must be configured even when ws is only fallback.
+		return errors.New("transport ws requires noise")
 	}
 	if c.Transport.H3Enabled {
 		return errors.New("transport.h3_enabled is unsupported before H2 gate passes")
@@ -246,6 +267,15 @@ func Validate(c Config) error {
 		}
 		if _, _, err := net.SplitHostPort(c.Peer.Address); err != nil {
 			return fmt.Errorf("peer.address: %w", err)
+		}
+		fallbackPeerSet := c.Peer.FallbackAddress != "" || c.Peer.FallbackServerName != "" || c.Peer.FallbackCAFile != ""
+		if fallbackPeerSet && c.Transport.Fallback == "" {
+			return errors.New("peer fallback path requires transport.fallback")
+		}
+		if c.Peer.FallbackAddress != "" {
+			if _, _, err := net.SplitHostPort(c.Peer.FallbackAddress); err != nil {
+				return fmt.Errorf("peer.fallback_address: %w", err)
+			}
 		}
 	case "listener":
 		if c.Server == nil || c.Peer != nil {

@@ -98,6 +98,9 @@
       "properties": {
         "address": {"type": "string", "minLength": 3},
         "server_name": {"type": "string", "minLength": 1},
+        "fallback_address": {"type": "string", "minLength": 3},
+        "fallback_server_name": {"type": "string", "minLength": 1},
+        "fallback_ca_file": {"type": "string", "minLength": 1},
         "allowed_identity": {"type": "string", "minLength": 1}
       }
     },
@@ -126,6 +129,7 @@
       "required": ["primary", "h3_enabled", "shards", "profile"],
       "properties": {
         "primary": {"enum": ["h2", "ws"]},
+        "fallback": {"enum": ["h2", "ws"]},
         "h3_enabled": {"const": false},
         "shards": {"type": "integer", "minimum": 1, "maximum": 8},
         "profile": {"type": "string", "minLength": 1, "maxLength": 64},

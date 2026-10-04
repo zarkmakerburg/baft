@@ -149,10 +149,10 @@ jobs:
             -run '^TestRecoveryRuntimePairDoesNotLeakResources$' \
             -count=1 -timeout 20m -v
 
-      - name: Baseline active-flow replacement 20x
+      - name: Baseline and cross-transport active-flow replacement
         run: |
           go test ./tests/integration \
-            -run '^TestRuntimeCarrierReplacementPreservesActiveFlow$' \
+            -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestRuntimeCarrierReplacementAcrossTransportFallbacks)$' \
             -count=20 -timeout 15m -v
 
       - name: Eight-flow replacement 10x
@@ -182,7 +182,7 @@ jobs:
       - name: Recovery race sample
         run: |
           go test -race ./tests/integration \
-            -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$' \
+            -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestRuntimeCarrierReplacementAcrossTransportFallbacks|TestMultiFlowCarrierReplacementNoDuplicateOrLoss|TestRuntimeRecoveryRouteIdentityIsolation|TestStableFinalizedCarrierFailureStartsFreshEpoch|TestUnresolvedTransactionRebindKeepsSameEpochCandidateDigest|TestMultipleConsecutiveCarrierReplacementsKeepSameTCPFlow)$' \
             -count=2 -timeout 20m -v
 
       - name: Recovery under concurrent Flow churn 50x and race 10x
