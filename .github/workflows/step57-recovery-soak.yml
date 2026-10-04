@@ -152,7 +152,7 @@ jobs:
       - name: Baseline and cross-transport active-flow replacement
         run: |
           go test ./tests/integration \
-            -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestRuntimeCarrierReplacementAcrossTransportFallbacks) \ \
+            -run '^(TestRuntimeCarrierReplacementPreservesActiveFlow|TestRuntimeCarrierReplacementAcrossTransportFallbacks)$' \
             -count=20 -timeout 15m -v
 
       - name: Eight-flow replacement 10x
