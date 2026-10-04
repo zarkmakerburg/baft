@@ -34,9 +34,14 @@ type Node struct {
 	Role string `json:"role"`
 }
 type Peer struct {
-	Address         string `json:"address"`
-	ServerName      string `json:"server_name"`
-	AllowedIdentity string `json:"allowed_identity"`
+	Address            string `json:"address"`
+	ServerName         string `json:"server_name"`
+	AllowedIdentity    string `json:"allowed_identity"`
+	// Fallback* optionally describe a distinct network path for
+	// Transport.Fallback. Empty values inherit the primary peer/TLS values.
+	FallbackAddress    string `json:"fallback_address,omitempty"`
+	FallbackServerName string `json:"fallback_server_name,omitempty"`
+	FallbackCAFile     string `json:"fallback_ca_file,omitempty"`
 }
 type Server struct {
 	Listen                string   `json:"listen"`
@@ -262,6 +267,15 @@ func Validate(c Config) error {
 		}
 		if _, _, err := net.SplitHostPort(c.Peer.Address); err != nil {
 			return fmt.Errorf("peer.address: %w", err)
+		}
+		fallbackPeerSet := c.Peer.FallbackAddress != "" || c.Peer.FallbackServerName != "" || c.Peer.FallbackCAFile != ""
+		if fallbackPeerSet && c.Transport.Fallback == "" {
+			return errors.New("peer fallback path requires transport.fallback")
+		}
+		if c.Peer.FallbackAddress != "" {
+			if _, _, err := net.SplitHostPort(c.Peer.FallbackAddress); err != nil {
+				return fmt.Errorf("peer.fallback_address: %w", err)
+			}
 		}
 	case "listener":
 		if c.Server == nil || c.Peer != nil {
