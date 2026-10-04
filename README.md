@@ -2,6 +2,12 @@
   <img src="docs/assets/baft-readme-poster.webp" alt="BAFT — resilient infrastructure for multi-path routing" width="100%">
 </p>
 
+<p align="center">
+  <a href="#quick-install"><img src="docs/assets/btn-quick-start-en.png" alt="Quick start" width="240"></a>
+  &nbsp;
+  <a href="docs/en/README.md"><img src="docs/assets/btn-docs-en.png" alt="Technical docs" width="240"></a>
+</p>
+
 <h1 align="center">BAFT</h1>
 
 <p align="center"><strong>Bounded · Authenticated · Fail-safe · Transactional</strong></p>
@@ -25,6 +31,23 @@
 BAFT is research software for securely relaying authenticated TCP byte streams between two operator-controlled agents. In the baseline architecture the **IR** agent initiates the Carrier connection to **EX**, while application data remains bidirectional. BAFT does not replace the target service, Xray, or the application protocol; it moves TCP bytes only through preconfigured, explicitly authorized Routes.
 
 The repository is developed from content Blueprint v1.4 and Implementation Master Prompt v1.2 dated 2026-09-27. The historical Blueprint filename contains `v1.0`, but the normative content version is **1.4**.
+
+<a id="quick-install"></a>
+
+## Quick install
+
+One line on each server (Debian/Ubuntu, run as root). Install EX first; it prints a `BAFTPAIR1:...` pairing code for IR.
+
+```bash
+# EX (outside server)
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash -s -- --role ex --public-address EX_HOST_OR_IP
+
+# IR (inside server), with the pairing code printed by EX
+curl -fsSL https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh | sudo bash -s -- --role ir --pairing-code 'BAFTPAIR1:...'
+```
+
+Prefer to read the installer first? `curl -fsSLO https://raw.githubusercontent.com/zarkmakerburg/baft/main/install.sh && less install.sh`, then run `sudo bash install.sh` with the same flags. Every release the installer fetches is verified against the pinned root key. Full guide: [Running IR and EX](docs/en/06-running-ir-ex.md).
+
 
 ## Project status
 
