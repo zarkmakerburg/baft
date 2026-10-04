@@ -1,0 +1,60 @@
+name: advanced-adversary
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Adversary profile'
+        required: false
+        default: 'bounded'
+      fuzztime:
+        description: 'Recordshape fuzz duration'
+        required: false
+        default: '10s'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/adversary/**'
+      - 'tests/e2e/installer_faults.sh'
+      - 'install.sh'
+      - 'internal/session/**'
+      - 'internal/recovery/**'
+      - 'internal/tunnelnode/**'
+      - 'internal/recordshape/**'
+      - '.github/workflows/advanced-adversary.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  advanced-adversary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Verify module lock
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Advanced adversary harness
+        env:
+          ADV_PROFILE: ${{ github.event.inputs.profile || 'bounded' }}
+          ADV_FUZZTIME: ${{ github.event.inputs.fuzztime || '10s' }}
+        run: tests/adversary/advanced.sh "$RUNNER_TEMP/advanced-adversary"
+      - name: Publish summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/advanced-adversary/report.md" ]; then
+            cat "$RUNNER_TEMP/advanced-adversary/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: advanced-adversary-${{ github.sha }}
+          path: ${{ runner.temp }}/advanced-adversary
+          retention-days: 30
