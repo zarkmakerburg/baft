@@ -69,9 +69,25 @@ message one authenticates) is asserted by the Go unit tests in
 `TestNoiseSlowProbeBounded`). The soak complements them with whole-node
 behaviour under sustained load.
 
+## The report the tester leaves
+
+Every run produces a consolidated report (`tests/adversary/report.py`) with the
+overall verdict, the destruction/DoS table, the intrusion table, the findings,
+and the environment. It is published three ways:
+
+- in the **job summary** of the `adversary-soak` run (Actions tab);
+- as an uploaded **artifact** (`report.md` plus the raw `results.jsonl` and
+  `provenance.txt`), 30-day retention;
+- committed to the **`adversarial-reports` branch** (`latest.md` and
+  `history/<timestamp>.md`) on every scheduled or manual run, so there is a
+  persistent, browsable history without touching `main`.
+
+A committed baseline snapshot lives at `reports/adversarial/README.md`.
+
 ## When a gap is found
 
-A failing scenario is a real finding. The run's artifact (`summary.md`,
+A failing scenario is a real finding, listed in the report's **Findings**
+section, and the job goes red. The run's artifact (`report.md`, `summary.md`,
 `results.jsonl`, `provenance.txt`) has the repro and the measured numbers. A
 clearly-scoped defensive fix (for example a missing bound) is made on a branch
 with the full gates; anything larger is reported first.
