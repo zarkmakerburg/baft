@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
 const (
