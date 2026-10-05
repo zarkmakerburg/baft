@@ -32,22 +32,28 @@ for path in workflows:
             failures.append(f"{path}:{lineno}: mutable @latest tool reference: {line.strip()}")
 
 release = Path(".github/workflows/release.yml").read_text()
-if "go run ./cmd/baft-release" in release:
-    failures.append("release.yml: release-tag source is still executed as the signer")
-m = re.search(r"^\s*TRUSTED_SIGNER_COMMIT:\s*([0-9a-f]+)\s*$", release, re.M)
-if not m or not sha_re.fullmatch(m.group(1)):
-    failures.append("release.yml: TRUSTED_SIGNER_COMMIT is missing or not an immutable full SHA")
-if "environment: release" not in release:
-    failures.append("release.yml: protected release environment is not attached to signing")
-if 'ref: ${{ env.TRUSTED_SIGNER_COMMIT }}' not in release:
-    failures.append("release.yml: signing job does not checkout TRUSTED_SIGNER_COMMIT")
-if '"$RUNNER_TEMP/baft-release" sign' not in release:
-    failures.append("release.yml: signing step does not invoke the isolated trusted signer binary")
+for forbidden in (
+    "BAFT_RELEASE_SIGNING_KEY",
+    "BAFT_RELEASE_KEY_CERT",
+    "secrets.",
+    "environment: release",
+    "contents: write",
+    "gh release create",
+    "go run ./cmd/baft-release",
+):
+    if forbidden in release:
+        failures.append(f"release.yml: signing boundary violation: contains {forbidden!r}")
+if "unsigned-release-candidate" not in release:
+    failures.append("release.yml: unsigned candidate artifact is not enforced")
+if "signing_boundary=external-offline" not in release:
+    failures.append("release.yml: external/offline signing boundary marker is missing")
+if "signed=false" not in release:
+    failures.append("release.yml: candidate is not explicitly marked unsigned")
 
 if failures:
     print("CI supply-chain policy violations:", file=sys.stderr)
     for failure in failures:
         print(" - " + failure, file=sys.stderr)
     sys.exit(1)
-print(f"CI supply-chain policy: PASS ({len(workflows)} workflows)")
+print(f"CI supply-chain policy: PASS ({len(workflows)} workflows); release secrets absent")
 PY

@@ -51,6 +51,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -521,10 +522,17 @@ func (m *Manager) securePKI(dir string) error {
 			return fmt.Errorf("chmod %s: %w", path, err)
 		}
 	}
-	if err := m.chownTo(filepath.Join(dir, "server.key"), m.User, m.User); err != nil {
+	serverKey := filepath.Join(dir, "server.key")
+	if err := m.chownTo(serverKey, m.User, m.User); err != nil {
 		return err
 	}
 	if err := m.chownTo(dir, "root", m.User); err != nil {
+		return err
+	}
+	if err := m.verifyOwnerGroup(serverKey, m.User, m.User); err != nil {
+		return err
+	}
+	if err := m.verifyOwnerGroup(dir, "root", m.User); err != nil {
 		return err
 	}
 	for path, mode := range modes {
@@ -542,6 +550,47 @@ func (m *Manager) securePKI(dir string) error {
 	return nil
 }
 
+func (m *Manager) verifyOwnerGroup(path, owner, group string) error {
+	if m.User == "" {
+		return nil
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("%s ownership metadata is unavailable", path)
+	}
+	if owner != "" {
+		u, err := user.Lookup(owner)
+		if err != nil {
+			return err
+		}
+		uid, err := strconv.Atoi(u.Uid)
+		if err != nil {
+			return err
+		}
+		if int(st.Uid) != uid {
+			return fmt.Errorf("%s uid is %d, want %d", path, st.Uid, uid)
+		}
+	}
+	if group != "" {
+		g, err := user.LookupGroup(group)
+		if err != nil {
+			return err
+		}
+		gid, err := strconv.Atoi(g.Gid)
+		if err != nil {
+			return err
+		}
+		if int(st.Gid) != gid {
+			return fmt.Errorf("%s gid is %d, want %d", path, st.Gid, gid)
+		}
+	}
+	return nil
+}
+
 // writeLike replaces path atomically, keeping its mode and owner.
 func writeLike(path string, b []byte) error {
 	fi, err := os.Stat(path)
@@ -554,6 +603,14 @@ func writeLike(path string, b []byte) error {
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
 		if err := os.Chown(path, int(st.Uid), int(st.Gid)); err != nil {
 			return err
+		}
+		after, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		afterStat, ok := after.Sys().(*syscall.Stat_t)
+		if !ok || afterStat.Uid != st.Uid || afterStat.Gid != st.Gid {
+			return fmt.Errorf("%s ownership was not preserved", path)
 		}
 	}
 	return syncPath(path)
