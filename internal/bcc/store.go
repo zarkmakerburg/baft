@@ -178,6 +178,8 @@ type state struct {
 	IngressSelections map[string]IngressSelection `json:"ingress_selections,omitempty"`
 	// IngressDistributions are M-016's durable new-connection weight vectors.
 	IngressDistributions map[string]IngressDistribution `json:"ingress_distributions,omitempty"`
+	// SmartIngressPlans are M-017's durable provider-independent publication intents.
+	SmartIngressPlans map[string]SmartIngressPlan `json:"smart_ingress_plans,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`
@@ -196,7 +198,7 @@ type Store struct {
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
 	if err:=recoverRestoreTransaction(path);err!=nil{return nil,fmt.Errorf("recover interrupted restore: %w",err)}
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},IngressSelections:map[string]IngressSelection{},IngressDistributions:map[string]IngressDistribution{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},IngressSelections:map[string]IngressSelection{},IngressDistributions:map[string]IngressDistribution{},SmartIngressPlans:map[string]SmartIngressPlan{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
 	b,err:=os.ReadFile(path)
 	switch {
 	case err==nil&&isSQLiteFile(b):
