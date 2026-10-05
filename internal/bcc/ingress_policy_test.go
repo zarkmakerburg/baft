@@ -294,3 +294,70 @@ func TestIngressPersistenceTableMigratesCleanly(t *testing.T) {
 		t.Fatalf("schema version=%d err=%v want=%d", v, err, len(stateMigrations))
 	}
 }
+
+
+func TestIngressTwoIRFiveExplicitEXProducesFiveIndependentDecisions(t *testing.T) {
+	now := time.Unix(8000, 0).UTC()
+	s := desiredTopologyStore(t)
+	if _, err := s.SetTopologySpec(desiredSpec([]string{"ir-1", "ir-2"}, ""), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReconcileTopology(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	for id, tun := range s.st.Tunnels {
+		tun.Phase = TunnelActive
+		s.st.Tunnels[id] = tun
+	}
+	for _, id := range []string{"ir-1", "ir-2", "ex-1", "ex-2", "ex-3", "ex-4", "ex-5"} {
+		latency := int64(50)
+		if id == "ir-1" {
+			latency = 15
+		}
+		if id == "ir-2" {
+			latency = 70
+		}
+		setIngressNodeHealthyLocked(s, id, now.Add(2*time.Second), latency, 5, 0)
+	}
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+
+	if _, err := s.EvaluateIngress(now.Add(10*time.Second), DefaultIngressPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	got := s.IngressSnapshot(now.Add(10 * time.Second))
+	if len(got) != 5 {
+		t.Fatalf("decisions=%d, want 5: %+v", len(got), got)
+	}
+	for _, d := range got {
+		if d.State != IngressReady || d.ActiveIR != "ir-1" || d.EXNode == "" || !d.Usable {
+			t.Fatalf("route %s bad decision: %+v", d.RouteID, d)
+		}
+		if len(d.StandbyIRs) != 1 || d.StandbyIRs[0] != "ir-2" {
+			t.Fatalf("route %s standby=%v", d.RouteID, d.StandbyIRs)
+		}
+	}
+}
+
+func TestIngressSnapshotMarksPersistedSelectionUnusableBeforeReevaluation(t *testing.T) {
+	now := time.Unix(9000, 0).UTC()
+	s := ingressStore(t, now)
+	at := now.Add(10 * time.Second)
+	if _, err := s.EvaluateIngress(at, DefaultIngressPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	if got := oneIngress(t, s, at); !got.Usable {
+		t.Fatalf("fresh selection unexpectedly unusable: %+v", got)
+	}
+
+	// Simulate evidence aging before the next periodic evaluator runs.
+	staleAt := at.Add(10 * time.Minute)
+	got := oneIngress(t, s, staleAt)
+	if got.Usable {
+		t.Fatalf("stale persisted ACTIVE exposed as usable: %+v", got)
+	}
+}
