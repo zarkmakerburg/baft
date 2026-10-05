@@ -120,7 +120,7 @@ func providerOriginName(base, irNode string) string {
 }
 
 func validProviderScopeID(v string) bool {
-	if v == "" || strings.TrimSpace(v) != v || len(v) > 128 {
+	if v == "" || strings.TrimSpace(v) != v || len(v) > 32 {
 		return false
 	}
 	for _, r := range v {

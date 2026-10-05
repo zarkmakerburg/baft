@@ -360,6 +360,8 @@ func TestCloudflareFailClosedInvalidDesiredAndBindingInputs(t *testing.T) {
 		{"mismatched EX", func(_ *SmartIngressView, b *SmartIngressProviderBinding) { b.EXNode = "ex-2" }},
 		{"provider mismatch", func(_ *SmartIngressView, b *SmartIngressProviderBinding) { b.Provider = "other" }},
 		{"invalid account scope", func(_ *SmartIngressView, b *SmartIngressProviderBinding) { b.AccountID = "bad scope id" }},
+		{"oversized account id", func(_ *SmartIngressView, b *SmartIngressProviderBinding) { b.AccountID = strings.Repeat("a", 33) }},
+		{"oversized zone id", func(_ *SmartIngressView, b *SmartIngressProviderBinding) { b.ZoneID = strings.Repeat("z", 33) }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
