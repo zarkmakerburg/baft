@@ -34,7 +34,9 @@ type IngressCandidate struct {
 	Score                      int      `json:"score"`
 	Health                     string   `json:"health"`
 	TopologyStatus             string   `json:"topology_status"`
+	RouteStatus                string   `json:"route_status,omitempty"`
 	LatencyMS                  int64    `json:"latency_ms"`
+	RouteLatencyMS             int64    `json:"route_latency_ms,omitempty"`
 	NoiseLatencyMS             int64    `json:"noise_latency_ms,omitempty"`
 	HandshakeErrorRateMilliMin int64    `json:"handshake_error_rate_milli_per_min,omitempty"`
 	Reasons                    []string `json:"reasons,omitempty"`
@@ -277,18 +279,35 @@ func (s *Store) ingressCandidateLocked(ir string, route ExplicitEXRoute, now tim
 		return c
 	}
 
-	okFresh, reason := s.nodeEligibleForIngressLocked(ir, now, p)
-	c.Health = s.nodeHealthStateLocked(ir)
+	okFresh, reason := s.nodeCoreEligibleForIngressLocked(ir, now, p)
+	c.Health = s.nodeCoreHealthStateLocked(ir)
 	if !okFresh {
 		c.Reasons = append(c.Reasons, reason)
 		return c
 	}
 	cur := s.st.Telemetry[ir]
+	routeSample, ok := routeSnapshotForIngress(cur, route)
+	if !ok {
+		c.Reasons = append(c.Reasons, "route-specific telemetry is missing")
+		return c
+	}
+	c.RouteStatus = routeSample.Status
+	c.RouteLatencyMS = routeSample.LatencyMS
+	if routeSample.Status != "up" {
+		if routeSample.Status == "" {
+			c.Reasons = append(c.Reasons, "route-specific telemetry has no status")
+		} else {
+			c.Reasons = append(c.Reasons, "route-specific telemetry is "+routeSample.Status)
+		}
+		return c
+	}
 	c.NoiseLatencyMS = cur.NoiseLatencyMS
 	c.HandshakeErrorRateMilliMin = cur.HandshakeErrorRateMilliMin
 
 	score := 1000
-	if n.LatencyMS > 0 {
+	if routeSample.LatencyMS > 0 {
+		score -= minIngress(int(routeSample.LatencyMS), 500)
+	} else if n.LatencyMS > 0 {
 		score -= minIngress(int(n.LatencyMS), 500)
 	}
 	if cur.NoiseLatencyMS > 0 {
@@ -301,8 +320,80 @@ func (s *Store) ingressCandidateLocked(ir string, route ExplicitEXRoute, now tim
 		score = 1
 	}
 	c.Score, c.Eligible = score, true
-	c.Reasons = []string{"ACTIVE topology edge; node health UP; management and telemetry evidence fresh"}
+	c.Reasons = []string{"ACTIVE topology edge; core node health UP; route-specific probe UP; management and telemetry evidence fresh"}
 	return c
+}
+
+func routeSnapshotForIngress(cur TelemetryCursor, route ExplicitEXRoute) (telemetry.RouteSnapshot, bool) {
+	id := route.RouteID
+	if id == "" {
+		id = route.ID
+	}
+	for _, r := range cur.Routes {
+		if r.RouteID == id {
+			return r, true
+		}
+	}
+	return telemetry.RouteSnapshot{}, false
+}
+
+func (s *Store) nodeCoreHealthStateLocked(id string) string {
+	rec, ok := s.st.Health[id]
+	if !ok {
+		return HealthUnknown
+	}
+	// Old persisted/test records may predate per-layer health. Preserve their
+	// meaning, but current records deliberately exclude L4 here because route
+	// health is evaluated separately for the explicit route being selected.
+	if len(rec.Layers) == 0 {
+		if rec.Overall != "" {
+			return rec.Overall
+		}
+		return HealthUnknown
+	}
+	get := func(layer string) string {
+		if r := rec.Layers[layer]; r != nil && r.State != "" {
+			return r.State
+		}
+		return HealthUnknown
+	}
+	for _, layer := range []string{LayerL0, LayerL1} {
+		if get(layer) != HealthUp {
+			return get(layer)
+		}
+	}
+	for _, layer := range []string{LayerL2, LayerAgent} {
+		switch get(layer) {
+		case HealthDown, HealthDegraded, HealthRecovering:
+			return HealthDegraded
+		}
+	}
+	return HealthUp
+}
+
+func (s *Store) nodeCoreEligibleForIngressLocked(id string, now time.Time, p IngressPolicy) (bool, string) {
+	n, ok := s.st.Nodes[id]
+	if !ok {
+		return false, "node is missing"
+	}
+	if n.Revoked {
+		return false, "node is revoked"
+	}
+	state := s.nodeCoreHealthStateLocked(id)
+	if state != HealthUp {
+		return false, "core node health is " + state
+	}
+	if n.AgentSeen.IsZero() || now.Sub(n.AgentSeen) >= p.AgentStaleAfter {
+		return false, "agent evidence is stale or missing"
+	}
+	if n.LastChecked.IsZero() || now.Sub(n.LastChecked) > p.ProbeStaleAfter {
+		return false, "reachability probe is stale or missing"
+	}
+	cur, ok := s.st.Telemetry[id]
+	if !ok || cur.LastTelemetry.IsZero() || now.Sub(cur.LastTelemetry) >= p.TelemetryStaleAfter {
+		return false, "telemetry is stale or missing"
+	}
+	return true, ""
 }
 
 func (s *Store) nodeHealthStateLocked(id string) string {
