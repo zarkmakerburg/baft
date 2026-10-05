@@ -305,6 +305,19 @@ func (s *Server) evaluateHealthAt(now time.Time) {
 			},
 		})
 	}
+	smartEvents, err := s.store.EvaluateSmartIngress(now)
+	if err != nil {
+		return
+	}
+	for _, e := range smartEvents {
+		_, _ = s.audit.Append(AuditEntry{
+			Timestamp: now.UTC(), Actor: "bcc", Action: "ingress.smart.desired", Target: e.RouteID, Outcome: "success",
+			Details: map[string]any{
+				"ex_node": e.EXNode, "host": e.Host, "from_state": e.FromState, "to_state": e.ToState,
+				"generation": e.Generation, "distribution_generation": e.DistributionGeneration, "reason": e.Reason,
+			},
+		})
+	}
 }
 
 // healthAPI: GET /api/health[?node=ID[&all=1]], admin only, read only.

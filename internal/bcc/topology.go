@@ -20,6 +20,7 @@ type IRPoolMember struct {
 	NodeID         string    `json:"node_id"`
 	Enabled        bool      `json:"enabled"`
 	CapacityWeight int       `json:"capacity_weight,omitempty"`
+	IngressIP      string    `json:"ingress_ip,omitempty"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -30,6 +31,7 @@ type ExplicitEXRoute struct {
 	EXNode        string    `json:"ex_node"`
 	Country       string    `json:"country,omitempty"`
 	PublicAddress string    `json:"public_address,omitempty"`
+	IngressHost   string    `json:"ingress_host,omitempty"`
 	Target        string    `json:"target,omitempty"`
 	RouteID       string    `json:"route_id,omitempty"`
 	Enabled       bool      `json:"enabled"`
@@ -169,6 +171,14 @@ func (s *Store) SetTopologySpec(spec TopologySpec, now time.Time) (TopologyRepor
 		if m.CapacityWeight > 10000 {
 			return TopologyReport{}, fmt.Errorf("IR member %q capacity_weight exceeds 10000", m.NodeID)
 		}
+		m.IngressIP = strings.TrimSpace(m.IngressIP)
+		if m.IngressIP != "" {
+			ip := net.ParseIP(m.IngressIP)
+			if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+				return TopologyReport{}, fmt.Errorf("IR member %q ingress_ip must be an explicit public unicast IP", m.NodeID)
+			}
+			m.IngressIP = ip.String()
+		}
 		m.UpdatedAt = now.UTC()
 		irs[m.NodeID] = m
 	}
@@ -177,6 +187,11 @@ func (s *Store) SetTopologySpec(spec TopologySpec, now time.Time) (TopologyRepor
 	for _, r := range spec.EXRoutes {
 		r.ID = strings.TrimSpace(r.ID)
 		r.EXNode = strings.TrimSpace(r.EXNode)
+		var hostErr error
+		r.IngressHost, hostErr = normalizeSmartIngressHost(r.IngressHost)
+		if hostErr != nil {
+			return TopologyReport{}, fmt.Errorf("EX route %q ingress_host: %w", r.ID, hostErr)
+		}
 		if !topologyRouteIDRe.MatchString(r.ID) {
 			return TopologyReport{}, errors.New("EX route id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 		}
