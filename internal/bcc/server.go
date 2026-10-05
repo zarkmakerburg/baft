@@ -194,6 +194,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/ingress/distribution/evaluate",s.distributionEvaluateAPI)
 	m.HandleFunc("/api/ingress/smart",s.smartIngressAPI)
 	m.HandleFunc("/api/ingress/smart/evaluate",s.smartIngressEvaluateAPI)
+	m.HandleFunc("/api/ingress/smart/provider/dry-run",s.smartIngressProviderDryRunAPI)
 	m.HandleFunc("/api/cert-rotations",s.certRotations)
 	m.HandleFunc("/api/cert-rotations/cancel",s.certRotationCancel)
 	m.HandleFunc("/api/bootstrap/hostkey",s.bootstrapHostKey)
