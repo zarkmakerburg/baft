@@ -60,11 +60,13 @@ var stateMigrations = []string{
 	`CREATE TABLE ingress_distributions (route_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 	// 9: provider-independent Smart Ingress desired/applied state (M-017).
 	`CREATE TABLE smart_ingress_plans (route_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
+	// 10: durable security-audit intents committed with BCC state (SEC-002).
+	`CREATE TABLE security_audit_intents (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "topology", "ingress_selections", "ingress_distributions", "smart_ingress_plans",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "security_audit_intents", "topology", "ingress_selections", "ingress_distributions", "smart_ingress_plans",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -207,6 +209,11 @@ func writeStateTx(tx *sql.Tx, st state) error {
 	}
 	for id, v := range st.CertRotations {
 		if err := put(`INSERT INTO cert_rotations VALUES (?, ?)`, id, v); err != nil {
+			return err
+		}
+	}
+	for id, v := range st.SecurityAuditIntents {
+		if err := put(`INSERT INTO security_audit_intents VALUES (?, ?)`, id, v); err != nil {
 			return err
 		}
 	}
@@ -389,6 +396,13 @@ func readStateDB(path string) (state, error) {
 			var v CertRotation
 			err := decode("cert_rotations", d, &v)
 			st.CertRotations[k] = v
+			return err
+		}},
+		{`SELECT id, 0, doc FROM security_audit_intents`, func(k string, _ int64, d []byte) error {
+			var v AuditEntry
+			err := decode("security_audit_intents", d, &v)
+			if v.IntentID != k { return fmt.Errorf("BCC state security audit intent key %q does not match payload %q", k, v.IntentID) }
+			st.SecurityAuditIntents[k] = v
 			return err
 		}},
 		{`SELECT kind || ':' || id, 0, doc FROM topology`, func(k string, _ int64, d []byte) error {

@@ -585,6 +585,16 @@ func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 	}
 	rotEvents, rotChanged := s.advanceRotationsLocked(now.UTC())
 	events = append(events, rotEvents...)
+	for _, e := range rotEvents {
+		outcome := "failure"
+		switch e.Action {
+		case "cert.rotation.activated", "cert.rotation.complete":
+			outcome = "success"
+		}
+		if _, err := s.enqueueSecurityAuditLocked(securityAuditEvent(now, e.Action, e.TunnelID, outcome, e.Detail)); err != nil {
+			return nil, err
+		}
+	}
 	if !changed && !rotChanged {
 		return nil, nil
 	}
@@ -773,10 +783,14 @@ func (s *Server) AdvanceTunnels() {
 	if err != nil {
 		return
 	}
+	_ = s.FlushSecurityAuditIntents()
 	for _, e := range events {
+		if strings.HasPrefix(e.Action, "cert.rotation.") {
+			continue
+		}
 		outcome := "success"
 		switch e.Action {
-		case "tunnel.active", "tunnel.in_sync", "cert.rotation.activated", "cert.rotation.complete":
+		case "tunnel.active", "tunnel.in_sync":
 		default:
 			outcome = "failure"
 		}

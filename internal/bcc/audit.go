@@ -15,6 +15,7 @@ import (
 
 type AuditEntry struct {
 	Sequence  uint64         `json:"sequence"`
+	IntentID  string         `json:"intent_id,omitempty"`
 	Timestamp time.Time      `json:"timestamp"`
 	Actor     string         `json:"actor"`
 	RemoteIP  string         `json:"remote_ip"`
@@ -79,6 +80,7 @@ func (a *AuditLog) Append(e AuditEntry)(AuditEntry,error){
 	closeErr:=f.Close()
 	if err!=nil{return AuditEntry{},err}
 	if closeErr!=nil{return AuditEntry{},closeErr}
+	if err:=fsyncDir(a.path);err!=nil{return AuditEntry{},err}
 	a.lastHash=e.Hash;a.nextSeq++
 	return e,nil
 }

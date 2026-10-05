@@ -170,6 +170,9 @@ type state struct {
 	Discovery       map[string]NodeDiscovery     `json:"discovery,omitempty"`
 	// CertRotations are the certificate rotations of built tunnels (A4).
 	CertRotations   map[string]CertRotation      `json:"cert_rotations,omitempty"`
+	// SecurityAuditIntents are audit entries committed in the same SQLite
+	// transaction as security-sensitive state changes and drained afterward.
+	SecurityAuditIntents map[string]AuditEntry   `json:"security_audit_intents,omitempty"`
 	// Desired topology (M-014): IR pool members, explicit EX routes, and stable edge bindings.
 	IRPool           map[string]IRPoolMember       `json:"ir_pool,omitempty"`
 	EXRoutes         map[string]ExplicitEXRoute    `json:"ex_routes,omitempty"`
@@ -198,7 +201,7 @@ type Store struct {
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
 	if err:=recoverRestoreTransaction(path);err!=nil{return nil,fmt.Errorf("recover interrupted restore: %w",err)}
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},IngressSelections:map[string]IngressSelection{},IngressDistributions:map[string]IngressDistribution{},SmartIngressPlans:map[string]SmartIngressPlan{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},SecurityAuditIntents:map[string]AuditEntry{},IngressSelections:map[string]IngressSelection{},IngressDistributions:map[string]IngressDistribution{},SmartIngressPlans:map[string]SmartIngressPlan{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
 	b,err:=os.ReadFile(path)
 	switch {
 	case err==nil&&isSQLiteFile(b):
