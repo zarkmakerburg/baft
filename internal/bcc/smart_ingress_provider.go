@@ -60,10 +60,12 @@ type SmartIngressProviderRouteState struct {
 // SmartIngressProviderObserved is non-secret observed metadata supplied by the
 // dry-run caller. M-017B never reads a provider over the network.
 type SmartIngressProviderObserved struct {
-	Exists              bool   `json:"exists"`
-	PoolID              string `json:"pool_id,omitempty"`
-	LoadBalancerID      string `json:"load_balancer_id,omitempty"`
-	LoadBalancerEnabled *bool  `json:"load_balancer_enabled,omitempty"`
+	Exists                        bool   `json:"exists"`
+	PoolID                        string `json:"pool_id,omitempty"`
+	PoolEnabled                   *bool  `json:"pool_enabled,omitempty"`
+	LoadBalancerID                string `json:"load_balancer_id,omitempty"`
+	LoadBalancerEnabled           *bool  `json:"load_balancer_enabled,omitempty"`
+	LoadBalancerPoolWiringMatches *bool  `json:"load_balancer_pool_wiring_matches,omitempty"`
 	SmartIngressProviderRouteState
 }
 
@@ -308,7 +310,9 @@ func sameProviderOrigins(a, b []SmartIngressProviderOrigin) bool {
 
 func sameCloudflareRouteState(a SmartIngressProviderRouteState, b SmartIngressProviderObserved) bool {
 	return b.Exists &&
+		(b.PoolEnabled == nil || *b.PoolEnabled) &&
 		(b.LoadBalancerEnabled == nil || *b.LoadBalancerEnabled) &&
+		(b.LoadBalancerPoolWiringMatches == nil || *b.LoadBalancerPoolWiringMatches) &&
 		a.RouteID == b.RouteID &&
 		a.Provider == b.Provider &&
 		a.EXNode == b.EXNode &&

@@ -141,12 +141,23 @@ func (s *Server) cloudflareToken() (string, error) {
 
 func currentSmartIngressView(store *Store, routeID string, now time.Time) (SmartIngressView, error) {
 	routeID = strings.TrimSpace(routeID)
-	for _, v := range store.SmartIngressSnapshot(now) {
-		if v.RouteID == routeID {
-			return v, nil
-		}
+	now = now.UTC()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	persisted, ok := store.st.SmartIngressPlans[routeID]
+	if !ok || persisted.RouteID == "" {
+		return SmartIngressView{}, fmt.Errorf("Smart Ingress route %q does not exist", routeID)
 	}
-	return SmartIngressView{}, fmt.Errorf("Smart Ingress route %q does not exist", routeID)
+	route, exists := store.st.EXRoutes[routeID]
+	live := store.chooseSmartIngressLocked(route, exists, persisted, now)
+	if !sameSmartIngressDesired(persisted, live) {
+		return SmartIngressView{}, fmt.Errorf("Smart Ingress route %q desired state is stale; evaluate it before provider access", routeID)
+	}
+	return SmartIngressView{
+		SmartIngressPlan: persisted,
+		Usable:           persisted.State == SmartIngressReady,
+	}, nil
 }
 
 type providerPlanDigestMaterial struct {
@@ -393,12 +404,20 @@ func (s *Server) observeCloudflare(ctx context.Context, token string, view Smart
 		if live.Observed.PoolID == "" {
 			return cloudflareLiveObservation{}, errors.New("managed Cloudflare pool has no id")
 		}
+		poolEnabled := boolDefaultTrue(pool.Enabled)
+		live.Observed.PoolEnabled = &poolEnabled
 	}
 	if lb != nil {
 		live.LoadBalancerPresent = true
 		live.Observed.LoadBalancerID = strings.TrimSpace(lb.ID)
 		if live.Observed.LoadBalancerID == "" {
 			return cloudflareLiveObservation{}, errors.New("managed Cloudflare load balancer has no id")
+		}
+		if pool != nil {
+			wiringMatches := len(lb.DefaultPools) == 1 &&
+				lb.DefaultPools[0] == live.Observed.PoolID &&
+				lb.FallbackPool == live.Observed.PoolID
+			live.Observed.LoadBalancerPoolWiringMatches = &wiringMatches
 		}
 	}
 	if pool == nil || lb == nil {
@@ -467,7 +486,7 @@ func (s *Server) writeCloudflarePool(ctx context.Context, token string, desired 
 	path := "/accounts/" + url.PathEscape(desired.AccountID) + "/load_balancers/pools"
 	method := http.MethodPost
 	if poolID != "" {
-		method = http.MethodPut
+		method = http.MethodPatch
 		path += "/" + url.PathEscape(poolID)
 	}
 	var result struct {
@@ -489,7 +508,7 @@ func (s *Server) writeCloudflareLoadBalancer(ctx context.Context, token string, 
 	path := cloudflareLoadBalancerBasePath(desired.LoadBalancerScope, desired.LoadBalancerScopeID)
 	method := http.MethodPost
 	if lbID != "" {
-		method = http.MethodPut
+		method = http.MethodPatch
 		path += "/" + url.PathEscape(lbID)
 	}
 	var result struct {
@@ -522,7 +541,7 @@ func cloudflareWithdrawConverged(observed cloudflareLiveObservation) bool {
 	return observed.Observed.LoadBalancerEnabled != nil && !*observed.Observed.LoadBalancerEnabled
 }
 
-func (s *Server) executeCloudflareOperation(ctx context.Context, token string, view SmartIngressView, binding SmartIngressProviderBinding, op SmartIngressProviderOperation, observed cloudflareLiveObservation) error {
+func (s *Server) executeCloudflareOperation(ctx context.Context, token string, in SmartIngressProviderLiveRequest, view SmartIngressView, binding SmartIngressProviderBinding, digest string, op SmartIngressProviderOperation, observed cloudflareLiveObservation) error {
 	switch op.Kind {
 	case SmartIngressProviderNoop:
 		return nil
@@ -537,6 +556,15 @@ func (s *Server) executeCloudflareOperation(ctx context.Context, token string, v
 		poolID, err := s.writeCloudflarePool(ctx, token, *op.Desired, observed.Observed.PoolID)
 		if err != nil {
 			return err
+		}
+
+		// CREATE/UPDATE spans two provider writes. Re-fence against the live
+		// desired state before issuing the second write so a concurrent Smart
+		// Ingress evaluation cannot make the load-balancer write stale.
+		currentView, currentBinding, currentDigest, err := s.liveProviderPlan(in)
+		if err != nil || currentView.Generation != view.Generation ||
+			!samePlanDigest(currentDigest, digest) || currentBinding != binding {
+			return errors.New("desired state changed between provider writes")
 		}
 		return s.writeCloudflareLoadBalancer(ctx, token, *op.Desired, observed.Observed.LoadBalancerID, poolID)
 	default:
@@ -554,6 +582,11 @@ func (s *Store) ConfirmSmartIngressApplied(routeID string, generation uint64, no
 	}
 	if p.Generation != generation {
 		return SmartIngressPlan{}, false, errors.New("Smart Ingress generation changed before provider confirmation")
+	}
+	route, exists := s.st.EXRoutes[routeID]
+	live := s.chooseSmartIngressLocked(route, exists, p, now)
+	if !sameSmartIngressDesired(p, live) {
+		return SmartIngressPlan{}, false, errors.New("Smart Ingress desired state changed before durable provider confirmation")
 	}
 	already := p.AppliedGeneration == p.Generation && p.ApplyStatus == SmartIngressApplyApplied
 	if p.State == SmartIngressReady && p.Action == SmartIngressActionPublish {
@@ -615,7 +648,7 @@ func providerOperationForLive(view SmartIngressView, binding SmartIngressProvide
 	return op
 }
 
-func (s *Server) liveProviderPlan(r *http.Request, in SmartIngressProviderLiveRequest) (SmartIngressView, SmartIngressProviderBinding, string, error) {
+func (s *Server) liveProviderPlan(in SmartIngressProviderLiveRequest) (SmartIngressView, SmartIngressProviderBinding, string, error) {
 	if strings.ToLower(strings.TrimSpace(in.Provider)) != SmartIngressProviderCloudflare {
 		return SmartIngressView{}, SmartIngressProviderBinding{}, "", errors.New("unsupported Smart Ingress provider")
 	}
@@ -647,7 +680,7 @@ func (s *Server) smartIngressProviderObserveAPI(w http.ResponseWriter, r *http.R
 		http.Error(w, "observe request must not include apply acknowledgement", http.StatusBadRequest)
 		return
 	}
-	view, binding, digest, err := s.liveProviderPlan(r, in)
+	view, binding, digest, err := s.liveProviderPlan(in)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -695,7 +728,7 @@ func (s *Server) smartIngressProviderApplyAPI(w http.ResponseWriter, r *http.Req
 		http.Error(w, "explicit apply acknowledgement is required", http.StatusBadRequest)
 		return
 	}
-	view, binding, digest, err := s.liveProviderPlan(r, in)
+	view, binding, digest, err := s.liveProviderPlan(in)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -709,7 +742,7 @@ func (s *Server) smartIngressProviderApplyAPI(w http.ResponseWriter, r *http.Req
 	routeLock.Lock()
 	defer routeLock.Unlock()
 
-	view, binding, digest, err = s.liveProviderPlan(r, in)
+	view, binding, digest, err = s.liveProviderPlan(in)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -733,6 +766,15 @@ func (s *Server) smartIngressProviderApplyAPI(w http.ResponseWriter, r *http.Req
 		}, err, http.StatusBadGateway)
 		return
 	}
+	// Provider observation can itself take long enough for the live desired
+	// state to change. Fence once more immediately before any provider write.
+	writeView, writeBinding, writeDigest, err := s.liveProviderPlan(in)
+	if err != nil || writeView.Generation != view.Generation ||
+		!samePlanDigest(writeDigest, digest) || writeBinding != binding {
+		http.Error(w, "desired state changed during provider observation", http.StatusConflict)
+		return
+	}
+
 	op := providerOperationForLive(view, binding, observed)
 	if op.Kind == SmartIngressProviderBlocked {
 		http.Error(w, "provider reconciliation is blocked: "+op.Reason, http.StatusConflict)
@@ -745,7 +787,7 @@ func (s *Server) smartIngressProviderApplyAPI(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	writeErr := s.executeCloudflareOperation(ctx, token, view, binding, op, observed)
+	writeErr := s.executeCloudflareOperation(ctx, token, in, view, binding, digest, op, observed)
 	post, observeErr := s.observeCloudflare(ctx, token, view, binding)
 	converged := false
 	if observeErr == nil {
@@ -771,7 +813,7 @@ func (s *Server) smartIngressProviderApplyAPI(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	currentView, currentBinding, currentDigest, err := s.liveProviderPlan(r, in)
+	currentView, currentBinding, currentDigest, err := s.liveProviderPlan(in)
 	if err != nil || currentView.Generation != view.Generation || !samePlanDigest(currentDigest, digest) ||
 		currentBinding != binding {
 		http.Error(w, "desired state changed after provider write; applied generation was not advanced", http.StatusConflict)

@@ -23,6 +23,8 @@ type cloudflareFakeTransport struct {
 	writes          int
 	failBeforeWrite bool
 	failAfterWrite  bool
+	afterRead       func()
+	afterWrite      func()
 }
 
 func boolPtr(v bool) *bool { return &v }
@@ -68,7 +70,7 @@ func (f *cloudflareFakeTransport) RoundTrip(req *http.Request) (*http.Response, 
 		in.ID = "pool-1"
 		f.pool = &in
 		result = in
-	case method == http.MethodPut && strings.Contains(path, "/load_balancers/pools/"):
+	case method == http.MethodPatch && strings.Contains(path, "/load_balancers/pools/"):
 		if f.pool == nil {
 			return f.response(req, http.StatusNotFound, false, map[string]any{}), nil
 		}
@@ -87,33 +89,48 @@ func (f *cloudflareFakeTransport) RoundTrip(req *http.Request) (*http.Response, 
 		in.ID = "lb-1"
 		f.lb = &in
 		result = in
-	case method == http.MethodPut && strings.Contains(path, "/load_balancers/"):
-		if f.lb == nil {
-			return f.response(req, http.StatusNotFound, false, map[string]any{}), nil
-		}
-		var in cloudflareLoadBalancer
-		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-			return nil, err
-		}
-		in.ID = f.lb.ID
-		f.lb = &in
-		result = in
 	case method == http.MethodPatch && strings.Contains(path, "/load_balancers/"):
 		if f.lb == nil {
 			return f.response(req, http.StatusNotFound, false, map[string]any{}), nil
 		}
 		var in struct {
-			Enabled *bool `json:"enabled"`
+			Name         *string   `json:"name"`
+			Description  *string   `json:"description"`
+			Enabled      *bool     `json:"enabled"`
+			DefaultPools *[]string `json:"default_pools"`
+			FallbackPool *string   `json:"fallback_pool"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			return nil, err
 		}
+		if in.Name != nil {
+			f.lb.Name = *in.Name
+		}
+		if in.Description != nil {
+			f.lb.Description = *in.Description
+		}
 		if in.Enabled != nil {
 			f.lb.Enabled = in.Enabled
+		}
+		if in.DefaultPools != nil {
+			f.lb.DefaultPools = append([]string(nil), (*in.DefaultPools)...)
+		}
+		if in.FallbackPool != nil {
+			f.lb.FallbackPool = *in.FallbackPool
 		}
 		result = *f.lb
 	default:
 		return f.response(req, http.StatusNotFound, false, map[string]any{}), nil
+	}
+	if method == http.MethodGet && f.afterRead != nil {
+		hook := f.afterRead
+		f.afterRead = nil
+		hook()
+	}
+	if method != http.MethodGet && f.afterWrite != nil {
+		hook := f.afterWrite
+		f.afterWrite = nil
+		hook()
 	}
 	if method != http.MethodGet && f.failAfterWrite {
 		f.failAfterWrite = false
@@ -248,6 +265,7 @@ func TestSmartIngressLiveDisabledMakesZeroProviderRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	app.now = func() time.Time { return now.Add(20 * time.Second) }
 	fake := &cloudflareFakeTransport{token: "unused"}
 	app.smartIngressHTTPClient = &http.Client{Transport: fake}
 	code, _ := liveProviderObserve(t, app, binding)
@@ -557,5 +575,210 @@ func TestSmartIngressConcurrentApplyHasOneProviderWriter(t *testing.T) {
 	_, writes := fake.counts()
 	if writes != 2 {
 		t.Fatalf("concurrent apply provider writes=%d want exactly one pool+LB writer", writes)
+	}
+}
+
+func disableSmartIngressIRForTest(store *Store, irNode string) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	member := store.st.IRPool[irNode]
+	member.Enabled = false
+	store.st.IRPool[irNode] = member
+}
+
+func TestSmartIngressStaleDesiredBlocksProviderBeforeNetwork(t *testing.T) {
+	store, app, view, binding, fake := setupLiveProvider(t)
+	if len(view.Endpoints) == 0 {
+		t.Fatal("ready Smart Ingress view has no endpoints")
+	}
+	disableSmartIngressIRForTest(store, view.Endpoints[0].IRNode)
+
+	code, _ := liveProviderObserve(t, app, binding)
+	if code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 for stale desired state", code)
+	}
+	if requests, writes := fake.counts(); requests != 0 || writes != 0 {
+		t.Fatalf("stale desired state reached provider: requests=%d writes=%d", requests, writes)
+	}
+}
+
+func TestSmartIngressStaleWithdrawBlocksProviderBeforeNetwork(t *testing.T) {
+	store, app, view, binding, fake := setupLiveProvider(t)
+
+	store.mu.Lock()
+	route := store.st.EXRoutes[view.RouteID]
+	route.Enabled = false
+	store.st.EXRoutes[view.RouteID] = route
+	store.mu.Unlock()
+	if _, err := store.EvaluateSmartIngress(app.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	store.mu.Lock()
+	route = store.st.EXRoutes[view.RouteID]
+	route.Enabled = true
+	store.st.EXRoutes[view.RouteID] = route
+	store.mu.Unlock()
+
+	code, _ := liveProviderObserve(t, app, binding)
+	if code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 for stale withdraw", code)
+	}
+	if requests, writes := fake.counts(); requests != 0 || writes != 0 {
+		t.Fatalf("stale withdraw reached provider: requests=%d writes=%d", requests, writes)
+	}
+}
+
+func TestSmartIngressDesiredChangeBetweenProviderWritesStopsSecondWrite(t *testing.T) {
+	store, app, view, binding, fake := setupLiveProvider(t)
+	desired := desiredCloudflareForTest(t, view, binding)
+	installFakeObserved(t, fake, desired, true)
+
+	code, observed := liveProviderObserve(t, app, binding)
+	if code != http.StatusOK {
+		t.Fatalf("observe status=%d want 200", code)
+	}
+	if observed.Operation.Kind != SmartIngressProviderUpdate {
+		t.Fatalf("operation=%s want UPDATE", observed.Operation.Kind)
+	}
+	if len(view.Endpoints) == 0 {
+		t.Fatal("ready Smart Ingress view has no endpoints")
+	}
+
+	fake.afterWrite = func() {
+		disableSmartIngressIRForTest(store, view.Endpoints[0].IRNode)
+	}
+	code, _, body := liveProviderApply(t, app, binding, SmartIngressProviderApplyAck{
+		RouteID: view.RouteID, Generation: view.Generation, PlanDigest: observed.PlanDigest,
+	})
+	if code != http.StatusConflict {
+		t.Fatalf("apply status=%d want 409 after desired state changed between writes; body=%s", code, body)
+	}
+	_, writes := fake.counts()
+	if writes != 1 {
+		t.Fatalf("provider writes=%d want exactly 1; second stale write must be fenced", writes)
+	}
+
+	store.mu.Lock()
+	applied := store.st.SmartIngressPlans[view.RouteID]
+	store.mu.Unlock()
+	if applied.AppliedGeneration != 0 || applied.ApplyStatus == SmartIngressApplyApplied {
+		t.Fatalf("stale multi-write apply advanced durable state: %+v", applied)
+	}
+}
+
+func TestConfirmSmartIngressAppliedRejectsStaleLiveDesired(t *testing.T) {
+	store, app, view, _, _ := setupLiveProvider(t)
+	if len(view.Endpoints) == 0 {
+		t.Fatal("ready Smart Ingress view has no endpoints")
+	}
+	disableSmartIngressIRForTest(store, view.Endpoints[0].IRNode)
+
+	_, changed, err := store.ConfirmSmartIngressApplied(view.RouteID, view.Generation, app.now(), AuditEntry{
+		Actor:   "admin",
+		Details: map[string]any{"provider": SmartIngressProviderCloudflare},
+	})
+	if err == nil {
+		t.Fatal("stale live desired state was durably confirmed")
+	}
+	if changed {
+		t.Fatal("stale live desired state reported a durable change")
+	}
+
+	store.mu.Lock()
+	applied := store.st.SmartIngressPlans[view.RouteID]
+	store.mu.Unlock()
+	if applied.AppliedGeneration != 0 || applied.ApplyStatus == SmartIngressApplyApplied {
+		t.Fatalf("stale durable confirmation advanced applied state: %+v", applied)
+	}
+}
+
+func TestSmartIngressLiveDisabledPoolIsUpdateNotNoop(t *testing.T) {
+	_, app, view, binding, fake := setupLiveProvider(t)
+	desired := desiredCloudflareForTest(t, view, binding)
+	installFakeObserved(t, fake, desired, false)
+	fake.pool.Enabled = boolPtr(false)
+
+	code, observed := liveProviderObserve(t, app, binding)
+	if code != http.StatusOK {
+		t.Fatalf("observe status=%d want 200", code)
+	}
+	if observed.Operation.Kind != SmartIngressProviderUpdate {
+		t.Fatalf("operation=%s want UPDATE for disabled pool", observed.Operation.Kind)
+	}
+	code, applied, body := liveProviderApply(t, app, binding, SmartIngressProviderApplyAck{
+		RouteID: view.RouteID, Generation: view.Generation, PlanDigest: observed.PlanDigest,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("apply status=%d body=%s", code, body)
+	}
+	if !applied.Confirmed {
+		t.Fatal("disabled pool repair was not confirmed")
+	}
+	if fake.pool == nil || !boolDefaultTrue(fake.pool.Enabled) {
+		t.Fatal("provider pool remained disabled after confirmed apply")
+	}
+}
+
+func TestSmartIngressLiveWrongPoolWiringIsUpdateNotNoop(t *testing.T) {
+	_, app, view, binding, fake := setupLiveProvider(t)
+	desired := desiredCloudflareForTest(t, view, binding)
+	installFakeObserved(t, fake, desired, false)
+	fake.lb.DefaultPools = []string{"wrong-pool"}
+	fake.lb.FallbackPool = "wrong-pool"
+
+	code, observed := liveProviderObserve(t, app, binding)
+	if code != http.StatusOK {
+		t.Fatalf("observe status=%d want 200", code)
+	}
+	if observed.Operation.Kind != SmartIngressProviderUpdate {
+		t.Fatalf("operation=%s want UPDATE for wrong pool wiring", observed.Operation.Kind)
+	}
+	code, applied, body := liveProviderApply(t, app, binding, SmartIngressProviderApplyAck{
+		RouteID: view.RouteID, Generation: view.Generation, PlanDigest: observed.PlanDigest,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("apply status=%d body=%s", code, body)
+	}
+	if !applied.Confirmed {
+		t.Fatal("load balancer pool wiring repair was not confirmed")
+	}
+	if fake.lb == nil || len(fake.lb.DefaultPools) != 1 || fake.lb.DefaultPools[0] != "pool-1" || fake.lb.FallbackPool != "pool-1" {
+		t.Fatalf("provider load balancer wiring not repaired: %+v", fake.lb)
+	}
+}
+
+func TestSmartIngressDesiredChangeDuringProviderObserveMakesZeroWrites(t *testing.T) {
+	store, app, view, binding, fake := setupLiveProvider(t)
+	desired := desiredCloudflareForTest(t, view, binding)
+	installFakeObserved(t, fake, desired, true)
+
+	code, observed := liveProviderObserve(t, app, binding)
+	if code != http.StatusOK {
+		t.Fatalf("observe status=%d want 200", code)
+	}
+	if len(view.Endpoints) == 0 {
+		t.Fatal("ready Smart Ingress view has no endpoints")
+	}
+
+	fake.afterRead = func() {
+		disableSmartIngressIRForTest(store, view.Endpoints[0].IRNode)
+	}
+	code, _, body := liveProviderApply(t, app, binding, SmartIngressProviderApplyAck{
+		RouteID: view.RouteID, Generation: view.Generation, PlanDigest: observed.PlanDigest,
+	})
+	if code != http.StatusConflict {
+		t.Fatalf("apply status=%d want 409 after desired changed during observe; body=%s", code, body)
+	}
+	_, writes := fake.counts()
+	if writes != 0 {
+		t.Fatalf("provider writes=%d want 0 when desired changed during provider observation", writes)
+	}
+
+	store.mu.Lock()
+	applied := store.st.SmartIngressPlans[view.RouteID]
+	store.mu.Unlock()
+	if applied.AppliedGeneration != 0 || applied.ApplyStatus == SmartIngressApplyApplied {
+		t.Fatalf("stale observe/apply advanced durable state: %+v", applied)
 	}
 }
