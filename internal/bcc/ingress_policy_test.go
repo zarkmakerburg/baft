@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zarkmakerburg/baft/internal/telemetry"
 )
 
 func ingressStore(t *testing.T, now time.Time) *Store {
@@ -53,11 +55,34 @@ func setIngressNodeHealthyLocked(s *Store, id string, now time.Time, latency, no
 	n.Health = "up"
 	n.LatencyMS = latency
 	s.st.Nodes[id] = n
+	routes := []telemetry.RouteSnapshot(nil)
+	if strings.HasPrefix(id, "ir-") {
+		routes = []telemetry.RouteSnapshot{{RouteID: "de", Status: "up", LatencyMS: latency, ProbeKind: "tcp"}}
+	}
 	s.st.Telemetry[id] = TelemetryCursor{
 		NodeID: id, LastTelemetry: now, NoiseLatencyMS: noise,
-		HandshakeErrorRateMilliMin: errRate, ActiveSessions: 1,
+		HandshakeErrorRateMilliMin: errRate, ActiveSessions: 1, Routes: routes,
 	}
 	s.st.Health[id] = NodeHealthRecord{Overall: HealthUp}
+}
+
+func setIngressRoutesLocked(s *Store, id string, routes ...telemetry.RouteSnapshot) {
+	cur := s.st.Telemetry[id]
+	cur.Routes = append([]telemetry.RouteSnapshot(nil), routes...)
+	s.st.Telemetry[id] = cur
+}
+
+func setIngressLayerHealthLocked(s *Store, id string, l4 string) {
+	s.st.Health[id] = NodeHealthRecord{
+		Overall: HealthDegraded,
+		Layers: map[string]*LayerRecord{
+			LayerL0:    {State: HealthUp},
+			LayerL1:    {State: HealthUp},
+			LayerL2:    {State: HealthUp},
+			LayerAgent: {State: HealthUp},
+			LayerL4:    {State: l4},
+		},
+	}
 }
 
 func setIngressHealthLocked(s *Store, id, health string) {
@@ -323,6 +348,15 @@ func TestIngressTwoIRFiveExplicitEXProducesFiveIndependentDecisions(t *testing.T
 		}
 		setIngressNodeHealthyLocked(s, id, now.Add(2*time.Second), latency, 5, 0)
 	}
+	allRoutes := []telemetry.RouteSnapshot{
+		{RouteID: "de", Status: "up", LatencyMS: 20, ProbeKind: "tcp"},
+		{RouteID: "nl", Status: "up", LatencyMS: 25, ProbeKind: "tcp"},
+		{RouteID: "uk", Status: "up", LatencyMS: 30, ProbeKind: "tcp"},
+		{RouteID: "us", Status: "up", LatencyMS: 80, ProbeKind: "tcp"},
+		{RouteID: "tr", Status: "up", LatencyMS: 35, ProbeKind: "tcp"},
+	}
+	setIngressRoutesLocked(s, "ir-1", allRoutes...)
+	setIngressRoutesLocked(s, "ir-2", allRoutes...)
 	if err := s.saveLocked(); err != nil {
 		s.mu.Unlock()
 		t.Fatal(err)
@@ -362,5 +396,104 @@ func TestIngressSnapshotMarksPersistedSelectionUnusableBeforeReevaluation(t *tes
 	got := oneIngress(t, s, staleAt)
 	if got.Usable {
 		t.Fatalf("stale persisted ACTIVE exposed as usable: %+v", got)
+	}
+}
+
+
+func TestIngressRouteFailureOnlyMovesAffectedRoute(t *testing.T) {
+	now := time.Unix(9500, 0).UTC()
+	s := desiredTopologyStore(t)
+	spec := TopologySpec{
+		IRMembers: []IRPoolMember{{NodeID: "ir-1", Enabled: true}, {NodeID: "ir-2", Enabled: true}},
+		EXRoutes: []ExplicitEXRoute{
+			{ID: "de", EXNode: "ex-1", Country: "DE", Enabled: true, Target: "127.0.0.1:28443"},
+			{ID: "tr", EXNode: "ex-2", Country: "TR", Enabled: true, Target: "127.0.0.1:28443"},
+		},
+	}
+	if _, err := s.SetTopologySpec(spec, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReconcileTopology(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	for id, tun := range s.st.Tunnels {
+		tun.Phase = TunnelActive
+		s.st.Tunnels[id] = tun
+	}
+	for _, id := range []string{"ir-1", "ir-2", "ex-1", "ex-2"} {
+		setIngressNodeHealthyLocked(s, id, now.Add(2*time.Second), 30, 5, 0)
+	}
+	setIngressRoutesLocked(s, "ir-1",
+		telemetry.RouteSnapshot{RouteID: "de", Status: "up", LatencyMS: 10, ProbeKind: "tcp"},
+		telemetry.RouteSnapshot{RouteID: "tr", Status: "up", LatencyMS: 10, ProbeKind: "tcp"},
+	)
+	setIngressRoutesLocked(s, "ir-2",
+		telemetry.RouteSnapshot{RouteID: "de", Status: "up", LatencyMS: 60, ProbeKind: "tcp"},
+		telemetry.RouteSnapshot{RouteID: "tr", Status: "up", LatencyMS: 60, ProbeKind: "tcp"},
+	)
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+
+	at := now.Add(10 * time.Second)
+	if _, err := s.EvaluateIngress(at, DefaultIngressPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	first := s.IngressSnapshot(at)
+	if len(first) != 2 {
+		t.Fatalf("initial decisions=%d, want 2: %+v", len(first), first)
+	}
+	for _, d := range first {
+		if d.ActiveIR != "ir-1" || !d.Usable {
+			t.Fatalf("initial route %s: %+v", d.RouteID, d)
+		}
+	}
+
+	s.mu.Lock()
+	setIngressRoutesLocked(s, "ir-1",
+		telemetry.RouteSnapshot{RouteID: "de", Status: "up", LatencyMS: 10, ProbeKind: "tcp"},
+		telemetry.RouteSnapshot{RouteID: "tr", Status: "down", LatencyMS: 0, ProbeKind: "tcp"},
+	)
+	// The aggregate L4 layer is degraded because TR is down. DE must still be
+	// allowed to use the same IR because its own route-specific proof is UP.
+	setIngressLayerHealthLocked(s, "ir-1", HealthDown)
+	s.mu.Unlock()
+
+	events, err := s.EvaluateIngress(at.Add(time.Second), DefaultIngressPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].RouteID != "tr" || events[0].FromIR != "ir-1" || events[0].ToIR != "ir-2" {
+		t.Fatalf("route-specific failover events: %+v", events)
+	}
+	got := s.IngressSnapshot(at.Add(time.Second))
+	byRoute := map[string]IngressDecision{}
+	for _, d := range got {
+		byRoute[d.RouteID] = d
+	}
+	if byRoute["de"].ActiveIR != "ir-1" || !byRoute["de"].Usable {
+		t.Fatalf("unrelated DE route moved or became unusable: %+v", byRoute["de"])
+	}
+	if byRoute["tr"].ActiveIR != "ir-2" || !byRoute["tr"].Usable {
+		t.Fatalf("failed TR route did not move to standby: %+v", byRoute["tr"])
+	}
+}
+
+func TestIngressMissingRouteSpecificTelemetryIsIneligible(t *testing.T) {
+	now := time.Unix(9600, 0).UTC()
+	s := ingressStore(t, now)
+	at := now.Add(10 * time.Second)
+	s.mu.Lock()
+	setIngressRoutesLocked(s, "ir-1")
+	s.mu.Unlock()
+	if _, err := s.EvaluateIngress(at, DefaultIngressPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	got := oneIngress(t, s, at)
+	if got.ActiveIR != "ir-2" {
+		t.Fatalf("candidate without route-specific proof won: %+v", got)
 	}
 }
