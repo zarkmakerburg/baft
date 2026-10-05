@@ -684,3 +684,39 @@ func TestRotationRefusesWhatItDoesNotOwn(t *testing.T) {
 		}
 	})
 }
+
+func TestCertEpochStrictFailsClosedAgainstRetiredHistory(t *testing.T) {
+	m := &Manager{Env: Env{StateDir: t.TempDir()}}
+	if got, err := m.certEpochStrict(); err != nil || got != 0 {
+		t.Fatalf("fresh epoch = %d, %v; want 0, nil", got, err)
+	}
+	dir := m.rotDir("r1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := []byte(`{"version":1,"id":"r1","tunnel_id":"t1","role":"ex","epoch":3,"phase":"retired"}`)
+	if err := os.WriteFile(m.rotPath("r1"), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.certEpochStrict(); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing epoch with retired history = %v; want fail-closed", err)
+	}
+	if err := os.WriteFile(m.rotEpochPath(), []byte("corrupt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.certEpochStrict(); err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("corrupt epoch = %v; want fail-closed", err)
+	}
+	if err := os.WriteFile(m.rotEpochPath(), []byte("2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.certEpochStrict(); err == nil || !strings.Contains(err.Error(), "behind") {
+		t.Fatalf("stale epoch = %v; want fail-closed", err)
+	}
+	if err := os.WriteFile(m.rotEpochPath(), []byte("3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.certEpochStrict(); err != nil || got != 3 {
+		t.Fatalf("matching epoch = %d, %v; want 3, nil", got, err)
+	}
+}

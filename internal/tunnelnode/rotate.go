@@ -199,21 +199,81 @@ func (m *Manager) rotationInProgress() string {
 	return id
 }
 
-func (m *Manager) clearRotActive(rid string) {
-	if m.rotActiveID() == rid {
-		_ = os.Remove(m.rotActivePath())
+func (m *Manager) clearRotActive(rid string) error {
+	if m.rotActiveID() != rid {
+		return nil
 	}
+	return removeDurable(m.rotActivePath())
 }
 
-// CertEpoch is the node's certificate generation: the epoch of the last
-// rotation that retired its old material (0 before any rotation).
-func (m *Manager) CertEpoch() int {
+func (m *Manager) readCertEpoch() (int, error) {
 	b, err := os.ReadFile(m.rotEpochPath())
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil || n < 0 {
+		return 0, errors.New("certificate epoch is corrupt")
+	}
+	return n, nil
+}
+
+func (m *Manager) retiredHistoryEpoch() (int, bool, error) {
+	entries, err := os.ReadDir(m.rotRoot())
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	maxEpoch, found := 0, false
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		r, err := m.readRot(entry.Name())
+		if err != nil {
+			return 0, false, err
+		}
+		if r.Phase == RotRetired {
+			if r.Epoch < 0 {
+				return 0, false, fmt.Errorf("rotation %s has invalid retired epoch %d", r.ID, r.Epoch)
+			}
+			if !found || r.Epoch > maxEpoch {
+				maxEpoch = r.Epoch
+			}
+			found = true
+		}
+	}
+	return maxEpoch, found, nil
+}
+
+func (m *Manager) certEpochStrict() (int, error) {
+	historyEpoch, hasRetired, err := m.retiredHistoryEpoch()
+	if err != nil {
+		return 0, fmt.Errorf("certificate rotation history: %w", err)
+	}
+	n, err := m.readCertEpoch()
+	if errors.Is(err, os.ErrNotExist) {
+		if hasRetired {
+			return 0, fmt.Errorf("certificate epoch is missing but retired history reaches epoch %d", historyEpoch)
+		}
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if hasRetired && n < historyEpoch {
+		return 0, fmt.Errorf("certificate epoch %d is behind retired history epoch %d", n, historyEpoch)
+	}
+	return n, nil
+}
+
+// CertEpoch is report-only. Security decisions use certEpochStrict so
+// missing/corrupt state can never silently weaken the anti-replay fence.
+func (m *Manager) CertEpoch() int {
+	n, err := m.readCertEpoch()
+	if err != nil {
 		return 0
 	}
 	return n
@@ -295,8 +355,12 @@ func (m *Manager) beginRotation(rid, tunnelID, role string, epoch int) (config.C
 	if cur := m.rotationInProgress(); cur != "" && cur != rid {
 		return config.Config{}, fmt.Errorf("rotation %s is still in progress on this node", cur)
 	}
-	if epoch <= m.CertEpoch() {
-		return config.Config{}, fmt.Errorf("rotation epoch %d is not newer than this node's certificate epoch %d", epoch, m.CertEpoch())
+	nodeEpoch, err := m.certEpochStrict()
+	if err != nil {
+		return config.Config{}, fmt.Errorf("certificate epoch state is unsafe: %w", err)
+	}
+	if epoch <= nodeEpoch {
+		return config.Config{}, fmt.Errorf("rotation epoch %d is not newer than this node's certificate epoch %d", epoch, nodeEpoch)
 	}
 	return m.rotationTarget(tunnelID, role)
 }
@@ -445,15 +509,37 @@ func sameDigests(a, b map[string]string) bool {
 
 // securePKI applies the modes and owners ensurePKI uses.
 func (m *Manager) securePKI(dir string) error {
-	_ = os.Chmod(dir, 0o750)
-	_ = os.Chmod(filepath.Join(dir, "ca.key"), 0o600)
-	_ = os.Chmod(filepath.Join(dir, "server.key"), 0o600)
-	_ = os.Chmod(filepath.Join(dir, "ca.pem"), 0o644)
-	_ = os.Chmod(filepath.Join(dir, "server.pem"), 0o644)
+	modes := map[string]os.FileMode{
+		dir:                              0o750,
+		filepath.Join(dir, "ca.key"):     0o600,
+		filepath.Join(dir, "server.key"): 0o600,
+		filepath.Join(dir, "ca.pem"):     0o644,
+		filepath.Join(dir, "server.pem"): 0o644,
+	}
+	for path, mode := range modes {
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+	}
 	if err := m.chownTo(filepath.Join(dir, "server.key"), m.User, m.User); err != nil {
 		return err
 	}
-	return m.chownTo(dir, "root", m.User)
+	if err := m.chownTo(dir, "root", m.User); err != nil {
+		return err
+	}
+	for path, mode := range modes {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if fi.Mode().Perm() != mode {
+			return fmt.Errorf("%s mode is %o, want %o", path, fi.Mode().Perm(), mode)
+		}
+		if err := syncPath(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeLike replaces path atomically, keeping its mode and owner.
@@ -466,9 +552,11 @@ func writeLike(path string, b []byte) error {
 		return err
 	}
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		_ = os.Chown(path, int(st.Uid), int(st.Gid))
+		if err := os.Chown(path, int(st.Uid), int(st.Gid)); err != nil {
+			return err
+		}
 	}
-	return nil
+	return syncPath(path)
 }
 
 // waitSettled waits, for a bounded time, until the service is active and
@@ -760,8 +848,12 @@ func (m *Manager) irRestoreOld(ctx context.Context, cfg config.Config, r *Rotati
 		return fmt.Errorf("%s; restoring the previous CA file failed: %v", reason, err)
 	}
 	r.Phase = RotRolledBack
-	_ = m.writeRot(r)
-	m.clearRotActive(r.ID)
+	if err := m.writeRot(r); err != nil {
+		return fmt.Errorf("%s; previous CA was restored but rollback state was not persisted: %v", reason, err)
+	}
+	if err := m.clearRotActive(r.ID); err != nil {
+		return fmt.Errorf("%s; previous CA was restored but active rotation marker was not durably cleared: %v", reason, err)
+	}
 	return fmt.Errorf("%s; the previous CA file was restored", reason)
 }
 
@@ -951,7 +1043,7 @@ func (m *Manager) RotateActivateEX(ctx context.Context, rid string) (string, err
 		return "", errors.New("the live certificates changed outside BAFT; nothing was changed")
 	}
 	if _, err := os.Stat(m.pkiPrev(rid)); errors.Is(err, os.ErrNotExist) {
-		if err := os.Rename(m.pkiNext(rid), m.pkiPrev(rid)); err != nil {
+		if err := renameDurable(m.pkiNext(rid), m.pkiPrev(rid)); err != nil {
 			return "", err
 		}
 	}
@@ -987,7 +1079,7 @@ func (m *Manager) RotateActivateEX(ctx context.Context, rid string) (string, err
 func (m *Manager) exUndoActivate(ctx context.Context, cfg config.Config, r *Rotation, reason string) error {
 	err := exchangeDirs(m.pkiDir(), m.pkiPrev(r.ID))
 	if err == nil {
-		err = os.Rename(m.pkiPrev(r.ID), m.pkiNext(r.ID))
+		err = renameDurable(m.pkiPrev(r.ID), m.pkiNext(r.ID))
 	}
 	if err == nil {
 		err = m.restartService(ctx)
@@ -996,7 +1088,9 @@ func (m *Manager) exUndoActivate(ctx context.Context, cfg config.Config, r *Rota
 		return fmt.Errorf("%s; restoring the previous certificate failed: %v", reason, err)
 	}
 	r.Phase = RotStaged
-	_ = m.writeRot(r)
+	if err := m.writeRot(r); err != nil {
+		return fmt.Errorf("%s; previous certificate restored but staged state was not persisted: %v", reason, err)
+	}
 	return fmt.Errorf("%s; the previous certificate was restored", reason)
 }
 
@@ -1153,14 +1247,22 @@ func (m *Manager) RotateRetireIR(ctx context.Context, rid string) (string, error
 		_ = m.writeRot(&r)
 		return "", fmt.Errorf("retire failed: %v; old + new trust was restored", err)
 	}
+	if err := writeFile(m.rotEpochPath(), []byte(strconv.Itoa(r.Epoch)+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("persisting certificate epoch: %w", err)
+	}
+	if err := removeAllDurable(filepath.Join(m.rotDir(rid), "backup")); err != nil {
+		return "", fmt.Errorf("durably removing rotation backup: %w", err)
+	}
+	if err := removeDurable(filepath.Join(m.rotDir(rid), "bundle.pem")); err != nil {
+		return "", fmt.Errorf("durably removing retired CA bundle: %w", err)
+	}
 	r.Phase, r.Retired = RotRetired, m.Now().UTC()
 	if err := m.writeRot(&r); err != nil {
 		return "", err
 	}
-	_ = writeFile(m.rotEpochPath(), []byte(strconv.Itoa(r.Epoch)+"\n"), 0o600)
-	_ = os.RemoveAll(filepath.Join(m.rotDir(rid), "backup"))
-	_ = os.Remove(filepath.Join(m.rotDir(rid), "bundle.pem"))
-	m.clearRotActive(rid)
+	if err := m.clearRotActive(rid); err != nil {
+		return "", err
+	}
 	return m.irEvidence(ctx, cfg, r, "retire", "trusts the new CA only")
 }
 
@@ -1191,16 +1293,20 @@ func (m *Manager) RotateRetireEX(ctx context.Context, rid string) (string, error
 		return "", err
 	}
 	for _, d := range []string{m.pkiPrev(rid), m.pkiNext(rid)} {
-		if err := os.RemoveAll(d); err != nil {
+		if err := removeAllDurable(d); err != nil {
 			return "", err
 		}
+	}
+	if err := writeFile(m.rotEpochPath(), []byte(strconv.Itoa(r.Epoch)+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("persisting certificate epoch: %w", err)
 	}
 	r.Phase, r.Retired = RotRetired, m.Now().UTC()
 	if err := m.writeRot(&r); err != nil {
 		return "", err
 	}
-	_ = writeFile(m.rotEpochPath(), []byte(strconv.Itoa(r.Epoch)+"\n"), 0o600)
-	m.clearRotActive(rid)
+	if err := m.clearRotActive(rid); err != nil {
+		return "", err
+	}
 	return m.exEvidence(ctx, cfg, r, "retire", "the old certificate set was destroyed")
 }
 
@@ -1285,13 +1391,17 @@ func (m *Manager) exRollback(ctx context.Context, cfg config.Config, r Rotation)
 	}
 	// Both names carry this rotation's id; the live set is in pki.
 	for _, d := range []string{m.pkiPrev(r.ID), m.pkiNext(r.ID)} {
-		_ = os.RemoveAll(d)
+		if err := removeAllDurable(d); err != nil {
+			return "", err
+		}
 	}
 	r.Phase = RotRolledBack
 	if err := m.writeRot(&r); err != nil {
 		return "", err
 	}
-	m.clearRotActive(r.ID)
+	if err := m.clearRotActive(r.ID); err != nil {
+		return "", err
+	}
 	return "rolled back: serving the previous certificate", nil
 }
 
@@ -1366,7 +1476,9 @@ func (m *Manager) irRollback(ctx context.Context, cfg config.Config, r Rotation,
 	if err := m.writeRot(&r); err != nil {
 		return "", err
 	}
-	m.clearRotActive(r.ID)
+	if err := m.clearRotActive(r.ID); err != nil {
+		return "", err
+	}
 	return "rolled back: trusts the previous CA only", nil
 }
 

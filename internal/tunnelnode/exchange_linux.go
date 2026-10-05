@@ -8,5 +8,8 @@ import "golang.org/x/sys/unix"
 // RENAME_EXCHANGE): at every instant each name holds one complete tree, so
 // a crash can never leave the service with half of a certificate set.
 func exchangeDirs(a, b string) error {
-	return unix.Renameat2(unix.AT_FDCWD, a, unix.AT_FDCWD, b, unix.RENAME_EXCHANGE)
+	if err := unix.Renameat2(unix.AT_FDCWD, a, unix.AT_FDCWD, b, unix.RENAME_EXCHANGE); err != nil {
+		return err
+	}
+	return syncParentDirs(a, b)
 }
