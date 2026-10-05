@@ -1,7 +1,7 @@
 package bcc
 
 import (
-	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"time"
@@ -179,7 +179,11 @@ func (s *Store) chooseDistributionLocked(route ExplicitEXRoute, old IngressDistr
 		d.TrafficKbps = s.recentTrafficKbpsLocked(c.IRNode, now, p.LoadWindow)
 		if c.Eligible {
 			loadPenalty := int64(100)
-			loadPenalty += min64(int64(d.ActiveSessions)*5, 500)
+			sessionPenalty := int64(500)
+			if d.ActiveSessions < 100 {
+				sessionPenalty = int64(d.ActiveSessions) * 5
+			}
+			loadPenalty += sessionPenalty
 			loadPenalty += min64((d.TrafficKbps/1000)*4, 600)
 			d.RawScore = int64(d.CapacityWeight) * int64(maxInt(c.Score, 1)) * 100 / loadPenalty
 			if d.RawScore < 1 {
@@ -305,7 +309,14 @@ func (s *Store) recentTrafficKbpsLocked(node string, now time.Time, window time.
 	if seconds <= 0 {
 		return 0
 	}
-	return int64((float64(delta) * 8 / 1000) / seconds)
+	kbps := (float64(delta) * 8 / 1000) / seconds
+	if kbps >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	if kbps <= 0 {
+		return 0
+	}
+	return int64(kbps)
 }
 
 func cloneIngressDistributions(in map[string]IngressDistribution) map[string]IngressDistribution {
@@ -443,5 +454,3 @@ func (s *Server) distributionEvaluateAPI(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, s.store.DistributionSnapshot(s.now()))
 }
 
-// keep fmt referenced for stable gofmt/import grouping when this file grows
-var _ = fmt.Sprintf
