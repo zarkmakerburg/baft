@@ -188,6 +188,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/tunnels/rotate-cert",s.certRotationStart)
 	m.HandleFunc("/api/topology",s.topologyAPI)
 	m.HandleFunc("/api/topology/reconcile",s.topologyReconcileAPI)
+	m.HandleFunc("/api/ingress",s.ingressAPI)
+	m.HandleFunc("/api/ingress/evaluate",s.ingressEvaluateAPI)
 	m.HandleFunc("/api/cert-rotations",s.certRotations)
 	m.HandleFunc("/api/cert-rotations/cancel",s.certRotationCancel)
 	m.HandleFunc("/api/bootstrap/hostkey",s.bootstrapHostKey)
