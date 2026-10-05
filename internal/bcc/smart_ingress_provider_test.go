@@ -395,6 +395,7 @@ func TestSmartIngressProviderDryRunAPIAdminOnlyNoNetworkNoApplyMutation(t *testi
 		t.Fatal(err)
 	}
 	app.now = func() time.Time { return at }
+	app.httpClient = &http.Client{Transport: denyOutboundRoundTripper{}}
 
 	oldTransport, oldClient := http.DefaultTransport, http.DefaultClient
 	http.DefaultTransport = denyOutboundRoundTripper{}
