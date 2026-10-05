@@ -292,6 +292,19 @@ func (s *Server) evaluateHealthAt(now time.Time) {
 			},
 		})
 	}
+	distEvents, err := s.store.EvaluateDistributions(now, DefaultDistributionPolicy())
+	if err != nil {
+		return
+	}
+	for _, e := range distEvents {
+		_, _ = s.audit.Append(AuditEntry{
+			Timestamp: now.UTC(), Actor: "bcc", Action: "ingress.distribution", Target: e.RouteID, Outcome: "success",
+			Details: map[string]any{
+				"ex_node": e.EXNode, "from_state": e.FromState, "to_state": e.ToState,
+				"from": e.From, "to": e.To, "generation": e.Generation, "reason": e.Reason,
+			},
+		})
+	}
 }
 
 // healthAPI: GET /api/health[?node=ID[&all=1]], admin only, read only.

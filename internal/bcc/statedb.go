@@ -56,11 +56,13 @@ var stateMigrations = []string{
 	`CREATE TABLE topology (kind TEXT NOT NULL, id TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (kind, id));`,
 	// 7: durable IR active/standby decisions per explicit EX route (M-015).
 	`CREATE TABLE ingress_selections (route_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
+	// 8: durable weighted IR distributions per explicit EX route (M-016).
+	`CREATE TABLE ingress_distributions (route_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "topology", "ingress_selections",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "topology", "ingress_selections", "ingress_distributions",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -210,6 +212,7 @@ func writeStateTx(tx *sql.Tx, st state) error {
 	for id, v := range st.EXRoutes { if err := put(`INSERT INTO topology VALUES (?, ?, ?)`, "route", id, v); err != nil { return err } }
 	for id, v := range st.TopologyBindings { if err := put(`INSERT INTO topology VALUES (?, ?, ?)`, "binding", id, v); err != nil { return err } }
 	for id, v := range st.IngressSelections { if err := put(`INSERT INTO ingress_selections VALUES (?, ?)`, id, v); err != nil { return err } }
+	for id, v := range st.IngressDistributions { if err := put(`INSERT INTO ingress_distributions VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.Finance {
 		if err := put(`INSERT INTO finance VALUES (?, ?)`, id, v); err != nil {
 			return err
@@ -398,6 +401,12 @@ func readStateDB(path string) (state, error) {
 			var v IngressSelection
 			err := decode("ingress_selections", d, &v)
 			st.IngressSelections[k] = v
+			return err
+		}},
+		{`SELECT route_id, 0, doc FROM ingress_distributions`, func(k string, _ int64, d []byte) error {
+			var v IngressDistribution
+			err := decode("ingress_distributions", d, &v)
+			st.IngressDistributions[k] = v
 			return err
 		}},
 		{`SELECT node_id, 0, doc FROM finance`, func(k string, _ int64, d []byte) error {

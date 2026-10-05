@@ -17,9 +17,10 @@ import (
 // IRPoolMember is one ingress node participating in the Iran HA fabric.
 // Health-based selection is intentionally deferred to M-015.
 type IRPoolMember struct {
-	NodeID    string    `json:"node_id"`
-	Enabled   bool      `json:"enabled"`
-	UpdatedAt time.Time `json:"updated_at"`
+	NodeID         string    `json:"node_id"`
+	Enabled        bool      `json:"enabled"`
+	CapacityWeight int       `json:"capacity_weight,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // ExplicitEXRoute is one user-visible egress identity. It is deliberately not
@@ -161,6 +162,12 @@ func (s *Store) SetTopologySpec(spec TopologySpec, now time.Time) (TopologyRepor
 		}
 		if n.Revoked {
 			return TopologyReport{}, fmt.Errorf("IR member %q is revoked", m.NodeID)
+		}
+		if m.CapacityWeight <= 0 {
+			m.CapacityWeight = 100
+		}
+		if m.CapacityWeight > 10000 {
+			return TopologyReport{}, fmt.Errorf("IR member %q capacity_weight exceeds 10000", m.NodeID)
 		}
 		m.UpdatedAt = now.UTC()
 		irs[m.NodeID] = m
