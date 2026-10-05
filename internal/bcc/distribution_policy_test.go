@@ -268,3 +268,38 @@ func TestDistributionSQLiteMigrationPersistence(t *testing.T) {
 		t.Fatalf("schema version=%d err=%v want=%d", v, err, len(stateMigrations))
 	}
 }
+
+
+func TestDistributionTrafficLoadUsesEWMA(t *testing.T) {
+	now := time.Unix(19000, 0).UTC()
+	s := ingressStore(t, now)
+	s.mu.Lock()
+	s.st.History["ir-1"] = []HistoryPoint{
+		{Timestamp: now.Add(-3 * time.Minute), IngressBytes: 0},
+		{Timestamp: now.Add(-2 * time.Minute), IngressBytes: 1_000_000},
+		{Timestamp: now.Add(-time.Minute), IngressBytes: 2_000_000},
+		{Timestamp: now, IngressBytes: 102_000_000},
+	}
+	got := s.recentTrafficKbpsLocked("ir-1", now, 5*time.Minute)
+	s.mu.Unlock()
+	if got <= 133 || got >= 13_333 {
+		t.Fatalf("EWMA traffic load=%d kbps; want > baseline and < latest spike", got)
+	}
+}
+
+func TestDistributionTrafficEWMAResetsAcrossCounterRollback(t *testing.T) {
+	now := time.Unix(20000, 0).UTC()
+	s := ingressStore(t, now)
+	s.mu.Lock()
+	s.st.History["ir-1"] = []HistoryPoint{
+		{Timestamp: now.Add(-3 * time.Minute), IngressBytes: 50_000_000},
+		{Timestamp: now.Add(-2 * time.Minute), IngressBytes: 60_000_000},
+		{Timestamp: now.Add(-time.Minute), IngressBytes: 1_000_000},
+		{Timestamp: now, IngressBytes: 2_000_000},
+	}
+	got := s.recentTrafficKbpsLocked("ir-1", now, 5*time.Minute)
+	s.mu.Unlock()
+	if got <= 0 || got > 2_000 {
+		t.Fatalf("counter reset produced implausible smoothed load: %d kbps", got)
+	}
+}

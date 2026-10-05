@@ -286,39 +286,56 @@ func (s *Store) recentTrafficKbpsLocked(node string, now time.Time, window time.
 		return 0
 	}
 	cut := now.Add(-window)
-	var first *HistoryPoint
-	var last *HistoryPoint
+	const alpha = 0.35
+	var prev *HistoryPoint
+	var ewma float64
+	haveSample := false
 	for i := range h {
 		p := &h[i]
 		if p.Timestamp.After(now) || p.Timestamp.Before(cut) {
 			continue
 		}
-		if first == nil {
-			first = p
+		if prev == nil {
+			prev = p
+			continue
 		}
-		last = p
+		if !p.Timestamp.After(prev.Timestamp) {
+			prev = p
+			continue
+		}
+		if p.IngressBytes < prev.IngressBytes || p.EgressBytes < prev.EgressBytes {
+			prev = p
+			continue
+		}
+		ingressDelta := p.IngressBytes - prev.IngressBytes
+		egressDelta := p.EgressBytes - prev.EgressBytes
+		seconds := p.Timestamp.Sub(prev.Timestamp).Seconds()
+		prev = p
+		if seconds <= 0 {
+			continue
+		}
+		kbps := ((float64(ingressDelta) + float64(egressDelta)) * 8 / 1000) / seconds
+		if kbps >= float64(math.MaxInt64) {
+			kbps = float64(math.MaxInt64)
+		}
+		if kbps < 0 {
+			kbps = 0
+		}
+		if !haveSample {
+			ewma = kbps
+			haveSample = true
+		} else {
+			ewma = alpha*kbps + (1-alpha)*ewma
+		}
 	}
-	if first == nil || last == nil || !last.Timestamp.After(first.Timestamp) {
+	if !haveSample || ewma <= 0 {
 		return 0
 	}
-	if last.IngressBytes < first.IngressBytes || last.EgressBytes < first.EgressBytes {
-		return 0
-	}
-	delta := (last.IngressBytes - first.IngressBytes) + (last.EgressBytes - first.EgressBytes)
-	seconds := last.Timestamp.Sub(first.Timestamp).Seconds()
-	if seconds <= 0 {
-		return 0
-	}
-	kbps := (float64(delta) * 8 / 1000) / seconds
-	if kbps >= float64(math.MaxInt64) {
+	if ewma >= float64(math.MaxInt64) {
 		return math.MaxInt64
 	}
-	if kbps <= 0 {
-		return 0
-	}
-	return int64(kbps)
+	return int64(ewma)
 }
-
 func cloneIngressDistributions(in map[string]IngressDistribution) map[string]IngressDistribution {
 	out := make(map[string]IngressDistribution, len(in))
 	for k, v := range in {
