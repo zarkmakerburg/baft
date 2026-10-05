@@ -44,6 +44,10 @@ type IngressCandidate struct {
 // evidence. StandbyIRs are ordered by current candidate score.
 type IngressDecision struct {
 	IngressSelection
+	// Usable is true only when the persisted ACTIVE selection is still backed
+	// by current healthy/fresh evidence. Consumers such as Smart Ingress must
+	// fail closed when it is false, even before the next evaluation cycle.
+	Usable     bool               `json:"usable"`
 	StandbyIRs []string           `json:"standby_irs,omitempty"`
 	Candidates []IngressCandidate `json:"candidates,omitempty"`
 }
@@ -144,8 +148,20 @@ func (s *Store) IngressSnapshot(now time.Time) []IngressDecision {
 			sel = IngressSelection{RouteID: id, EXNode: r.EXNode, State: IngressUnknown}
 		}
 		_, candidates := s.chooseIngressLocked(r, sel, now, DefaultIngressPolicy())
+		exOK, _ := s.nodeEligibleForIngressLocked(r.EXNode, now, DefaultIngressPolicy())
+		usable := sel.State == IngressReady && exOK
+		if usable {
+			usable = false
+			for _, c := range candidates {
+				if c.IRNode == sel.ActiveIR && c.Eligible {
+					usable = true
+					break
+				}
+			}
+		}
 		out = append(out, IngressDecision{
 			IngressSelection: sel,
+			Usable:           usable,
 			StandbyIRs:       standbyOrder(candidates, sel.ActiveIR),
 			Candidates:       candidates,
 		})
