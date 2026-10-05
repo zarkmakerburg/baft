@@ -17,9 +17,9 @@ func smartIngressStore(t *testing.T, now time.Time) *Store {
 	for i := range spec.IRMembers {
 		switch spec.IRMembers[i].NodeID {
 		case "ir-1":
-			spec.IRMembers[i].IngressIP = "198.51.100.101"
+			spec.IRMembers[i].IngressIP = "1.1.1.1"
 		case "ir-2":
-			spec.IRMembers[i].IngressIP = "198.51.100.102"
+			spec.IRMembers[i].IngressIP = "8.8.8.8"
 		}
 	}
 	for i := range spec.EXRoutes {
@@ -315,6 +315,16 @@ func TestSmartIngressTopologyInputsValidateButRemainOptional(t *testing.T) {
 		t.Fatal("private ingress_ip was accepted")
 	}
 	spec = desiredSpec([]string{"ir-1", "ir-2"}, "")
+	spec.IRMembers[0].IngressIP = "100.64.0.1"
+	if _, err := s.SetTopologySpec(spec, now); err == nil {
+		t.Fatal("CGNAT ingress_ip was accepted as public")
+	}
+	spec = desiredSpec([]string{"ir-1", "ir-2"}, "")
+	spec.IRMembers[0].IngressIP = "198.51.100.1"
+	if _, err := s.SetTopologySpec(spec, now); err == nil {
+		t.Fatal("documentation ingress_ip was accepted as public")
+	}
+	spec = desiredSpec([]string{"ir-1", "ir-2"}, "")
 	spec.EXRoutes[0].IngressHost = "not a hostname"
 	if _, err := s.SetTopologySpec(spec, now); err == nil {
 		t.Fatal("invalid ingress_host was accepted")
@@ -336,9 +346,9 @@ func TestSmartIngressStateDBRoundTripStandalone(t *testing.T) {
 	s.mu.Lock()
 	s.st.SmartIngressPlans["de"] = SmartIngressPlan{
 		RouteID: "de", EXNode: "ex-1", Host: "de.ingress.example.test", State: SmartIngressReady, Action: SmartIngressActionPublish,
-		Endpoints: []SmartIngressEndpoint{{IRNode: "ir-1", IP: "198.51.100.101", Weight: 100}},
+		Endpoints: []SmartIngressEndpoint{{IRNode: "ir-1", IP: "1.1.1.1", Weight: 100}},
 		DistributionGeneration: 4, Generation: 7, AppliedGeneration: 6, AppliedHost: "old.ingress.example.test",
-		AppliedEndpoints: []SmartIngressEndpoint{{IRNode: "ir-2", IP: "198.51.100.102", Weight: 100}}, ApplyStatus: SmartIngressApplyPending,
+		AppliedEndpoints: []SmartIngressEndpoint{{IRNode: "ir-2", IP: "8.8.8.8", Weight: 100}}, ApplyStatus: SmartIngressApplyPending,
 	}
 	if err := s.saveLocked(); err != nil {
 		s.mu.Unlock()
@@ -353,7 +363,7 @@ func TestSmartIngressStateDBRoundTripStandalone(t *testing.T) {
 	got := s2.st.SmartIngressPlans["de"]
 	s2.mu.Unlock()
 	if got.Generation != 7 || got.DistributionGeneration != 4 || len(got.Endpoints) != 1 ||
-		got.Endpoints[0].IP != "198.51.100.101" || got.AppliedGeneration != 6 ||
+		got.Endpoints[0].IP != "1.1.1.1" || got.AppliedGeneration != 6 ||
 		got.AppliedHost != "old.ingress.example.test" || len(got.AppliedEndpoints) != 1 {
 		t.Fatalf("standalone Smart Ingress DB round-trip mismatch: %+v", got)
 	}

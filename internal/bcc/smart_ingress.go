@@ -207,7 +207,7 @@ func (s *Store) chooseSmartIngressLocked(route ExplicitEXRoute, exists bool, old
 			return next
 		}
 		ip := net.ParseIP(member.IngressIP)
-		if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		if !isPublicIngressIP(ip) {
 			next.Reason = "eligible IR has invalid public ingress_ip"
 			return next
 		}

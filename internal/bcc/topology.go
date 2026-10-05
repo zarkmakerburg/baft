@@ -140,6 +140,42 @@ func sha256Short(v string) string {
 	return hex.EncodeToString(sum[:4])
 }
 
+func isPublicIngressIP(ip net.IP) bool {
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		// RFC 6598 shared address space, RFC 2544 benchmarking, and RFC 5737
+		// documentation ranges are not public Internet ingress addresses even
+		// though net.IP.IsGlobalUnicast reports some of them as global unicast.
+		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+			return false
+		}
+		if v4[0] == 198 && (v4[1] == 18 || v4[1] == 19) {
+			return false
+		}
+		if v4[0] == 192 && v4[1] == 0 && v4[2] == 2 {
+			return false
+		}
+		if v4[0] == 198 && v4[1] == 51 && v4[2] == 100 {
+			return false
+		}
+		if v4[0] == 203 && v4[1] == 0 && v4[2] == 113 {
+			return false
+		}
+		return true
+	}
+	v6 := ip.To16()
+	if v6 == nil {
+		return false
+	}
+	// RFC 3849 documentation prefix 2001:db8::/32.
+	if v6[0] == 0x20 && v6[1] == 0x01 && v6[2] == 0x0d && v6[3] == 0xb8 {
+		return false
+	}
+	return true
+}
+
 func (s *Store) SetTopologySpec(spec TopologySpec, now time.Time) (TopologyReport, error) {
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
@@ -174,8 +210,8 @@ func (s *Store) SetTopologySpec(spec TopologySpec, now time.Time) (TopologyRepor
 		m.IngressIP = strings.TrimSpace(m.IngressIP)
 		if m.IngressIP != "" {
 			ip := net.ParseIP(m.IngressIP)
-			if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
-				return TopologyReport{}, fmt.Errorf("IR member %q ingress_ip must be an explicit public unicast IP", m.NodeID)
+			if !isPublicIngressIP(ip) {
+				return TopologyReport{}, fmt.Errorf("IR member %q ingress_ip must be an explicit public Internet unicast IP", m.NodeID)
 			}
 			m.IngressIP = ip.String()
 		}
