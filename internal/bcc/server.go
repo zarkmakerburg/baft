@@ -71,6 +71,7 @@ type Server struct {
 	activeAlerts map[string]Alert
 	httpClient *http.Client
 	mutationMu sync.Mutex
+	securityAuditMu sync.Mutex
 	backupMu sync.Mutex
 	backupDir string
 	backupKey []byte

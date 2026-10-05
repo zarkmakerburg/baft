@@ -102,6 +102,8 @@ func (s *Store) AckSecurityAuditIntent(id string) error {
 }
 
 func (s *Server) FlushSecurityAuditIntents() error {
+	s.securityAuditMu.Lock()
+	defer s.securityAuditMu.Unlock()
 	pending := s.store.PendingSecurityAuditIntents()
 	if len(pending) == 0 {
 		return nil

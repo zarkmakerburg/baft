@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -238,6 +239,67 @@ func TestSecurityAuditRestartDoesNotDuplicateAppendBeforeAckCrashWindow(t *testi
 		t.Fatalf("intent delivered %d times, want exactly once", matches)
 	}
 	if err := restarted.audit.Verify(); err != nil {
+		t.Fatalf("audit chain verify: %v", err)
+	}
+}
+
+func TestConcurrentSecurityAuditFlushIsExactlyOnce(t *testing.T) {
+	store, _ := readyRotationStore(t)
+	app, err := NewServer(store, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Round(0)
+	store.mu.Lock()
+	intent, err := store.enqueueSecurityAuditLocked(AuditEntry{
+		Timestamp: now, Actor: "bcc", Action: "cert.rotation.complete", Target: "rot-concurrent",
+		Outcome: "success", Details: map[string]any{"detail": "concurrent drain"},
+	})
+	if err == nil {
+		err = store.saveLocked()
+	}
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 64
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- app.FlushSecurityAuditIntents()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent flush: %v", err)
+		}
+	}
+	if got := store.PendingSecurityAuditIntents(); len(got) != 0 {
+		t.Fatalf("pending after concurrent flush: %+v", got)
+	}
+	entries, err := app.audit.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matches int
+	for _, e := range entries {
+		if e.IntentID == intent.IntentID {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("intent delivered %d times under concurrent flush, want exactly once", matches)
+	}
+	if err := app.audit.Verify(); err != nil {
 		t.Fatalf("audit chain verify: %v", err)
 	}
 }
