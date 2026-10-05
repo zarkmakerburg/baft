@@ -40,7 +40,7 @@ func newPlanRig(t *testing.T) *planRig {
 	me := u.Username
 	d := t.TempDir()
 	r := &planRig{t: t, dir: d, bins: filepath.Join(d, "stubs")}
-	for _, p := range []string{"stubs", "opt", "etc", "var", "bin", "sysd", "agent", "agentstate"} {
+	for _, p := range []string{"stubs", "opt", "etc", "var", "bin", "sysd", "agent", "agentstate", "bccetc", "bccvar"} {
 		if err := os.MkdirAll(filepath.Join(d, p), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -63,6 +63,15 @@ exit 0
 		"BAFT_RELEASE_STATE="+filepath.Join(d, "opt/release-state.json"),
 		"BAFT_SYSTEMD_DIR="+filepath.Join(d, "sysd"),
 		"BAFT_AGENT_DIR="+filepath.Join(d, "agent"), "BAFT_AGENT_STATE_DIR="+filepath.Join(d, "agentstate"),
+		"BAFT_BCC_BIN="+filepath.Join(d, "bin/baft-bcc"),
+		"BAFT_BCC_CONFIG_DIR="+filepath.Join(d, "bccetc"),
+		"BAFT_BCC_STATE_DIR="+filepath.Join(d, "bccvar"),
+		"BAFT_BCC_STATE_FILE="+filepath.Join(d, "bccvar/bcc-state.json"),
+		"BAFT_BCC_ADMIN_TOKEN_FILE="+filepath.Join(d, "bccetc/admin-token"),
+		"BAFT_BCC_ACCESS_FILE="+filepath.Join(d, "bccetc/access.json"),
+		"BAFT_BCC_JOB_KEY_FILE="+filepath.Join(d, "bccetc/job-key"),
+		"BAFT_BCC_BACKUP_DIR="+filepath.Join(d, "bccvar/backups"),
+		"BAFT_BCC_SERVICE=baft-bcc",
 		"BAFT_USER="+me, "BAFT_NONINTERACTIVE=1",
 	)
 	return r

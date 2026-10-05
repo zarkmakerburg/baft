@@ -203,6 +203,29 @@ jobs:
           sudo env GITHUB_ACTIONS=true BAFT_RUN_TESTS=0 BAFT_INSTALL_FROM=source \
             BAFT_REPO_URL="file://$GITHUB_WORKSPACE" BAFT_REF="$GITHUB_SHA" tests/e2e/install_two_roles.sh
 
+  e2e-bcc-install:
+    # First-class BCC installer: signed release + source mode on a real
+    # systemd runner, secure credential handoff, and no-op rerun semantics.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+      - name: Let root clone this checkout with a blob filter
+        run: |
+          git config uploadpack.allowFilter true
+          sudo git config --system --add safe.directory '*'
+      - name: Build a signed release with throwaway keys
+        run: scripts/release/local_release.sh "$RUNNER_TEMP/rel" v0.0.1-bcc-ci
+      - name: Install BCC from release and source, verify handoff and rerun
+        run: sudo env GITHUB_ACTIONS=true "PATH=$PATH" tests/e2e/install_bcc.sh "$RUNNER_TEMP/rel"
+
   e2e-install-ssh:
     # The EX installer installs and pairs the IR over SSH (a real sshd on the
     # same runner stands in for the IR server): one command, nobody on the IR.
