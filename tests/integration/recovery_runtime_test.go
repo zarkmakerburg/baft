@@ -592,7 +592,7 @@ func TestRuntimeRecoveryRouteIdentityIsolation(t *testing.T){
 
 
 
-func waitRecoveryFaultAndSettled(t *testing.T, fired *atomic.Bool, p *recoveryRuntimePair) {
+func waitRecoveryFaultAndSettled(t *testing.T, fired *atomic.Bool, p *recoveryRuntimePair) ([]node.RecoveryAuthoritySnapshot, []node.RecoveryAuthoritySnapshot) {
 	t.Helper()
 	deadline:=time.Now().Add(5*time.Second)
 	for time.Now().Before(deadline) {
@@ -604,20 +604,21 @@ func waitRecoveryFaultAndSettled(t *testing.T, fired *atomic.Bool, p *recoveryRu
 				for _,s:=range append(append([]node.RecoveryAuthoritySnapshot{},ir...),ex...) {
 					if s.Epoch!=1||s.Frozen { allOld=false;break }
 				}
-				if allOld{return}
+				if allOld{return ir,ex}
 			}
 		}
 		time.Sleep(20*time.Millisecond)
 	}
 	t.Fatalf("pre-commit fault did not settle with both runtimes on old epoch: fired=%v ir=%+v ex=%+v",
 		fired.Load(),p.irRuntime.RecoveryAuthoritiesForTest(),p.exRuntime.RecoveryAuthoritiesForTest())
+	return nil,nil
 }
 
-func assertBothRuntimeOldEpoch(t *testing.T,p *recoveryRuntimePair) {
+func assertBothRuntimeOldEpoch(t *testing.T,ir,ex []node.RecoveryAuthoritySnapshot) {
 	t.Helper()
 	for name,states:=range map[string][]node.RecoveryAuthoritySnapshot{
-		"dialer":p.irRuntime.RecoveryAuthoritiesForTest(),
-		"listener":p.exRuntime.RecoveryAuthoritiesForTest(),
+		"dialer":ir,
+		"listener":ex,
 	} {
 		if len(states)==0 { t.Fatalf("%s has no live recovery authority",name) }
 		for _,s:=range states {
@@ -639,8 +640,8 @@ func TestTwoRuntimeDialerPreCommitFailureKeepsBothOldEpoch(t *testing.T) {
 		return nil
 	})
 	p.proxy.CutAll()
-	waitRecoveryFaultAndSettled(t,&fired,p)
-	assertBothRuntimeOldEpoch(t,p)
+	ir,ex:=waitRecoveryFaultAndSettled(t,&fired,p)
+	assertBothRuntimeOldEpoch(t,ir,ex)
 	t.Log("PASS two real runtimes kept old epoch after dialer pre-commit failure")
 }
 
@@ -656,8 +657,8 @@ func TestTwoRuntimeListenerPreCommitFailureKeepsBothOldEpoch(t *testing.T) {
 		return nil
 	})
 	p.proxy.CutAll()
-	waitRecoveryFaultAndSettled(t,&fired,p)
-	assertBothRuntimeOldEpoch(t,p)
+	ir,ex:=waitRecoveryFaultAndSettled(t,&fired,p)
+	assertBothRuntimeOldEpoch(t,ir,ex)
 	t.Log("PASS two real runtimes kept old epoch after listener pre-commit failure")
 }
 
