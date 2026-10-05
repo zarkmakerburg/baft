@@ -70,6 +70,11 @@ type Server struct {
 	alertMu sync.Mutex
 	activeAlerts map[string]Alert
 	httpClient *http.Client
+	smartIngressHTTPClient *http.Client
+	smartIngressLiveEnabled bool
+	smartIngressTokenEnv string
+	smartIngressApplyMu sync.Mutex
+	smartIngressRouteLocks map[string]*sync.Mutex
 	mutationMu sync.Mutex
 	securityAuditMu sync.Mutex
 	backupMu sync.Mutex
@@ -96,6 +101,8 @@ func NewServer(store *Store,adminToken string) (*Server,error) {
 		store:store,adminToken:adminToken,audit:audit,guard:newIPGuard(SecurityConfig{}),trustedProxies:map[string]struct{}{},probeTimeout:1500*time.Millisecond,
 		alertConfig:AlertConfig{TelemetryStaleAfter:3*time.Minute,HandshakeErrorRateMilliPerMin:5000,Interval:15*time.Second},
 		activeAlerts:initialAlerts,httpClient:&http.Client{Timeout:5*time.Second},
+		smartIngressHTTPClient:&http.Client{Timeout:5*time.Second,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}},
+		smartIngressLiveEnabled:strings.TrimSpace(os.Getenv("BAFT_SMART_INGRESS_LIVE"))=="1",smartIngressTokenEnv:strings.TrimSpace(os.Getenv("BAFT_CLOUDFLARE_API_TOKEN_ENV")),smartIngressRouteLocks:map[string]*sync.Mutex{},
 		auditAnchorRetryBase:time.Second,auditAnchorRetryMax:time.Minute,anchorOutbox:outbox,anchorWake:make(chan struct{},1),
 		now:func() time.Time{return time.Now().UTC()},
 		loginLim:newLoginLimiter(),hashing:newHashSlots(2),
@@ -198,6 +205,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/ingress/smart",s.smartIngressAPI)
 	m.HandleFunc("/api/ingress/smart/evaluate",s.smartIngressEvaluateAPI)
 	m.HandleFunc("/api/ingress/smart/provider/dry-run",s.smartIngressProviderDryRunAPI)
+	m.HandleFunc("/api/ingress/smart/provider/observe",s.smartIngressProviderObserveAPI)
+	m.HandleFunc("/api/ingress/smart/provider/apply",s.smartIngressProviderApplyAPI)
 	m.HandleFunc("/api/cert-rotations",s.certRotations)
 	m.HandleFunc("/api/cert-rotations/cancel",s.certRotationCancel)
 	m.HandleFunc("/api/bootstrap/hostkey",s.bootstrapHostKey)
