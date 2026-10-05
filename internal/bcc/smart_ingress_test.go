@@ -93,7 +93,7 @@ func TestSmartIngressTwoIRFiveEXPlansAreIndependent(t *testing.T) {
 	}
 	for route, ex := range wantEX {
 		p := plans[route]
-		if p.EXNode != ex || p.Host != route+".ingress.example.test" || p.State != SmartIngressReady || !p.Usable {
+		if p.EXNode != ex || p.Host != route+".ingress.example.test" || p.State != SmartIngressReady || p.Action != SmartIngressActionPublish || !p.Usable {
 			t.Fatalf("route %s invalid plan: %+v", route, p)
 		}
 		if p.ApplyStatus != SmartIngressApplyPending || p.AppliedGeneration != 0 {
@@ -158,8 +158,18 @@ func TestSmartIngressEXFailureIsFailClosedAndNeverSubstitutesEX(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := smartByRoute(s.SmartIngressSnapshot(at))
-
 	s.mu.Lock()
+	applied := s.st.SmartIngressPlans["uk"]
+	applied.AppliedGeneration = applied.Generation
+	applied.AppliedHost = applied.Host
+	applied.AppliedEndpoints = append([]SmartIngressEndpoint(nil), applied.Endpoints...)
+	applied.ApplyStatus = SmartIngressApplyApplied
+	applied.AppliedAt = at
+	s.st.SmartIngressPlans["uk"] = applied
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
 	setIngressHealthLocked(s, "ex-3", HealthDown)
 	s.mu.Unlock()
 	if _, err := s.EvaluateDistributions(at.Add(time.Second), DefaultDistributionPolicy()); err != nil {
@@ -170,8 +180,12 @@ func TestSmartIngressEXFailureIsFailClosedAndNeverSubstitutesEX(t *testing.T) {
 	}
 	after := smartByRoute(s.SmartIngressSnapshot(at.Add(time.Second)))
 	uk := after["uk"]
-	if uk.EXNode != "ex-3" || uk.State != SmartIngressUnpublishable || uk.Usable || len(uk.Endpoints) != 0 {
+	if uk.EXNode != "ex-3" || uk.State != SmartIngressUnpublishable || uk.Action != SmartIngressActionWithdraw || uk.Usable || len(uk.Endpoints) != 0 {
 		t.Fatalf("failed EX was substituted or remained publishable: %+v", uk)
+	}
+	if uk.ApplyStatus != SmartIngressApplyPending || uk.AppliedHost != before["uk"].Host ||
+		len(uk.AppliedEndpoints) != len(before["uk"].Endpoints) {
+		t.Fatalf("withdrawal lost the last applied provider state: before=%+v after=%+v", before["uk"], uk)
 	}
 	for _, route := range []string{"de", "nl", "us", "tr"} {
 		if after[route].Generation != before[route].Generation {
@@ -321,9 +335,10 @@ func TestSmartIngressStateDBRoundTripStandalone(t *testing.T) {
 	}
 	s.mu.Lock()
 	s.st.SmartIngressPlans["de"] = SmartIngressPlan{
-		RouteID: "de", EXNode: "ex-1", Host: "de.ingress.example.test", State: SmartIngressReady,
+		RouteID: "de", EXNode: "ex-1", Host: "de.ingress.example.test", State: SmartIngressReady, Action: SmartIngressActionPublish,
 		Endpoints: []SmartIngressEndpoint{{IRNode: "ir-1", IP: "198.51.100.101", Weight: 100}},
-		DistributionGeneration: 4, Generation: 7, ApplyStatus: SmartIngressApplyPending,
+		DistributionGeneration: 4, Generation: 7, AppliedGeneration: 6, AppliedHost: "old.ingress.example.test",
+		AppliedEndpoints: []SmartIngressEndpoint{{IRNode: "ir-2", IP: "198.51.100.102", Weight: 100}}, ApplyStatus: SmartIngressApplyPending,
 	}
 	if err := s.saveLocked(); err != nil {
 		s.mu.Unlock()
@@ -338,7 +353,8 @@ func TestSmartIngressStateDBRoundTripStandalone(t *testing.T) {
 	got := s2.st.SmartIngressPlans["de"]
 	s2.mu.Unlock()
 	if got.Generation != 7 || got.DistributionGeneration != 4 || len(got.Endpoints) != 1 ||
-		got.Endpoints[0].IP != "198.51.100.101" {
+		got.Endpoints[0].IP != "198.51.100.101" || got.AppliedGeneration != 6 ||
+		got.AppliedHost != "old.ingress.example.test" || len(got.AppliedEndpoints) != 1 {
 		t.Fatalf("standalone Smart Ingress DB round-trip mismatch: %+v", got)
 	}
 }

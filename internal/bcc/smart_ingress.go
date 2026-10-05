@@ -13,6 +13,9 @@ const (
 	SmartIngressReady         = "READY"
 	SmartIngressUnpublishable = "UNPUBLISHABLE"
 
+	SmartIngressActionPublish  = "PUBLISH"
+	SmartIngressActionWithdraw = "WITHDRAW"
+
 	SmartIngressApplyPending = "PENDING"
 	SmartIngressApplyBlocked = "BLOCKED"
 	SmartIngressApplyApplied = "APPLIED"
@@ -34,6 +37,7 @@ type SmartIngressPlan struct {
 	EXNode                 string                 `json:"ex_node"`
 	Host                   string                 `json:"host,omitempty"`
 	State                  string                 `json:"state"`
+	Action                 string                 `json:"action"`
 	Endpoints              []SmartIngressEndpoint `json:"endpoints,omitempty"`
 	DistributionGeneration uint64                 `json:"distribution_generation,omitempty"`
 	Generation             uint64                 `json:"generation"`
@@ -41,6 +45,8 @@ type SmartIngressPlan struct {
 	ChangedAt              time.Time              `json:"changed_at,omitempty"`
 	EvaluatedAt            time.Time              `json:"evaluated_at,omitempty"`
 	AppliedGeneration      uint64                 `json:"applied_generation,omitempty"`
+	AppliedHost            string                 `json:"applied_host,omitempty"`
+	AppliedEndpoints       []SmartIngressEndpoint `json:"applied_endpoints,omitempty"`
 	ApplyStatus            string                 `json:"apply_status,omitempty"`
 	AppliedAt              time.Time              `json:"applied_at,omitempty"`
 }
@@ -118,8 +124,10 @@ func (s *Store) EvaluateSmartIngress(now time.Time) ([]SmartIngressEvent, error)
 			}
 			next.ChangedAt = now
 			next.AppliedGeneration = old.AppliedGeneration
+			next.AppliedHost = old.AppliedHost
+			next.AppliedEndpoints = append([]SmartIngressEndpoint(nil), old.AppliedEndpoints...)
 			next.AppliedAt = old.AppliedAt
-			if next.State == SmartIngressReady {
+			if next.State == SmartIngressReady || old.AppliedGeneration > 0 || old.AppliedHost != "" || len(old.AppliedEndpoints) > 0 {
 				next.ApplyStatus = SmartIngressApplyPending
 			} else {
 				next.ApplyStatus = SmartIngressApplyBlocked
@@ -133,6 +141,8 @@ func (s *Store) EvaluateSmartIngress(now time.Time) ([]SmartIngressEvent, error)
 			next.Generation = old.Generation
 			next.ChangedAt = old.ChangedAt
 			next.AppliedGeneration = old.AppliedGeneration
+			next.AppliedHost = old.AppliedHost
+			next.AppliedEndpoints = append([]SmartIngressEndpoint(nil), old.AppliedEndpoints...)
 			next.ApplyStatus = old.ApplyStatus
 			next.AppliedAt = old.AppliedAt
 		}
@@ -146,7 +156,7 @@ func (s *Store) EvaluateSmartIngress(now time.Time) ([]SmartIngressEvent, error)
 }
 
 func (s *Store) chooseSmartIngressLocked(route ExplicitEXRoute, exists bool, old SmartIngressPlan, now time.Time) SmartIngressPlan {
-	next := SmartIngressPlan{RouteID: route.ID, EXNode: route.EXNode, Host: route.IngressHost, State: SmartIngressUnpublishable}
+	next := SmartIngressPlan{RouteID: route.ID, EXNode: route.EXNode, Host: route.IngressHost, State: SmartIngressUnpublishable, Action: SmartIngressActionWithdraw}
 	if !exists || !route.Enabled {
 		next.RouteID = old.RouteID
 		if next.RouteID == "" {
@@ -211,12 +221,13 @@ func (s *Store) chooseSmartIngressLocked(route ExplicitEXRoute, exists bool, old
 	}
 	sort.Slice(next.Endpoints, func(i, j int) bool { return next.Endpoints[i].IRNode < next.Endpoints[j].IRNode })
 	next.State = SmartIngressReady
+	next.Action = SmartIngressActionPublish
 	next.Reason = "desired publication mirrors the current usable M-016 distribution"
 	return next
 }
 
 func sameSmartIngressDesired(a, b SmartIngressPlan) bool {
-	if a.RouteID != b.RouteID || a.EXNode != b.EXNode || a.Host != b.Host || a.State != b.State ||
+	if a.RouteID != b.RouteID || a.EXNode != b.EXNode || a.Host != b.Host || a.State != b.State || a.Action != b.Action ||
 		a.DistributionGeneration != b.DistributionGeneration || len(a.Endpoints) != len(b.Endpoints) {
 		return false
 	}
@@ -232,6 +243,7 @@ func cloneSmartIngressPlans(in map[string]SmartIngressPlan) map[string]SmartIngr
 	out := make(map[string]SmartIngressPlan, len(in))
 	for k, v := range in {
 		v.Endpoints = append([]SmartIngressEndpoint(nil), v.Endpoints...)
+		v.AppliedEndpoints = append([]SmartIngressEndpoint(nil), v.AppliedEndpoints...)
 		out[k] = v
 	}
 	return out
