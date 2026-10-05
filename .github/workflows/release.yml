@@ -3,12 +3,13 @@ name: release
 # Builds, signs and verifies a release when a v* tag is pushed, then opens a
 # draft GitHub release for the owner to review and publish.
 #
-# Needs a protected `release` environment holding:
-#   BAFT_RELEASE_SIGNING_KEY  release signing private key (baft-release keygen)
-#   BAFT_RELEASE_KEY_CERT     root-signed certificate for that key (baft-release certify)
-# and, committed by the root holder, the root public key at
-# release/keys/root.pub and the current root-signed revocation list at
-# release/keys/revocations.json (it must not be expired).
+# Security boundary:
+# - build executes the tagged repository, but has no release-signing secret.
+# - sign receives the protected release secrets, but executes baft-release only
+#   from TRUSTED_SIGNER_COMMIT, never from the tagged checkout.
+# - publish has contents:write but no release-signing secret.
+#
+# Updating TRUSTED_SIGNER_COMMIT is a security-sensitive review event.
 on:
   push:
     tags: ['v*']
@@ -20,41 +21,103 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  TRUSTED_SIGNER_COMMIT: 89f1957bcbf282f677034cb82553eeac7c443a97
+
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: release
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           check-latest: false
           cache: false
-      - name: Check the tag and the pinned root key
+      - name: Check the tag and release trust data
         run: |
           set -euo pipefail
           if [ ! -s release/keys/root.pub ]; then
-            echo "::error::release/keys/root.pub is missing; commit the offline root public key first"
+            echo "::error::release/keys/root.pub is missing"
             exit 1
           fi
           if [ ! -s release/keys/revocations.json ]; then
-            echo "::error::release/keys/revocations.json is missing; sign an initial list with baft-release revoke"
+            echo "::error::release/keys/revocations.json is missing"
             exit 1
           fi
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::tag $GITHUB_REF_NAME points at a commit that is not on main (the canonical branch)"
+            echo "::error::tag $GITHUB_REF_NAME points at a commit that is not on main"
             exit 1
           fi
-      - name: Build
+          scripts/third_party_licenses.sh --check
+      - name: Build unsigned release artifacts
         run: scripts/release/build.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/dist"
-      - name: Sign
+      - name: Stage non-secret release input
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/input/dist" "$RUNNER_TEMP/input/notices"
+          cp -a "$RUNNER_TEMP/dist/." "$RUNNER_TEMP/input/dist/"
+          cp release/keys/root.pub "$RUNNER_TEMP/input/root.pub"
+          cp release/keys/revocations.json "$RUNNER_TEMP/input/revocations.json"
+          cp install.sh "$RUNNER_TEMP/input/install.sh"
+          cp scripts/release/offline_bundle.sh "$RUNNER_TEMP/input/offline_bundle.sh"
+          cp LICENSE COPYRIGHT THIRD_PARTY_LICENSES.md "$RUNNER_TEMP/input/notices/"
+          if [ -f "release/notes/$GITHUB_REF_NAME.md" ]; then
+            cp "release/notes/$GITHUB_REF_NAME.md" "$RUNNER_TEMP/input/notes.md"
+          else
+            cat > "$RUNNER_TEMP/input/notes.md" <<'EOF'
+          Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub -revocations release/keys/revocations.json
+          EOF
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-release-input
+          path: ${{ runner.temp }}/input
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout only the immutable trusted signer source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TRUSTED_SIGNER_COMMIT }}
+          path: trusted-signer
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: trusted-signer/go.mod
+          check-latest: false
+          cache: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: unsigned-release-input
+          path: ${{ runner.temp }}/input
+      - name: Build and verify the immutable trusted signer
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-signer rev-parse HEAD)" = "$TRUSTED_SIGNER_COMMIT"
+          cmp trusted-signer/release/keys/root.pub "$RUNNER_TEMP/input/root.pub"
+          (
+            cd trusted-signer
+            go build -trimpath -buildvcs=false -o "$RUNNER_TEMP/baft-release" ./cmd/baft-release
+          )
+          test -x "$RUNNER_TEMP/baft-release"
+      - name: Sign with protected release credential
         env:
           BAFT_RELEASE_SIGNING_KEY: ${{ secrets.BAFT_RELEASE_SIGNING_KEY }}
           BAFT_RELEASE_KEY_CERT: ${{ secrets.BAFT_RELEASE_KEY_CERT }}
@@ -62,42 +125,53 @@ jobs:
           set -euo pipefail
           for v in BAFT_RELEASE_SIGNING_KEY BAFT_RELEASE_KEY_CERT; do
             if [ -z "${!v}" ]; then
-              echo "::error title=Missing release secret::$v is empty. Add it to the 'release' environment (Settings > Environments > release > secrets) and re-run."
+              echo "::error title=Missing release secret::$v is empty in the protected release environment"
               exit 1
             fi
           done
           printf '%s\n' "$BAFT_RELEASE_KEY_CERT" > "$RUNNER_TEMP/release-key.cert.json"
-          go run ./cmd/baft-release sign -dir "$RUNNER_TEMP/dist" \
-            -version "$GITHUB_REF_NAME" -commit "$GITHUB_SHA" \
-            -cert "$RUNNER_TEMP/release-key.cert.json" -root-pub release/keys/root.pub \
-            -build-flag -trimpath -build-flag -buildvcs=false -build-flag 'CGO_ENABLED=0' \
-            -build-flag '-ldflags=-s -w -buildid='
-      - name: Verify against the pinned root key
-        run: |
-          go run ./cmd/baft-release verify -dir "$RUNNER_TEMP/dist" -root-pub release/keys/root.pub \
-            -revocations release/keys/revocations.json
-      - name: Offline bundle
+          "$RUNNER_TEMP/baft-release" sign -dir "$RUNNER_TEMP/input/dist"             -version "$GITHUB_REF_NAME" -commit "$GITHUB_SHA"             -cert "$RUNNER_TEMP/release-key.cert.json"             -root-pub trusted-signer/release/keys/root.pub             -build-flag -trimpath -build-flag -buildvcs=false             -build-flag 'CGO_ENABLED=0' -build-flag '-ldflags=-s -w -buildid='
+      - name: Verify signed artifacts with the trusted signer
         run: |
           set -euo pipefail
-          scripts/release/offline_bundle.sh "$RUNNER_TEMP/dist" release/keys/revocations.json install.sh "$RUNNER_TEMP/offline" .
+          "$RUNNER_TEMP/baft-release" verify             -dir "$RUNNER_TEMP/input/dist"             -root-pub trusted-signer/release/keys/root.pub             -revocations "$RUNNER_TEMP/input/revocations.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-release-dist
+          path: ${{ runner.temp }}/input/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: unsigned-release-input
+          path: ${{ runner.temp }}/input
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: signed-release-dist
+          path: ${{ runner.temp }}/signed-dist
+      - name: Build and verify offline bundle without signing credentials
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/input/offline_bundle.sh"             "$RUNNER_TEMP/signed-dist"             "$RUNNER_TEMP/input/revocations.json"             "$RUNNER_TEMP/input/install.sh"             "$RUNNER_TEMP/offline"             "$RUNNER_TEMP/input/notices"
           mkdir -p "$RUNNER_TEMP/unpacked"
           tar -xzf "$RUNNER_TEMP"/offline/*.tar.gz -C "$RUNNER_TEMP/unpacked"
-          BAFT_REVOCATIONS_FILE=release/keys/revocations.json BAFT_VERIFY_ARTIFACTS="baft-linux-amd64 baft-pair-linux-amd64 baft-agent-linux-amd64" \
-            bash install.sh --verify-release "$(echo "$RUNNER_TEMP"/unpacked/baft-offline-*)/release"
+          d=$(echo "$RUNNER_TEMP"/unpacked/baft-offline-*)
+          BAFT_ROOT_PUB="$(cat "$RUNNER_TEMP/input/root.pub")"             BAFT_REVOCATIONS_FILE="$RUNNER_TEMP/input/revocations.json"             BAFT_VERIFY_ARTIFACTS="baft-linux-amd64 baft-pair-linux-amd64 baft-agent-linux-amd64"             bash "$RUNNER_TEMP/input/install.sh" --verify-release "$d/release"
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "::error title=Release already exists::A GitHub release for $GITHUB_REF_NAME already exists. Delete that release (keep the tag) and re-run; this workflow creates the signed draft itself."
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error title=Release already exists::A GitHub release for $GITHUB_REF_NAME already exists. Keep the tag and resolve the existing release explicitly."
             exit 1
           fi
-          if [ -f "release/notes/$GITHUB_REF_NAME.md" ]; then
-            notes=(--notes-file "release/notes/$GITHUB_REF_NAME.md")
-          else
-            notes=(--notes "Signed release. Verify with: baft-release verify -dir <download dir> -root-pub release/keys/root.pub -revocations release/keys/revocations.json")
-          fi
-          scripts/third_party_licenses.sh --check
-          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/* "$RUNNER_TEMP"/offline/* \
-            LICENSE COPYRIGHT THIRD_PARTY_LICENSES.md \
-            --draft --verify-tag --title "BAFT $GITHUB_REF_NAME" "${notes[@]}"
+          gh release create "$GITHUB_REF_NAME"             "$RUNNER_TEMP"/signed-dist/*             "$RUNNER_TEMP"/offline/*             "$RUNNER_TEMP/input/notices/LICENSE"             "$RUNNER_TEMP/input/notices/COPYRIGHT"             "$RUNNER_TEMP/input/notices/THIRD_PARTY_LICENSES.md"             --repo "$GITHUB_REPOSITORY"             --draft --verify-tag             --title "BAFT $GITHUB_REF_NAME"             --notes-file "$RUNNER_TEMP/input/notes.md"
