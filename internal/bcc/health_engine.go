@@ -276,6 +276,22 @@ func (s *Server) evaluateHealthAt(now time.Time) {
 			},
 		})
 	}
+	// Ingress decisions consume only persisted health/topology evidence. Run the
+	// deterministic M-015 selector after health has been committed so a health
+	// transition can immediately fail over the affected explicit EX route.
+	ingressEvents, err := s.store.EvaluateIngress(now, DefaultIngressPolicy())
+	if err != nil {
+		return
+	}
+	for _, e := range ingressEvents {
+		_, _ = s.audit.Append(AuditEntry{
+			Timestamp: now.UTC(), Actor: "bcc", Action: "ingress.selection", Target: e.RouteID, Outcome: "success",
+			Details: map[string]any{
+				"ex_node": e.EXNode, "from_state": e.FromState, "to_state": e.ToState,
+				"from_ir": e.FromIR, "to_ir": e.ToIR, "generation": e.Generation, "reason": e.Reason,
+			},
+		})
+	}
 }
 
 // healthAPI: GET /api/health[?node=ID[&all=1]], admin only, read only.
