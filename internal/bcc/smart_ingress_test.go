@@ -194,6 +194,25 @@ func TestSmartIngressEXFailureIsFailClosedAndNeverSubstitutesEX(t *testing.T) {
 	}
 }
 
+func TestSmartIngressRestoredInvalidHostFailsClosed(t *testing.T) {
+	now := time.Unix(26500, 0).UTC()
+	s := smartIngressStore(t, now)
+	at := now.Add(10 * time.Second)
+	s.mu.Lock()
+	r := s.st.EXRoutes["de"]
+	r.IngressHost = "not a hostname"
+	s.st.EXRoutes["de"] = r
+	s.mu.Unlock()
+
+	if _, err := s.EvaluateSmartIngress(at); err != nil {
+		t.Fatal(err)
+	}
+	got := smartByRoute(s.SmartIngressSnapshot(at))["de"]
+	if got.State != SmartIngressUnpublishable || got.Usable || got.Action != SmartIngressActionWithdraw {
+		t.Fatalf("restored invalid hostname did not fail closed: %+v", got)
+	}
+}
+
 func TestSmartIngressMissingExplicitIRIPFailsClosed(t *testing.T) {
 	now := time.Unix(27000, 0).UTC()
 	s := smartIngressStore(t, now)

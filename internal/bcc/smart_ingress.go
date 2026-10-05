@@ -175,6 +175,12 @@ func (s *Store) chooseSmartIngressLocked(route ExplicitEXRoute, exists bool, old
 		next.Reason = "explicit ingress_host is missing"
 		return next
 	}
+	normalizedHost, err := normalizeSmartIngressHost(next.Host)
+	if err != nil || normalizedHost == "" {
+		next.Reason = "explicit ingress_host is invalid"
+		return next
+	}
+	next.Host = normalizedHost
 	dist, ok := s.st.IngressDistributions[route.ID]
 	if !ok || dist.RouteID == "" {
 		next.Reason = "M-016 distribution has not been evaluated"
