@@ -8,9 +8,9 @@
 
 - Build تکرارپذیر `baft`، `baft-pair` و `baft-bcc` برای linux/amd64 و linux/arm64 (`scripts/release/build.sh`).
 - Release امضاشده: `SHA256SUMS`، manifest امضاشده (`manifest.json`) همراه با provenance، و گواهی کلید release (`release-key.cert.json`).
-- کلید دوسطحی طبق تصمیم ۲۰۲۶-۱۰-۰۱: کلید Root آفلاین (Ed25519) کلید امضای release را که در CI است گواهی می‌کند. سرورها فقط کلید عمومی Root را pin می‌کنند.
+- کلید دوسطحی: کلید Root آفلاین (Ed25519) کلید امضای release را گواهی می‌کند؛ کلید release فقط در مرز امضای مستقل/آفلاین نگه‌داری می‌شود و GitHub Actions هرگز به آن دسترسی ندارد. سرورها فقط کلید عمومی Root را pin می‌کنند.
 - ابزار `baft-release` با فرمان‌های `keygen`، `keyid`، `certify`، `revoke`، `sign`، `verify`.
-- Workflow `release`: روی tag `v*` می‌سازد، امضا می‌کند، با Root pinشده verify می‌کند و یک draft release می‌سازد.
+- Workflow `release`: روی tag `v*` فقط یک candidate **بدون امضا** می‌سازد و آپلود می‌کند؛ امضا، verify، ساخت بستهٔ آفلاین و انتشار بیرون از Actions و در مرز اعتماد مستقل انجام می‌شود.
 - Job `release-dry-run` در CI که کل مسیر را با کلیدهای یک‌بارمصرف تمرین می‌کند.
 - Branch protection: rulesetهای فعال از ۲۰۲۶-۱۰-۰۱.
 
@@ -31,13 +31,13 @@ Release فقط وقتی پذیرفته می‌شود که: گواهی با Root 
 ## Invariantها
 
 - هیچ کلید خصوصی وارد مخزن نمی‌شود.
-- چیزی منتشر نمی‌شود که در همان اجرا با `release/keys/root.pub` verify نشده باشد.
-- Release به‌صورت draft ساخته می‌شود و انتشار با صاحب پروژه است.
+- GitHub Actions هیچ کلید امضای release یا گواهی release-key را دریافت نمی‌کند و فقط candidate بدون امضا تولید می‌کند.
+- هیچ چیز به‌عنوان release رسمی منتشر نمی‌شود تا signer مستقل/آفلاین آن را امضا و با Root و revocation list جاری verify کند.
 - Tag روی commitی خارج از `main` (شاخهٔ canonical) release نمی‌سازد.
 
 ## راه‌اندازی یک‌باره توسط صاحب پروژه
 
-روی ماشین آفلاین: `keygen` برای root و release، سپس `certify` (دستورها در نسخهٔ انگلیسی). فهرست ابطال اولیه (خالی) را هم امضا کنید: `baft-release revoke -root-key root.key -valid-days 180 -out revocations.json`. بعد `root.pub` و `revocations.json` را با PR در `release/keys/` بگذارید و همان کلید Root را در `BAFT_PINNED_ROOT_PUB` داخل `install.sh` قرار دهید (اگر این دو فرق کنند `tests/docs` رد می‌شود)، در گیت‌هاب environment به نام `release` (محدود به tagهای `v*`) با secretهای `BAFT_RELEASE_SIGNING_KEY` و `BAFT_RELEASE_KEY_CERT` بسازید، و `release.key` را از ماشین آفلاین پاک کنید.
+روی ماشین آفلاین: `keygen` برای root و release، سپس `certify` (دستورها در نسخهٔ انگلیسی). فهرست ابطال اولیه (خالی) را هم امضا کنید: `baft-release revoke -root-key root.key -valid-days 180 -out revocations.json`. بعد `root.pub` و `revocations.json` را با PR در `release/keys/` بگذارید و همان کلید Root را در `BAFT_PINNED_ROOT_PUB` داخل `install.sh` قرار دهید. **کلید release و گواهی آن را به GitHub Actions ندهید.** آن‌ها فقط در محیط signer مستقل/آفلاین نگه‌داری شوند. برای هر tag، artifact با نام `unsigned-release-candidate` را بگیرید، اتصال tag/commit را بررسی کنید، با signer مستقل در commit مورد اعتماد و immutable امضا و verify کنید و فقط بعد از آن release نهایی را منتشر کنید؛ جزئیات در `release/SIGNING.md` است.
 
 ## بستهٔ نصب آفلاین
 
@@ -74,17 +74,17 @@ sudo bash install.sh --offline . --agent-only --bcc-url ... --node-id ...
 
 ## چرخش و ابطال
 
-- چرخش: کلید release جدید، گواهی با Root، جایگزینی secretها. سرورها تغییری لازم ندارند.
+- چرخش: کلید release جدید و گواهی با Root؛ credential فقط در محیط signer مستقل/آفلاین جایگزین می‌شود. سرورها تغییری لازم ندارند.
 - ابطال: `baft-release revoke -in release/keys/revocations.json -key-id <id> -out revocations.json` و commit آن. همیشه `-in` بدهید تا `sequence` بالا برود.
 - تمدید: قبل از `expires_at` فهرست را بدون تغییر با `revoke -in ...` دوباره امضا و commit کنید. فهرست منقضی، release و نصب را تا تمدید متوقف می‌کند.
 
 ## تست‌ها و Exit Criteria
 
 - `go test ./internal/release` و `scripts/release/dry_run.sh` (شامل بررسی تکرارپذیری build و رد آرتیفکت دستکاری‌شده، Root اشتباه، کلید باطل‌شده، کلید بدون گواهی، نبودِ فهرست ابطال، فهرست تکراری قدیمی و downgrade).
-- CI سبز، و یک tag آزمایشی که draft release آن روی ماشین دیگری verify شود.
+- CI سبز، candidate بدون امضا برای tag آزمایشی، سپس امضا در محیط مستقل/آفلاین و verify نسخهٔ نهایی روی ماشین دیگری.
 
 ## Rollback
 
-حذف draft release و tag. تغییر افزایشی است و revert کردن PR هیچ کد runtime را تغییر نمی‌دهد.
+پیش از امضا، candidate مشکل‌دار را دور بیندازید. بعد از انتشار، tag منتشرشده را جابه‌جا یا بازاستفاده نکنید و از فرایند incident/revocation استفاده کنید.
 
 </div>

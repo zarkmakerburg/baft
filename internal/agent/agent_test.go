@@ -48,6 +48,40 @@ func (f *fakeSystem) Run(_ context.Context, name string, args ...string) (string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, filepath.Base(name)+" "+strings.Join(args, " "))
+	if filepath.Base(name) == "baft-pair" && len(args) > 0 {
+		arg := func(flag string) string {
+			for i := 0; i+1 < len(args); i++ {
+				if args[i] == flag {
+					return args[i+1]
+				}
+			}
+			return ""
+		}
+		switch args[0] {
+		case "keygen":
+			if path := arg("--file"); path != "" {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					return "", err
+				}
+				if err := os.WriteFile(path, []byte("fake-noise-key"), 0o600); err != nil {
+					return "", err
+				}
+			}
+		case "pki":
+			if dir := arg("--dir"); dir != "" {
+				if err := os.MkdirAll(dir, 0o750); err != nil {
+					return "", err
+				}
+				for file, mode := range map[string]os.FileMode{
+					"ca.key": 0o600, "server.key": 0o600, "ca.pem": 0o644, "server.pem": 0o644,
+				} {
+					if err := os.WriteFile(filepath.Join(dir, file), []byte("fake-"+file), mode); err != nil {
+						return "", err
+					}
+				}
+			}
+		}
+	}
 	return f.doctor, nil
 }
 
@@ -293,5 +327,38 @@ func TestRestartReloadAndHealthActions(t *testing.T) {
 	r.sys.active = []string{"failed"}
 	if _, err := r.agent.execute(context.Background(), agentjob.Job{Action: agentjob.ActionRestart}); err == nil {
 		t.Fatal("restart reported success with the service down")
+	}
+}
+
+func TestMarkSeenPersistsPrivateAtomicJournal(t *testing.T) {
+	r := newRig(t)
+	if err := r.agent.markSeen("job-durable-1"); err != nil {
+		t.Fatal(err)
+	}
+	path := r.agent.seenPath()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("seen journal mode=%o want 600", fi.Mode().Perm())
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen map[string]time.Time
+	if err := json.Unmarshal(b, &seen); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := seen["job-durable-1"]; !ok {
+		t.Fatalf("seen journal missing job: %s", b)
+	}
+	matches, err := filepath.Glob(filepath.Join(r.agent.cfg.StateDir, ".seen-jobs-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary seen journals leaked: %v", matches)
 	}
 }

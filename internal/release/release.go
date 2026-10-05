@@ -1,8 +1,9 @@
 // Package release signs and verifies BAFT release artifacts.
 //
 // Trust is two-tier. An offline Ed25519 root key certifies a release signing
-// key for a bounded validity window; the release signing key (held by CI)
-// signs the release manifest. Servers pin only the root public key, so the
+// key for a bounded validity window; the release signing key is held only by
+// an isolated/offline signer, never by repository CI. It signs the release
+// manifest. Servers pin only the root public key, so the
 // release key can be rotated or revoked without re-pinning anything.
 //
 // Every signed document is a DSSE envelope: the signature covers the exact

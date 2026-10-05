@@ -7,6 +7,7 @@ on:
   schedule:
     - cron: '47 4 * * *'
   workflow_dispatch:
+  pull_request:
   push:
     branches: [feat/zeroday-fuzz]
 
@@ -18,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: false
@@ -29,4 +30,4 @@ jobs:
         # G101 env-var NAME literals, G122 root-installer chown. Every other
         # rule (injection, weak crypto, unsafe, etc.) stays blocking, so a new
         # finding fails this job. staticcheck returns once it supports go1.27.
-        run: go run github.com/securego/gosec/v2/cmd/gosec@latest -exclude-dir=tests -exclude=G115,G703,G101,G122 -severity high ./...
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -exclude-dir=tests -exclude=G115,G703,G101,G122 -severity high ./...

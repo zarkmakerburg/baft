@@ -46,8 +46,8 @@ jobs:
           - pkg: ./internal/carrier/ws
             fn: FuzzReadFrame
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: false
@@ -57,7 +57,7 @@ jobs:
           go test -run='^$' -fuzz='^${{ matrix.fn }}$' -fuzztime="${t}s" "${{ matrix.pkg }}"
       - name: Upload crashers
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fuzz-crashers-${{ matrix.fn }}-${{ github.sha }}
           path: '**/testdata/fuzz/**'

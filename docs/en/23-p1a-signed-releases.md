@@ -6,9 +6,9 @@ Status: implementation proposed for owner approval. Launch-1 step P1-A from [22-
 
 - Reproducible builds of `baft`, `baft-pair` and `baft-bcc` for linux/amd64 and linux/arm64 (`scripts/release/build.sh`).
 - A signed release: `SHA256SUMS`, a signed manifest (`manifest.json`) that includes build provenance, and the release key certificate (`release-key.cert.json`).
-- Two-tier keys, as decided on 2026-10-01: an offline Ed25519 root key certifies a release signing key held by CI. Servers pin only the root public key.
+- Two-tier keys: an offline Ed25519 root key certifies a release signing key held only by an isolated/offline signing boundary. GitHub Actions never receives the long-lived release key. Servers pin only the root public key.
 - `baft-release` tool: `keygen`, `keyid`, `certify`, `revoke`, `sign`, `verify`.
-- `release` workflow: on a `v*` tag it builds, signs, verifies against the pinned root and opens a draft GitHub release.
+- `release` workflow: on a `v*` tag it builds and uploads an **unsigned candidate only**. Signing, verification, offline-bundle creation and publication happen outside repository Actions in an independent signing boundary.
 - `release-dry-run` CI job that rehearses the whole flow with throwaway keys on every push and PR.
 - Branch protection: the rulesets in place since 2026-10-01 (PR required, `test` check required, no force-push or deletion on `main` and `release-v1-goldapp`; `v*` tags cannot be moved or deleted).
 
@@ -51,9 +51,9 @@ A server keeps a root-owned `/opt/baft/release-state.json` (`$BAFT_PREFIX/releas
 
 ## Invariants
 
-- No private key is ever written to the repository. `*.key` is git-ignored; CI receives the release key only as an environment secret.
-- Nothing is published that did not verify against `release/keys/root.pub` in the same run.
-- The release is created as a draft; the owner publishes it.
+- No private key is ever written to the repository. `*.key` is git-ignored; GitHub Actions never receives the long-lived release signing key or release-key certificate.
+- A repository workflow may produce only an unsigned candidate. Nothing becomes an official release until an independent/offline trusted signer has signed and verified it against `release/keys/root.pub` and the current revocation list.
+- Repository Actions have no permission or credential path that can turn an unsigned candidate into a trusted BAFT release.
 - A tag on a commit outside `main` (the canonical branch) does not produce a release.
 
 ## Owner setup (one time)
@@ -76,8 +76,8 @@ Also sign the initial (empty) revocation list:
 ```
 
 1. Commit `root.pub` as `release/keys/root.pub` and `revocations.json` as `release/keys/revocations.json`, and put the same root key in `BAFT_PINNED_ROOT_PUB` in `install.sh` (one PR; `tests/docs` fails if the two differ).
-2. In GitHub, create the environment `release`, restrict it to tags `v*`, and add the secrets `BAFT_RELEASE_SIGNING_KEY` (contents of `release.key`) and `BAFT_RELEASE_KEY_CERT` (contents of `release-key.cert.json`).
-3. Delete `release.key` from the offline machine once the secret is stored.
+2. Keep `release.key` and `release-key.cert.json` out of GitHub Actions. Store the release key only in the isolated/offline signing environment (or a future HSM/KMS service with equivalent isolation).
+3. For each tag, download the `unsigned-release-candidate` artifact, verify its embedded tag/commit, sign it with an independently reviewed signer at an immutable trusted commit, verify the result, build the offline bundle, and only then publish the signed assets. See `release/SIGNING.md`.
 
 ## Offline installation bundle
 
@@ -110,7 +110,7 @@ It exits non-zero on any failure and uses the REST API only. `tests/release` hol
 
 ## Rotation and revocation
 
-- Rotation: generate a new release key, certify it with the root, replace both secrets. Servers need no change.
+- Rotation: generate a new release key, certify it with the root, and replace the credential only inside the isolated/offline signing boundary. Servers need no change.
 - Revocation: `baft-release revoke -root-key root.key -in release/keys/revocations.json -key-id <id> -out revocations.json`, commit it as `release/keys/revocations.json`, rotate. Always pass `-in` so the `sequence` grows; a fresh list restarts at 1 and servers that saw more refuse it.
 - Refresh: before the list's `expires_at`, re-sign it unchanged with `revoke -in release/keys/revocations.json -out revocations.json` and commit it. An expired list stops releases and installs until it is refreshed.
 - Root compromise needs re-pinning every server; that is why the root stays offline.
@@ -123,8 +123,8 @@ It exits non-zero on any failure and uses the REST API only. `tests/release` hol
 ## Exit criteria
 
 - CI green including `release-dry-run`.
-- Owner completes the setup above, pushes a `v*` tag, and the draft release verifies with `baft-release verify` on a separate machine.
+- Owner completes the setup above, pushes a `v*` tag, verifies the unsigned candidate binding, signs it outside GitHub Actions, and the final signed release verifies with `baft-release verify` on a separate machine.
 
 ## Rollback
 
-Delete the draft release, and the tag if the tag ruleset allows it. The code change is additive; reverting the PR removes the workflow and tool without touching runtime code.
+Before signing, discard the unsigned candidate artifact if anything is wrong. After publication, follow the normal immutable-tag/release incident process; never repurpose an already published tag.

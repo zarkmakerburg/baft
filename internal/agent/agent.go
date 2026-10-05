@@ -147,11 +147,36 @@ func (a *Agent) markSeen(id string) error {
 	if err := os.MkdirAll(a.cfg.StateDir, 0o700); err != nil {
 		return err
 	}
-	tmp := a.seenPath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.CreateTemp(a.cfg.StateDir, ".seen-jobs-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, a.seenPath())
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, a.seenPath()); err != nil {
+		return err
+	}
+	dir, err := os.Open(a.cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (a *Agent) isSeen(id string) bool {

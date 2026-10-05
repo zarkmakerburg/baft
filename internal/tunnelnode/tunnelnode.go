@@ -787,7 +787,7 @@ func (m *Manager) ensurePKI(ctx context.Context, id, host string) (replaced bool
 		return false, nil
 	}
 	if _, err := os.Stat(m.pkiDir()); err == nil {
-		if err := os.Rename(m.pkiDir(), m.pkiDir()+".before-"+id); err != nil {
+		if err := renameDurable(m.pkiDir(), m.pkiDir()+".before-"+id); err != nil {
 			return false, err
 		}
 		replaced = true
@@ -801,17 +801,12 @@ func (m *Manager) ensurePKI(ctx context.Context, id, host string) (replaced bool
 	if err := writeFile(marker, []byte(host+"\n"), 0o644); err != nil {
 		return replaced, err
 	}
-	// Same modes as install.sh: only the service user reads server.key, the CA
-	// signing key stays root-only, certificates are public.
-	_ = os.Chmod(m.pkiDir(), 0o750)
-	_ = os.Chmod(filepath.Join(m.pkiDir(), "ca.key"), 0o600)
-	_ = os.Chmod(filepath.Join(m.pkiDir(), "server.key"), 0o600)
-	_ = os.Chmod(filepath.Join(m.pkiDir(), "ca.pem"), 0o644)
-	_ = os.Chmod(filepath.Join(m.pkiDir(), "server.pem"), 0o644)
-	if err := m.chownTo(filepath.Join(m.pkiDir(), "server.key"), m.User, m.User); err != nil {
+	// Same modes/ownership as install.sh, but verified and synced before the
+	// PKI tree can become live.
+	if err := m.securePKI(m.pkiDir()); err != nil {
 		return replaced, err
 	}
-	return replaced, m.chownTo(m.pkiDir(), "root", m.User)
+	return replaced, nil
 }
 
 // writeConfig installs b as the live config, root-owned and group-readable
@@ -960,6 +955,54 @@ WantedBy=multi-user.target
 `, user, m.BaftBin, m.liveConfig(), m.StateDir, caps)
 }
 
+func syncPath(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
+func syncParentDirs(paths ...string) error {
+	seen := map[string]bool{}
+	for _, path := range paths {
+		dir := filepath.Dir(path)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if err := syncPath(dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renameDurable(oldPath, newPath string) error {
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return err
+	}
+	return syncParentDirs(oldPath, newPath)
+}
+
+func removeDurable(path string) error {
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return syncParentDirs(path)
+}
+
+func removeAllDurable(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	return syncParentDirs(path)
+}
+
 func writeFile(path string, b []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -985,7 +1028,7 @@ func writeFile(path string, b []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	return renameDurable(name, path)
 }
 
 func writeJSON(path string, v any, mode os.FileMode) error {
