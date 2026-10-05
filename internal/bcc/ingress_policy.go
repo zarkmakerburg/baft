@@ -89,6 +89,7 @@ func (s *Store) EvaluateIngress(now time.Time, p IngressPolicy) ([]IngressEvent,
 	if s.st.IngressSelections == nil {
 		s.st.IngressSelections = map[string]IngressSelection{}
 	}
+	before := cloneIngressSelections(s.st.IngressSelections)
 	ids := make([]string, 0, len(s.st.EXRoutes))
 	for id, r := range s.st.EXRoutes {
 		if r.Enabled {
@@ -124,7 +125,19 @@ func (s *Store) EvaluateIngress(now time.Time, p IngressPolicy) ([]IngressEvent,
 		}
 		s.st.IngressSelections[id] = next
 	}
-	return events, s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		s.st.IngressSelections = before
+		return nil, err
+	}
+	return events, nil
+}
+
+func cloneIngressSelections(in map[string]IngressSelection) map[string]IngressSelection {
+	out := make(map[string]IngressSelection, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // IngressSnapshot returns persisted decisions plus current diagnostic evidence.
