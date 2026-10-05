@@ -303,3 +303,143 @@ func TestDistributionTrafficEWMAResetsAcrossCounterRollback(t *testing.T) {
 		t.Fatalf("counter reset produced implausible smoothed load: %d kbps", got)
 	}
 }
+
+
+func TestDistributionFiveRoutesStayIndependent(t *testing.T) {
+	now := time.Unix(21000, 0).UTC()
+	s := desiredTopologyStore(t)
+	if _, err := s.SetTopologySpec(desiredSpec([]string{"ir-1", "ir-2"}, ""), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReconcileTopology(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	s.mu.Lock()
+	for id, tun := range s.st.Tunnels {
+		tun.Phase = TunnelActive
+		s.st.Tunnels[id] = tun
+	}
+	for _, id := range []string{"ir-1", "ir-2", "ex-1", "ex-2", "ex-3", "ex-4", "ex-5"} {
+		setIngressNodeHealthyLocked(s, id, now.Add(2*time.Second), 20, 5, 0)
+	}
+	routes1 := []telemetry.RouteSnapshot{
+		{RouteID: "de", Status: "up", LatencyMS: 10, ProbeKind: "tcp"},
+		{RouteID: "nl", Status: "up", LatencyMS: 11, ProbeKind: "tcp"},
+		{RouteID: "uk", Status: "up", LatencyMS: 12, ProbeKind: "tcp"},
+		{RouteID: "us", Status: "up", LatencyMS: 13, ProbeKind: "tcp"},
+		{RouteID: "tr", Status: "up", LatencyMS: 14, ProbeKind: "tcp"},
+	}
+	routes2 := []telemetry.RouteSnapshot{
+		{RouteID: "de", Status: "up", LatencyMS: 30, ProbeKind: "tcp"},
+		{RouteID: "nl", Status: "up", LatencyMS: 31, ProbeKind: "tcp"},
+		{RouteID: "uk", Status: "up", LatencyMS: 32, ProbeKind: "tcp"},
+		{RouteID: "us", Status: "up", LatencyMS: 33, ProbeKind: "tcp"},
+		{RouteID: "tr", Status: "up", LatencyMS: 34, ProbeKind: "tcp"},
+	}
+	setIngressRoutesLocked(s, "ir-1", routes1...)
+	setIngressRoutesLocked(s, "ir-2", routes2...)
+	s.mu.Unlock()
+
+	at := now.Add(10 * time.Second)
+	if _, err := s.EvaluateDistributions(at, DefaultDistributionPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]DistributionView{}
+	for _, d := range s.DistributionSnapshot(at) {
+		before[d.RouteID] = d
+	}
+	wantEX := map[string]string{"de": "ex-1", "nl": "ex-2", "uk": "ex-3", "us": "ex-4", "tr": "ex-5"}
+	if len(before) != len(wantEX) {
+		t.Fatalf("routes=%d want=%d: %+v", len(before), len(wantEX), before)
+	}
+	for route, ex := range wantEX {
+		d := before[route]
+		if d.EXNode != ex || d.State != DistributionReady || !d.Usable {
+			t.Fatalf("route %s distribution invalid: %+v", route, d)
+		}
+		if d.Weights["ir-1"]+d.Weights["ir-2"] != 100 {
+			t.Fatalf("route %s weights do not sum to 100: %+v", route, d.Weights)
+		}
+	}
+
+	s.mu.Lock()
+	routes1[4] = telemetry.RouteSnapshot{RouteID: "tr", Status: "down", ProbeKind: "tcp"}
+	setIngressRoutesLocked(s, "ir-1", routes1...)
+	setIngressLayerHealthLocked(s, "ir-1", HealthDown)
+	s.mu.Unlock()
+	if _, err := s.EvaluateDistributions(at.Add(time.Second), DefaultDistributionPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	after := map[string]DistributionView{}
+	for _, d := range s.DistributionSnapshot(at.Add(time.Second)) {
+		after[d.RouteID] = d
+	}
+	for _, route := range []string{"de", "nl", "uk", "us"} {
+		if !sameWeights(before[route].Weights, after[route].Weights) || !after[route].Usable {
+			t.Fatalf("unrelated route %s changed after TR-only failure: before=%+v after=%+v", route, before[route], after[route])
+		}
+	}
+	if after["tr"].Weights["ir-1"] != 0 || after["tr"].Weights["ir-2"] != 100 || !after["tr"].Usable {
+		t.Fatalf("TR route did not isolate failed IR: %+v", after["tr"])
+	}
+}
+
+func TestDistributionExplicitEXFailureNeverSubstitutesEX(t *testing.T) {
+	now := time.Unix(22000, 0).UTC()
+	s := ingressStore(t, now)
+	at := now.Add(10 * time.Second)
+	if _, err := s.EvaluateDistributions(at, DefaultDistributionPolicy()); err != nil {
+		t.Fatal(err)
+	}
+
+	s.mu.Lock()
+	setIngressHealthLocked(s, "ex-1", HealthDown)
+	s.mu.Unlock()
+	if _, err := s.EvaluateDistributions(at.Add(time.Second), DefaultDistributionPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	got := oneDistribution(t, s, at.Add(time.Second))
+	if got.EXNode != "ex-1" || got.State != DistributionUnavailable || got.Usable {
+		t.Fatalf("explicit EX failure was not fail-closed: %+v", got)
+	}
+	for ir, w := range got.Weights {
+		if w != 0 {
+			t.Fatalf("unavailable route retained non-zero IR weight %s=%d: %+v", ir, w, got)
+		}
+	}
+}
+
+func TestDistributionLargeLoadShiftChangesAfterHoldDown(t *testing.T) {
+	now := time.Unix(23000, 0).UTC()
+	s := ingressStore(t, now)
+	at := now.Add(10 * time.Second)
+	s.mu.Lock()
+	setIngressNodeHealthyLocked(s, "ir-1", now.Add(2*time.Second), 20, 5, 0)
+	setIngressNodeHealthyLocked(s, "ir-2", now.Add(2*time.Second), 20, 5, 0)
+	setIngressRoutesLocked(s, "ir-1", telemetry.RouteSnapshot{RouteID: "de", Status: "up", LatencyMS: 20, ProbeKind: "tcp"})
+	setIngressRoutesLocked(s, "ir-2", telemetry.RouteSnapshot{RouteID: "de", Status: "up", LatencyMS: 20, ProbeKind: "tcp"})
+	s.mu.Unlock()
+
+	p := DefaultDistributionPolicy()
+	if _, err := s.EvaluateDistributions(at, p); err != nil {
+		t.Fatal(err)
+	}
+	first := oneDistribution(t, s, at)
+
+	afterHold := at.Add(p.HoldDown + time.Second)
+	s.mu.Lock()
+	setDistributionHistoryLocked(s, "ir-1", afterHold, 900*1024*1024, 120)
+	setDistributionHistoryLocked(s, "ir-2", afterHold, 10*1024*1024, 2)
+	s.mu.Unlock()
+	if _, err := s.EvaluateDistributions(afterHold, p); err != nil {
+		t.Fatal(err)
+	}
+	second := oneDistribution(t, s, afterHold)
+	if second.Generation <= first.Generation || sameWeights(first.Weights, second.Weights) {
+		t.Fatalf("large load shift did not advance distribution after hold-down: first=%+v second=%+v", first, second)
+	}
+	if second.Weights["ir-1"] >= second.Weights["ir-2"] {
+		t.Fatalf("busy IR did not lose weight after hold-down: %+v", second)
+	}
+}
