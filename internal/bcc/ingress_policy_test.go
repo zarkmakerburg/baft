@@ -44,6 +44,9 @@ func ingressStore(t *testing.T, now time.Time) *Store {
 }
 
 func setIngressNodeHealthyLocked(s *Store, id string, now time.Time, latency, noise, errRate int64) {
+	if s.st.Health == nil {
+		s.st.Health = map[string]NodeHealthRecord{}
+	}
 	n := s.st.Nodes[id]
 	n.AgentSeen = now
 	n.LastChecked = now
