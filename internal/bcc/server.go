@@ -91,9 +91,6 @@ func NewServer(store *Store,adminToken string) (*Server,error) {
 	if err!=nil{return nil,fmt.Errorf("open audit log: %w",err)}
 	outbox,err:=OpenAuditAnchorOutbox(store.path+".audit-anchor-outbox.json")
 	if err!=nil{return nil,fmt.Errorf("open audit anchor outbox: %w",err)}
-	entries,err:=audit.List(0)
-	if err!=nil{return nil,fmt.Errorf("read audit for outbox reconcile: %w",err)}
-	if err:=outbox.ReconcileSecurityAudit(entries);err!=nil{return nil,fmt.Errorf("reconcile audit anchor outbox: %w",err)}
 	initialAlerts:=store.ActiveAlertsSnapshot()
 	srv:=&Server{
 		store:store,adminToken:adminToken,audit:audit,guard:newIPGuard(SecurityConfig{}),trustedProxies:map[string]struct{}{},probeTimeout:1500*time.Millisecond,
@@ -104,6 +101,9 @@ func NewServer(store *Store,adminToken string) (*Server,error) {
 		loginLim:newLoginLimiter(),hashing:newHashSlots(2),
 	}
 	if err:=srv.FlushSecurityAuditIntents();err!=nil{return nil,fmt.Errorf("reconcile security audit intents: %w",err)}
+	entries,err:=audit.List(0)
+	if err!=nil{return nil,fmt.Errorf("read audit for outbox reconcile: %w",err)}
+	if err:=outbox.ReconcileSecurityAudit(entries);err!=nil{return nil,fmt.Errorf("reconcile audit anchor outbox: %w",err)}
 	return srv,nil
 }
 
@@ -479,10 +479,14 @@ func (s *Server) revokeNode(w http.ResponseWriter,r *http.Request){
 	var in struct{NodeID string `json:"node_id"`; Reason string `json:"reason"`}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
 	details:=map[string]any{"reason":strings.TrimSpace(in.Reason)}
-	n,err:=s.store.RevokeNode(strings.TrimSpace(in.NodeID),in.Reason,s.now())
+	now:=s.now()
+	n,err:=s.store.RevokeNode(strings.TrimSpace(in.NodeID),in.Reason,now,AuditEntry{Timestamp:now.UTC(),Actor:"admin",RemoteIP:s.clientIP(r),Details:withRequest(r,details)})
 	if err!=nil{s.auditFailure(w,r,"node.revoke",in.NodeID,details,err,http.StatusBadRequest);return}
-	if err:=s.auditAdmin(r,"node.revoke",in.NodeID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
-	_ = s.SendAuditAnchor(r.Context())
+	if err:=s.FlushSecurityAuditIntents();err!=nil{
+		w.Header().Set("X-BAFT-Audit-State","pending")
+	}else{
+		_ = s.SendAuditAnchor(r.Context())
+	}
 	writeJSON(w,http.StatusOK,n)
 }
 
@@ -502,9 +506,13 @@ func (s *Server) rotateNodeToken(w http.ResponseWriter,r *http.Request){
 	if !ok||strings.TrimSpace(newToken)==""{http.Error(w,"agent token environment variable is empty",400);return}
 	grace:=time.Duration(in.GraceSeconds)*time.Second
 	details:=map[string]any{"agent_token_env":envName,"grace_seconds":in.GraceSeconds}
-	n,err:=s.store.RotateAgentToken(strings.TrimSpace(in.NodeID),newToken,s.now(),grace)
+	now:=s.now()
+	n,err:=s.store.RotateAgentToken(strings.TrimSpace(in.NodeID),newToken,now,grace,AuditEntry{Timestamp:now.UTC(),Actor:"admin",RemoteIP:s.clientIP(r),Details:withRequest(r,details)})
 	if err!=nil{s.auditFailure(w,r,"node.token.rotate",in.NodeID,details,err,http.StatusBadRequest);return}
-	if err:=s.auditAdmin(r,"node.token.rotate",in.NodeID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
-	_ = s.SendAuditAnchor(r.Context())
+	if err:=s.FlushSecurityAuditIntents();err!=nil{
+		w.Header().Set("X-BAFT-Audit-State","pending")
+	}else{
+		_ = s.SendAuditAnchor(r.Context())
+	}
 	writeJSON(w,http.StatusOK,n)
 }

@@ -346,13 +346,15 @@ func (s *Store) authorizedLocked(nodeID,token string) bool {
 	return ok
 }
 
-func (s *Store) RotateAgentToken(nodeID,newToken string,now time.Time,grace time.Duration)(Node,error){
+func (s *Store) RotateAgentToken(nodeID,newToken string,now time.Time,grace time.Duration,audits ...AuditEntry)(Node,error){
 	if strings.TrimSpace(newToken)==""{return Node{},errors.New("new agent token is required")}
 	if grace<0||grace>15*time.Minute{return Node{},errors.New("token rotation grace must be between 0 and 15 minutes")}
+	if len(audits)>1{return Node{},errors.New("at most one security audit intent is allowed")}
 	now=now.UTC()
 	s.mu.Lock();defer s.mu.Unlock()
 	n,ok:=s.st.Nodes[nodeID];if !ok{return Node{},errors.New("node not found")}
 	if n.Revoked{return Node{},errors.New("node is revoked")}
+	before,err:=cloneState(s.st);if err!=nil{return Node{},err}
 	oldHash:=n.AgentTokenHash
 	n.AgentTokenHash=tokenHash(newToken)
 	if grace>0&&oldHash!=""{
@@ -364,14 +366,22 @@ func (s *Store) RotateAgentToken(nodeID,newToken string,now time.Time,grace time
 	}
 	n.UpdatedAt=now
 	s.st.Nodes[nodeID]=n
-	if err:=s.saveLocked();err!=nil{return Node{},err}
+	if len(audits)==1{
+		a:=audits[0]
+		a.Timestamp,a.Action,a.Target,a.Outcome=now,"node.token.rotate",nodeID,"success"
+		if a.Actor==""{a.Actor="admin"}
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return Node{},err}
+	}
+	if err:=s.saveLocked();err!=nil{s.st=before;return Node{},err}
 	return publicNode(n),nil
 }
 
-func (s *Store) RevokeNode(nodeID,reason string,now time.Time)(Node,error){
+func (s *Store) RevokeNode(nodeID,reason string,now time.Time,audits ...AuditEntry)(Node,error){
+	if len(audits)>1{return Node{},errors.New("at most one security audit intent is allowed")}
 	now=now.UTC()
 	s.mu.Lock();defer s.mu.Unlock()
 	n,ok:=s.st.Nodes[nodeID];if !ok{return Node{},errors.New("node not found")}
+	before,err:=cloneState(s.st);if err!=nil{return Node{},err}
 	n.Revoked=true
 	n.RevokedAt=now
 	n.RevokeReason=strings.TrimSpace(reason)
@@ -380,7 +390,13 @@ func (s *Store) RevokeNode(nodeID,reason string,now time.Time)(Node,error){
 	n.Health="down"
 	n.UpdatedAt=now
 	s.st.Nodes[nodeID]=n
-	if err:=s.saveLocked();err!=nil{return Node{},err}
+	if len(audits)==1{
+		a:=audits[0]
+		a.Timestamp,a.Action,a.Target,a.Outcome=now,"node.revoke",nodeID,"success"
+		if a.Actor==""{a.Actor="admin"}
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return Node{},err}
+	}
+	if err:=s.saveLocked();err!=nil{s.st=before;return Node{},err}
 	return publicNode(n),nil
 }
 

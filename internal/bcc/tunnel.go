@@ -543,6 +543,8 @@ func (s *Store) failLocked(t *Tunnel, reason string, now time.Time) {
 func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	beforeState,err:=cloneState(s.st)
+	if err!=nil{return nil,err}
 	var events []TunnelEvent
 	changed := false
 	ids := make([]string, 0, len(s.st.Tunnels))
@@ -592,13 +594,18 @@ func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 			outcome = "success"
 		}
 		if _, err := s.enqueueSecurityAuditLocked(securityAuditEvent(now, e.Action, e.TunnelID, outcome, e.Detail)); err != nil {
+			s.st=beforeState
 			return nil, err
 		}
 	}
 	if !changed && !rotChanged {
 		return nil, nil
 	}
-	return events, s.saveLocked()
+	if err:=s.saveLocked();err!=nil{
+		s.st=beforeState
+		return nil,err
+	}
+	return events,nil
 }
 
 func (s *Store) advanceLocked(t *Tunnel, now time.Time) *TunnelEvent {

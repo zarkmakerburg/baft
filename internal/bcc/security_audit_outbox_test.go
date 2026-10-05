@@ -1,6 +1,7 @@
 package bcc
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -301,5 +302,177 @@ func TestConcurrentSecurityAuditFlushIsExactlyOnce(t *testing.T) {
 	}
 	if err := app.audit.Verify(); err != nil {
 		t.Fatalf("audit chain verify: %v", err)
+	}
+}
+
+func TestNodeRevokeCommitsDurableAuditIntentBeforeDelivery(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	store, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertNode(Node{ID: "n1", Alias: "N1", Address: "127.0.0.1:34001", Role: "foreign"}, "old-token"); err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewServer(store, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	breakAuditAppend(t, app.audit)
+
+	rr := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr, authReq(http.MethodPost, "/api/nodes/revoke", "admin", map[string]any{"node_id": "n1", "reason": "security incident"}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-BAFT-Audit-State"); got != "pending" {
+		t.Fatalf("audit state=%q, want pending", got)
+	}
+	node, ok := store.GetNode("n1")
+	if !ok || !node.Revoked {
+		t.Fatalf("revoke state not committed: %+v", node)
+	}
+	pending := store.PendingSecurityAuditIntents()
+	if len(pending) != 1 || pending[0].Action != "node.revoke" {
+		t.Fatalf("pending revoke intent=%+v", pending)
+	}
+
+	reopened, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewServer(reopened, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.PendingSecurityAuditIntents()) != 0 {
+		t.Fatalf("revoke intent did not drain: %+v", reopened.PendingSecurityAuditIntents())
+	}
+	entries, err := restarted.audit.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	for _, e := range entries {
+		if e.Action == "node.revoke" {
+			count++
+			if e.IntentID == "" {
+				t.Fatal("revoke audit entry has no intent id")
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("node.revoke audit count=%d entries=%+v", count, entries)
+	}
+	if got := restarted.anchorOutbox.Pending(); len(got) != 1 {
+		t.Fatalf("revoke anchor was not reconciled after restart: %+v", got)
+	}
+	if err := restarted.audit.Verify(); err != nil {
+		t.Fatalf("audit chain verify: %v", err)
+	}
+}
+
+func TestNodeTokenRotationCommitsDurableAuditIntentBeforeDelivery(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	store, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertNode(Node{ID: "n1", Alias: "N1", Address: "127.0.0.1:34002", Role: "foreign"}, "old-token"); err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewServer(store, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SEC002_NEW_TOKEN", "new-token")
+	breakAuditAppend(t, app.audit)
+
+	rr := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr, authReq(http.MethodPost, "/api/nodes/rotate-token", "admin", map[string]any{"node_id": "n1", "agent_token_env": "SEC002_NEW_TOKEN", "grace_seconds": 0}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rotate status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-BAFT-Audit-State"); got != "pending" {
+		t.Fatalf("audit state=%q, want pending", got)
+	}
+	store.mu.Lock()
+	_, oldOK := store.authorizedHashLocked("n1", "old-token", time.Now().UTC())
+	_, newOK := store.authorizedHashLocked("n1", "new-token", time.Now().UTC())
+	store.mu.Unlock()
+	if oldOK || !newOK {
+		t.Fatalf("token state is not committed truth old=%v new=%v", oldOK, newOK)
+	}
+	pending := store.PendingSecurityAuditIntents()
+	if len(pending) != 1 || pending[0].Action != "node.token.rotate" {
+		t.Fatalf("pending token intent=%+v", pending)
+	}
+
+	reopened, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewServer(reopened, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := restarted.audit.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	for _, e := range entries {
+		if e.Action == "node.token.rotate" {
+			count++
+			if e.IntentID == "" {
+				t.Fatal("token rotation audit entry has no intent id")
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("node.token.rotate audit count=%d entries=%+v", count, entries)
+	}
+	if got := restarted.anchorOutbox.Pending(); len(got) != 1 {
+		t.Fatalf("token rotation anchor was not reconciled after restart: %+v", got)
+	}
+	if err := restarted.audit.Verify(); err != nil {
+		t.Fatalf("audit chain verify: %v", err)
+	}
+}
+
+func TestAdvanceTunnelsRestoresInMemoryStateWhenSaveFails(t *testing.T) {
+	store := tunnelStore(t)
+	now := time.Now().UTC()
+	tn := newTunnel(t, store, now)
+	job := pullAll(t, store, "ex-1")[0]
+	if err := store.AckJobOutput("ex-1", "tok-ex-1", job.ID, "succeeded", "pairing code issued", testPairCode); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.snapshotState()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store.path = filepath.Join(blocker, "state.json")
+	if _, err := store.AdvanceTunnels(now.Add(time.Second)); err == nil {
+		t.Fatal("AdvanceTunnels unexpectedly succeeded with an unwritable state path")
+	}
+	after, err := store.snapshotState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(before)
+	a, _ := json.Marshal(after)
+	if string(a) != string(b) {
+		t.Fatalf("in-memory state advanced despite failed transaction\nbefore=%s\nafter=%s", b, a)
+	}
+	if got := after.Tunnels[tn.ID]; got.Phase != tn.Phase || got.JobID != tn.JobID {
+		t.Fatalf("tunnel state advanced despite failed save: before=%+v after=%+v", tn, got)
 	}
 }
