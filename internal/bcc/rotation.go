@@ -136,8 +136,9 @@ func (s *Store) rotationOnNodesLocked(nodes ...string) *CertRotation {
 	return nil
 }
 
-// StartCertRotation validates a request and queues PREPARE on the EX.
-func (s *Store) StartCertRotation(req CertRotationRequest, now time.Time) (CertRotation, error) {
+// StartCertRotation validates a request, queues PREPARE on the EX, and
+// commits the success audit intent in the same state transaction.
+func (s *Store) StartCertRotation(req CertRotationRequest, now time.Time, audit AuditEntry) (CertRotation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.st.Tunnels[req.TunnelID]
@@ -177,6 +178,10 @@ func (s *Store) StartCertRotation(req CertRotationRequest, now time.Time) (CertR
 	if time.Duration(req.HoldSeconds)*time.Second >= overlap {
 		return CertRotation{}, errors.New("the hold must be shorter than the overlap")
 	}
+	before, err := cloneState(s.st)
+	if err != nil {
+		return CertRotation{}, err
+	}
 	r := CertRotation{
 		ID: newRotationID(), TunnelID: t.ID, InstanceID: t.InstanceID, EXNode: t.EXNode, IRNode: t.IRNode, Epoch: t.CertEpoch + 1,
 		Phase: CertRotPreparing, HoldSeconds: req.HoldSeconds, OverlapDeadline: now.UTC().Add(overlap),
@@ -187,7 +192,23 @@ func (s *Store) StartCertRotation(req CertRotationRequest, now time.Time) (CertR
 		s.st.CertRotations = map[string]CertRotation{}
 	}
 	s.st.CertRotations[r.ID] = r
-	return r, s.saveLocked()
+	audit.Timestamp, audit.Action, audit.Target, audit.Outcome = now.UTC(), "cert.rotation.start", r.ID, "success"
+	if audit.Actor == "" {
+		audit.Actor = "admin"
+	}
+	audit.Details = mergeAuditDetails(audit.Details, map[string]any{
+		"rotation_id": r.ID, "epoch": r.Epoch, "job_id": r.JobID,
+		"overlap_deadline": r.OverlapDeadline.Format(time.RFC3339),
+	})
+	if _, err := s.enqueueSecurityAuditLocked(audit); err != nil {
+		s.st = before
+		return CertRotation{}, err
+	}
+	if err := s.saveLocked(); err != nil {
+		s.st = before
+		return CertRotation{}, err
+	}
+	return r, nil
 }
 
 func (s *Store) rotJobLocked(r *CertRotation, node, typ string, params map[string]string, now time.Time) {
@@ -224,7 +245,8 @@ func (s *Store) ListCertRotations() []CertRotation {
 
 // CancelCertRotation rolls a rotation back on request. Once RETIRE started
 // the new certificate is the working one and there is nothing to cancel.
-func (s *Store) CancelCertRotation(id, reason string, now time.Time) (CertRotation, error) {
+// The state change and its success audit intent are one durable transaction.
+func (s *Store) CancelCertRotation(id, reason string, now time.Time, audit AuditEntry) (CertRotation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.st.CertRotations[id]
@@ -239,13 +261,30 @@ func (s *Store) CancelCertRotation(id, reason string, now time.Time) (CertRotati
 	case certRotRetiring(r.Phase):
 		return r, errors.New("the old certificate is being retired; the rotation can no longer be cancelled")
 	}
+	before, err := cloneState(s.st)
+	if err != nil {
+		return CertRotation{}, err
+	}
 	r.Error = "cancelled by operator"
 	if v := strings.TrimSpace(reason); v != "" {
 		r.Error += ": " + v
 	}
 	s.startRotationRollbackLocked(&r, now)
 	s.st.CertRotations[id] = r
-	return r, s.saveLocked()
+	audit.Timestamp, audit.Action, audit.Target, audit.Outcome = now.UTC(), "cert.rotation.cancel", id, "success"
+	if audit.Actor == "" {
+		audit.Actor = "admin"
+	}
+	audit.Details = mergeAuditDetails(audit.Details, map[string]any{"phase": r.Phase})
+	if _, err := s.enqueueSecurityAuditLocked(audit); err != nil {
+		s.st = before
+		return CertRotation{}, err
+	}
+	if err := s.saveLocked(); err != nil {
+		s.st = before
+		return CertRotation{}, err
+	}
+	return r, nil
 }
 
 // startRotationRollbackLocked cancels queued steps and rolls back the EX
@@ -597,16 +636,17 @@ func (s *Server) certRotationStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	details := map[string]any{"tunnel_id": in.TunnelID, "hold_seconds": in.HoldSeconds, "overlap_hours": in.OverlapHours}
-	rot, err := s.store.StartCertRotation(in, s.now())
+	now := s.now()
+	rot, err := s.store.StartCertRotation(in, now, AuditEntry{
+		Timestamp: now.UTC(), Actor: "admin", RemoteIP: s.clientIP(r),
+		Details: withRequest(r, details),
+	})
 	if err != nil {
 		s.auditFailure(w, r, "cert.rotation.start", in.TunnelID, details, err, 400)
 		return
 	}
-	details["rotation_id"], details["epoch"], details["job_id"] = rot.ID, rot.Epoch, rot.JobID
-	details["overlap_deadline"] = rot.OverlapDeadline.Format(time.RFC3339)
-	if err := s.auditAdmin(r, "cert.rotation.start", rot.ID, "success", details); err != nil {
-		http.Error(w, "audit log failure", 500)
-		return
+	if err := s.FlushSecurityAuditIntents(); err != nil {
+		w.Header().Set("X-BAFT-Audit-State", "pending")
 	}
 	writeJSON(w, 202, rot)
 }
@@ -630,14 +670,17 @@ func (s *Server) certRotationCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	details := map[string]any{"reason": strings.TrimSpace(in.Reason)}
-	rot, err := s.store.CancelCertRotation(in.ID, in.Reason, s.now())
+	now := s.now()
+	rot, err := s.store.CancelCertRotation(in.ID, in.Reason, now, AuditEntry{
+		Timestamp: now.UTC(), Actor: "admin", RemoteIP: s.clientIP(r),
+		Details: withRequest(r, details),
+	})
 	if err != nil {
 		s.auditFailure(w, r, "cert.rotation.cancel", in.ID, details, err, 400)
 		return
 	}
-	if err := s.auditAdmin(r, "cert.rotation.cancel", in.ID, "success", details); err != nil {
-		http.Error(w, "audit log failure", 500)
-		return
+	if err := s.FlushSecurityAuditIntents(); err != nil {
+		w.Header().Set("X-BAFT-Audit-State", "pending")
 	}
 	writeJSON(w, 200, rot)
 }

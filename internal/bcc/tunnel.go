@@ -543,6 +543,8 @@ func (s *Store) failLocked(t *Tunnel, reason string, now time.Time) {
 func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	beforeState,err:=cloneState(s.st)
+	if err!=nil{return nil,err}
 	var events []TunnelEvent
 	changed := false
 	ids := make([]string, 0, len(s.st.Tunnels))
@@ -585,10 +587,25 @@ func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 	}
 	rotEvents, rotChanged := s.advanceRotationsLocked(now.UTC())
 	events = append(events, rotEvents...)
+	for _, e := range rotEvents {
+		outcome := "failure"
+		switch e.Action {
+		case "cert.rotation.activated", "cert.rotation.complete":
+			outcome = "success"
+		}
+		if _, err := s.enqueueSecurityAuditLocked(securityAuditEvent(now, e.Action, e.TunnelID, outcome, e.Detail)); err != nil {
+			s.st=beforeState
+			return nil, err
+		}
+	}
 	if !changed && !rotChanged {
 		return nil, nil
 	}
-	return events, s.saveLocked()
+	if err:=s.saveLocked();err!=nil{
+		s.st=beforeState
+		return nil,err
+	}
+	return events,nil
 }
 
 func (s *Store) advanceLocked(t *Tunnel, now time.Time) *TunnelEvent {
@@ -773,10 +790,14 @@ func (s *Server) AdvanceTunnels() {
 	if err != nil {
 		return
 	}
+	_ = s.FlushSecurityAuditIntents()
 	for _, e := range events {
+		if strings.HasPrefix(e.Action, "cert.rotation.") {
+			continue
+		}
 		outcome := "success"
 		switch e.Action {
-		case "tunnel.active", "tunnel.in_sync", "cert.rotation.activated", "cert.rotation.complete":
+		case "tunnel.active", "tunnel.in_sync":
 		default:
 			outcome = "failure"
 		}

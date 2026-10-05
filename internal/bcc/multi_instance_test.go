@@ -221,7 +221,7 @@ func TestScopedCertRotationJobCarriesInstanceIdentity(t *testing.T) {
 		Phase: TunnelActive,
 	}
 	s.mu.Unlock()
-	rot, err := s.StartCertRotation(CertRotationRequest{TunnelID: "tun-a"}, now)
+	rot, err := s.StartCertRotation(CertRotationRequest{TunnelID: "tun-a"}, now, AuditEntry{Timestamp: now.UTC(), Actor: "test", Action: "cert.rotation.start", Outcome: "success"})
 	if err != nil {
 		t.Fatal(err)
 	}
