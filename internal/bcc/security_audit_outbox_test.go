@@ -476,3 +476,47 @@ func TestAdvanceTunnelsRestoresInMemoryStateWhenSaveFails(t *testing.T) {
 		t.Fatalf("tunnel state advanced despite failed save: before=%+v after=%+v", tn, got)
 	}
 }
+
+func TestAuditDirectorySyncFailureDoesNotReuseSequence(t *testing.T) {
+	store, tunnelID := readyRotationStore(t)
+	app, err := NewServer(store, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	realSync := app.audit.syncDir
+	app.audit.syncDir = func(string) error { return os.ErrPermission }
+
+	rr := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr, authReq(http.MethodPost, "/api/tunnels/rotate-cert", "admin", map[string]any{
+		"tunnel_id": tunnelID,
+	}))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("start status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-BAFT-Audit-State"); got != "pending" {
+		t.Fatalf("audit state=%q, want pending", got)
+	}
+	if got := store.PendingSecurityAuditIntents(); len(got) != 1 {
+		t.Fatalf("pending after directory sync failure=%+v", got)
+	}
+
+	app.audit.syncDir = realSync
+	if err := app.FlushSecurityAuditIntents(); err != nil {
+		t.Fatalf("reconcile delivered-but-pending intent: %v", err)
+	}
+	if got := store.PendingSecurityAuditIntents(); len(got) != 0 {
+		t.Fatalf("pending after reconcile=%+v", got)
+	}
+	second, err := app.audit.Append(AuditEntry{
+		Timestamp: time.Now().UTC(), Actor: "test", Action: "audit.sequence.after_dirsync_error", Outcome: "success",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Sequence != 2 {
+		t.Fatalf("sequence reused after directory sync error: got=%d want=2", second.Sequence)
+	}
+	if err := app.audit.Verify(); err != nil {
+		t.Fatalf("audit chain corrupted after directory sync error: %v", err)
+	}
+}

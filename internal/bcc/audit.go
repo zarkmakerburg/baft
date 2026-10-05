@@ -32,11 +32,12 @@ type AuditLog struct {
 	path     string
 	lastHash string
 	nextSeq  uint64
+	syncDir  func(string) error
 }
 
 func OpenAuditLog(path string) (*AuditLog,error) {
 	if path==""{return nil,errors.New("audit path is required")}
-	a:=&AuditLog{path:path,nextSeq:1}
+	a:=&AuditLog{path:path,nextSeq:1,syncDir:fsyncDir}
 	f,err:=os.Open(path)
 	if errors.Is(err,os.ErrNotExist){return a,nil}
 	if err!=nil{return nil,err}
@@ -80,8 +81,13 @@ func (a *AuditLog) Append(e AuditEntry)(AuditEntry,error){
 	closeErr:=f.Close()
 	if err!=nil{return AuditEntry{},err}
 	if closeErr!=nil{return AuditEntry{},closeErr}
-	if err:=fsyncDir(a.path);err!=nil{return AuditEntry{},err}
+	// The entry is visible and file-fsynced at this point. Advance the
+	// in-process chain before the directory durability barrier so a transient
+	// directory-sync failure cannot make the next append reuse this sequence.
 	a.lastHash=e.Hash;a.nextSeq++
+	syncDir:=a.syncDir
+	if syncDir==nil{syncDir=fsyncDir}
+	if err:=syncDir(a.path);err!=nil{return AuditEntry{},err}
 	return e,nil
 }
 
