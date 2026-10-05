@@ -232,6 +232,7 @@ func normalizeCloudflareObserved(in SmartIngressProviderObserved, binding SmartI
 	if !in.Exists {
 		return SmartIngressProviderObserved{}, ""
 	}
+	in.Origins = append([]SmartIngressProviderOrigin(nil), in.Origins...)
 	in.RouteID = strings.TrimSpace(in.RouteID)
 	in.Provider = strings.ToLower(strings.TrimSpace(in.Provider))
 	in.EXNode = strings.TrimSpace(in.EXNode)

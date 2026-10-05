@@ -276,6 +276,40 @@ func TestCloudflareMissingBindingAndUnmanagedObservedBlock(t *testing.T) {
 	}
 }
 
+func TestCloudflarePlannerDoesNotMutateObservedInput(t *testing.T) {
+	view := SmartIngressView{SmartIngressPlan: SmartIngressPlan{
+		RouteID: "de", EXNode: "ex-1", Host: "de.ingress.example.test",
+		State: SmartIngressReady, Action: SmartIngressActionPublish,
+		Generation: 2, DistributionGeneration: 2,
+		Endpoints: []SmartIngressEndpoint{
+			{IRNode: "ir-1", IP: "1.1.1.1", Weight: 65},
+			{IRNode: "ir-2", IP: "8.8.8.8", Weight: 35},
+		},
+	}, Usable: true}
+	binding := SmartIngressProviderBinding{
+		RouteID: "de", Provider: SmartIngressProviderCloudflare, EXNode: "ex-1",
+		AccountID: "account-01", ZoneID: "zone-01",
+	}
+	base, err := PlanSmartIngressProviderDryRun([]SmartIngressView{view}, SmartIngressProviderDryRunRequest{
+		Provider: SmartIngressProviderCloudflare, Bindings: []SmartIngressProviderBinding{binding},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := observedFromOperations(base.Operations)
+	observed[0].Origins[0], observed[0].Origins[1] = observed[0].Origins[1], observed[0].Origins[0]
+	before, _ := json.Marshal(observed)
+	if _, err := PlanSmartIngressProviderDryRun([]SmartIngressView{view}, SmartIngressProviderDryRunRequest{
+		Provider: SmartIngressProviderCloudflare, Bindings: []SmartIngressProviderBinding{binding}, Observed: observed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := json.Marshal(observed)
+	if !bytes.Equal(before, after) {
+		t.Fatalf("planner mutated observed input\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestCloudflareExactDesiredObservedIsNoop(t *testing.T) {
 	now := time.Unix(36000, 0).UTC()
 	_, views := readySmartIngressViews(t, now)
