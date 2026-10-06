@@ -241,6 +241,47 @@ func TestDoctorReportsMissingReleaseAndStoppedService(t *testing.T) {
 	if code != 1 || c["service"].Status != checkFail || c["release"].Status != checkWarn {
 		t.Fatalf("code=%d service=%+v release=%+v", code, c["service"], c["release"])
 	}
+	if c["release"].Provenance != provenanceMissingState ||
+		!strings.Contains(c["release"].Detail, "external hash alone does not prove signed provenance") {
+		t.Fatalf("missing release state was not distinguished: %+v", c["release"])
+	}
+}
+
+func TestDoctorDistinguishesVerifiedAndSourceUnknownProvenance(t *testing.T) {
+	cfg, _ := writeDialerConfig(t, 0o600)
+	h := newFakeHost(t)
+
+	_, verified := doctorResult(t, h, "--file", cfg, "--release-state", writeReleaseState(t, "v"+version))
+	if got := verified["release"]; got.Status != checkOK || got.Provenance != provenanceVerifiedSigned {
+		t.Fatalf("verified release = %+v", got)
+	}
+
+	d := &doctor{}
+	d.checkReleaseVersion(filepath.Join(t.TempDir(), "missing-source.json"), "main-938f5d6")
+	if got := d.checks[len(d.checks)-1]; got.Status != checkWarn || got.Provenance != provenanceSourceUnknown ||
+		!strings.Contains(got.Detail, "source or unknown build") {
+		t.Fatalf("source/unknown release = %+v", got)
+	}
+
+	d = &doctor{}
+	d.checkReleaseVersion(filepath.Join(t.TempDir(), "missing-release.json"), "0.2.0")
+	if got := d.checks[len(d.checks)-1]; got.Status != checkWarn || got.Provenance != provenanceMissingState ||
+		!strings.Contains(got.Detail, "external hash alone does not prove signed provenance") {
+		t.Fatalf("release-shaped missing state = %+v", got)
+	}
+}
+
+func TestDoctorRejectsMalformedReleaseStateAsVerifiedProvenance(t *testing.T) {
+	cfg, _ := writeDialerConfig(t, 0o600)
+	h := newFakeHost(t)
+	p := filepath.Join(t.TempDir(), "release-state.json")
+	if err := os.WriteFile(p, []byte(`{"schema_version":1,"version":"v`+version+`","commit":"","revocation_sequence":1,"updated_at":"2026-10-01T00:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, c := doctorResult(t, h, "--file", cfg, "--release-state", p)
+	if got := c["release"]; got.Status != checkFail || got.Provenance != provenanceStateInvalid {
+		t.Fatalf("malformed state was accepted: %+v", got)
+	}
 }
 
 func TestLogsRunsJournalctl(t *testing.T) {

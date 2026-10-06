@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,7 +140,12 @@ func TestNoiseHTMLFallbackAndAuthenticatedHTTP2(t *testing.T) {
 func TestNoiseSlowProbeBounded(t *testing.T) {
 	ik, _ := securityinternal.GenerateKeyPair()
 	rk, _ := securityinternal.GenerateKeyPair()
-	h, err := HandlerWithNoise(nil, NoiseOptions{Handshake: securityinternal.HandshakeConfig{Static: rk, PeerStatic: ik.Public}, PeerIdentity: "test", HandshakeTimeout: 20 * time.Millisecond, MaxPending: 1})
+	phaseCh := make(chan string, 1)
+	h, err := HandlerWithNoise(nil, NoiseOptions{
+		Handshake: securityinternal.HandshakeConfig{Static: rk, PeerStatic: ik.Public},
+		PeerIdentity: "test", HandshakeTimeout: 20 * time.Millisecond, MaxPending: 1,
+		OnHandshakeFailure: func(phase string) { phaseCh <- phase },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,5 +172,91 @@ func TestNoiseSlowProbeBounded(t *testing.T) {
 	}
 	if resp.Header.Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Fatal(resp.Header)
+	}
+	select {
+	case phase := <-phaseCh:
+		if phase != "noise_timeout" {
+			t.Fatalf("failure phase=%q, want noise_timeout", phase)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing phase-aware server failure callback")
+	}
+}
+
+func TestOpenNoiseReportsTLSPhase(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan struct{})
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		close(accepted)
+	}()
+
+	client, err := NewClient("https://"+ln.Addr().String(), &tls.Config{
+		MinVersion: tls.VersionTLS13, ServerName: "field-test.invalid", NextProtos: []string{"h2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	ik, _ := securityinternal.GenerateKeyPair()
+	rk, _ := securityinternal.GenerateKeyPair()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _, _, err = client.OpenNoise(ctx, securityinternal.HandshakeConfig{Static: ik, PeerStatic: rk.Public})
+	if err == nil {
+		t.Fatal("TLS failure unexpectedly succeeded")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "phase=tls_handshake_error") {
+		t.Fatalf("error missing TLS phase: %v", err)
+	}
+	if !strings.Contains(got, "tcp_connect_complete@") || !strings.Contains(got, "tls_handshake_error@") {
+		t.Fatalf("error missing phase timeline: %v", err)
+	}
+	if strings.Contains(got, ln.Addr().String()) || strings.Contains(got, "https://") {
+		t.Fatalf("phase error leaked endpoint metadata: %v", err)
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept test connection")
+	}
+}
+
+func TestNoisePhaseTraceSanitizedErrorPreservesCause(t *testing.T) {
+	op := &net.OpError{Op: "read", Net: "tcp",
+		Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.17"), Port: 18443},
+		Err:  io.EOF,
+	}
+	original := &url.Error{Op: "Post", URL: "https://private.example:18443/baft/v1/carrier", Err: op}
+	trace := newNoisePhaseTrace()
+	trace.note("tls_handshake_error", "")
+	wrapped := trace.wrap(original, false, true)
+	if !errors.Is(wrapped, io.EOF) {
+		t.Fatalf("transport cause lost: %v", wrapped)
+	}
+	var got *net.OpError
+	if !errors.As(wrapped, &got) || got != op {
+		t.Fatal("typed transport error identity lost")
+	}
+	for _, secret := range []string{"private.example", "192.0.2.17", "18443", "https://"} {
+		if strings.Contains(wrapped.Error(), secret) {
+			t.Fatalf("sanitized diagnostic leaked endpoint metadata: %v", wrapped)
+		}
+	}
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		if !errors.Is(trace.wrap(cause, false, true), cause) {
+			t.Fatalf("context cause lost: %v", cause)
+		}
+	}
+	if !errors.Is(trace.wrap(context.Canceled, true, true), context.DeadlineExceeded) {
+		t.Fatal("internal handshake timeout did not retain deadline semantics")
 	}
 }

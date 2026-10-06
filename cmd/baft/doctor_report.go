@@ -67,8 +67,23 @@ func annotate(c *check) {
 		set("L0", "service process", "the service is not running or keeps restarting",
 			"no carrier and no traffic while it is down")
 	case c.Name == "release":
-		set("", "release provenance", "this is not a verified signed release of this version",
-			"no assurance which binary runs; it cannot be matched to release evidence")
+		switch c.Provenance {
+		case provenanceMissingState:
+			set("", "release provenance", "release-shaped binary has no durable verified release state",
+				"version or hash resemblance alone is not signed provenance; the install path cannot be proven")
+		case provenanceSourceUnknown:
+			set("", "release provenance", "binary provenance is source or unknown",
+				"there is no durable signed-release evidence for the running binary")
+		case provenanceStateMismatch:
+			set("", "release provenance", "release state and running binary version disagree",
+				"the durable release evidence does not describe the running binary")
+		case provenanceStateInvalid:
+			set("", "release provenance", "the durable release state is unreadable or invalid",
+				"signed-release provenance cannot be established until the state is repaired")
+		default:
+			set("", "release provenance", "this is not a verified signed release of this version",
+				"no assurance which binary runs; it cannot be matched to release evidence")
+		}
 	case c.Name == "metrics":
 		set("L0", "service process", "the metrics endpoint does not answer",
 			"flows and recovery counters are not visible; usually the service is down")

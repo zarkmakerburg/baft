@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -127,8 +128,11 @@ func parseOpsFlags(name string, args []string, stderr io.Writer, extra func(*fla
 }
 
 type releaseState struct {
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
+	SchemaVersion      int    `json:"schema_version"`
+	Version            string `json:"version"`
+	Commit             string `json:"commit"`
+	RevocationSequence uint64 `json:"revocation_sequence"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 func readReleaseState(path string) (*releaseState, error) {
@@ -139,6 +143,18 @@ func readReleaseState(path string) (*releaseState, error) {
 	var s releaseState
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if s.SchemaVersion != 1 {
+		return nil, fmt.Errorf("%s: unsupported release-state schema %d", path, s.SchemaVersion)
+	}
+	if !strings.HasPrefix(s.Version, "v") || !releaseShapedVersion.MatchString(strings.TrimPrefix(s.Version, "v")) {
+		return nil, fmt.Errorf("%s: invalid release version %q", path, s.Version)
+	}
+	if !releaseCommit.MatchString(s.Commit) {
+		return nil, fmt.Errorf("%s: invalid release commit", path)
+	}
+	if _, err := time.Parse(time.RFC3339, s.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("%s: invalid release updated_at: %w", path, err)
 	}
 	return &s, nil
 }
@@ -335,6 +351,10 @@ type check struct {
 	Impact     string `json:"impact,omitempty"`
 	FixCommand string `json:"fix_command,omitempty"`
 	FixSafety  string `json:"fix_safety,omitempty"`
+	// Provenance is set only for the release check so automation can
+	// distinguish verified signed state from an unproven release-shaped
+	// binary and a source/unknown build.
+	Provenance string `json:"provenance,omitempty"`
 }
 
 // Fix safety classes for a suggested command.
@@ -463,23 +483,61 @@ func (d *doctor) checkService(service string) {
 	}
 }
 
+var (
+	releaseShapedVersion = regexp.MustCompile("^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$")
+	releaseCommit        = regexp.MustCompile("^[0-9a-f]{40}$")
+)
+
+const (
+	provenanceVerifiedSigned = "verified_signed_release"
+	provenanceMissingState   = "release_shaped_missing_state"
+	provenanceSourceUnknown  = "source_or_unknown_build"
+	provenanceStateInvalid   = "invalid_release_state"
+	provenanceStateMismatch  = "release_state_binary_mismatch"
+)
+
+func missingReleaseProvenance(binaryVersion string) string {
+	if releaseShapedVersion.MatchString(strings.TrimPrefix(binaryVersion, "v")) {
+		return provenanceMissingState
+	}
+	return provenanceSourceUnknown
+}
+
+func (d *doctor) addRelease(status, provenance, detail, hint string) {
+	d.add("release", status, detail, hint)
+	d.checks[len(d.checks)-1].Provenance = provenance
+}
+
 func (d *doctor) checkRelease(path string) {
+	d.checkReleaseVersion(path, version)
+}
+
+func (d *doctor) checkReleaseVersion(path, binaryVersion string) {
 	rs, err := readReleaseState(path)
 	if errors.Is(err, os.ErrNotExist) {
-		d.add("release", checkWarn, "no installer release state at "+path+" (source install?)",
-			"production servers should be installed from a signed release")
+		if missingReleaseProvenance(binaryVersion) == provenanceMissingState {
+			d.addRelease(checkWarn, provenanceMissingState,
+				fmt.Sprintf("binary reports release-shaped version %s but verified release state is absent at %s; a matching version or external hash alone does not prove signed provenance", binaryVersion, path),
+				"reinstall this exact signed release through a verified BAFT deployment path to recreate durable release provenance")
+		} else {
+			d.addRelease(checkWarn, provenanceSourceUnknown,
+				fmt.Sprintf("no verified release state at %s; binary reports %s, so treat this as a source or unknown build", path, binaryVersion),
+				"production servers should be installed from a signed release")
+		}
 		return
 	}
 	if err != nil {
-		d.add("release", checkFail, err.Error(), "")
+		d.addRelease(checkFail, provenanceStateInvalid, err.Error(), "")
 		return
 	}
-	if strings.TrimPrefix(rs.Version, "v") != version {
-		d.add("release", checkWarn, fmt.Sprintf("installed release %s but the binary reports %s", rs.Version, version),
+	if strings.TrimPrefix(rs.Version, "v") != strings.TrimPrefix(binaryVersion, "v") {
+		d.addRelease(checkWarn, provenanceStateMismatch,
+			fmt.Sprintf("verified release state says %s but the binary reports %s", rs.Version, binaryVersion),
 			"reinstall the release with install.sh")
 		return
 	}
-	d.add("release", checkOK, fmt.Sprintf("signed release %s (commit %.12s)", rs.Version, rs.Commit), "")
+	d.addRelease(checkOK, provenanceVerifiedSigned,
+		fmt.Sprintf("verified signed release %s (commit %.12s)", rs.Version, rs.Commit), "")
 }
 
 func (d *doctor) checkMetrics(cfg config.Config) {
