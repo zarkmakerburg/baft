@@ -128,8 +128,11 @@ func parseOpsFlags(name string, args []string, stderr io.Writer, extra func(*fla
 }
 
 type releaseState struct {
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
+	SchemaVersion      int    `json:"schema_version"`
+	Version            string `json:"version"`
+	Commit             string `json:"commit"`
+	RevocationSequence uint64 `json:"revocation_sequence"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 func readReleaseState(path string) (*releaseState, error) {
@@ -140,6 +143,18 @@ func readReleaseState(path string) (*releaseState, error) {
 	var s releaseState
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if s.SchemaVersion != 1 {
+		return nil, fmt.Errorf("%s: unsupported release-state schema %d", path, s.SchemaVersion)
+	}
+	if !strings.HasPrefix(s.Version, "v") || !releaseShapedVersion.MatchString(strings.TrimPrefix(s.Version, "v")) {
+		return nil, fmt.Errorf("%s: invalid release version %q", path, s.Version)
+	}
+	if !releaseCommit.MatchString(s.Commit) {
+		return nil, fmt.Errorf("%s: invalid release commit", path)
+	}
+	if _, err := time.Parse(time.RFC3339, s.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("%s: invalid release updated_at: %w", path, err)
 	}
 	return &s, nil
 }
@@ -468,7 +483,10 @@ func (d *doctor) checkService(service string) {
 	}
 }
 
-var releaseShapedVersion = regexp.MustCompile("^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$")
+var (
+	releaseShapedVersion = regexp.MustCompile("^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$")
+	releaseCommit        = regexp.MustCompile("^[0-9a-f]{40}$")
+)
 
 const (
 	provenanceVerifiedSigned = "verified_signed_release"
