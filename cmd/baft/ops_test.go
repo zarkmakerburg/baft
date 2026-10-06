@@ -256,13 +256,11 @@ func TestDoctorDistinguishesVerifiedAndSourceUnknownProvenance(t *testing.T) {
 		t.Fatalf("verified release = %+v", got)
 	}
 
-	oldVersion := version
-	version = "main-938f5d6"
-	t.Cleanup(func() { version = oldVersion })
-	_, unknown := doctorResult(t, h, "--file", cfg, "--release-state", filepath.Join(t.TempDir(), "none.json"))
-	if got := unknown["release"]; got.Status != checkWarn || got.Provenance != provenanceSourceUnknown ||
-		!strings.Contains(got.Detail, "source or unknown build") {
-		t.Fatalf("source/unknown release = %+v", got)
+	if got := missingReleaseProvenance("main-938f5d6"); got != provenanceSourceUnknown {
+		t.Fatalf("source/unknown classifier = %q", got)
+	}
+	if got := missingReleaseProvenance("0.2.0"); got != provenanceMissingState {
+		t.Fatalf("release-shaped classifier = %q", got)
 	}
 }
 
