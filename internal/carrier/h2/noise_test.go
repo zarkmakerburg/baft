@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -225,5 +227,36 @@ func TestOpenNoiseReportsTLSPhase(t *testing.T) {
 	case <-accepted:
 	case <-time.After(time.Second):
 		t.Fatal("server did not accept test connection")
+	}
+}
+
+func TestNoisePhaseTraceSanitizedErrorPreservesCause(t *testing.T) {
+	op := &net.OpError{Op: "read", Net: "tcp",
+		Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.17"), Port: 18443},
+		Err:  io.EOF,
+	}
+	original := &url.Error{Op: "Post", URL: "https://private.example:18443/baft/v1/carrier", Err: op}
+	trace := newNoisePhaseTrace()
+	trace.note("tls_handshake_error", "")
+	wrapped := trace.wrap(original, false, true)
+	if !errors.Is(wrapped, io.EOF) {
+		t.Fatalf("transport cause lost: %v", wrapped)
+	}
+	var got *net.OpError
+	if !errors.As(wrapped, &got) || got != op {
+		t.Fatal("typed transport error identity lost")
+	}
+	for _, secret := range []string{"private.example", "192.0.2.17", "18443", "https://"} {
+		if strings.Contains(wrapped.Error(), secret) {
+			t.Fatalf("sanitized diagnostic leaked endpoint metadata: %v", wrapped)
+		}
+	}
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		if !errors.Is(trace.wrap(cause, false, true), cause) {
+			t.Fatalf("context cause lost: %v", cause)
+		}
+	}
+	if !errors.Is(trace.wrap(context.Canceled, true, true), context.DeadlineExceeded) {
+		t.Fatal("internal handshake timeout did not retain deadline semantics")
 	}
 }
