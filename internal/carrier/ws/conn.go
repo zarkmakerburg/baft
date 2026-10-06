@@ -48,6 +48,13 @@ const maxReadFramePayload = 1 << 20 // 1 MiB
 // writes are split across frames; smaller writes go out as a single frame.
 const writeFramePayload = 32 * 1024
 
+// writeFrameBufs avoids a per-frame allocation while still allowing each
+// WebSocket frame to reach the underlying transport in one Write call.
+var writeFrameBufs = sync.Pool{New: func() any {
+	b := make([]byte, 14+writeFramePayload)
+	return &b
+}}
+
 // ErrClosed is returned by Read/Write after the connection is closed.
 var ErrClosed = errors.New("ws: connection closed")
 
@@ -289,7 +296,9 @@ func (c *Conn) writeFrame(opcode byte, payload []byte) error {
 	// extra syscall/TLS record, this prevents a tiny header-only TLS record from
 	// being separated from the frame payload by an intermediary. The wire bytes
 	// are unchanged: header (and client mask key) followed by payload.
-	wire := make([]byte, n+length)
+	bp := writeFrameBufs.Get().(*[]byte)
+	defer writeFrameBufs.Put(bp)
+	wire := (*bp)[:n+length]
 	copy(wire, hdr[:n])
 	if c.isClient {
 		// Mask into the wire buffer; never mutate the caller's slice.
