@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,7 +138,12 @@ func TestNoiseHTMLFallbackAndAuthenticatedHTTP2(t *testing.T) {
 func TestNoiseSlowProbeBounded(t *testing.T) {
 	ik, _ := securityinternal.GenerateKeyPair()
 	rk, _ := securityinternal.GenerateKeyPair()
-	h, err := HandlerWithNoise(nil, NoiseOptions{Handshake: securityinternal.HandshakeConfig{Static: rk, PeerStatic: ik.Public}, PeerIdentity: "test", HandshakeTimeout: 20 * time.Millisecond, MaxPending: 1})
+	phaseCh := make(chan string, 1)
+	h, err := HandlerWithNoise(nil, NoiseOptions{
+		Handshake: securityinternal.HandshakeConfig{Static: rk, PeerStatic: ik.Public},
+		PeerIdentity: "test", HandshakeTimeout: 20 * time.Millisecond, MaxPending: 1,
+		OnHandshakeFailure: func(phase string) { phaseCh <- phase },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,5 +170,60 @@ func TestNoiseSlowProbeBounded(t *testing.T) {
 	}
 	if resp.Header.Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Fatal(resp.Header)
+	}
+	select {
+	case phase := <-phaseCh:
+		if phase != "noise_timeout" {
+			t.Fatalf("failure phase=%q, want noise_timeout", phase)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing phase-aware server failure callback")
+	}
+}
+
+func TestOpenNoiseReportsTLSPhase(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan struct{})
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		close(accepted)
+	}()
+
+	client, err := NewClient("https://"+ln.Addr().String(), &tls.Config{
+		MinVersion: tls.VersionTLS13, ServerName: "field-test.invalid", NextProtos: []string{"h2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	ik, _ := securityinternal.GenerateKeyPair()
+	rk, _ := securityinternal.GenerateKeyPair()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _, _, err = client.OpenNoise(ctx, securityinternal.HandshakeConfig{Static: ik, PeerStatic: rk.Public})
+	if err == nil {
+		t.Fatal("TLS failure unexpectedly succeeded")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "phase=tls_handshake_error") {
+		t.Fatalf("error missing TLS phase: %v", err)
+	}
+	if !strings.Contains(got, "tcp_connect_complete@") || !strings.Contains(got, "tls_handshake_error@") {
+		t.Fatalf("error missing phase timeline: %v", err)
+	}
+	if strings.Contains(got, ln.Addr().String()) || strings.Contains(got, "https://") {
+		t.Fatalf("phase error leaked endpoint metadata: %v", err)
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept test connection")
 	}
 }

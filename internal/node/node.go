@@ -42,6 +42,34 @@ type ListenerStartupState struct {
 	StartupError error
 }
 
+type carrierServerErrorWriter struct {
+	handshakeErrors *atomic.Uint64
+	samples         atomic.Uint64
+}
+
+func (w *carrierServerErrorWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	phase := ""
+	switch {
+	case strings.Contains(msg, "TLS handshake error"):
+		phase = "tls_handshake"
+	case strings.Contains(strings.ToLower(msg), "http2"):
+		phase = "h2"
+	}
+	if phase == "" {
+		phase = "other"
+	} else if w.handshakeErrors != nil {
+		w.handshakeErrors.Add(1)
+	}
+	// Sample every server error class so malformed/probing traffic cannot turn
+	// diagnostics into an unbounded log-amplification path.
+	n := w.samples.Add(1)
+	if n <= 3 || n%100 == 0 {
+		log.Printf("baft carrier server error phase=%s sample=%d", phase, n)
+	}
+	return len(p), nil
+}
+
 type Runtime struct {
 	Revocations *identity.RevocationSet
 	Resources   *resources.Allocator
@@ -785,10 +813,20 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		if err != nil {
 			return err
 		}
+		var noiseFailureSamples atomic.Uint64
 		opts := carrierh2.NoiseOptions{
 			Handshake: nc, PeerIdentity: legacyIdentity, AllowedPeers: allowedPeers,
 			Cover: cover, Revocations: r.Revocations,
+			// WS still uses the legacy callback. H2 prefers the phase-aware
+			// callback below, so one failed handshake increments exactly once.
 			OnHandshakeError: func(){ r.handshakeErrors.Add(1) },
+			OnHandshakeFailure: func(phase string) {
+				r.handshakeErrors.Add(1)
+				n := noiseFailureSamples.Add(1)
+				if n <= 3 || n%100 == 0 {
+					log.Printf("baft carrier handshake failed phase=%s sample=%d", phase, n)
+				}
+			},
 		}
 		// Public website TLS; Noise authenticates the pinned peer before session.New.
 		tlsCfg.ClientAuth = tls.NoClientCert
@@ -824,7 +862,10 @@ func (r *Runtime) runListener(ctx context.Context, cfg config.Config) error {
 		handler = carrierh2.HandlerWithRevocation(stream, r.Revocations)
 	}
 
-	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
+	srv := &http.Server{
+		Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10,
+		ErrorLog: log.New(&carrierServerErrorWriter{handshakeErrors: &r.handshakeErrors}, "", 0),
+	}
 	if serveWS && !serveH2 {
 		// WebSocket-only mode must prevent ServeTLS from auto-enabling HTTP/2;
 		// combined h2+ws mode deliberately leaves HTTP/2 enabled.
