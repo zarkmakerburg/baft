@@ -41,7 +41,7 @@ Only artifacts whose BAFT ownership is **proven** are eligible. Proof is one of:
 | transport unit made by `install.sh` | byte-identical to what the installer writes for the parameters the unit names (a test runs the installer's own shell function and compares) |
 | tunnel unit built by BCC | `# baft-managed: true` / `# baft-tunnel:` header and a `baft.managed.json` marker beside its config that names the same tunnel and matches the unit and config byte for byte |
 | agent unit | byte-identical to the installer's agent unit |
-| BCC unit | labelled `# baft-managed: true` and `# baft-component: bcc` (BAFT has no BCC installer; the operator labels a unit they want BAFT to own) |
+| BCC unit | labelled `# baft-managed: true` and `# baft-component: bcc`; `install.sh --bcc-only` writes both labels, while an unlabelled operator-written BCC unit remains unmanaged |
 | binary | its embedded Go build information (read from the file, never executed) names BAFT's module and the expected program |
 | files | a name BAFT writes, at BAFT's own location, in BAFT's format (config that loads, Noise key, PEM files, marker, release state, pairing leftovers, the tunnel builder's records, the installer's rerun backups, BCC's state database, access file, job key, audit log, backups) |
 

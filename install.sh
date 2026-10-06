@@ -64,6 +64,25 @@ NOISE_KEY="$BAFT_CONFIG_DIR/noise-key.json"
 BAFT_SYSTEMD_DIR="${BAFT_SYSTEMD_DIR:-/etc/systemd/system}"
 UNIT_FILE="$BAFT_SYSTEMD_DIR/$BAFT_SERVICE.service"
 AGENT_UNIT_FILE="$BAFT_SYSTEMD_DIR/$BAFT_AGENT_UNIT.service"
+
+# BCC-only install. This is intentionally separate from the IR/EX transport
+# role: installing the control plane must never create or mutate a tunnel.
+BCC_ONLY=0
+BAFT_BCC_BIN="${BAFT_BCC_BIN:-/usr/local/bin/baft-bcc}"
+BAFT_BCC_CONFIG_DIR="${BAFT_BCC_CONFIG_DIR:-/etc/baft-bcc}"
+BAFT_BCC_STATE_DIR="${BAFT_BCC_STATE_DIR:-/var/lib/baft-bcc}"
+BAFT_BCC_STATE_FILE="${BAFT_BCC_STATE_FILE:-$BAFT_BCC_STATE_DIR/bcc-state.json}"
+BAFT_BCC_ADMIN_TOKEN_FILE="${BAFT_BCC_ADMIN_TOKEN_FILE:-$BAFT_BCC_CONFIG_DIR/admin-token}"
+BAFT_BCC_ACCESS_FILE="${BAFT_BCC_ACCESS_FILE:-$BAFT_BCC_CONFIG_DIR/access.json}"
+BAFT_BCC_JOB_KEY_FILE="${BAFT_BCC_JOB_KEY_FILE:-$BAFT_BCC_CONFIG_DIR/job-key}"
+BAFT_BCC_BACKUP_DIR="${BAFT_BCC_BACKUP_DIR:-$BAFT_BCC_STATE_DIR/backups}"
+BAFT_BCC_SERVICE="${BAFT_BCC_SERVICE:-baft-bcc}"
+BAFT_BCC_UNIT_FILE="$BAFT_SYSTEMD_DIR/$BAFT_BCC_SERVICE.service"
+BAFT_BCC_LISTEN="${BAFT_BCC_LISTEN:-127.0.0.1:8080}"
+BAFT_BCC_PUBLIC_URL="${BAFT_BCC_PUBLIC_URL:-}"
+BAFT_BCC_TLS_CERT="${BAFT_BCC_TLS_CERT:-}"
+BAFT_BCC_TLS_KEY="${BAFT_BCC_TLS_KEY:-}"
+BAFT_BCC_ALLOW_INSECURE_HTTP="${BAFT_BCC_ALLOW_INSECURE_HTTP:-0}"
 # Rerun controls. A rerun inspects first and changes only what the plan shows.
 PLAN_ONLY=0
 PLAN_JSON=0
@@ -133,6 +152,9 @@ Usage:
       # server enrollment: binaries + baft-agent only, no tunnel yet; the agent
       # token comes from BAFT_AGENT_TOKEN_FILE (or BAFT_AGENT_TOKEN) and the
       # pinned BCC job key from BAFT_BCC_JOB_KEY
+  sudo bash install.sh --bcc-only
+      # installs the BAFT Command Center service only; no IR/EX tunnel is created
+      # default listen is loopback 127.0.0.1:8080 and web credentials are shown once
 
 Options:
   --version vX.Y.Z    install this signed release (default: the latest)
@@ -151,6 +173,15 @@ Options:
                       terminal). A non-root user needs passwordless sudo.
   --re-pair           start a NEW pairing on an installed node (the current config is
                       backed up first); a rerun never re-pairs on its own
+  --bcc-only          install only BAFT Command Center (no tunnel/data-plane changes)
+  --bcc-listen ADDR   BCC listen address (default 127.0.0.1:8080)
+  --bcc-public-url URL
+                      operator-facing base URL used in the final access handoff;
+                      it does not make a loopback listener public
+  --bcc-tls-cert FILE TLS certificate for a non-loopback/HTTPS BCC listener
+  --bcc-tls-key FILE  TLS private key (must be supplied with --bcc-tls-cert)
+  --bcc-allow-insecure-http
+                      explicitly permit plain HTTP on a non-loopback BCC listener
   --offline DIR       install from an unpacked baft-offline-<version>.tar.gz: no
                       network, no apt; python3 and openssl must already be installed.
                       The release is verified exactly as for an online install.
@@ -175,6 +206,10 @@ Environment:
   BAFT_TARGET (EX: fixed IP:port traffic exits to, default 127.0.0.1:2443)
   BAFT_ROUTE_LISTEN (IR: loopback address local clients use, default 127.0.0.1:1443)
   BAFT_METRICS_LISTEN BAFT_RUN_TESTS BAFT_PAIRING_CODE BAFT_REPLY_CODE
+  BAFT_BCC_BIN BAFT_BCC_CONFIG_DIR BAFT_BCC_STATE_DIR BAFT_BCC_STATE_FILE
+  BAFT_BCC_ADMIN_TOKEN_FILE BAFT_BCC_ACCESS_FILE BAFT_BCC_JOB_KEY_FILE
+  BAFT_BCC_BACKUP_DIR BAFT_BCC_SERVICE BAFT_BCC_LISTEN BAFT_BCC_PUBLIC_URL
+  BAFT_BCC_TLS_CERT BAFT_BCC_TLS_KEY BAFT_BCC_ALLOW_INSECURE_HTTP
   BAFT_SHAPE_DISTRIBUTION BAFT_SHAPE_MEAN BAFT_SHAPE_STDDEV
   BAFT_SHAPE_MAX_PADDING BAFT_SHAPE_MAX_RATIO
   BAFT_JITTER_MIN_US BAFT_JITTER_MAX_US
@@ -210,6 +245,12 @@ while [[ $# -gt 0 ]]; do
     --yes|-y) ASSUME_YES=1; shift ;;
     --re-pair) RE_PAIR=1; shift ;;
     --agent-only) AGENT_ONLY=1; shift ;;
+    --bcc-only) BCC_ONLY=1; shift ;;
+    --bcc-listen) BAFT_BCC_LISTEN="${2:-}"; shift 2 ;;
+    --bcc-public-url) BAFT_BCC_PUBLIC_URL="${2:-}"; shift 2 ;;
+    --bcc-tls-cert) BAFT_BCC_TLS_CERT="${2:-}"; shift 2 ;;
+    --bcc-tls-key) BAFT_BCC_TLS_KEY="${2:-}"; shift 2 ;;
+    --bcc-allow-insecure-http) BAFT_BCC_ALLOW_INSECURE_HTTP=1; shift ;;
     --bcc-url) BAFT_BCC_URL="${2:-}"; shift 2 ;;
     --node-id) BAFT_NODE_ID="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -270,6 +311,8 @@ STATE=""; STATE_WHY=""; INSTALLED_REL=""
 F_BIN=0; F_PAIR=0; F_AGENT_BIN=0; F_RELSTATE=0; F_UNIT=0; F_UNIT_MANAGED=0; F_CFG=0; F_CFG_VALID=0
 F_KEY=0; F_KEY_OK=0; F_PKI=0; F_PENDING=0; F_USER=0; F_ACTIVE=0; F_ENABLED=0; F_DIRS=0
 F_AGENT_UNIT=0; F_AGENT_ACTIVE=0; F_AGENT_ENABLED=0; F_TOKEN=0; F_JOBKEY=0
+F_BCC_BIN=0; F_BCC_UNIT=0; F_BCC_UNIT_MANAGED=0; F_BCC_ACTIVE=0; F_BCC_ENABLED=0
+F_BCC_ADMIN=0; F_BCC_ACCESS=0; F_BCC_JOBKEY=0; F_BCC_STATE=0; F_BCC_DIRS=0
 
 INSPECTED=0; CFG_INVALID_WHY=""
 inspect_install() {
@@ -300,11 +343,41 @@ inspect_install() {
   if svc_enabled "$BAFT_AGENT_UNIT.service"; then F_AGENT_ENABLED=1; fi
   [[ -f "$BAFT_AGENT_DIR/token" ]] && F_TOKEN=1
   [[ -f "$BAFT_AGENT_DIR/bcc-job.pub" ]] && F_JOBKEY=1
+
+  [[ -x "$BAFT_BCC_BIN" ]] && F_BCC_BIN=1
+  [[ -f "$BAFT_BCC_UNIT_FILE" ]] && F_BCC_UNIT=1
+  if [[ "$F_BCC_UNIT" == 1 ]] &&
+     grep -q '^# baft-managed: true' "$BAFT_BCC_UNIT_FILE" 2>/dev/null &&
+     grep -q '^# baft-component: bcc' "$BAFT_BCC_UNIT_FILE" 2>/dev/null; then F_BCC_UNIT_MANAGED=1; fi
+  [[ -s "$BAFT_BCC_ADMIN_TOKEN_FILE" ]] && F_BCC_ADMIN=1
+  [[ -s "$BAFT_BCC_ACCESS_FILE" ]] && F_BCC_ACCESS=1
+  [[ -s "$BAFT_BCC_JOB_KEY_FILE" ]] && F_BCC_JOBKEY=1
+  [[ -f "$BAFT_BCC_STATE_FILE" ]] && F_BCC_STATE=1
+  [[ -d "$BAFT_BCC_CONFIG_DIR" && -d "$BAFT_BCC_STATE_DIR" ]] && F_BCC_DIRS=1
+  if svc_active "$BAFT_BCC_SERVICE.service"; then F_BCC_ACTIVE=1; fi
+  if svc_enabled "$BAFT_BCC_SERVICE.service"; then F_BCC_ENABLED=1; fi
   return 0
 }
 
 classify_state() {
   if [[ -n "$CFG_INVALID_WHY" ]]; then STATE="BROKEN_INSTALL"; STATE_WHY="$CFG_INVALID_WHY"; return; fi
+  if [[ "$BCC_ONLY" == "1" ]]; then
+    if [[ "$F_BCC_UNIT" == 1 && "$F_BCC_UNIT_MANAGED" == 0 ]]; then
+      STATE="BROKEN_INSTALL"; STATE_WHY="$BAFT_BCC_UNIT_FILE exists but is not BAFT-managed"; return
+    fi
+    if [[ "$F_BCC_BIN$F_BCC_UNIT$F_BCC_ADMIN$F_BCC_ACCESS$F_BCC_JOBKEY$F_BCC_STATE" == "000000" ]]; then
+      STATE="FRESH_INSTALL"; STATE_WHY="no BAFT Command Center install exists here"; return
+    fi
+    if [[ "$F_BCC_BIN" == 1 && "$F_BCC_UNIT" == 1 && "$F_BCC_ADMIN" == 1 && "$F_BCC_ACCESS" == 1 && "$F_BCC_JOBKEY" == 1 && "$F_BCC_STATE" == 1 ]]; then
+      if [[ "$F_BCC_ACTIVE" == 1 && "$F_BCC_ENABLED" == 1 ]]; then
+        STATE="ALREADY_INSTALLED"; STATE_WHY="BAFT Command Center is installed and running"
+      else
+        STATE="REPAIR_REQUIRED"; STATE_WHY="BAFT Command Center is installed but its service is not running or enabled"
+      fi
+      return
+    fi
+    STATE="PARTIAL_INSTALL"; STATE_WHY="some BAFT Command Center files are missing"; return
+  fi
   if [[ "$AGENT_ONLY" == "1" ]]; then
     # The binaries are shared by every instance on a host, so only this
     # instance's own files decide whether it is fresh.
@@ -345,7 +418,7 @@ classify_state() {
 # STAGED=1 once a release was downloaded and verified; before that (--plan) the
 # comparison can only use the requested version.
 STAGED=0; TARGET_REL=""
-STAGE_BIN=""; STAGE_PAIR=""; STAGE_AGENT=""
+STAGE_BIN=""; STAGE_PAIR=""; STAGE_AGENT=""; STAGE_BCC=""
 DO_BIN=0
 plan_binary() { # item installed-path staged-path flag
   local item="$1" path="$2" staged="$3" present="$4"
@@ -372,6 +445,7 @@ plan_relstate() {
 }
 DO_UNIT=0; DO_PKI=0; DO_KEYGEN=0; DO_PAIRING=0; DO_RESTART=0; DO_START=0; DO_ENABLE=0; DO_FIXPERM=0
 DO_AGENT_UNIT=0; DO_AGENT_ENABLE=0; DO_TOKEN=0; DO_JOBKEY=0; DO_ROOTPIN=0
+DO_BCC_UNIT=0; DO_BCC_ENABLE=0; DO_BCC_ADMIN=0; DO_BCC_ACCESS=0; DO_BCC_JOBKEY=0
 REFUSED=""
 
 build_role_plan() {
@@ -456,6 +530,47 @@ build_agent_plan() {
   else plan_add "agent service" keep "left running; no restart needed"; fi
 }
 
+build_bcc_plan() {
+  plan_binary "BCC binary" "$BAFT_BCC_BIN" "$STAGE_BCC" "$F_BCC_BIN"
+  plan_relstate
+  if [[ "$STATE" == "BROKEN_INSTALL" ]]; then
+    plan_add "install" refuse "$STATE_WHY"
+    REFUSED="$STATE_WHY"
+    return
+  fi
+
+  if [[ "$F_BCC_ADMIN" == 0 ]]; then plan_add "BCC admin token" create "$BAFT_BCC_ADMIN_TOKEN_FILE (root-only; never printed)"; DO_BCC_ADMIN=1
+  else plan_add "BCC admin token" keep "exists; rerun never rotates it"; fi
+
+  if [[ "$F_BCC_ACCESS" == 0 ]]; then plan_add "BCC access" create "$BAFT_BCC_ACCESS_FILE; username/password/path shown once"; DO_BCC_ACCESS=1
+  else plan_add "BCC access" keep "exists; rerun never rotates it"; fi
+
+  if [[ "$F_BCC_JOBKEY" == 0 ]]; then plan_add "BCC job key" create "$BAFT_BCC_JOB_KEY_FILE (owner-only)"; DO_BCC_JOBKEY=1
+  else plan_add "BCC job key" keep "exists; rerun never rotates it"; fi
+
+  if [[ "$F_BCC_UNIT" == 0 ]]; then
+    plan_add "BCC systemd unit" create "$BAFT_BCC_UNIT_FILE"; DO_BCC_UNIT=1
+  elif [[ "$F_BCC_UNIT_MANAGED" == 0 ]]; then
+    plan_add "BCC systemd unit" refuse "$BAFT_BCC_UNIT_FILE exists but is not BAFT-managed"
+    REFUSED="$BAFT_BCC_UNIT_FILE exists but is not BAFT-managed"
+    return
+  elif cmp -s "$BAFT_BCC_UNIT_FILE" <(render_bcc_unit); then
+    plan_add "BCC systemd unit" keep "identical"
+  else
+    plan_add "BCC systemd unit" update "managed unit arguments differ"; DO_BCC_UNIT=1
+  fi
+
+  if [[ "$F_BCC_ENABLED" == 0 ]]; then plan_add "BCC service enable" update "enable $BAFT_BCC_SERVICE.service"; DO_BCC_ENABLE=1; fi
+
+  if [[ "$F_BCC_ACTIVE" == 0 ]]; then
+    plan_add "BCC service" start "start the Command Center after its files are ready"; DO_START=1
+  elif [[ "$DO_BIN" == 1 || "$DO_BCC_UNIT" == 1 || "$DO_BCC_ADMIN" == 1 || "$DO_BCC_JOBKEY" == 1 ]]; then
+    plan_add "BCC service" restart "to pick up the verified binary, managed unit or startup credential"; DO_RESTART=1
+  else
+    plan_add "BCC service" keep "left running; credentials are not rotated"
+  fi
+}
+
 show_plan() {
   if [[ "$PLAN_JSON" == "1" ]]; then
     local i sep=""
@@ -492,7 +607,7 @@ confirm_plan() {
 }
 
 # ---- apply with rollback ----
-BACKUP_DIR=""; BACKUP_MAP=(); CREATED=(); BACKED_UP=(); WAS_ACTIVE=0; WAS_AGENT_ACTIVE=0; TOUCHED_SERVICE=0
+BACKUP_DIR=""; BACKUP_MAP=(); CREATED=(); BACKED_UP=(); WAS_ACTIVE=0; WAS_AGENT_ACTIVE=0; WAS_BCC_ACTIVE=0; TOUCHED_SERVICE=0
 backup_name() { printf '%s' "$1" | tr '/' '_'; }
 backup_file() {
   local f="$1"
@@ -521,7 +636,7 @@ prune_backups() {
     if (( n > 3 )); then rm -rf -- "$d"; fi
   done < <(ls -1dt "$BAFT_PREFIX"/backups/rerun-* 2>/dev/null)
 }
-ENABLED_BY_RUN=0; WAS_ENABLED=0; WAS_AGENT_ENABLED=0
+ENABLED_BY_RUN=0; WAS_ENABLED=0; WAS_AGENT_ENABLED=0; WAS_BCC_ENABLED=0
 fail_point() { # test hook: BAFT_TEST_FAIL_AT=<point> makes the run fail there
   if [[ "${BAFT_TEST_FAIL_AT:-}" == "$1" ]]; then die "injected failure at $1 (test hook)"; fi
   return 0
@@ -534,7 +649,8 @@ rollback_apply() {
   APPLYING=0
   log "apply failed: rolling back"
   local f unit was_active
-  if [[ "$AGENT_ONLY" == "1" ]]; then unit="$BAFT_AGENT_UNIT.service"; was_active="$WAS_AGENT_ACTIVE"
+  if [[ "$BCC_ONLY" == "1" ]]; then unit="$BAFT_BCC_SERVICE.service"; was_active="$WAS_BCC_ACTIVE"
+  elif [[ "$AGENT_ONLY" == "1" ]]; then unit="$BAFT_AGENT_UNIT.service"; was_active="$WAS_AGENT_ACTIVE"
   else unit="$BAFT_SERVICE.service"; was_active="$WAS_ACTIVE"; fi
   if [[ "$TOUCHED_SERVICE" == 1 ]]; then systemctl stop "$unit" || true; fi
   if [[ "$ENABLED_BY_RUN" == 1 ]]; then systemctl disable "$unit" || true; fi
@@ -853,7 +969,70 @@ if [[ -n "$VERIFY_ONLY_DIR" ]]; then
   exit
 fi
 
-if [[ "$AGENT_ONLY" == "1" ]]; then
+bcc_listen_host() {
+  local host
+  if [[ "$BAFT_BCC_LISTEN" == \[*\]:* ]]; then
+    host="${BAFT_BCC_LISTEN#\[}"
+    host="${host%%\]:*}"
+  else
+    host="${BAFT_BCC_LISTEN%:*}"
+  fi
+  printf '%s' "$host"
+}
+
+bcc_listen_is_loopback() {
+  local host
+  host="$(bcc_listen_host)"
+  case "$host" in
+    localhost|127.*|::1) return 0 ;;
+  esac
+  return 1
+}
+
+validate_bcc_settings() {
+  [[ "$BAFT_BCC_LISTEN" =~ ^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9._-]+):([0-9]{1,5})$ ]] || die "--bcc-listen must be HOST:PORT"
+  local port="${BASH_REMATCH[2]}" host
+  host="$(bcc_listen_host)"
+  (( port >= 1 && port <= 65535 )) || die "--bcc-listen port must be 1..65535"
+  if [[ "$host" != "localhost" ]]; then
+    if [[ "$host" == *:* ]]; then
+      [[ "$host" =~ ^[0-9A-Fa-f:]+$ ]] || die "--bcc-listen host must be localhost or an IP literal"
+      command -v python3 >/dev/null 2>&1 || die "python3 is required to validate an IPv6 --bcc-listen"
+      python3 - "$host" <<'PY' >/dev/null 2>&1 || die "--bcc-listen host must be localhost or an IP literal"
+import ipaddress, sys
+ipaddress.ip_address(sys.argv[1])
+PY
+    else
+      local a b c d extra
+      IFS=. read -r a b c d extra <<<"$host"
+      [[ -z "$extra" && "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$c" =~ ^[0-9]+$ && "$d" =~ ^[0-9]+$ ]] ||
+        die "--bcc-listen host must be localhost or an IP literal"
+      (( 10#$a <= 255 && 10#$b <= 255 && 10#$c <= 255 && 10#$d <= 255 )) ||
+        die "--bcc-listen host must be localhost or an IP literal"
+    fi
+  fi
+  if [[ -n "$BAFT_BCC_TLS_CERT" || -n "$BAFT_BCC_TLS_KEY" ]]; then
+    [[ -n "$BAFT_BCC_TLS_CERT" && -n "$BAFT_BCC_TLS_KEY" ]] || die "--bcc-tls-cert and --bcc-tls-key must be supplied together"
+  fi
+  if ! bcc_listen_is_loopback && [[ -z "$BAFT_BCC_TLS_CERT" && "$BAFT_BCC_ALLOW_INSECURE_HTTP" != "1" ]]; then
+    die "non-loopback --bcc-listen requires TLS cert/key (or explicit --bcc-allow-insecure-http)"
+  fi
+  if [[ -n "$BAFT_BCC_PUBLIC_URL" ]]; then
+    [[ "$BAFT_BCC_PUBLIC_URL" =~ ^https://[^[:space:]/]+/?$ || ( "$BAFT_BCC_ALLOW_INSECURE_HTTP" == "1" && "$BAFT_BCC_PUBLIC_URL" =~ ^http://[^[:space:]/]+/?$ ) ]] ||
+      die "--bcc-public-url must be https://host[:port] (http only with --bcc-allow-insecure-http)"
+  fi
+  local v
+  for v in "$BAFT_BCC_BIN" "$BAFT_BCC_CONFIG_DIR" "$BAFT_BCC_STATE_DIR" "$BAFT_BCC_STATE_FILE"     "$BAFT_BCC_ADMIN_TOKEN_FILE" "$BAFT_BCC_ACCESS_FILE" "$BAFT_BCC_JOB_KEY_FILE" "$BAFT_BCC_BACKUP_DIR" "$BAFT_BCC_UNIT_FILE"; do
+    [[ "$v" != *[[:space:]]* ]] || die "BCC install paths must not contain whitespace"
+  done
+}
+
+if [[ "$BCC_ONLY" == "1" ]]; then
+  [[ "$AGENT_ONLY" == "0" ]] || die "--bcc-only cannot be combined with --agent-only"
+  [[ -z "$ROLE" ]] || die "--bcc-only does not take --role"
+  [[ "$RE_PAIR" == "0" && "$STEALTH_PRO" == "0" && -z "$IR_SSH" ]] || die "--bcc-only cannot be combined with tunnel/pairing options"
+  validate_bcc_settings
+elif [[ "$AGENT_ONLY" == "1" ]]; then
   [[ -z "$ROLE" ]] || die "--agent-only does not take --role; the tunnel is set up later from BCC"
   [[ "$BAFT_BCC_URL" == https://* || ( "$BAFT_BCC_URL" == http://* && "${BAFT_AGENT_ALLOW_HTTP:-0}" == "1" ) ]] || die "--bcc-url must be https://"
   [[ "$BAFT_NODE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || die "--node-id is missing or malformed"
@@ -1038,6 +1217,65 @@ WantedBy=multi-user.target
 EOF
 }
 
+render_bcc_unit() {
+  local tls_args="" insecure="" caps="" allow_line="" port host
+  port="${BAFT_BCC_LISTEN##*:}"
+  if [[ "$BAFT_BCC_LISTEN" == \[*\]:* ]]; then
+    host="${BAFT_BCC_LISTEN#\[}"
+    host="${host%%\]:*}"
+  else
+    host="${BAFT_BCC_LISTEN%:*}"
+  fi
+  case "$host" in
+    localhost|127.*|::1) ;;
+    *) allow_line="Environment=BAFT_BCC_ALLOWED_LISTEN_IPS=$host" ;;
+  esac
+  if [[ -n "$BAFT_BCC_TLS_CERT" ]]; then
+    tls_args=" --tls-cert $BAFT_BCC_TLS_CERT --tls-key $BAFT_BCC_TLS_KEY"
+  fi
+  if [[ "$BAFT_BCC_ALLOW_INSECURE_HTTP" == "1" ]]; then insecure=" --allow-insecure-http"; fi
+  if (( port < 1024 )); then
+    caps=$'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE'
+  else
+    caps='CapabilityBoundingSet='
+  fi
+  cat <<UNIT
+# baft-managed: true
+# baft-component: bcc
+[Unit]
+Description=BAFT Command Center
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+$allow_line
+ExecStart=$BAFT_BCC_BIN --listen $BAFT_BCC_LISTEN --state-file $BAFT_BCC_STATE_FILE --admin-token-file $BAFT_BCC_ADMIN_TOKEN_FILE --access-file $BAFT_BCC_ACCESS_FILE --job-key-file $BAFT_BCC_JOB_KEY_FILE --backup-dir $BAFT_BCC_BACKUP_DIR$tls_args$insecure
+Restart=on-failure
+RestartSec=5s
+$caps
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=$BAFT_BCC_STATE_DIR
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
 render_agent_unit() {
   local root_flag="" http_flag="" bindir
   if [[ -n "$BAFT_ROOT_PUB" ]]; then root_flag="--release-root $BAFT_AGENT_DIR/release-root.pub"; fi
@@ -1091,12 +1329,25 @@ plan_base() {
   else plan_add "directories" keep "exist; owner and mode are not changed"; fi
 }
 
+plan_bcc_base() {
+  if [[ "$F_BCC_DIRS" == 0 ]]; then
+    plan_add "BCC directories" create "$BAFT_BCC_CONFIG_DIR and $BAFT_BCC_STATE_DIR"
+  else
+    plan_add "BCC directories" keep "exist; credentials are not regenerated"
+  fi
+}
+
 plan_everything() {
   [[ "$INSPECTED" == 1 ]] || inspect_install
   classify_state
   [[ "$AGENT_ONLY" == "1" ]] && prepare_agent_inputs
-  plan_base
-  if [[ "$AGENT_ONLY" == "1" ]]; then build_agent_plan; else build_role_plan; fi
+  if [[ "$BCC_ONLY" == "1" ]]; then
+    plan_bcc_base
+    build_bcc_plan
+  else
+    plan_base
+    if [[ "$AGENT_ONLY" == "1" ]]; then build_agent_plan; else build_role_plan; fi
+  fi
   refine_state
 }
 
@@ -1158,6 +1409,7 @@ reset_plan() {
   PLAN_ITEM=(); PLAN_ACT=(); PLAN_DETAIL=(); PLAN_CHANGES=0; REFUSED=""
   DO_BIN=0; DO_UNIT=0; DO_PKI=0; DO_KEYGEN=0; DO_PAIRING=0; DO_RESTART=0; DO_START=0; DO_ENABLE=0
   DO_FIXPERM=0; DO_AGENT_UNIT=0; DO_AGENT_ENABLE=0; DO_TOKEN=0; DO_JOBKEY=0; DO_ROOTPIN=0; DO_RELSTATE=0
+  DO_BCC_UNIT=0; DO_BCC_ENABLE=0; DO_BCC_ADMIN=0; DO_BCC_ACCESS=0; DO_BCC_JOBKEY=0
 }
 
 # Prerequisites (apt packages, the Go toolchain for --from-source) are the only
@@ -1177,6 +1429,7 @@ elif [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
   [[ -s /etc/ssl/certs/ca-certificates.crt ]] || NEED_APT=1
 else
   for c in curl git jq python3 cc make; do command -v "$c" >/dev/null 2>&1 || NEED_APT=1; done
+  if [[ "$BCC_ONLY" == "1" ]]; then command -v openssl >/dev/null 2>&1 || NEED_APT=1; fi
   [[ -s /etc/ssl/certs/ca-certificates.crt ]] || NEED_APT=1
   if command -v go >/dev/null 2>&1 && [[ "$(go version | awk '{print $3}' | sed 's/^go//')" == "$BAFT_GO_VERSION" ]]; then NEED_GO=0; else NEED_GO=1; fi
 fi
@@ -1212,7 +1465,11 @@ if [[ "$NEED_APT" == 1 || "$NEED_GO" == 1 ]]; then
     if [[ "$BAFT_INSTALL_FROM" == "release" ]]; then
       apt-get install -y --no-install-recommends ca-certificates curl openssl python3
     else
-      apt-get install -y --no-install-recommends ca-certificates curl git jq python3 build-essential
+      if [[ "$BCC_ONLY" == "1" ]]; then
+        apt-get install -y --no-install-recommends ca-certificates curl git jq python3 openssl build-essential
+      else
+        apt-get install -y --no-install-recommends ca-certificates curl git jq python3 build-essential
+      fi
     fi
   fi
   if [[ "$NEED_GO" == 1 ]]; then install_go; fi
@@ -1224,11 +1481,15 @@ fi
 # directory. Nothing is written to a final path before the plan is confirmed.
 STAGE="$(mktemp -d)"
 CLEANUP+=("$STAGE")
-STAGE_BIN="$STAGE/baft"; STAGE_PAIR="$STAGE/baft-pair"; STAGE_AGENT="$STAGE/baft-agent"
+STAGE_BIN="$STAGE/baft"; STAGE_PAIR="$STAGE/baft-pair"; STAGE_AGENT="$STAGE/baft-agent"; STAGE_BCC="$STAGE/baft-bcc"
 REL_DIR=""
 REL_REV=""
-REL_ARTIFACTS=("baft-linux-$GOARCH" "baft-pair-linux-$GOARCH")
-if [[ "$AGENT_ONLY" == "1" ]]; then REL_ARTIFACTS+=("baft-agent-linux-$GOARCH"); fi
+if [[ "$BCC_ONLY" == "1" ]]; then
+  REL_ARTIFACTS=("baft-bcc-linux-$GOARCH")
+else
+  REL_ARTIFACTS=("baft-linux-$GOARCH" "baft-pair-linux-$GOARCH")
+  if [[ "$AGENT_ONLY" == "1" ]]; then REL_ARTIFACTS+=("baft-agent-linux-$GOARCH"); fi
+fi
 fetch_release() {
   local url="$BAFT_RELEASE_URL" f
   REL_DIR="$(mktemp -d)"
@@ -1258,9 +1519,13 @@ fetch_release() {
   got="$(verify_release "$REL_DIR" "$REL_REV" 0 "${REL_ARTIFACTS[@]}")" || die "the downloaded release did not verify; nothing was installed"
   TARGET_REL="${got%% *}"
   log "verified signed release $got"
-  install -m 0755 "$REL_DIR/baft-linux-$GOARCH" "$STAGE_BIN"
-  install -m 0755 "$REL_DIR/baft-pair-linux-$GOARCH" "$STAGE_PAIR"
-  if [[ "$AGENT_ONLY" == "1" ]]; then install -m 0755 "$REL_DIR/baft-agent-linux-$GOARCH" "$STAGE_AGENT"; fi
+  if [[ "$BCC_ONLY" == "1" ]]; then
+    install -m 0755 "$REL_DIR/baft-bcc-linux-$GOARCH" "$STAGE_BCC"
+  else
+    install -m 0755 "$REL_DIR/baft-linux-$GOARCH" "$STAGE_BIN"
+    install -m 0755 "$REL_DIR/baft-pair-linux-$GOARCH" "$STAGE_PAIR"
+    if [[ "$AGENT_ONLY" == "1" ]]; then install -m 0755 "$REL_DIR/baft-agent-linux-$GOARCH" "$STAGE_AGENT"; fi
+  fi
 }
 
 build_from_source() {
@@ -1277,12 +1542,17 @@ build_from_source() {
   (
     cd "$SRC"
     go mod download
-    if [[ "$BAFT_RUN_TESTS" == "1" ]]; then
-      go test ./internal/recordshape ./internal/securityinternal ./internal/carrier/h2 ./internal/config ./cmd/baft ./cmd/baft-pair ./tests/integration -count=1
+    if [[ "$BCC_ONLY" == "1" ]]; then
+      if [[ "$BAFT_RUN_TESTS" == "1" ]]; then go test ./internal/bcc ./cmd/baft-bcc -count=1; fi
+      go build -trimpath -ldflags="-s -w" -o "$STAGE_BCC" ./cmd/baft-bcc
+    else
+      if [[ "$BAFT_RUN_TESTS" == "1" ]]; then
+        go test ./internal/recordshape ./internal/securityinternal ./internal/carrier/h2 ./internal/config ./cmd/baft ./cmd/baft-pair ./tests/integration -count=1
+      fi
+      go build -trimpath -ldflags="-s -w -X main.version=${BAFT_REF}" -o "$STAGE_BIN" ./cmd/baft
+      go build -trimpath -ldflags="-s -w" -o "$STAGE_PAIR" ./cmd/baft-pair
+      if [[ "$AGENT_ONLY" == "1" ]]; then go build -trimpath -ldflags="-s -w" -o "$STAGE_AGENT" ./cmd/baft-agent; fi
     fi
-    go build -trimpath -ldflags="-s -w -X main.version=${BAFT_REF}" -o "$STAGE_BIN" ./cmd/baft
-    go build -trimpath -ldflags="-s -w" -o "$STAGE_PAIR" ./cmd/baft-pair
-    if [[ "$AGENT_ONLY" == "1" ]]; then go build -trimpath -ldflags="-s -w" -o "$STAGE_AGENT" ./cmd/baft-agent; fi
   )
   TARGET_REL="$BAFT_REF"
 }
@@ -1298,7 +1568,7 @@ STAGED=1
 # is missing or does not run) is validated with the verified staged binary.
 # It is kept if it validates; if not the install is refused. It is never paired
 # over.
-if [[ "$AGENT_ONLY" != "1" && "$STEALTH_PRO" != "1" && "$F_CFG" == 1 && "$F_CFG_VALID" == 0 ]]; then
+if [[ "$BCC_ONLY" != "1" && "$AGENT_ONLY" != "1" && "$STEALTH_PRO" != "1" && "$F_CFG" == 1 && "$F_CFG_VALID" == 0 ]]; then
   if "$STAGE_BIN" config validate --file "$CONFIG" >/dev/null 2>&1; then
     F_CFG_VALID=1
     log "the existing config validates with the verified release; it is kept"
@@ -1358,9 +1628,20 @@ confirm_plan
 # APPLY. From here a failure rolls back the files and restarts the service
 # that was running before.
 APPLYING=1
-WAS_ACTIVE="$F_ACTIVE"; WAS_AGENT_ACTIVE="$F_AGENT_ACTIVE"; WAS_ENABLED="$F_ENABLED"; WAS_AGENT_ENABLED="$F_AGENT_ENABLED"
+WAS_ACTIVE="$F_ACTIVE"; WAS_AGENT_ACTIVE="$F_AGENT_ACTIVE"; WAS_BCC_ACTIVE="$F_BCC_ACTIVE"; WAS_ENABLED="$F_ENABLED"; WAS_AGENT_ENABLED="$F_AGENT_ENABLED"; WAS_BCC_ENABLED="$F_BCC_ENABLED"
 
 ensure_base() {
+  if [[ "$BCC_ONLY" == "1" ]]; then
+    [[ -d "$BAFT_BCC_CONFIG_DIR" ]] || install -d -m 0700 -o root -g root "$BAFT_BCC_CONFIG_DIR"
+    [[ -d "$BAFT_BCC_STATE_DIR" ]] || install -d -m 0700 -o root -g root "$BAFT_BCC_STATE_DIR"
+    [[ -d "$BAFT_PREFIX" ]] || install -d -m 0755 -o root -g root "$BAFT_PREFIX"
+    [[ -d "$(dirname "$BAFT_BCC_BIN")" ]] || install -d -m 0755 -o root -g root "$(dirname "$BAFT_BCC_BIN")"
+    if [[ "$BAFT_INSTALL_FROM" == "source" && -d "$STAGE/src" ]]; then
+      rm -rf "$BAFT_PREFIX/src"
+      mv "$STAGE/src" "$BAFT_PREFIX/src"
+    fi
+    return 0
+  fi
   if [[ "$F_USER" == 0 ]]; then
     useradd --system --home-dir "$BAFT_STATE_DIR" --create-home --shell /usr/sbin/nologin "$BAFT_USER"
   fi
@@ -1384,11 +1665,16 @@ install_changed() {
 }
 
 install_binaries() {
-  install_changed "$STAGE_BIN" "$BAFT_BIN"
-  install_changed "$STAGE_PAIR" "$BAFT_PAIR_BIN"
-  if [[ "$AGENT_ONLY" == "1" ]]; then install_changed "$STAGE_AGENT" "$BAFT_AGENT_BIN"; fi
-  # A new binary that does not run is caught before any service is touched.
-  "$BAFT_BIN" version >/dev/null 2>&1 || die "verify: the installed $BAFT_BIN does not run"
+  if [[ "$BCC_ONLY" == "1" ]]; then
+    install_changed "$STAGE_BCC" "$BAFT_BCC_BIN"
+    "$BAFT_BCC_BIN" --help >/dev/null 2>&1 || die "verify: the installed $BAFT_BCC_BIN does not run"
+  else
+    install_changed "$STAGE_BIN" "$BAFT_BIN"
+    install_changed "$STAGE_PAIR" "$BAFT_PAIR_BIN"
+    if [[ "$AGENT_ONLY" == "1" ]]; then install_changed "$STAGE_AGENT" "$BAFT_AGENT_BIN"; fi
+    # A new binary that does not run is caught before any service is touched.
+    "$BAFT_BIN" version >/dev/null 2>&1 || die "verify: the installed $BAFT_BIN does not run"
+  fi
   fail_point post-binaries
 }
 
@@ -1410,15 +1696,21 @@ wait_active() {
 # VERIFY, then record the release (only after everything verified), then keep
 # the rollback copies of the last three runs and stop rolling back.
 finalize_apply() {
-  "$BAFT_BIN" version >/dev/null 2>&1 || die "verify: $BAFT_BIN does not run"
-  if [[ "$AGENT_ONLY" != "1" && -f "$CONFIG" ]]; then
-    "$BAFT_BIN" config validate --file "$CONFIG" >/dev/null 2>&1 || die "verify: $CONFIG does not validate"
+  if [[ "$BCC_ONLY" == "1" ]]; then
+    "$BAFT_BCC_BIN" --help >/dev/null 2>&1 || die "verify: $BAFT_BCC_BIN does not run"
+  else
+    "$BAFT_BIN" version >/dev/null 2>&1 || die "verify: $BAFT_BIN does not run"
+    if [[ "$AGENT_ONLY" != "1" && -f "$CONFIG" ]]; then
+      "$BAFT_BIN" config validate --file "$CONFIG" >/dev/null 2>&1 || die "verify: $CONFIG does not validate"
+    fi
   fi
   # Enablement is the last service change before the commit point; rollback
   # undoes it (ENABLED_BY_RUN) if anything after it fails.
-  if [[ "$AGENT_ONLY" == "1" && ( "$DO_AGENT_UNIT" == 1 || "$DO_AGENT_ENABLE" == 1 ) && "$WAS_AGENT_ENABLED" == 0 ]]; then
+  if [[ "$BCC_ONLY" == "1" && ( "$DO_BCC_UNIT" == 1 || "$DO_BCC_ENABLE" == 1 ) && "$WAS_BCC_ENABLED" == 0 ]]; then
+    ENABLED_BY_RUN=1; systemctl enable "$BAFT_BCC_SERVICE.service"
+  elif [[ "$AGENT_ONLY" == "1" && ( "$DO_AGENT_UNIT" == 1 || "$DO_AGENT_ENABLE" == 1 ) && "$WAS_AGENT_ENABLED" == 0 ]]; then
     ENABLED_BY_RUN=1; systemctl enable "$BAFT_AGENT_UNIT.service"
-  elif [[ "$AGENT_ONLY" != "1" && ( "$DO_UNIT" == 1 || "$DO_ENABLE" == 1 ) && "$WAS_ENABLED" == 0 ]]; then
+  elif [[ "$BCC_ONLY" != "1" && "$AGENT_ONLY" != "1" && ( "$DO_UNIT" == 1 || "$DO_ENABLE" == 1 ) && "$WAS_ENABLED" == 0 ]]; then
     ENABLED_BY_RUN=1; systemctl enable "$BAFT_SERVICE.service"
   fi
   fail_point pre-commit
@@ -1464,8 +1756,102 @@ install_agent() {
   else log "baft-agent enrolled as $BAFT_NODE_ID with $BAFT_BCC_URL; add tunnels from BCC"; fi
 }
 
+bcc_access_base() {
+  if [[ -n "$BAFT_BCC_PUBLIC_URL" ]]; then
+    printf '%s' "${BAFT_BCC_PUBLIC_URL%/}"
+    return
+  fi
+  if [[ -n "$BAFT_BCC_TLS_CERT" ]]; then printf 'https://%s' "$BAFT_BCC_LISTEN"
+  else printf 'http://%s' "$BAFT_BCC_LISTEN"; fi
+}
+
+install_bcc() {
+  local access_once="" access_show="" access_path="" base="" tmp token f
+
+  if [[ -n "$BAFT_BCC_TLS_CERT" ]]; then
+    [[ -r "$BAFT_BCC_TLS_CERT" ]] || die "cannot read --bcc-tls-cert $BAFT_BCC_TLS_CERT"
+    [[ -r "$BAFT_BCC_TLS_KEY" ]] || die "cannot read --bcc-tls-key $BAFT_BCC_TLS_KEY"
+  fi
+
+  if [[ "$DO_BCC_ADMIN" == "1" ]]; then
+    backup_file "$BAFT_BCC_ADMIN_TOKEN_FILE"
+    tmp="$(mktemp)"; CLEANUP+=("$tmp")
+    openssl rand -hex 32 >"$tmp"
+    install -m 0600 -o root -g root "$tmp" "$BAFT_BCC_ADMIN_TOKEN_FILE"
+  fi
+  [[ -s "$BAFT_BCC_ADMIN_TOKEN_FILE" ]] || die "verify: BCC admin token is missing"
+
+  if [[ "$DO_BCC_ACCESS" == "1" ]]; then
+    backup_file "$BAFT_BCC_ACCESS_FILE"
+    access_once="$("$BAFT_BCC_BIN" access init --access-file "$BAFT_BCC_ACCESS_FILE")" ||
+      die "could not initialize BCC web access"
+    chown root:root "$BAFT_BCC_ACCESS_FILE"
+    chmod 0600 "$BAFT_BCC_ACCESS_FILE"
+  fi
+  "$BAFT_BCC_BIN" access show --access-file "$BAFT_BCC_ACCESS_FILE" >/dev/null ||
+    die "verify: BCC access file is invalid"
+
+  if [[ "$DO_BCC_JOBKEY" == "1" ]]; then
+    backup_file "$BAFT_BCC_JOB_KEY_FILE"
+    "$BAFT_BCC_BIN" jobkey show --job-key-file "$BAFT_BCC_JOB_KEY_FILE" >/dev/null ||
+      die "could not initialize BCC job-signing key"
+    chown root:root "$BAFT_BCC_JOB_KEY_FILE"
+    chmod 0600 "$BAFT_BCC_JOB_KEY_FILE"
+  else
+    "$BAFT_BCC_BIN" jobkey show --job-key-file "$BAFT_BCC_JOB_KEY_FILE" >/dev/null ||
+      die "verify: BCC job-signing key is invalid"
+  fi
+
+  for f in "$BAFT_BCC_ADMIN_TOKEN_FILE" "$BAFT_BCC_ACCESS_FILE" "$BAFT_BCC_JOB_KEY_FILE"; do
+    [[ "$(stat -c '%a %U' "$f" 2>/dev/null)" == "600 root" ]] ||
+      die "verify: $f must be root-owned mode 0600"
+  done
+
+  if [[ "$DO_BCC_UNIT" == "1" ]]; then
+    backup_file "$BAFT_BCC_UNIT_FILE"
+    tmp="$(mktemp)"; CLEANUP+=("$tmp")
+    render_bcc_unit >"$tmp"
+    install -m 0644 -o root -g root "$tmp" "$BAFT_BCC_UNIT_FILE"
+    systemctl daemon-reload
+  fi
+
+  if [[ "$DO_RESTART" == "1" || "$DO_START" == "1" ]]; then
+    # Fresh-start files are part of rollback. Existing live state is never
+    # copied while BCC is running.
+    for f in "$BAFT_BCC_STATE_FILE" "$BAFT_BCC_STATE_FILE.audit.jsonl"       "$BAFT_BCC_STATE_FILE.audit-anchor-outbox.json" "$BAFT_BCC_STATE_FILE.lock"       "$BAFT_BCC_STATE_FILE-wal" "$BAFT_BCC_STATE_FILE-shm"; do
+      [[ -e "$f" ]] || backup_file "$f"
+    done
+    TOUCHED_SERVICE=1
+  fi
+  if [[ "$DO_RESTART" == "1" ]]; then systemctl restart "$BAFT_BCC_SERVICE.service"
+  elif [[ "$DO_START" == "1" ]]; then systemctl start "$BAFT_BCC_SERVICE.service"; fi
+  if [[ "$DO_RESTART" == "1" || "$DO_START" == "1" ]]; then
+    wait_active "$BAFT_BCC_SERVICE.service" 20 || die "verify: $BAFT_BCC_SERVICE.service is not running"
+  fi
+  [[ -f "$BAFT_BCC_STATE_FILE" ]] || die "verify: BCC state file was not created"
+
+  finalize_apply
+
+  access_show="$("$BAFT_BCC_BIN" access show --access-file "$BAFT_BCC_ACCESS_FILE")"
+  access_path="$(printf '%s\n' "$access_show" | sed -n 's/^[[:space:]]*path:[[:space:]]*//p' | head -n1)"
+  base="$(bcc_access_base)"
+  printf '\nBAFT Command Center\n'
+  printf '  URL:      %s%s\n' "$base" "$access_path"
+  if [[ -n "$access_once" ]]; then
+    printf '\n%s\n' "$access_once"
+  else
+    printf '%s\n' "$access_show"
+    printf '  password: not stored; rotate locally with: %s access regenerate --access-file %s\n' "$BAFT_BCC_BIN" "$BAFT_BCC_ACCESS_FILE"
+  fi
+  printf '  job key:  run locally: %s jobkey show --job-key-file %s\n\n' "$BAFT_BCC_BIN" "$BAFT_BCC_JOB_KEY_FILE"
+}
+
 ensure_base
 install_binaries
+if [[ "$BCC_ONLY" == "1" ]]; then
+  install_bcc
+  exit 0
+fi
 if [[ "$AGENT_ONLY" == "1" ]]; then
   install_agent
   exit 0

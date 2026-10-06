@@ -2,6 +2,20 @@
 
 Launch-1 step P1-C from [22-launch-1-roadmap.md](22-launch-1-roadmap.md): how an operator reaches the BCC dashboard, and BCC state in a versioned SQLite database (last section).
 
+## First-class installation
+
+The same signed installer used for IR/EX nodes can install the Command Center without creating a tunnel:
+
+```bash
+sudo bash install.sh --bcc-only
+```
+
+The default is deliberately local-only: BCC listens on `127.0.0.1:8080`. The installer verifies and installs the signed `baft-bcc` artifact, creates a root-owned 0600 admin token, access file and job-signing key, writes a BAFT-owned systemd unit, starts it, and prints the secret dashboard URL, username and password. The password is shown only on the first `access init`; a healthy rerun does not rotate credentials or restart BCC and can only say that the password is not stored.
+
+For an operator-facing URL behind an existing TLS terminator or SSH/reverse-proxy setup, `--bcc-public-url https://bcc.example.com` changes the URL shown at handoff but does **not** expose a loopback listener. A non-loopback `--bcc-listen` is fail-closed unless a TLS certificate/key pair is supplied, or plain HTTP is explicitly authorized with `--bcc-allow-insecure-http`. Automatic ACME/certificate provisioning is not part of this installer step.
+
+`bash install.sh --bcc-only --plan --json` is read-only and shows whether the BCC binary, credentials, service unit or service state would change. Existing access/admin/job credentials are kept; rotation remains an explicit local console action.
+
 ## Model
 
 Three independent credentials, created and rotated together:
