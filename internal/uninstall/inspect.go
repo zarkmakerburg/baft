@@ -363,6 +363,7 @@ func (e *Env) classifyAgent(u *Unit, raw string) {
 
 type bccPaths struct {
 	StateFile, AccessFile, JobKeyFile, BackupDir string
+	BootstrapScript, BootstrapSHA256             string   // installer-managed only when the unit marker and digest agree
 	Operator                                     []string // operator-provided files it names
 }
 
@@ -436,10 +437,29 @@ func parseBCC(raw string) *bccPaths {
 	if b.BackupDir == "" {
 		b.BackupDir = abs("./backups")
 	}
-	for _, k := range []string{"tls-cert", "tls-key", "admin-token-file", "install-script"} {
+	for _, k := range []string{"tls-cert", "tls-key", "admin-token-file"} {
 		if p := abs(val[k]); p != "" {
 			b.Operator = append(b.Operator, p)
 		}
+	}
+	installScript := abs(val["install-script"])
+	marker := func(prefix string) string {
+		for _, line := range strings.Split(raw, "\n") {
+			if strings.HasPrefix(line, prefix) {
+				return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			}
+		}
+		return ""
+	}
+	markerScript := abs(marker("# baft-bootstrap-script:"))
+	markerSHA := marker("# baft-bootstrap-sha256:")
+	managedMarker := labelled(raw, "bcc") && markerScript != "" && regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(markerSHA)
+	if managedMarker && (installScript == "" || installScript == markerScript) {
+		b.BootstrapScript, b.BootstrapSHA256 = markerScript, markerSHA
+	} else if installScript != "" {
+		// A command-line script without the installer-owned path+digest marker is
+		// operator material. Safe uninstall never claims or removes it.
+		b.Operator = append(b.Operator, installScript)
 	}
 	return b
 }
@@ -908,6 +928,14 @@ func (e *Env) scanBCC(inv *Inventory, b *bccPaths, u *Unit) {
 	add(b.StateFile+".lock", ClassRuntime, nil, "the BCC process lock")
 	add(b.StateFile+".audit.jsonl", ClassAudit, isJSONHead, "the BCC audit log (hash chain)")
 	add(b.StateFile+".audit-anchor-outbox.json", ClassAudit, isJSONHead, "the BCC audit anchor outbox")
+	if b.BootstrapScript != "" {
+		if a := add(b.BootstrapScript, ClassRuntime, nil, "the installer-managed BCC bootstrap script pinned by the unit digest"); a != nil && a.Ownership == Managed {
+			if a.SHA256 != b.BootstrapSHA256 {
+				a.Ownership = Drifted
+				a.Evidence = "BCC bootstrap script digest differs from the installer-owned unit marker"
+			}
+		}
+	}
 	if ents, err := os.ReadDir(b.BackupDir); err == nil {
 		for _, ent := range ents {
 			n := ent.Name()

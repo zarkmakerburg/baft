@@ -29,9 +29,18 @@ for f in manifest.json release-key.cert.json SHA256SUMS; do
   [[ -s "$dist/$f" ]] || { echo "offline_bundle: $dist/$f is missing; sign the release first" >&2; exit 1; }
 done
 [[ -s "$rev" && -s "$inst" ]] || { echo "offline_bundle: revocations.json or install.sh is missing" >&2; exit 1; }
+for arch in amd64 arm64; do
+  signed_inst="$dist/baft-install-linux-$arch"
+  [[ -s "$signed_inst" ]] || { echo "offline_bundle: signed $signed_inst is missing" >&2; exit 1; }
+done
 (cd "$dist" && sha256sum --quiet -c SHA256SUMS) || { echo "offline_bundle: release files do not match SHA256SUMS" >&2; exit 1; }
+for arch in amd64 arm64; do
+  cmp -s -- "$inst" "$dist/baft-install-linux-$arch" || { echo "offline_bundle: top-level install.sh differs from the signed $arch installer" >&2; exit 1; }
+done
 
-# The name only; the signature is checked by install.sh, not here.
+# The name only; the signature is checked by install.sh, not here. The cmp
+# above proves the launcher copied into the bundle is the signed installer
+# generation listed in dist/SHA256SUMS for both supported architectures.
 version=$(python3 -c 'import base64,json,sys;e=json.load(open(sys.argv[1]));print(json.loads(base64.b64decode(e["payload"]))["version"])' "$dist/manifest.json")
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "offline_bundle: unexpected version '$version'" >&2; exit 1; }
 

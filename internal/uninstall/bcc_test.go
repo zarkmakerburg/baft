@@ -1,7 +1,9 @@
 package uninstall
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,4 +212,52 @@ func TestBCCStateWithoutUnit(t *testing.T) {
 	if has(p.Remove, r.p("bcc/state.db")) == nil || p.Backup == nil {
 		t.Fatalf("remove %v backup %+v", paths(p.Remove), p.Backup)
 	}
+}
+
+func TestBCCManagedBootstrapScriptOwnershipUsesPinnedDigest(t *testing.T) {
+	setup := func(t *testing.T) (*rig, string) {
+		t.Helper()
+		r := newRig(t)
+		r.bcc(true, false)
+		bootstrap := r.p("bcc/bootstrap-install.sh")
+		body := []byte("#!/usr/bin/env bash\necho managed-bootstrap\n")
+		r.write("bcc/bootstrap-install.sh", string(body), 0o700)
+		sum := fmt.Sprintf("%x", sha256.Sum256(body))
+		unitPath := r.p("units/baft-bcc.service")
+		raw, err := os.ReadFile(unitPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit := strings.Replace(string(raw), "# baft-component: bcc\n",
+			"# baft-component: bcc\n# baft-bootstrap-script: "+bootstrap+"\n# baft-bootstrap-sha256: "+sum+"\n", 1)
+		unit = strings.Replace(unit, " --listen 127.0.0.1:8080", " --install-script "+bootstrap+" --public-url https://bcc.example.test --listen 127.0.0.1:8080", 1)
+		if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return r, bootstrap
+	}
+
+	t.Run("matching digest is BAFT-owned", func(t *testing.T) {
+		r, bootstrap := setup(t)
+		p := r.plan(yes(Options{Scope: Scope{BCC: true}}))
+		a := has(p.Remove, bootstrap)
+		if a == nil || a.Ownership != Managed || a.Class != ClassRuntime {
+			t.Fatalf("managed bootstrap not removable with BCC scope: remove=%v hold=%v untouched=%v", paths(p.Remove), paths(p.Hold), paths(p.Untouched))
+		}
+	})
+
+	t.Run("edited script is held", func(t *testing.T) {
+		r, bootstrap := setup(t)
+		if err := os.WriteFile(bootstrap, []byte("#!/bin/sh\necho operator-edited\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		p := r.plan(yes(Options{Scope: Scope{BCC: true}}))
+		a := has(p.Hold, bootstrap)
+		if a == nil || a.Ownership != Drifted {
+			t.Fatalf("edited bootstrap must be held: remove=%v hold=%v untouched=%v", paths(p.Remove), paths(p.Hold), paths(p.Untouched))
+		}
+		if has(p.Remove, bootstrap) != nil {
+			t.Fatal("edited bootstrap was scheduled for removal")
+		}
+	})
 }

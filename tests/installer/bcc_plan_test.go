@@ -14,12 +14,14 @@ func TestPlanBCCOnlyFresh(t *testing.T) {
 		t.Fatalf("state=%s want FRESH_INSTALL: %+v", p.State, p.Steps)
 	}
 	for item, want := range map[string]string{
-		"BCC binary":       "create",
-		"BCC admin token":  "create",
-		"BCC access":       "create",
-		"BCC job key":      "create",
-		"BCC systemd unit": "create",
-		"BCC service":      "start",
+		"BCC binary":           "create",
+		"BCC admin token":      "create",
+		"BCC access":           "create",
+		"BCC job key":          "create",
+		"BCC bootstrap script": "create",
+		"BCC SSH enrollment":   "skip",
+		"BCC systemd unit":     "create",
+		"BCC service":          "start",
 	} {
 		if got := p.action(item); got != want {
 			t.Errorf("%s=%q want %q: %+v", item, got, want, p.Steps)
@@ -115,5 +117,11 @@ func TestBCCOnlyNonLoopbackTLSPlan(t *testing.T) {
 	}
 	if got := p.action("BCC service"); got != "start" {
 		t.Fatalf("BCC service=%q want start: %+v", got, p.Steps)
+	}
+	if got := p.action("BCC SSH enrollment"); got != "enable" {
+		t.Fatalf("BCC SSH enrollment=%q want enable: %+v", got, p.Steps)
+	}
+	if got := p.action("BCC bootstrap script"); got != "create" {
+		t.Fatalf("BCC bootstrap script=%q want create: %+v", got, p.Steps)
 	}
 }

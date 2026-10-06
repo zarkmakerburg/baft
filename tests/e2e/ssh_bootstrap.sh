@@ -10,10 +10,18 @@ cd "$(dirname "$0")/../.."
 [[ "$EUID" -eq 0 ]] || { echo "run as root"; exit 1; }
 REL="$(cd "${1:?usage: ssh_bootstrap.sh <release-dir>}" && pwd)"
 VERSION="$(python3 -c 'import json,base64,sys;e=json.load(open(sys.argv[1]));print(json.loads(base64.b64decode(e["payload"]))["version"])' "$REL/dist/manifest.json")"
+case "$(uname -m)" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; *) echo "unsupported arch" >&2; exit 1 ;; esac
 WORK="$(mktemp -d)"
 PIDS=()
 BCC=http://127.0.0.1:18300
 SSHPORT=2322
+BCC_SERVICE=baft-bcc-ssh-e2e
+BCC_PREFIX=/opt/baft-bcc-ssh-e2e
+BCC_BIN=/usr/local/bin/baft-bcc-ssh-e2e
+BCC_CONFIG=/etc/baft-bcc-ssh-e2e
+BCC_STATE_DIR=/var/lib/baft-bcc-ssh-e2e
+BCC_STATE=$BCC_STATE_DIR/bcc-state.json
+ADMIN=""
 log() { printf '[ssh-e2e] %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
@@ -27,13 +35,15 @@ cleanup() {
     fi
   fi
   systemctl stop baft-agent 2>/dev/null || true; systemctl disable baft-agent 2>/dev/null || true
-  rm -f /etc/systemd/system/baft-agent.service; systemctl daemon-reload 2>/dev/null || true
+  systemctl stop "$BCC_SERVICE" 2>/dev/null || true; systemctl disable "$BCC_SERVICE" 2>/dev/null || true
+  rm -f /etc/systemd/system/baft-agent.service "/etc/systemd/system/$BCC_SERVICE.service"
+  systemctl daemon-reload 2>/dev/null || true
   for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
-  rm -rf "$WORK" /etc/baft-agent /var/lib/baft-agent
+  rm -rf "$WORK" /etc/baft-agent /var/lib/baft-agent "$BCC_PREFIX" "$BCC_CONFIG" "$BCC_STATE_DIR" "$BCC_BIN"
   exit $rc
 }
 trap cleanup EXIT
-api() { curl -fsS -H 'Authorization: Bearer admintok' "$@"; }
+api() { curl -fsS -H "Authorization: Bearer $ADMIN" "$@"; }
 
 command -v sshd >/dev/null || { apt-get update -qq && apt-get install -y -qq openssh-server >/dev/null; }
 SSHD="$(command -v sshd || echo /usr/sbin/sshd)"
@@ -65,15 +75,37 @@ CFG
 "$SSHD" -D -e -f "$WORK/sshd_config" >"$WORK/sshd.log" 2>&1 & PIDS+=($!)
 for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/$SSHPORT) 2>/dev/null && break; sleep 0.5; done
 
-log "BCC with the install script and public URL that enable /api/bootstrap"
-BCC_BIN="$WORK/baft-bcc"
-case "$(uname -m)" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; *) fail "unsupported arch" ;; esac
-install -m 0755 "$REL/dist/baft-bcc-linux-$ARCH" "$BCC_BIN"
-echo admintok >"$WORK/admin.token"; chmod 600 "$WORK/admin.token"
-"$BCC_BIN" access init --access-file "$WORK/s.json.access.json" >/dev/null
-"$BCC_BIN" --admin-token-file "$WORK/admin.token" --state-file "$WORK/s.json" --listen 127.0.0.1:18300 \
-  --install-script install.sh --public-url "$BCC" --allow-insecure-http >"$WORK/bcc.log" 2>&1 & PIDS+=($!)
+log "first-class signed BCC install wires the managed installer and public URL"
+bcc_env=(
+  BAFT_INSTALL_FROM=release
+  BAFT_RELEASE_URL="file://$REL/dist"
+  BAFT_ROOT_PUB="$ROOTPUB"
+  BAFT_REVOCATIONS_URL="$REV"
+  BAFT_PREFIX="$BCC_PREFIX"
+  BAFT_RELEASE_STATE="$BCC_PREFIX/release-state.json"
+  BAFT_BCC_BIN="$BCC_BIN"
+  BAFT_BCC_CONFIG_DIR="$BCC_CONFIG"
+  BAFT_BCC_STATE_DIR="$BCC_STATE_DIR"
+  BAFT_BCC_STATE_FILE="$BCC_STATE"
+  BAFT_BCC_ADMIN_TOKEN_FILE="$BCC_CONFIG/admin-token"
+  BAFT_BCC_ACCESS_FILE="$BCC_CONFIG/access.json"
+  BAFT_BCC_JOB_KEY_FILE="$BCC_CONFIG/job-key"
+  BAFT_BCC_BACKUP_DIR="$BCC_STATE_DIR/backups"
+  BAFT_BCC_BOOTSTRAP_SCRIPT="$BCC_PREFIX/bcc-bootstrap/install.sh"
+  BAFT_BCC_SERVICE="$BCC_SERVICE"
+  BAFT_BCC_LISTEN=127.0.0.1:18300
+  BAFT_NONINTERACTIVE=1
+)
+env "${bcc_env[@]}" bash install.sh --bcc-only --bcc-public-url "$BCC" --bcc-allow-insecure-http >"$WORK/bcc-install.out" 2>"$WORK/bcc-install.err" || fail "first-class BCC install failed"
+systemctl is-active --quiet "$BCC_SERVICE" || fail "first-class BCC service is not active"
+ADMIN="$(tr -d '\r\n' <"$BCC_CONFIG/admin-token")"
+[[ -n "$ADMIN" ]] || fail "installed BCC admin token is empty"
+BOOTSTRAP="$BCC_PREFIX/bcc-bootstrap/install.sh"
+[[ "$(stat -c '%U %a' "$BOOTSTRAP")" == "root 700" ]] || fail "installed bootstrap script is not root 0700"
+cmp -s "$BOOTSTRAP" "$REL/dist/baft-install-linux-$ARCH" || fail "installed bootstrap script is not the signed release installer"
+grep -Fq -- "--install-script $BOOTSTRAP --public-url $BCC --allow-insecure-http" "/etc/systemd/system/$BCC_SERVICE.service" || fail "installed BCC unit is not bootstrap-wired"
 for _ in $(seq 1 30); do api -o /dev/null "$BCC/api/nodes" 2>/dev/null && break; sleep 1; done
+api -o /dev/null "$BCC/api/nodes" || fail "installed BCC API did not become ready"
 
 log "read the host key and compare it with the real one"
 FP="$(api -d "{\"host\":\"127.0.0.1\",\"port\":$SSHPORT}" "$BCC/api/bootstrap/hostkey" | python3 -c 'import json,sys;print(json.load(sys.stdin)["fingerprint"])')"
@@ -89,7 +121,7 @@ PY
 }
 
 log "a wrong fingerprint must stop before anything runs"
-code="$(body 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' | curl -sS -o "$WORK/wrong.out" -w '%{http_code}' -H 'Authorization: Bearer admintok' -d @- "$BCC/api/bootstrap")"
+code="$(body 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' | curl -sS -o "$WORK/wrong.out" -w '%{http_code}' -H "Authorization: Bearer $ADMIN" -d @- "$BCC/api/bootstrap")"
 [[ "$code" == "502" ]] || fail "wrong fingerprint answered $code"
 grep -q 'host key mismatch' "$WORK/wrong.out" || fail "no mismatch message: $(cat "$WORK/wrong.out")"
 [[ ! -e /etc/systemd/system/baft-agent.service ]] || fail "something was installed despite the wrong host key"
@@ -116,5 +148,14 @@ journalctl -u baft-agent --no-pager | grep -q update_baft || fail "agent log has
 
 log "credentials were not kept"
 KEYBODY="$(sed -n '2p' "$WORK/clientkey")"
-if grep -aqF "$KEYBODY" "$WORK"/s.json* ; then fail "the SSH private key is in BCC's state or audit log"; fi
+if grep -aqF "$KEYBODY" "$BCC_STATE" "$BCC_STATE.audit.jsonl" "$WORK/bootstrap.json" 2>/dev/null; then
+  fail "the SSH private key leaked into BCC state, audit, or bootstrap response"
+fi
+if journalctl -u "$BCC_SERVICE" --no-pager 2>/dev/null | grep -F "$KEYBODY" >/dev/null; then
+  fail "the SSH private key leaked into the BCC journal"
+fi
+if grep -RaqF "$KEYBODY" "$BCC_CONFIG" "$BCC_STATE_DIR" 2>/dev/null; then
+  fail "the SSH private key leaked into BCC-managed files"
+fi
+if ps -eo args | grep -F "$KEYBODY" | grep -v grep >/dev/null 2>&1; then fail "the SSH private key leaked into process argv"; fi
 log "PASS"

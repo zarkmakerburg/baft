@@ -20,7 +20,15 @@ if [ -n "$(ls -A "$out")" ]; then
   exit 1
 fi
 
+# The BCC SSH bootstrap executes the installer shipped with this exact release.
+# Release artifacts deliberately retain the existing <binary>-linux-<arch>
+# allowlist, so the architecture-independent script is signed twice under
+# explicit architecture names rather than widening the signer to arbitrary
+# filenames.
+[[ -f install.sh ]] || { echo "build.sh: install.sh is missing" >&2; exit 1; }
+
 for arch in "${arches[@]}"; do
+  install -m 0755 install.sh "$out/baft-install-linux-$arch"
   for bin in "${binaries[@]}"; do
     ldflags="-s -w -buildid="
     if [ "$bin" = baft ]; then

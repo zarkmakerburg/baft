@@ -1,6 +1,8 @@
 package uninstall
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +138,12 @@ func TestCopyTreeKeepsModesAndLinks(t *testing.T) {
 }
 
 func TestBCCUnitFromInstallerIsRecognized(t *testing.T) {
+	bootstrap := filepath.Join(t.TempDir(), "install.sh")
+	bootstrapBytes := []byte("#!/usr/bin/env bash\necho bootstrap\n")
+	if err := os.WriteFile(bootstrap, bootstrapBytes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wantBootstrapSHA := fmt.Sprintf("%x", sha256.Sum256(bootstrapBytes))
 	env := map[string]string{
 		"BAFT_BCC_BIN":                 "/usr/local/bin/baft-bcc",
 		"BAFT_BCC_LISTEN":              "127.0.0.1:8080",
@@ -148,6 +156,8 @@ func TestBCCUnitFromInstallerIsRecognized(t *testing.T) {
 		"BAFT_BCC_TLS_CERT":            "",
 		"BAFT_BCC_TLS_KEY":             "",
 		"BAFT_BCC_ALLOW_INSECURE_HTTP": "0",
+		"BAFT_BCC_BOOTSTRAP_SCRIPT":    bootstrap,
+		"BAFT_BCC_PUBLIC_URL":          "https://bcc.example.test",
 	}
 	unit := runInstaller(t, "render_bcc_unit", env)
 	if !labelled(unit, "bcc") {
@@ -160,13 +170,20 @@ func TestBCCUnitFromInstallerIsRecognized(t *testing.T) {
 	if p.StateFile != "/var/lib/baft-bcc/bcc-state.json" ||
 		p.AccessFile != "/etc/baft-bcc/access.json" ||
 		p.JobKeyFile != "/etc/baft-bcc/job-key" ||
-		p.BackupDir != "/var/lib/baft-bcc/backups" {
+		p.BackupDir != "/var/lib/baft-bcc/backups" ||
+		p.BootstrapScript != bootstrap || p.BootstrapSHA256 != wantBootstrapSHA {
 		t.Fatalf("wrong BCC paths parsed: %+v", p)
+	}
+	if !strings.Contains(unit, "--install-script "+bootstrap+" --public-url https://bcc.example.test") {
+		t.Fatalf("installer BCC unit did not enable managed bootstrap:\n%s", unit)
 	}
 	foundAdmin := false
 	for _, path := range p.Operator {
 		if path == "/etc/baft-bcc/admin-token" {
 			foundAdmin = true
+		}
+		if path == bootstrap {
+			t.Fatalf("installer-managed bootstrap script was misclassified as operator-owned: %+v", p.Operator)
 		}
 	}
 	if !foundAdmin {
