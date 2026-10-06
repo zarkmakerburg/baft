@@ -67,6 +67,15 @@ log "signed-release BCC fresh install"
 run_rel >"$W/rel.out" 2>"$W/rel.err"
 systemctl is-active --quiet baft-bcc-e2e-rel || fail "release BCC is not active"
 systemctl is-enabled --quiet baft-bcc-e2e-rel || fail "release BCC is not enabled"
+[[ "$(stat -c '%U %a' /opt/baft-bcc-e2e-rel/release-state.json 2>/dev/null)" == "root 644" ]] ||
+  fail "verified BCC release did not record root-owned release provenance state"
+python3 - /opt/baft-bcc-e2e-rel/release-state.json <<'PY' || fail "BCC release provenance state is invalid"
+import json, re, sys
+s=json.load(open(sys.argv[1]))
+assert re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", s["version"]), s
+assert re.fullmatch(r"[0-9a-f]{40}", s["commit"]), s
+assert isinstance(s["revocation_sequence"], int) and s["revocation_sequence"] >= 0, s
+PY
 
 for f in /etc/baft-bcc-e2e-rel/admin-token /etc/baft-bcc-e2e-rel/access.json /etc/baft-bcc-e2e-rel/job-key; do
   [[ "$(stat -c '%U %a' "$f")" == "root 600" ]] || { stat "$f"; fail "$f is not root 0600"; }
@@ -140,6 +149,8 @@ src_env=(
 )
 env "${src_env[@]}" bash install.sh --bcc-only >"$W/src.out" 2>"$W/src.err"
 systemctl is-active --quiet baft-bcc-e2e-src || fail "source BCC is not active"
+[[ ! -e /opt/baft-bcc-e2e-src/release-state.json ]] ||
+  fail "source BCC must not fabricate signed-release provenance state"
 for f in /etc/baft-bcc-e2e-src/admin-token /etc/baft-bcc-e2e-src/access.json /etc/baft-bcc-e2e-src/job-key; do
   [[ "$(stat -c '%U %a' "$f")" == "root 600" ]] || fail "$f is not root 0600"
 done
