@@ -491,15 +491,19 @@ func (d *doctor) addRelease(status, provenance, detail, hint string) {
 }
 
 func (d *doctor) checkRelease(path string) {
+	d.checkReleaseVersion(path, version)
+}
+
+func (d *doctor) checkReleaseVersion(path, binaryVersion string) {
 	rs, err := readReleaseState(path)
 	if errors.Is(err, os.ErrNotExist) {
-		if missingReleaseProvenance(version) == provenanceMissingState {
+		if missingReleaseProvenance(binaryVersion) == provenanceMissingState {
 			d.addRelease(checkWarn, provenanceMissingState,
-				fmt.Sprintf("binary reports release-shaped version %s but verified release state is absent at %s; a matching version or external hash alone does not prove signed provenance", version, path),
+				fmt.Sprintf("binary reports release-shaped version %s but verified release state is absent at %s; a matching version or external hash alone does not prove signed provenance", binaryVersion, path),
 				"reinstall this exact signed release through a verified BAFT deployment path to recreate durable release provenance")
 		} else {
 			d.addRelease(checkWarn, provenanceSourceUnknown,
-				fmt.Sprintf("no verified release state at %s; binary reports %s, so treat this as a source or unknown build", path, version),
+				fmt.Sprintf("no verified release state at %s; binary reports %s, so treat this as a source or unknown build", path, binaryVersion),
 				"production servers should be installed from a signed release")
 		}
 		return
@@ -508,9 +512,9 @@ func (d *doctor) checkRelease(path string) {
 		d.addRelease(checkFail, provenanceStateInvalid, err.Error(), "")
 		return
 	}
-	if strings.TrimPrefix(rs.Version, "v") != strings.TrimPrefix(version, "v") {
+	if strings.TrimPrefix(rs.Version, "v") != strings.TrimPrefix(binaryVersion, "v") {
 		d.addRelease(checkWarn, provenanceStateMismatch,
-			fmt.Sprintf("verified release state says %s but the binary reports %s", rs.Version, version),
+			fmt.Sprintf("verified release state says %s but the binary reports %s", rs.Version, binaryVersion),
 			"reinstall the release with install.sh")
 		return
 	}
