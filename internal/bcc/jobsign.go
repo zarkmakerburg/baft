@@ -58,7 +58,7 @@ func agentAction(j Job) (string, map[string]string, error) {
 	switch j.Type {
 	case JobDeployBAFT:
 		return agentjob.ActionUpdateBAFT, map[string]string{"version": j.Version}, nil
-	case JobTunnelPrepareEX, JobTunnelPrepareIR, JobTunnelCommitEX, JobTunnelCommitIR, JobTunnelHealth, JobTunnelObserve, JobTunnelInspect, JobTunnelDiscover, JobTunnelFinalize, JobTunnelRollback,
+	case JobTunnelPrepareEX, JobTunnelPrepareIR, JobTunnelCommitEX, JobTunnelCommitIR, JobTunnelHealth, JobTunnelObserve, JobTunnelInspect, JobTunnelDiscover, JobTunnelFinalize, JobTunnelRollback, agentjob.ActionTunnelRetire,
 		agentjob.ActionCertPrepareEX, agentjob.ActionCertTrustIR, agentjob.ActionCertVerifyEX, agentjob.ActionCertVerifyIR,
 		agentjob.ActionCertActivateEX, agentjob.ActionCertConfirmIR, agentjob.ActionCertRetireIR, agentjob.ActionCertRetireEX,
 		agentjob.ActionCertRollback:

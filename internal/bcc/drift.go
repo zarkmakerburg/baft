@@ -80,6 +80,9 @@ func classifyLive(t Tunnel, node, role string, l tunnelnode.Live) DriftNode {
 	if l.MarkerTunnelID != t.ID {
 		bad("marker belongs to tunnel %q, want %q", l.MarkerTunnelID, t.ID)
 	}
+	if l.MarkerInstanceID != t.InstanceID {
+		bad("marker instance is %q, want %q", l.MarkerInstanceID, t.InstanceID)
+	}
 	if want, ok := t.ObservedGen[node]; ok && l.MarkerGeneration != want {
 		bad("marker generation %d, BCC verified %d", l.MarkerGeneration, want)
 	}

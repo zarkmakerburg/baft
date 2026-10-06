@@ -65,7 +65,7 @@ func TestTunnelJobsAreRefusedWhenNotEnabled(t *testing.T) {
 func TestTunnelActionsAreSignedAndStrictlyShaped(t *testing.T) {
 	for _, action := range []string{
 		agentjob.ActionTunnelPrepareEX, agentjob.ActionTunnelPrepareIR, agentjob.ActionTunnelCommitEX,
-		agentjob.ActionTunnelCommitIR, agentjob.ActionTunnelHealth, agentjob.ActionTunnelFinalize, agentjob.ActionTunnelRollback,
+		agentjob.ActionTunnelCommitIR, agentjob.ActionTunnelHealth, agentjob.ActionTunnelFinalize, agentjob.ActionTunnelRollback, agentjob.ActionTunnelRetire,
 	} {
 		found := false
 		for _, a := range agentjob.Actions() {

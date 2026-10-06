@@ -253,7 +253,7 @@ func TestRetiredEnrollJobsAreFailedNotServed(t *testing.T) {
 }
 
 func TestDashboardHasServerAndTunnelControlsWithoutStoringCredentials(t *testing.T) {
-	for _, want := range []string{`id="bsFp"`, `id="bsGo"`, `id="tnRows"`, "/api/bootstrap/hostkey", "/api/bootstrap", "/api/tunnels/cancel"} {
+	for _, want := range []string{`id="bsFp"`, `id="bsGo"`, `id="tnRows"`, "/api/bootstrap/hostkey", "/api/bootstrap", "/api/tunnels/cancel", "/api/tunnels/decommission/plan", "/api/tunnels/decommission", "tnDecommission"} {
 		if !strings.Contains(dashboardHTML, want) {
 			t.Errorf("dashboard lacks %s", want)
 		}

@@ -246,6 +246,9 @@ func (m *Manager) noiseKey() string              { return filepath.Join(m.Config
 func (m *Manager) pkiDir() string                { return filepath.Join(m.ConfigDir, "pki") }
 func (m *Manager) unitPath() string              { return filepath.Join(m.UnitDir, m.Service+".service") }
 func (m *Manager) backup(id, name string) string { return filepath.Join(m.stage(id), "backup", name) }
+func (m *Manager) retirePath(id string) string {
+	return filepath.Join(m.StateDir, "retire-receipts", id+".json")
+}
 
 func (m *Manager) readTxn(id string) (Txn, error) {
 	var t Txn
@@ -1227,6 +1230,196 @@ func (m *Manager) ownershipViolations(t Txn) []string {
 	return v
 }
 
+// RetireExpectation is BCC's last accepted proof for one active managed
+// instance. Retirement is destructive, so every value must still match.
+type RetireExpectation struct {
+	Generation   int    `json:"generation"`
+	ConfigSHA256 string `json:"config_sha256"`
+	UnitSHA256   string `json:"unit_sha256"`
+	MarkerSHA256 string `json:"marker_sha256"`
+}
+
+// RetireEvidence is returned to BCC so the destructive step has observable
+// before/after proof rather than relying on process exit status.
+type RetireEvidence struct {
+	TunnelID string `json:"tunnel_id"`
+	Instance string `json:"instance_id,omitempty"`
+	Before   Live   `json:"before"`
+	After    Live   `json:"after"`
+	Already  bool   `json:"already_retired,omitempty"`
+}
+
+type retireState struct {
+	TunnelID string `json:"tunnel_id"`
+	Instance string `json:"instance_id,omitempty"`
+	RetireExpectation
+	Phase   string    `json:"phase"`
+	Updated time.Time `json:"updated"`
+}
+
+func validDigest(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+func (m *Manager) readRetireState(id string) (retireState, error) {
+	var st retireState
+	err := readJSON(m.retirePath(id), &st)
+	return st, err
+}
+
+func sameRetireExpectation(st retireState, id, instance string, want RetireExpectation) bool {
+	return st.TunnelID == id && st.Instance == instance &&
+		st.Generation == want.Generation && st.ConfigSHA256 == want.ConfigSHA256 &&
+		st.UnitSHA256 == want.UnitSHA256 && st.MarkerSHA256 == want.MarkerSHA256
+}
+
+func (m *Manager) verifyRetireLive(l Live, id string, want RetireExpectation, allowMissing bool) error {
+	var problems []string
+	bad := func(s string) { problems = append(problems, s) }
+	if l.NodeGeneration != want.Generation {
+		bad(fmt.Sprintf("node generation %d != expected %d", l.NodeGeneration, want.Generation))
+	}
+	if l.ConfigPresent {
+		if l.ConfigSHA256 != want.ConfigSHA256 {
+			bad("config digest changed outside BAFT")
+		}
+	} else if !allowMissing {
+		bad("managed config is missing")
+	}
+	if l.UnitPresent {
+		if l.UnitSHA256 != want.UnitSHA256 {
+			bad("unit digest changed outside BAFT")
+		}
+	} else if !allowMissing {
+		bad("managed unit is missing")
+	}
+	if l.MarkerPresent {
+		if l.MarkerManagedBy != "baft" {
+			bad("ownership marker is not BAFT-owned")
+		}
+		if l.MarkerTunnelID != id {
+			bad(fmt.Sprintf("ownership marker belongs to tunnel %q", l.MarkerTunnelID))
+		}
+		if l.MarkerInstanceID != m.Instance {
+			bad(fmt.Sprintf("ownership marker belongs to instance %q", l.MarkerInstanceID))
+		}
+		if l.MarkerGeneration != want.Generation {
+			bad(fmt.Sprintf("ownership marker generation %d != expected %d", l.MarkerGeneration, want.Generation))
+		}
+		if l.MarkerSHA256 != want.MarkerSHA256 {
+			bad("ownership marker digest changed outside BAFT")
+		}
+		if l.ConfigPresent && !l.MarkerConfigMatches {
+			bad("ownership marker no longer matches config")
+		}
+		if l.UnitPresent && !l.MarkerUnitMatches {
+			bad("ownership marker no longer matches unit")
+		}
+	} else if !allowMissing {
+		bad("BAFT ownership marker is missing")
+	}
+	if len(problems) > 0 {
+		return errors.New("retire refused: " + strings.Join(problems, "; ") + "; nothing was changed")
+	}
+	return nil
+}
+
+// Retire removes exactly one finalized BAFT-managed instance. A durable
+// started receipt is written only after the complete live ownership proof
+// matches, so retry after a partial local failure may safely continue.
+func (m *Manager) Retire(ctx context.Context, id string, want RetireExpectation) (RetireEvidence, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var ev RetireEvidence
+	ev.TunnelID, ev.Instance = id, m.Instance
+	if !idRe.MatchString(id) || want.Generation <= 0 ||
+		!validDigest(want.ConfigSHA256) || !validDigest(want.UnitSHA256) || !validDigest(want.MarkerSHA256) {
+		return ev, errors.New("invalid retire expectation")
+	}
+	if rid := m.rotationInProgress(); rid != "" {
+		return ev, fmt.Errorf("certificate rotation %s is in progress on this node", rid)
+	}
+
+	ev.Before = m.inspectUnlocked(ctx)
+	st, err := m.readRetireState(id)
+	if err == nil {
+		if !sameRetireExpectation(st, id, m.Instance, want) {
+			return ev, errors.New("retire receipt does not match this request")
+		}
+		if st.Phase == "complete" {
+			if ev.Before.ConfigPresent || ev.Before.UnitPresent || ev.Before.MarkerPresent || ev.Before.ServiceActive {
+				return ev, errors.New("retire receipt is complete but managed artifacts are present again")
+			}
+			ev.After, ev.Already = ev.Before, true
+			return ev, nil
+		}
+		if st.Phase != "started" {
+			return ev, errors.New("retire receipt has invalid phase")
+		}
+		if err := m.verifyRetireLive(ev.Before, id, want, true); err != nil {
+			return ev, err
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		tx, txErr := m.readTxn(id)
+		if txErr != nil {
+			return ev, fmt.Errorf("retire refused: finalized tunnel record %s is unavailable", id)
+		}
+		if tx.Phase != PhaseFinalized {
+			return ev, fmt.Errorf("retire refused: tunnel change %s is %s, not finalized", id, tx.Phase)
+		}
+		if err := m.verifyRetireLive(ev.Before, id, want, false); err != nil {
+			return ev, err
+		}
+		st = retireState{
+			TunnelID: id, Instance: m.Instance, RetireExpectation: want,
+			Phase: "started", Updated: m.Now().UTC(),
+		}
+		if err := writeJSON(m.retirePath(id), st, 0o600); err != nil {
+			return ev, err
+		}
+	} else {
+		return ev, fmt.Errorf("retire receipt: %w", err)
+	}
+
+	if _, err := m.System.Systemctl(ctx, "stop", m.Service); err != nil {
+		return ev, fmt.Errorf("stop %s: %w", m.Service, err)
+	}
+	state, _ := m.System.Systemctl(ctx, "is-active", m.Service)
+	if state == "active" || state == "activating" || state == "reloading" {
+		return ev, fmt.Errorf("%s is still %q; managed files were not removed", m.Service, state)
+	}
+	if _, err := m.System.Systemctl(ctx, "disable", m.Service); err != nil {
+		return ev, fmt.Errorf("disable %s: %w", m.Service, err)
+	}
+
+	// On retry, any surviving file must still be exactly the file BCC proved.
+	if err := m.verifyRetireLive(m.inspectUnlocked(ctx), id, want, true); err != nil {
+		return ev, err
+	}
+	for _, path := range []string{m.liveConfig(), m.unitPath(), m.markerPath()} {
+		if err := removeDurable(path); err != nil {
+			return ev, err
+		}
+	}
+	_, _ = m.System.Systemctl(ctx, "daemon-reload")
+	if m.activeID() == id {
+		m.clearActive()
+	}
+	ev.After = m.inspectUnlocked(ctx)
+	if ev.After.ConfigPresent || ev.After.UnitPresent || ev.After.MarkerPresent || ev.After.ServiceActive {
+		return ev, errors.New("retire incomplete: managed artifacts remain")
+	}
+	st.Phase, st.Updated = "complete", m.Now().UTC()
+	if err := writeJSON(m.retirePath(id), st, 0o600); err != nil {
+		return ev, err
+	}
+	return ev, nil
+}
+
 // Live is what a node actually has right now, read without a change id. It
 // is the input of drift detection: BCC compares it with the tunnel it
 // believes is active on this node.
@@ -1240,6 +1433,7 @@ type Live struct {
 	MarkerPresent       bool   `json:"marker_present"`
 	MarkerManagedBy     string `json:"marker_managed_by,omitempty"`
 	MarkerTunnelID      string `json:"marker_tunnel_id,omitempty"`
+	MarkerInstanceID    string `json:"marker_instance_id,omitempty"`
 	MarkerGeneration    int    `json:"marker_generation,omitempty"`
 	MarkerConfigMatches bool   `json:"marker_config_matches"`
 	MarkerUnitMatches   bool   `json:"marker_unit_matches"`
@@ -1263,6 +1457,10 @@ type Live struct {
 func (m *Manager) Inspect(ctx context.Context) Live {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.inspectUnlocked(ctx)
+}
+
+func (m *Manager) inspectUnlocked(ctx context.Context) Live {
 	l := Live{InstanceID: m.Instance, NodeGeneration: m.readGeneration()}
 	raw, err := os.ReadFile(m.liveConfig())
 	if err == nil {
@@ -1293,7 +1491,7 @@ func (m *Manager) Inspect(ctx context.Context) Live {
 	}
 	if err := readJSON(m.markerPath(), &mk); err == nil {
 		l.MarkerPresent = true
-		l.MarkerManagedBy, l.MarkerTunnelID, l.MarkerGeneration = mk.ManagedBy, mk.TunnelID, mk.Generation
+		l.MarkerManagedBy, l.MarkerTunnelID, l.MarkerInstanceID, l.MarkerGeneration = mk.ManagedBy, mk.TunnelID, mk.InstanceID, mk.Generation
 		l.MarkerConfigMatches = l.ConfigPresent && mk.ConfigSHA256 == l.ConfigSHA256
 		l.MarkerUnitMatches = l.UnitPresent && mk.UnitSHA256 == shaHex(unit)
 	}
