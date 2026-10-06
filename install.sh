@@ -139,6 +139,8 @@ preflight_dir_access() {
 
 preflight_chain() {
   local target="${1%/}" cur="/" part rest
+  # Parameter expansion turns "/" into ""; keep the root path canonical.
+  [[ -n "$target" ]] || target="/"
   [[ "$target" == /* ]] || die "preflight: expected absolute path, got '$target'"
   preflight_dir_access "/"
   rest="${target#/}"
