@@ -271,6 +271,15 @@ func (t *noisePhaseTrace) clientTrace() *httptrace.ClientTrace {
 	}
 }
 
+// sanitizedTransportError keeps diagnostic output free of endpoint metadata
+// while preserving errors.Is/errors.As for callers inspecting the cause.
+type sanitizedTransportError struct {
+	cause error
+}
+
+func (e *sanitizedTransportError) Error() string { return "transport error" }
+func (e *sanitizedTransportError) Unwrap() error { return e.cause }
+
 func (t *noisePhaseTrace) wrap(err error, timedOut, sanitizeTransport bool) error {
 	if err == nil {
 		return nil
@@ -296,13 +305,7 @@ func (t *noisePhaseTrace) wrap(err error, timedOut, sanitizeTransport bool) erro
 	// existing error contract for callers and diagnostics.
 	cause := err
 	if sanitizeTransport {
-		cause = errors.New("transport error")
-	}
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		cause = context.DeadlineExceeded
-	case errors.Is(err, context.Canceled):
-		cause = context.Canceled
+		cause = &sanitizedTransportError{cause: err}
 	}
 	return fmt.Errorf("h2: OpenNoise failed phase=%s elapsed=%dms trace=%s: %w",
 		t.phase, time.Since(t.start).Milliseconds(), b.String(), cause)
