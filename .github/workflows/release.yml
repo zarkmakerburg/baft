@@ -65,6 +65,8 @@ jobs:
           cp release/keys/root.pub "$RUNNER_TEMP/candidate/root.pub"
           cp release/keys/revocations.json "$RUNNER_TEMP/candidate/revocations.json"
           cp install.sh "$RUNNER_TEMP/candidate/install.sh"
+          cmp -s "$RUNNER_TEMP/candidate/install.sh" "$RUNNER_TEMP/candidate/dist/baft-install-linux-amd64"
+          cmp -s "$RUNNER_TEMP/candidate/install.sh" "$RUNNER_TEMP/candidate/dist/baft-install-linux-arm64"
           cp scripts/release/offline_bundle.sh "$RUNNER_TEMP/candidate/offline_bundle.sh"
           cp LICENSE COPYRIGHT THIRD_PARTY_LICENSES.md "$RUNNER_TEMP/candidate/notices/"
           if [ -f "release/notes/$GITHUB_REF_NAME.md" ]; then

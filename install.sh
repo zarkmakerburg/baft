@@ -79,7 +79,14 @@ BAFT_BCC_BACKUP_DIR="${BAFT_BCC_BACKUP_DIR:-$BAFT_BCC_STATE_DIR/backups}"
 BAFT_BCC_SERVICE="${BAFT_BCC_SERVICE:-baft-bcc}"
 BAFT_BCC_UNIT_FILE="$BAFT_SYSTEMD_DIR/$BAFT_BCC_SERVICE.service"
 BAFT_BCC_LISTEN="${BAFT_BCC_LISTEN:-127.0.0.1:8080}"
+BCC_PUBLIC_URL_EXPLICIT=0
+[[ ${BAFT_BCC_PUBLIC_URL+x} ]] && BCC_PUBLIC_URL_EXPLICIT=1
+BCC_BOOTSTRAP_SCRIPT_EXPLICIT=0
+[[ ${BAFT_BCC_BOOTSTRAP_SCRIPT+x} ]] && BCC_BOOTSTRAP_SCRIPT_EXPLICIT=1
+BCC_INSECURE_HTTP_EXPLICIT=0
+[[ ${BAFT_BCC_ALLOW_INSECURE_HTTP+x} ]] && BCC_INSECURE_HTTP_EXPLICIT=1
 BAFT_BCC_PUBLIC_URL="${BAFT_BCC_PUBLIC_URL:-}"
+BAFT_BCC_BOOTSTRAP_SCRIPT="${BAFT_BCC_BOOTSTRAP_SCRIPT:-$BAFT_PREFIX/bcc-bootstrap/install.sh}"
 BAFT_BCC_TLS_CERT="${BAFT_BCC_TLS_CERT:-}"
 BAFT_BCC_TLS_KEY="${BAFT_BCC_TLS_KEY:-}"
 BAFT_BCC_ALLOW_INSECURE_HTTP="${BAFT_BCC_ALLOW_INSECURE_HTTP:-0}"
@@ -300,6 +307,7 @@ Environment:
   BAFT_BCC_BIN BAFT_BCC_CONFIG_DIR BAFT_BCC_STATE_DIR BAFT_BCC_STATE_FILE
   BAFT_BCC_ADMIN_TOKEN_FILE BAFT_BCC_ACCESS_FILE BAFT_BCC_JOB_KEY_FILE
   BAFT_BCC_BACKUP_DIR BAFT_BCC_SERVICE BAFT_BCC_LISTEN BAFT_BCC_PUBLIC_URL
+  BAFT_BCC_BOOTSTRAP_SCRIPT
   BAFT_BCC_TLS_CERT BAFT_BCC_TLS_KEY BAFT_BCC_ALLOW_INSECURE_HTTP
   BAFT_SHAPE_DISTRIBUTION BAFT_SHAPE_MEAN BAFT_SHAPE_STDDEV
   BAFT_SHAPE_MAX_PADDING BAFT_SHAPE_MAX_RATIO
@@ -338,16 +346,45 @@ while [[ $# -gt 0 ]]; do
     --agent-only) AGENT_ONLY=1; shift ;;
     --bcc-only) BCC_ONLY=1; shift ;;
     --bcc-listen) BAFT_BCC_LISTEN="${2:-}"; shift 2 ;;
-    --bcc-public-url) BAFT_BCC_PUBLIC_URL="${2:-}"; shift 2 ;;
+    --bcc-public-url) BAFT_BCC_PUBLIC_URL="${2:-}"; BCC_PUBLIC_URL_EXPLICIT=1; shift 2 ;;
     --bcc-tls-cert) BAFT_BCC_TLS_CERT="${2:-}"; shift 2 ;;
     --bcc-tls-key) BAFT_BCC_TLS_KEY="${2:-}"; shift 2 ;;
-    --bcc-allow-insecure-http) BAFT_BCC_ALLOW_INSECURE_HTTP=1; shift ;;
+    --bcc-allow-insecure-http) BAFT_BCC_ALLOW_INSECURE_HTTP=1; BCC_INSECURE_HTTP_EXPLICIT=1; shift ;;
     --bcc-url) BAFT_BCC_URL="${2:-}"; shift 2 ;;
     --node-id) BAFT_NODE_ID="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# A healthy BCC rerun without --bcc-public-url keeps an already-managed
+# bootstrap configuration. An explicitly supplied environment value or CLI
+# option always wins; an explicit empty value disables bootstrap. The managed
+# marker also preserves a custom bootstrap path without making the listener
+# public or inferring a URL.
+managed_bcc_exec_arg() {
+  local flag="$1"
+  [[ -f "$BAFT_BCC_UNIT_FILE" ]] || return 0
+  sed -n 's/^ExecStart=//p' "$BAFT_BCC_UNIT_FILE" | head -n1 | awk -v f="--$flag" '{for(i=1;i<NF;i++) if($i==f){print $(i+1); exit}}'
+}
+adopt_managed_bcc_bootstrap_settings() {
+  [[ -f "$BAFT_BCC_UNIT_FILE" ]] || return 0
+  grep -q '^# baft-managed: true' "$BAFT_BCC_UNIT_FILE" 2>/dev/null || return 0
+  grep -q '^# baft-component: bcc' "$BAFT_BCC_UNIT_FILE" 2>/dev/null || return 0
+  if [[ "$BCC_PUBLIC_URL_EXPLICIT" == "0" ]]; then
+    local old_url
+    old_url="$(managed_bcc_exec_arg public-url)"
+    [[ -z "$old_url" ]] || BAFT_BCC_PUBLIC_URL="$old_url"
+  fi
+  if [[ "$BCC_BOOTSTRAP_SCRIPT_EXPLICIT" == "0" ]]; then
+    local old_script
+    old_script="$(sed -n 's/^# baft-bootstrap-script: //p' "$BAFT_BCC_UNIT_FILE" | head -n1)"
+    [[ -z "$old_script" ]] || BAFT_BCC_BOOTSTRAP_SCRIPT="$old_script"
+  fi
+  if [[ "$BCC_INSECURE_HTTP_EXPLICIT" == "0" ]] && grep -q -- ' --allow-insecure-http' "$BAFT_BCC_UNIT_FILE" 2>/dev/null; then
+    BAFT_BCC_ALLOW_INSECURE_HTTP=1
+  fi
+}
 
 # Where questions are read from. Run from a file (`bash install.sh`), stdin
 # answers them as before: a terminal, or a pipe/FIFO that scripts feed the
@@ -404,6 +441,7 @@ F_KEY=0; F_KEY_OK=0; F_PKI=0; F_PENDING=0; F_USER=0; F_ACTIVE=0; F_ENABLED=0; F_
 F_AGENT_UNIT=0; F_AGENT_ACTIVE=0; F_AGENT_ENABLED=0; F_TOKEN=0; F_JOBKEY=0
 F_BCC_BIN=0; F_BCC_UNIT=0; F_BCC_UNIT_MANAGED=0; F_BCC_ACTIVE=0; F_BCC_ENABLED=0
 F_BCC_ADMIN=0; F_BCC_ACCESS=0; F_BCC_JOBKEY=0; F_BCC_STATE=0; F_BCC_DIRS=0
+F_BCC_BOOTSTRAP=0; F_BCC_BOOTSTRAP_OK=0; F_BCC_BOOTSTRAP_ENABLED=0
 
 INSPECTED=0; CFG_INVALID_WHY=""
 inspect_install() {
@@ -444,6 +482,13 @@ inspect_install() {
   [[ -s "$BAFT_BCC_ACCESS_FILE" ]] && F_BCC_ACCESS=1
   [[ -s "$BAFT_BCC_JOB_KEY_FILE" ]] && F_BCC_JOBKEY=1
   [[ -f "$BAFT_BCC_STATE_FILE" ]] && F_BCC_STATE=1
+  [[ -f "$BAFT_BCC_BOOTSTRAP_SCRIPT" ]] && F_BCC_BOOTSTRAP=1
+  if [[ "$F_BCC_BOOTSTRAP" == 1 && "$(stat -c '%a %U' "$BAFT_BCC_BOOTSTRAP_SCRIPT" 2>/dev/null)" == "700 root" ]]; then
+    F_BCC_BOOTSTRAP_OK=1
+  fi
+  if [[ "$F_BCC_UNIT" == 1 ]] && grep -q -- ' --install-script ' "$BAFT_BCC_UNIT_FILE" 2>/dev/null && grep -q -- ' --public-url ' "$BAFT_BCC_UNIT_FILE" 2>/dev/null; then
+    F_BCC_BOOTSTRAP_ENABLED=1
+  fi
   [[ -d "$BAFT_BCC_CONFIG_DIR" && -d "$BAFT_BCC_STATE_DIR" ]] && F_BCC_DIRS=1
   if svc_active "$BAFT_BCC_SERVICE.service"; then F_BCC_ACTIVE=1; fi
   if svc_enabled "$BAFT_BCC_SERVICE.service"; then F_BCC_ENABLED=1; fi
@@ -509,7 +554,7 @@ classify_state() {
 # STAGED=1 once a release was downloaded and verified; before that (--plan) the
 # comparison can only use the requested version.
 STAGED=0; TARGET_REL=""
-STAGE_BIN=""; STAGE_PAIR=""; STAGE_AGENT=""; STAGE_BCC=""
+STAGE_BIN=""; STAGE_PAIR=""; STAGE_AGENT=""; STAGE_BCC=""; STAGE_BCC_BOOTSTRAP=""
 DO_BIN=0
 plan_binary() { # item installed-path staged-path flag
   local item="$1" path="$2" staged="$3" present="$4"
@@ -536,7 +581,7 @@ plan_relstate() {
 }
 DO_UNIT=0; DO_PKI=0; DO_KEYGEN=0; DO_PAIRING=0; DO_RESTART=0; DO_START=0; DO_ENABLE=0; DO_FIXPERM=0
 DO_AGENT_UNIT=0; DO_AGENT_ENABLE=0; DO_TOKEN=0; DO_JOBKEY=0; DO_ROOTPIN=0
-DO_BCC_UNIT=0; DO_BCC_ENABLE=0; DO_BCC_ADMIN=0; DO_BCC_ACCESS=0; DO_BCC_JOBKEY=0
+DO_BCC_UNIT=0; DO_BCC_ENABLE=0; DO_BCC_ADMIN=0; DO_BCC_ACCESS=0; DO_BCC_JOBKEY=0; DO_BCC_BOOTSTRAP=0
 REFUSED=""
 
 build_role_plan() {
@@ -639,6 +684,34 @@ build_bcc_plan() {
   if [[ "$F_BCC_JOBKEY" == 0 ]]; then plan_add "BCC job key" create "$BAFT_BCC_JOB_KEY_FILE (owner-only)"; DO_BCC_JOBKEY=1
   else plan_add "BCC job key" keep "exists; rerun never rotates it"; fi
 
+  if [[ "$STAGED" == 1 ]]; then
+    if same_file "$STAGE_BCC_BOOTSTRAP" "$BAFT_BCC_BOOTSTRAP_SCRIPT" && [[ "$F_BCC_BOOTSTRAP_OK" == 1 ]]; then
+      plan_add "BCC bootstrap script" keep "same installer bytes as ${TARGET_REL}; root-owned mode 0700"
+    elif [[ "$F_BCC_BOOTSTRAP" == 1 ]]; then
+      plan_add "BCC bootstrap script" update "replace with installer from ${TARGET_REL} and enforce root-owned mode 0700"; DO_BCC_BOOTSTRAP=1
+    else
+      plan_add "BCC bootstrap script" create "$BAFT_BCC_BOOTSTRAP_SCRIPT from installer generation ${TARGET_REL}"; DO_BCC_BOOTSTRAP=1
+    fi
+  elif [[ "$F_BCC_BOOTSTRAP" == 1 && "$F_BCC_BOOTSTRAP_OK" == 1 ]]; then
+    plan_add "BCC bootstrap script" keep "managed script exists; exact bytes are compared after release/source staging"
+  elif [[ "$F_BCC_BOOTSTRAP" == 1 ]]; then
+    plan_add "BCC bootstrap script" update "repair root ownership/mode and compare exact bytes after staging"; DO_BCC_BOOTSTRAP=1
+  else
+    plan_add "BCC bootstrap script" create "$BAFT_BCC_BOOTSTRAP_SCRIPT (staged only during apply)"; DO_BCC_BOOTSTRAP=1
+  fi
+
+  if [[ -n "$BAFT_BCC_PUBLIC_URL" ]]; then
+    if [[ "$F_BCC_BOOTSTRAP_ENABLED" == 1 ]]; then
+      plan_add "BCC SSH enrollment" keep "enabled for ${BAFT_BCC_PUBLIC_URL%/}; listener remains $BAFT_BCC_LISTEN"
+    else
+      plan_add "BCC SSH enrollment" enable "enable managed SSH bootstrap for ${BAFT_BCC_PUBLIC_URL%/}; listener remains $BAFT_BCC_LISTEN"
+    fi
+  elif [[ "$F_BCC_BOOTSTRAP_ENABLED" == 1 ]]; then
+    plan_add "BCC SSH enrollment" disable "remove bootstrap/public-url arguments; listener remains $BAFT_BCC_LISTEN"
+  else
+    plan_add "BCC SSH enrollment" skip "disabled: no explicit BCC public URL"
+  fi
+
   if [[ "$F_BCC_UNIT" == 0 ]]; then
     plan_add "BCC systemd unit" create "$BAFT_BCC_UNIT_FILE"; DO_BCC_UNIT=1
   elif [[ "$F_BCC_UNIT_MANAGED" == 0 ]]; then
@@ -655,8 +728,8 @@ build_bcc_plan() {
 
   if [[ "$F_BCC_ACTIVE" == 0 ]]; then
     plan_add "BCC service" start "start the Command Center after its files are ready"; DO_START=1
-  elif [[ "$DO_BIN" == 1 || "$DO_BCC_UNIT" == 1 || "$DO_BCC_ADMIN" == 1 || "$DO_BCC_JOBKEY" == 1 ]]; then
-    plan_add "BCC service" restart "to pick up the verified binary, managed unit or startup credential"; DO_RESTART=1
+  elif [[ "$DO_BIN" == 1 || "$DO_BCC_UNIT" == 1 || "$DO_BCC_ADMIN" == 1 || "$DO_BCC_JOBKEY" == 1 || "$DO_BCC_BOOTSTRAP" == 1 ]]; then
+    plan_add "BCC service" restart "to pick up the verified binary, managed unit, bootstrap generation or startup credential"; DO_RESTART=1
   else
     plan_add "BCC service" keep "left running; credentials are not rotated"
   fi
@@ -1113,12 +1186,13 @@ PY
       die "--bcc-public-url must be https://host[:port] (http only with --bcc-allow-insecure-http)"
   fi
   local v
-  for v in "$BAFT_BCC_BIN" "$BAFT_BCC_CONFIG_DIR" "$BAFT_BCC_STATE_DIR" "$BAFT_BCC_STATE_FILE"     "$BAFT_BCC_ADMIN_TOKEN_FILE" "$BAFT_BCC_ACCESS_FILE" "$BAFT_BCC_JOB_KEY_FILE" "$BAFT_BCC_BACKUP_DIR" "$BAFT_BCC_UNIT_FILE"; do
+  for v in "$BAFT_BCC_BIN" "$BAFT_BCC_CONFIG_DIR" "$BAFT_BCC_STATE_DIR" "$BAFT_BCC_STATE_FILE"     "$BAFT_BCC_ADMIN_TOKEN_FILE" "$BAFT_BCC_ACCESS_FILE" "$BAFT_BCC_JOB_KEY_FILE" "$BAFT_BCC_BACKUP_DIR" "$BAFT_BCC_UNIT_FILE" "$BAFT_BCC_BOOTSTRAP_SCRIPT"; do
     [[ "$v" != *[[:space:]]* ]] || die "BCC install paths must not contain whitespace"
   done
 }
 
 if [[ "$BCC_ONLY" == "1" ]]; then
+  adopt_managed_bcc_bootstrap_settings
   [[ "$AGENT_ONLY" == "0" ]] || die "--bcc-only cannot be combined with --agent-only"
   [[ -z "$ROLE" ]] || die "--bcc-only does not take --role"
   [[ "$RE_PAIR" == "0" && "$STEALTH_PRO" == "0" && -z "$IR_SSH" ]] || die "--bcc-only cannot be combined with tunnel/pairing options"
@@ -1309,7 +1383,8 @@ EOF
 }
 
 render_bcc_unit() {
-  local tls_args="" insecure="" caps="" allow_line="" port host
+  local tls_args="" insecure="" caps="" allow_line="" bootstrap_args="" bootstrap_hash="absent" bootstrap_src="" port host
+  local bootstrap_path="${BAFT_BCC_BOOTSTRAP_SCRIPT:-}" public_url="${BAFT_BCC_PUBLIC_URL:-}"
   port="${BAFT_BCC_LISTEN##*:}"
   if [[ "$BAFT_BCC_LISTEN" == \[*\]:* ]]; then
     host="${BAFT_BCC_LISTEN#\[}"
@@ -1325,6 +1400,12 @@ render_bcc_unit() {
     tls_args=" --tls-cert $BAFT_BCC_TLS_CERT --tls-key $BAFT_BCC_TLS_KEY"
   fi
   if [[ "$BAFT_BCC_ALLOW_INSECURE_HTTP" == "1" ]]; then insecure=" --allow-insecure-http"; fi
+  if [[ -n "${STAGE_BCC_BOOTSTRAP:-}" && -f "${STAGE_BCC_BOOTSTRAP:-}" ]]; then bootstrap_src="$STAGE_BCC_BOOTSTRAP"
+  elif [[ -n "$bootstrap_path" && -f "$bootstrap_path" ]]; then bootstrap_src="$bootstrap_path"; fi
+  if [[ -n "$bootstrap_src" ]]; then bootstrap_hash="$(sha256sum "$bootstrap_src" | awk '{print $1}')"; fi
+  if [[ -n "$public_url" ]]; then
+    bootstrap_args=" --install-script $bootstrap_path --public-url ${public_url%/}"
+  fi
   if (( port < 1024 )); then
     caps=$'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE'
   else
@@ -1333,6 +1414,8 @@ render_bcc_unit() {
   cat <<UNIT
 # baft-managed: true
 # baft-component: bcc
+# baft-bootstrap-script: $bootstrap_path
+# baft-bootstrap-sha256: $bootstrap_hash
 [Unit]
 Description=BAFT Command Center
 After=network-online.target
@@ -1342,7 +1425,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 $allow_line
-ExecStart=$BAFT_BCC_BIN --listen $BAFT_BCC_LISTEN --state-file $BAFT_BCC_STATE_FILE --admin-token-file $BAFT_BCC_ADMIN_TOKEN_FILE --access-file $BAFT_BCC_ACCESS_FILE --job-key-file $BAFT_BCC_JOB_KEY_FILE --backup-dir $BAFT_BCC_BACKUP_DIR$tls_args$insecure
+ExecStart=$BAFT_BCC_BIN --listen $BAFT_BCC_LISTEN --state-file $BAFT_BCC_STATE_FILE --admin-token-file $BAFT_BCC_ADMIN_TOKEN_FILE --access-file $BAFT_BCC_ACCESS_FILE --job-key-file $BAFT_BCC_JOB_KEY_FILE --backup-dir $BAFT_BCC_BACKUP_DIR$tls_args$bootstrap_args$insecure
 Restart=on-failure
 RestartSec=5s
 $caps
@@ -1500,7 +1583,7 @@ reset_plan() {
   PLAN_ITEM=(); PLAN_ACT=(); PLAN_DETAIL=(); PLAN_CHANGES=0; REFUSED=""
   DO_BIN=0; DO_UNIT=0; DO_PKI=0; DO_KEYGEN=0; DO_PAIRING=0; DO_RESTART=0; DO_START=0; DO_ENABLE=0
   DO_FIXPERM=0; DO_AGENT_UNIT=0; DO_AGENT_ENABLE=0; DO_TOKEN=0; DO_JOBKEY=0; DO_ROOTPIN=0; DO_RELSTATE=0
-  DO_BCC_UNIT=0; DO_BCC_ENABLE=0; DO_BCC_ADMIN=0; DO_BCC_ACCESS=0; DO_BCC_JOBKEY=0
+  DO_BCC_UNIT=0; DO_BCC_ENABLE=0; DO_BCC_ADMIN=0; DO_BCC_ACCESS=0; DO_BCC_JOBKEY=0; DO_BCC_BOOTSTRAP=0
 }
 
 # Prerequisites (apt packages, the Go toolchain for --from-source) are the only
@@ -1572,11 +1655,11 @@ fi
 # directory. Nothing is written to a final path before the plan is confirmed.
 STAGE="$(mktemp -d)"
 CLEANUP+=("$STAGE")
-STAGE_BIN="$STAGE/baft"; STAGE_PAIR="$STAGE/baft-pair"; STAGE_AGENT="$STAGE/baft-agent"; STAGE_BCC="$STAGE/baft-bcc"
+STAGE_BIN="$STAGE/baft"; STAGE_PAIR="$STAGE/baft-pair"; STAGE_AGENT="$STAGE/baft-agent"; STAGE_BCC="$STAGE/baft-bcc"; STAGE_BCC_BOOTSTRAP="$STAGE/bcc-bootstrap-install.sh"
 REL_DIR=""
 REL_REV=""
 if [[ "$BCC_ONLY" == "1" ]]; then
-  REL_ARTIFACTS=("baft-bcc-linux-$GOARCH")
+  REL_ARTIFACTS=("baft-bcc-linux-$GOARCH" "baft-install-linux-$GOARCH")
 else
   REL_ARTIFACTS=("baft-linux-$GOARCH" "baft-pair-linux-$GOARCH")
   if [[ "$AGENT_ONLY" == "1" ]]; then REL_ARTIFACTS+=("baft-agent-linux-$GOARCH"); fi
@@ -1612,6 +1695,7 @@ fetch_release() {
   log "verified signed release $got"
   if [[ "$BCC_ONLY" == "1" ]]; then
     install -m 0755 "$REL_DIR/baft-bcc-linux-$GOARCH" "$STAGE_BCC"
+    install -m 0700 "$REL_DIR/baft-install-linux-$GOARCH" "$STAGE_BCC_BOOTSTRAP"
   else
     install -m 0755 "$REL_DIR/baft-linux-$GOARCH" "$STAGE_BIN"
     install -m 0755 "$REL_DIR/baft-pair-linux-$GOARCH" "$STAGE_PAIR"
@@ -1636,6 +1720,7 @@ build_from_source() {
     if [[ "$BCC_ONLY" == "1" ]]; then
       if [[ "$BAFT_RUN_TESTS" == "1" ]]; then go test ./internal/bcc ./cmd/baft-bcc -count=1; fi
       go build -trimpath -ldflags="-s -w" -o "$STAGE_BCC" ./cmd/baft-bcc
+      install -m 0700 install.sh "$STAGE_BCC_BOOTSTRAP"
     else
       if [[ "$BAFT_RUN_TESTS" == "1" ]]; then
         go test ./internal/recordshape ./internal/securityinternal ./internal/carrier/h2 ./internal/config ./cmd/baft ./cmd/baft-pair ./tests/integration -count=1
@@ -1728,6 +1813,7 @@ ensure_base() {
     [[ -d "$BAFT_BCC_STATE_DIR" ]] || install -d -m 0700 -o root -g root "$BAFT_BCC_STATE_DIR"
     [[ -d "$BAFT_PREFIX" ]] || install -d -m 0755 -o root -g root "$BAFT_PREFIX"
     [[ -d "$(dirname "$BAFT_BCC_BIN")" ]] || install -d -m 0755 -o root -g root "$(dirname "$BAFT_BCC_BIN")"
+    [[ -d "$(dirname "$BAFT_BCC_BOOTSTRAP_SCRIPT")" ]] || install -d -m 0755 -o root -g root "$(dirname "$BAFT_BCC_BOOTSTRAP_SCRIPT")"
     if [[ "$BAFT_INSTALL_FROM" == "source" && -d "$STAGE/src" ]]; then
       rm -rf "$BAFT_PREFIX/src"
       mv "$STAGE/src" "$BAFT_PREFIX/src"
@@ -1899,6 +1985,17 @@ install_bcc() {
       die "verify: $f must be root-owned mode 0600"
   done
 
+  if [[ "$DO_BCC_BOOTSTRAP" == "1" ]]; then
+    backup_file "$BAFT_BCC_BOOTSTRAP_SCRIPT"
+    install -m 0700 -o root -g root "$STAGE_BCC_BOOTSTRAP" "$BAFT_BCC_BOOTSTRAP_SCRIPT"
+    fail_point post-bcc-bootstrap
+  fi
+  [[ -f "$BAFT_BCC_BOOTSTRAP_SCRIPT" ]] || die "verify: BCC bootstrap script is missing"
+  [[ "$(stat -c '%a %U' "$BAFT_BCC_BOOTSTRAP_SCRIPT" 2>/dev/null)" == "700 root" ]] ||
+    die "verify: $BAFT_BCC_BOOTSTRAP_SCRIPT must be root-owned mode 0700"
+  same_file "$STAGE_BCC_BOOTSTRAP" "$BAFT_BCC_BOOTSTRAP_SCRIPT" ||
+    die "verify: installed BCC bootstrap script does not match the staged installer generation"
+
   if [[ "$DO_BCC_UNIT" == "1" ]]; then
     backup_file "$BAFT_BCC_UNIT_FILE"
     tmp="$(mktemp)"; CLEANUP+=("$tmp")
@@ -1935,7 +2032,12 @@ install_bcc() {
     printf '%s\n' "$access_show"
     printf '  password: not stored; rotate locally with: %s access regenerate --access-file %s\n' "$BAFT_BCC_BIN" "$BAFT_BCC_ACCESS_FILE"
   fi
-  printf '  job key:  run locally: %s jobkey show --job-key-file %s\n\n' "$BAFT_BCC_BIN" "$BAFT_BCC_JOB_KEY_FILE"
+  printf '  job key:  run locally: %s jobkey show --job-key-file %s\n' "$BAFT_BCC_BIN" "$BAFT_BCC_JOB_KEY_FILE"
+  if [[ -n "$BAFT_BCC_PUBLIC_URL" ]]; then
+    printf '  SSH enrollment: available (host-key confirmation required; credentials are request-memory only)\n\n'
+  else
+    printf '  SSH enrollment: disabled (set --bcc-public-url to enable; the listener is not changed)\n\n'
+  fi
 }
 
 ensure_base
