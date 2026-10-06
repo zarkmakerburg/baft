@@ -10,6 +10,8 @@ cd "$(dirname "$0")/../.."
 [[ "$EUID" -eq 0 ]] || { echo "run as root"; exit 1; }
 REL="$(cd "${1:?usage: ssh_bootstrap.sh <release-dir>}" && pwd)"
 VERSION="$(python3 -c 'import json,base64,sys;e=json.load(open(sys.argv[1]));print(json.loads(base64.b64decode(e["payload"]))["version"])' "$REL/dist/manifest.json")"
+ROOTPUB="$(cat "$REL/root.pub")"
+REV="file://$REL/revocations.json"
 case "$(uname -m)" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; *) echo "unsupported arch" >&2; exit 1 ;; esac
 WORK="$(mktemp -d)"
 PIDS=()
