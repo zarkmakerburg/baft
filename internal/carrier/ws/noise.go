@@ -3,6 +3,9 @@ package ws
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -115,7 +118,9 @@ func HandlerWithNoise(stream StreamHandler, o NoiseOptions) (http.Handler, error
 		_ = conn.SetWriteDeadline(time.Now().Add(o.HandshakeTimeout + time.Second))
 		cfg := o.Handshake
 		cfg.Context = ctx
-		sc, peerStatic, err := securityinternal.Responder(conn, conn, cfg)
+		trace := &fieldNoiseIO{r: conn, w: conn}
+		sc, peerStatic, err := securityinternal.Responder(trace, trace, cfg)
+		trace.report("responder", err)
 		_ = conn.SetReadDeadline(time.Time{})
 		_ = conn.SetWriteDeadline(time.Time{})
 		releaseSlot()
@@ -174,11 +179,48 @@ func (d *Dialer) OpenNoise(ctx context.Context, cfg securityinternal.HandshakeCo
 	}
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	cfg.Context = ctx
-	sc, err := securityinternal.Initiator(conn, conn, cfg)
+	trace := &fieldNoiseIO{r: conn, w: conn}
+	sc, err := securityinternal.Initiator(trace, trace, cfg)
+	trace.report("initiator", err)
 	if err != nil {
 		_ = conn.Close()
 		return nil, nil, err
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return conn, sc, nil
+}
+
+type fieldNoiseIO struct {
+	r            io.Reader
+	w            io.Writer
+	readBytes    int
+	writtenBytes int
+}
+
+func (t *fieldNoiseIO) Read(p []byte) (int, error) {
+	n, e := t.r.Read(p)
+	t.readBytes += n
+	return n, e
+}
+func (t *fieldNoiseIO) Write(p []byte) (int, error) {
+	n, e := t.w.Write(p)
+	t.writtenBytes += n
+	return n, e
+}
+func (t *fieldNoiseIO) report(role string, err error) {
+	code := "success"
+	if err != nil {
+		code = "protocol"
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			code = "timeout"
+		}
+		if errors.Is(err, io.EOF) {
+			code = "eof"
+		}
+		if errors.Is(err, context.Canceled) {
+			code = "canceled"
+		}
+	}
+	log.Printf("HQ FIELD NOISE role=%s code=%s read_bytes=%d written_bytes=%d error_type=%T", role, code, t.readBytes, t.writtenBytes, err)
 }
