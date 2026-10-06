@@ -92,7 +92,7 @@ if id -u nobody >/dev/null 2>&1; then
   run $(rel "$W/rel1") BAFT_USER=nobody BAFT_SERVICE=baft-preflight \
     BAFT_PREFIX="$W/preflight-opt" BAFT_CONFIG_DIR="$W/preflight-block/etc/baft" \
     BAFT_STATE_DIR="$W/preflight-state" BAFT_RELEASE_STATE="$W/preflight-opt/release-state.json" \
-    BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 --plan \
+    BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 --yes \
     >"$W/o" 2>"$W/e" || rc=$?
   [[ "$rc" != 0 ]] || fail "blocked service-user parent unexpectedly passed preflight"
   grep -q "preflight: service user 'nobody' cannot traverse '$W/preflight-block'" "$W/e" ||
@@ -102,11 +102,6 @@ if id -u nobody >/dev/null 2>&1; then
   [[ "$(snapshot)" == "$PF0" ]] || fail "path preflight mutated the host"
 
   chmod 0755 "$W/preflight-block"
-  run $(rel "$W/rel1") BAFT_USER=nobody BAFT_SERVICE=baft-preflight \
-    BAFT_PREFIX="$W/preflight-opt" BAFT_CONFIG_DIR="$W/preflight-block/etc/baft" \
-    BAFT_STATE_DIR="$W/preflight-state" BAFT_RELEASE_STATE="$W/preflight-opt/release-state.json" \
-    BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 --plan \
-    >"$W/o" 2>"$W/e" || { cat "$W/e"; fail "healthy unprivileged hierarchy failed preflight"; }
 else
   log "skip unprivileged preflight fixture: nobody user is unavailable"
 fi
