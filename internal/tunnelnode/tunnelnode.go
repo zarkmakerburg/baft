@@ -321,6 +321,9 @@ func (m *Manager) begin(id, role string) (Txn, error) {
 		return Txn{}, fmt.Errorf("tunnel change %s already exists on this node", id)
 	}
 	t := Txn{Version: 1, ID: id, Role: role, Phase: PhasePrepared, Created: m.Now().UTC()}
+	if err := m.ensureScopedDirs(); err != nil {
+		return t, err
+	}
 	if err := os.MkdirAll(m.stage(id), 0o700); err != nil {
 		return t, err
 	}
@@ -752,6 +755,41 @@ func (m *Manager) rollbackTxn(ctx context.Context, t Txn) (string, error) {
 }
 
 // ---- helpers ----
+
+// ensureScopedDirs creates only the BAFT-owned instance namespace. The service
+// must be able to traverse both the shared instances directory and its leaf;
+// MkdirAll alone would leave newly-created ancestors root:root and make a
+// root:baft 0640 config unreadable by the service user.
+func (m *Manager) ensureScopedDirs() error {
+	if m.Instance == "" {
+		return nil
+	}
+	configParent := filepath.Dir(m.ConfigDir)
+	for _, path := range []string{configParent, m.ConfigDir} {
+		if err := os.MkdirAll(path, 0o750); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, 0o750); err != nil {
+			return err
+		}
+		if err := m.chownTo(path, "root", m.User); err != nil {
+			return err
+		}
+	}
+	stateParent := filepath.Dir(m.StateDir)
+	for _, path := range []string{stateParent, m.StateDir} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, 0o700); err != nil {
+			return err
+		}
+		if err := m.chownTo(path, m.User, m.User); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (m *Manager) requirePhase(id, role, phase string) (Txn, error) {
 	t, err := m.readTxn(id)

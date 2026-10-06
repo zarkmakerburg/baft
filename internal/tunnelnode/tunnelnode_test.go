@@ -149,6 +149,36 @@ func TestInstanceManagerScopesHostOwnership(t *testing.T) {
 	}
 }
 
+func TestScopedManagerCreatesTraversableInstanceNamespaces(t *testing.T) {
+	n := newNode(t)
+	m, err := n.Manager.ForInstance("slot-a", "127.0.0.1:9291")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the CI failure shape: MkdirAll may have created the shared
+	// config ancestor with a mode that the service group cannot traverse.
+	if err := os.MkdirAll(filepath.Dir(m.ConfigDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureScopedDirs(); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]os.FileMode{
+		filepath.Dir(m.ConfigDir): 0o750,
+		m.ConfigDir:               0o750,
+		filepath.Dir(m.StateDir):  0o700,
+		m.StateDir:                0o700,
+	} {
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := st.Mode().Perm(); got != want {
+			t.Fatalf("%s mode=%o want=%o", path, got, want)
+		}
+	}
+}
+
 // freePort returns a port that is free now and is bound again later by the
 // code under test. It is picked below the kernel's ephemeral range (Linux
 // default 32768-60999): a port from ":0" comes from that range, so an
