@@ -256,11 +256,18 @@ func TestDoctorDistinguishesVerifiedAndSourceUnknownProvenance(t *testing.T) {
 		t.Fatalf("verified release = %+v", got)
 	}
 
-	if got := missingReleaseProvenance("main-938f5d6"); got != provenanceSourceUnknown {
-		t.Fatalf("source/unknown classifier = %q", got)
+	d := &doctor{}
+	d.checkReleaseVersion(filepath.Join(t.TempDir(), "missing-source.json"), "main-938f5d6")
+	if got := d.checks[len(d.checks)-1]; got.Status != checkWarn || got.Provenance != provenanceSourceUnknown ||
+		!strings.Contains(got.Detail, "source or unknown build") {
+		t.Fatalf("source/unknown release = %+v", got)
 	}
-	if got := missingReleaseProvenance("0.2.0"); got != provenanceMissingState {
-		t.Fatalf("release-shaped classifier = %q", got)
+
+	d = &doctor{}
+	d.checkReleaseVersion(filepath.Join(t.TempDir(), "missing-release.json"), "0.2.0")
+	if got := d.checks[len(d.checks)-1]; got.Status != checkWarn || got.Provenance != provenanceMissingState ||
+		!strings.Contains(got.Detail, "external hash alone does not prove signed provenance") {
+		t.Fatalf("release-shaped missing state = %+v", got)
 	}
 }
 
