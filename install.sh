@@ -103,6 +103,97 @@ log(){ printf '[baft-install] %s\n' "$*" >&2; }
 die(){ log "ERROR: $*"; exit 1; }
 need_root(){ [[ "${EUID}" -eq 0 ]] || die "run as root"; }
 
+# P0-FIELD-A: fail before APPLY if the service identity cannot traverse the
+# host hierarchy needed to start BAFT. This is deliberately diagnostic-only:
+# the installer never chmods/chowns host base directories to make the check
+# pass.
+preflight_stat() {
+  stat -Lc 'mode=%a uid=%u gid=%g' -- "$1" 2>/dev/null || printf 'mode=? uid=? gid=?'
+}
+
+preflight_fail() {
+  local path="$1" need="$2"
+  die "preflight: service user '$BAFT_USER' cannot $need '$path' ($(preflight_stat "$path")); repair host permissions manually; nothing was changed"
+}
+
+preflight_user_access() {
+  local access="$1" path="$2"
+  python3 - "$BAFT_USER" "$access" "$path" <<'PY'
+import os, pwd, sys
+user, access, path = sys.argv[1:]
+try:
+    pw = pwd.getpwnam(user)
+    os.initgroups(user, pw.pw_gid)
+    os.setgid(pw.pw_gid)
+    os.setuid(pw.pw_uid)
+except (KeyError, OSError):
+    raise SystemExit(2)
+flag = {"x": os.X_OK, "r": os.R_OK}[access]
+raise SystemExit(0 if os.access(path, flag) else 1)
+PY
+}
+
+preflight_dir_access() {
+  local path="$1" mode
+  [[ -e "$path" ]] || return 0
+  [[ -d "$path" ]] || preflight_fail "$path" "traverse non-directory path"
+
+  if [[ "$F_USER" == "1" ]]; then
+    preflight_user_access x "$path" 2>/dev/null ||
+      preflight_fail "$path" "traverse"
+    return 0
+  fi
+
+  # On a fresh install the service account does not exist yet. Its future
+  # supplementary groups are not knowable, so an already-existing ancestor
+  # must at least be traversable by an unprivileged "other" identity.
+  mode="$(stat -Lc '%a' -- "$path" 2>/dev/null || true)"
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] ||
+    preflight_fail "$path" "inspect"
+  (( (8#$mode & 1) != 0 )) ||
+    preflight_fail "$path" "traverse"
+}
+
+preflight_chain() {
+  local target="${1%/}" cur="/" part rest
+  # Parameter expansion turns "/" into ""; keep the root path canonical.
+  [[ -n "$target" ]] || target="/"
+  [[ "$target" == /* ]] || die "preflight: expected absolute path, got '$target'"
+  preflight_dir_access "/"
+  rest="${target#/}"
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    [[ -n "$part" ]] || continue
+    if [[ "$cur" == "/" ]]; then cur="/$part"; else cur="$cur/$part"; fi
+    [[ -e "$cur" ]] || break
+    preflight_dir_access "$cur"
+  done
+}
+
+preflight_service_paths() {
+  [[ "$BCC_ONLY" == "1" || "$AGENT_ONLY" == "1" ]] && return 0
+
+  local p
+  for p in / /etc /etc/systemd /etc/systemd/system /var /var/lib \
+    "$BAFT_CONFIG_DIR" "$BAFT_STATE_DIR" "$BAFT_PREFIX" \
+    "$(dirname "$BAFT_BIN")" "$(dirname "$BAFT_PAIR_BIN")" "$BAFT_SYSTEMD_DIR"; do
+    preflight_chain "$p"
+  done
+
+  if [[ "$F_USER" == "1" ]]; then
+    for p in "$CONFIG" "$NOISE_KEY"; do
+      [[ -e "$p" ]] || continue
+      preflight_user_access r "$p" 2>/dev/null ||
+        preflight_fail "$p" "read"
+    done
+    if [[ -e "$BAFT_BIN" ]]; then
+      preflight_user_access x "$BAFT_BIN" 2>/dev/null ||
+        preflight_fail "$BAFT_BIN" "execute"
+    fi
+  fi
+}
+
 # show_logo prints the BAFT mark in 256-colour block art on a colour
 # terminal, and a plain title otherwise (pipes, logs, NO_COLOR, TERM=dumb).
 show_logo() {
@@ -1617,6 +1708,7 @@ fi
 
 # BUILD PLAN -> SHOW PLAN -> confirm.
 plan_everything
+preflight_service_paths
 show_plan
 if [[ -n "$REFUSED" ]]; then
   log "refusing to touch a broken install: $REFUSED"
