@@ -10,7 +10,7 @@ cd "$(dirname "$0")/../.."
 ROOT="$PWD"; OUT="${1:?usage: intrude.sh OUT_DIR}"; mkdir -p "$OUT"
 WORK="$(mktemp -d)"; PIDS=()
 log(){ printf '[intrude] %s\n' "$*" >&2; }
-stop_all(){ local p; for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null||true; done; for p in "${PIDS[@]}"; do wait "$p" 2>/dev/null||true; done; PIDS=(); }
+stop_all(){ local p; if [[ ${#PIDS[@]} -gt 0 ]]; then for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null||true; done; for p in "${PIDS[@]}"; do wait "$p" 2>/dev/null||true; done; fi; PIDS=(); }
 cleanup(){ stop_all; [[ -n "${TPID:-}" ]]&&kill "$TPID" 2>/dev/null||true; if [[ -z "${ADV_KEEP:-}" ]]; then rm -rf "$WORK"; else log "workdir $WORK"; fi; return 0; }
 trap cleanup EXIT
 fp(){ python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
