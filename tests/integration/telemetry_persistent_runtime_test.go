@@ -56,6 +56,12 @@ func TestRuntimePersistentTelemetrySurvivesOutageAndRestart(t *testing.T){
 	target,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)}
 	defer target.Close()
 	go func(){for{c,e:=target.Accept();if e!=nil{return};go func(x net.Conn){defer x.Close();_,_=io.Copy(x,x)}(c)}}()
+	// Zero-byte probe route: waitTCP on an application route creates a real
+	// Flow and can race HELLO/READY. This proves remote OPEN without adding bytes.
+	probeTarget,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{t.Fatal(err)}
+	defer probeTarget.Close()
+	probeAccepted:=make(chan struct{},4)
+	go func(){for{c,e:=probeTarget.Accept();if e!=nil{return};probeAccepted<-struct{}{};_ = c.Close()}}()
 
 	exKey,err:=securityinternal.GenerateKeyPair();if err!=nil{t.Fatal(err)}
 	irKey,err:=securityinternal.GenerateKeyPair();if err!=nil{t.Fatal(err)}
@@ -75,6 +81,8 @@ func TestRuntimePersistentTelemetrySurvivesOutageAndRestart(t *testing.T){
 	ex.Transport.Shards=1
 	ex.Routes[0].Target=target.Addr().String()
 	ex.Routes[0].AllowedPeers=[]string{"urn:baft:node:"+nodeID}
+	const probeRouteID="runtime-readiness-probe"
+	ex.Routes=append(ex.Routes,config.Route{ID:probeRouteID,Direction:"inbound",Target:probeTarget.Addr().String(),AllowedPeers:[]string{"urn:baft:node:"+nodeID}})
 	ex.TLS=config.TLS{MinVersion:"1.3",CAFile:ca,CertFile:cert,KeyFile:tlsKey,SessionTickets:false}
 	ex.Noise=&config.Noise{KeyFile:exPath,PeerPublicKey:irPub,RecordShaping:recordshape.Config{}}
 
@@ -88,6 +96,8 @@ func TestRuntimePersistentTelemetrySurvivesOutageAndRestart(t *testing.T){
 	ir.Management.MetricsListen=reserveAddress(t)
 	ir.Transport.Shards=1
 	ir.Routes[0].Listen=reserveAddress(t)
+	probeListen:=reserveAddress(t)
+	ir.Routes=append(ir.Routes,config.Route{ID:probeRouteID,Listen:probeListen,RemoteRoute:probeRouteID,Direction:"outbound",TrafficClass:"interactive"})
 	ir.TLS=ex.TLS
 	ir.Noise=&config.Noise{KeyFile:irPath,PeerPublicKey:exPub,RecordShaping:recordshape.Config{}}
 	ir.Telemetry=config.Telemetry{
@@ -98,6 +108,13 @@ func TestRuntimePersistentTelemetrySurvivesOutageAndRestart(t *testing.T){
 
 	if err:=config.Validate(ex);err!=nil{t.Fatalf("EX config: %v",err)}
 	if err:=config.Validate(ir);err!=nil{t.Fatalf("IR config: %v",err)}
+	waitDialerBound:=func(rt *node.Runtime,done <-chan error){
+		select{case <-rt.DialerReadyForTest():if err:=rt.DialerReadinessForTest();err!=nil{t.Fatalf("dialer route bind readiness: %v",err)};case err:=<-done:t.Fatalf("dialer exited before route bind readiness: %v",err);case <-time.After(8*time.Second):t.Fatal("dialer route bind readiness timeout")}
+	}
+	waitApplicationReady:=func(done <-chan error){
+		c,err:=net.DialTimeout("tcp",probeListen,time.Second);if err!=nil{t.Fatalf("readiness probe dial: %v",err)};defer c.Close()
+		select{case <-probeAccepted:case err:=<-done:t.Fatalf("dialer exited before application readiness: %v",err);case <-time.After(8*time.Second):t.Fatal("application readiness probe timeout")}
+	}
 
 	root,cancelRoot:=context.WithTimeout(context.Background(),30*time.Second);defer cancelRoot()
 	exCtx,cancelEX:=context.WithCancel(root);defer cancelEX()
@@ -107,8 +124,10 @@ func TestRuntimePersistentTelemetrySurvivesOutageAndRestart(t *testing.T){
 
 	irCtx1,cancelIR1:=context.WithCancel(root)
 	irDone1:=make(chan error,1)
-	go func(){irDone1<-node.NewRuntime().Run(irCtx1,ir)}()
-	waitTCP(t,ir.Routes[0].Listen,time.Now().Add(8*time.Second))
+	irRuntime1:=node.NewRuntime()
+	go func(){irDone1<-irRuntime1.Run(irCtx1,ir)}()
+	waitDialerBound(irRuntime1,irDone1)
+	waitApplicationReady(irDone1)
 
 	const payloadSize=1<<20
 	payload:=bytes.Repeat([]byte{0x6b},payloadSize)
@@ -144,8 +163,10 @@ func TestRuntimePersistentTelemetrySurvivesOutageAndRestart(t *testing.T){
 	// Restart while BCC remains unavailable. The same spool/BootID must be used.
 	irCtx2,cancelIR2:=context.WithCancel(root);defer cancelIR2()
 	irDone2:=make(chan error,1)
-	go func(){irDone2<-node.NewRuntime().Run(irCtx2,ir)}()
-	waitTCP(t,ir.Routes[0].Listen,time.Now().Add(8*time.Second))
+	irRuntime2:=node.NewRuntime()
+	go func(){irDone2<-irRuntime2.Run(irCtx2,ir)}()
+	waitDialerBound(irRuntime2,irDone2)
+	waitApplicationReady(irDone2)
 	sp,err:=telemetry.OpenSpool(spoolPath,nodeID,32);if err!=nil{t.Fatal(err)}
 	if sp.BootID()!=boot{t.Fatalf("runtime restart changed BootID %s -> %s",boot,sp.BootID())}
 	if sp.PendingCount()==0{t.Fatal("pending telemetry disappeared during restart")}
