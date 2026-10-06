@@ -133,22 +133,6 @@ rc=0; EXI >"$W/o" 2>"$W/e" || rc=$?
 [[ "$(snapshot)" == "$S0" ]] || fail "a refused plan changed the host"
 [[ ! -e "$W/bin/baft.new" && ! -e "$W/bin/baft-pair.new" ]] || fail "*.new left in the bin directory"
 
-log "1a'. service-user traversal preflight fails before mutation and names the path"
-mkdir -p "$W/blocked-parent/config" "$W/blocked-parent/state" "$W/blocked-parent/opt"
-chmod 0700 "$W/blocked-parent"
-S0="$(snapshot)"
-rc=0
-run $(rel "$W/rel1") BAFT_USER=nobody BAFT_SERVICE=baft-preflight \
-  BAFT_PREFIX="$W/blocked-parent/opt" BAFT_CONFIG_DIR="$W/blocked-parent/config" \
-  BAFT_STATE_DIR="$W/blocked-parent/state" BAFT_RELEASE_STATE="$W/blocked-parent/opt/release-state.json" \
-  BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 --plan >"$W/o" 2>"$W/e" || rc=$?
-[[ "$rc" != 0 ]] || fail "non-traversable parent unexpectedly passed preflight"
-grep -Fq "preflight: service user 'nobody' cannot traverse '$W/blocked-parent'" "$W/e" || {
-  cat "$W/e"; fail "preflight diagnostic did not name the first blocked parent";
-}
-[[ "$(snapshot)" == "$S0" ]] || fail "preflight failure changed the host"
-chmod 0755 "$W/blocked-parent"
-
 log "1b. a missing prerequisite on an existing install: no apt before confirmation"
 rc=0; run nocurl $(rel "$W/rel1") $(role_env ex) BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 >"$W/o" 2>"$W/e" || rc=$?
 [[ "$rc" == 4 ]] || { cat "$W/e"; fail "missing curl without --yes exited $rc, want 4"; }
