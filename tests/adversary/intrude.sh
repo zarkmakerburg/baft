@@ -10,7 +10,7 @@ cd "$(dirname "$0")/../.."
 ROOT="$PWD"; OUT="${1:?usage: intrude.sh OUT_DIR}"; mkdir -p "$OUT"
 WORK="$(mktemp -d)"; PIDS=()
 log(){ printf '[intrude] %s\n' "$*" >&2; }
-stop_all(){ local p; for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null||true; done; for p in "${PIDS[@]}"; do wait "$p" 2>/dev/null||true; done; PIDS=(); }
+stop_all(){ local p; if [[ ${#PIDS[@]} -gt 0 ]]; then for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null||true; done; for p in "${PIDS[@]}"; do wait "$p" 2>/dev/null||true; done; fi; PIDS=(); }
 cleanup(){ stop_all; [[ -n "${TPID:-}" ]]&&kill "$TPID" 2>/dev/null||true; if [[ -z "${ADV_KEEP:-}" ]]; then rm -rf "$WORK"; else log "workdir $WORK"; fi; return 0; }
 trap cleanup EXIT
 fp(){ python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
@@ -97,9 +97,17 @@ PY
   local held=true detail="rogue carrier rejected; EX up; legit traffic intact"
   if ! alive "$EX_PID"; then held=false; detail="EX died when a rogue carrier connected"; fi
   if ! transfer_ok "$ENTRY"; then held=false; detail="legit traffic broke after rogue connected"; fi
-  # If the rogue established a usable route, that is a bypass.
-  if grep -qiE 'READY|authenticated|session established' "$d/rogue.log" 2>/dev/null; then
-    held=false; detail="rogue carrier appears to have authenticated: $(grep -iE 'READY|auth|establish' "$d/rogue.log" | head -1)"
+  # The security invariant is semantic: a rogue static key is a bypass only
+  # if it can open the route and carry byte-verified application traffic.
+  # Diagnostic wording is deliberately not authoritative; transport phase
+  # errors may contain authentication/readiness words while still failing
+  # closed before a usable BAFT Session exists.
+  if transfer_ok "$rentry"; then
+    held=false; detail="rogue carrier established a usable route and carried verified application traffic"
+  elif [[ "$held" == true ]]; then
+    local rejected
+    rejected=$(grep -iE 'node stopped|OpenNoise|Noise|reject|mismatch' "$d/rogue.log" 2>/dev/null | head -1 || true)
+    [[ -z "$rejected" ]] || detail="rogue carrier rejected; legit traffic intact: $rejected"
   fi
   kill "$rpid" 2>/dev/null||true
   rec rogue_key "$held" "$detail"
