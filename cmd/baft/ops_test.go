@@ -271,6 +271,19 @@ func TestDoctorDistinguishesVerifiedAndSourceUnknownProvenance(t *testing.T) {
 	}
 }
 
+func TestDoctorRejectsMalformedReleaseStateAsVerifiedProvenance(t *testing.T) {
+	cfg, _ := writeDialerConfig(t, 0o600)
+	h := newFakeHost(t)
+	p := filepath.Join(t.TempDir(), "release-state.json")
+	if err := os.WriteFile(p, []byte(`{"schema_version":1,"version":"v`+version+`","commit":"","revocation_sequence":1,"updated_at":"2026-10-01T00:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, c := doctorResult(t, h, "--file", cfg, "--release-state", p)
+	if got := c["release"]; got.Status != checkFail || got.Provenance != provenanceStateInvalid {
+		t.Fatalf("malformed state was accepted: %+v", got)
+	}
+}
+
 func TestLogsRunsJournalctl(t *testing.T) {
 	h := newFakeHost(t)
 	var out, errOut bytes.Buffer
