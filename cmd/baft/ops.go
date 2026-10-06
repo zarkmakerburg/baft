@@ -478,6 +478,13 @@ const (
 	provenanceStateMismatch  = "release_state_binary_mismatch"
 )
 
+func missingReleaseProvenance(binaryVersion string) string {
+	if releaseShapedVersion.MatchString(strings.TrimPrefix(binaryVersion, "v")) {
+		return provenanceMissingState
+	}
+	return provenanceSourceUnknown
+}
+
 func (d *doctor) addRelease(status, provenance, detail, hint string) {
 	d.add("release", status, detail, hint)
 	d.checks[len(d.checks)-1].Provenance = provenance
@@ -486,8 +493,7 @@ func (d *doctor) addRelease(status, provenance, detail, hint string) {
 func (d *doctor) checkRelease(path string) {
 	rs, err := readReleaseState(path)
 	if errors.Is(err, os.ErrNotExist) {
-		reported := strings.TrimPrefix(version, "v")
-		if releaseShapedVersion.MatchString(reported) {
+		if missingReleaseProvenance(version) == provenanceMissingState {
 			d.addRelease(checkWarn, provenanceMissingState,
 				fmt.Sprintf("binary reports release-shaped version %s but verified release state is absent at %s; a matching version or external hash alone does not prove signed provenance", version, path),
 				"reinstall this exact signed release through a verified BAFT deployment path to recreate durable release provenance")
