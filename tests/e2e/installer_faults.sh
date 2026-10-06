@@ -82,6 +82,35 @@ snapshot() { # everything an install could touch, minus stub bookkeeping
 active() { [[ -f "$W/state/active.$1.service" ]]; }
 enabled() { [[ -f "$W/state/enabled.$1.service" ]]; }
 
+log "0. service-user path preflight is non-mutating and names the first blocked parent"
+if id -u nobody >/dev/null 2>&1; then
+  chmod 0755 "$W"
+  mkdir -p "$W/preflight-block/etc"
+  chmod 0700 "$W/preflight-block"
+  PF0="$(snapshot)"
+  rc=0
+  run $(rel "$W/rel1") BAFT_USER=nobody BAFT_SERVICE=baft-preflight \
+    BAFT_PREFIX="$W/preflight-opt" BAFT_CONFIG_DIR="$W/preflight-block/etc/baft" \
+    BAFT_STATE_DIR="$W/preflight-state" BAFT_RELEASE_STATE="$W/preflight-opt/release-state.json" \
+    BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 --plan \
+    >"$W/o" 2>"$W/e" || rc=$?
+  [[ "$rc" != 0 ]] || fail "blocked service-user parent unexpectedly passed preflight"
+  grep -q "preflight: service user 'nobody' cannot traverse '$W/preflight-block'" "$W/e" ||
+    { cat "$W/e"; fail "preflight did not name the first blocked parent"; }
+  grep -Eq 'mode=700 uid=[0-9]+ gid=[0-9]+' "$W/e" ||
+    { cat "$W/e"; fail "preflight diagnostic omitted mode/uid/gid"; }
+  [[ "$(snapshot)" == "$PF0" ]] || fail "path preflight mutated the host"
+
+  chmod 0755 "$W/preflight-block"
+  run $(rel "$W/rel1") BAFT_USER=nobody BAFT_SERVICE=baft-preflight \
+    BAFT_PREFIX="$W/preflight-opt" BAFT_CONFIG_DIR="$W/preflight-block/etc/baft" \
+    BAFT_STATE_DIR="$W/preflight-state" BAFT_RELEASE_STATE="$W/preflight-opt/release-state.json" \
+    BAFT_NONINTERACTIVE=1 bash install.sh --role ex --public-address 127.0.0.1 --plan \
+    >"$W/o" 2>"$W/e" || { cat "$W/e"; fail "healthy unprivileged hierarchy failed preflight"; }
+else
+  log "skip unprivileged preflight fixture: nobody user is unavailable"
+fi
+
 log "install a paired EX and IR from release v1 on the fake tree"
 mkfifo "$W/ff"; exec 3<>"$W/ff"
 RUN_STDIN="$W/ff" run $(rel "$W/rel1") $(role_env ex) BAFT_NONINTERACTIVE=0 BAFT_PORT=8443 BAFT_TARGET=127.0.0.1:2443 \
