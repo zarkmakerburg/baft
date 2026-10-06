@@ -36,13 +36,27 @@ func main() {
 	if !roots.AppendCertsFromPEM(ca) {
 		panic("invalid CA")
 	}
-	for _, mode := range []string{"baseline", "cubic", "mss1200", "nagle", "cubic-mss-lowat"} {
+	for _, mode := range []string{"rbuf16k", "rbuf64k", "rbuf1m"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		dialer := &net.Dialer{Timeout: 8 * time.Second}
 		if mode != "baseline" && mode != "nagle" {
 			dialer.Control = func(network, address string, raw syscall.RawConn) error {
 				var optionErr error
 				err := raw.Control(func(fd uintptr) {
+
+					size := 0
+					switch mode {
+					case "rbuf16k":
+						size = 16 << 10
+					case "rbuf64k":
+						size = 64 << 10
+					case "rbuf1m":
+						size = 1 << 20
+					}
+					if size != 0 {
+						optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					}
+
 					if mode == "cubic" || mode == "cubic-mss-lowat" {
 						optionErr = unix.SetsockoptString(int(fd), unix.IPPROTO_TCP, unix.TCP_CONGESTION, "cubic")
 					}
