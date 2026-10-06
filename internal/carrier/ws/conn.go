@@ -285,22 +285,21 @@ func (c *Conn) writeFrame(opcode byte, payload []byte) error {
 		return ErrClosed
 	default:
 	}
-	if _, err := c.nc.Write(hdr[:n]); err != nil {
-		return err
-	}
-	if length == 0 {
-		return nil
-	}
+	// Keep the frame header and payload in one underlying write.
+	// Mask into a scratch buffer; never mutate the caller's slice.
+	frame := make([]byte, n+length)
+	copy(frame, hdr[:n])
 	if c.isClient {
-		// Mask into a scratch buffer; never mutate the caller's slice.
-		masked := make([]byte, length)
 		for i := 0; i < length; i++ {
-			masked[i] = payload[i] ^ maskKey[i&3]
+			frame[n+i] = payload[i] ^ maskKey[i&3]
 		}
-		_, err := c.nc.Write(masked)
-		return err
+	} else {
+		copy(frame[n:], payload)
 	}
-	_, err := c.nc.Write(payload)
+	written, err := c.nc.Write(frame)
+	if err == nil && written != len(frame) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
