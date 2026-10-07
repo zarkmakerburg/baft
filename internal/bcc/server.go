@@ -196,6 +196,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/path-probes/cancel",s.pathProbeCancel)
 	m.HandleFunc("/api/path-discovery",s.pathDiscoveryAPI)
 	m.HandleFunc("/api/path-graph",s.pathGraphAPI)
+	m.HandleFunc("/api/path-matrix",s.pathMatrixAPI)
 	m.HandleFunc("/api/tunnels/cancel",s.tunnelCancel)
 	m.HandleFunc("/api/tunnels/plan",s.tunnelPlan)
 	m.HandleFunc("/api/tunnels/decommission/plan",s.tunnelDecommissionPlan)
