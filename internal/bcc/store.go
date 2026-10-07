@@ -190,6 +190,8 @@ type state struct {
 	PathDiscoveries  map[string]PathDiscovery     `json:"path_discoveries,omitempty"`
 	RouteDoctorRuns map[string]RouteDoctorRun    `json:"route_doctor_runs,omitempty"`
 	SSHMigrations map[string]SSHMigration `json:"ssh_migrations,omitempty"`
+	ChangeLedger []ChangeRecord `json:"change_ledger,omitempty"`
+	NextChangeSequence uint64 `json:"next_change_sequence,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`

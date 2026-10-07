@@ -761,6 +761,7 @@ func (s *Store) nextAfterFinalizeLocked(t *Tunnel, now time.Time) *TunnelEvent {
 		return nil
 	}
 	t.Phase, t.JobID, t.UpdatedAt = TunnelActive, "", now
+	s.recordActiveTunnelChangesLocked(t, now)
 	for node, gen := range t.ObservedGen {
 		if n, ok := s.st.Nodes[node]; ok {
 			setAppliedGeneration(&n, t.InstanceID, gen)
