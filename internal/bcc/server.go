@@ -192,6 +192,10 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/enroll",s.enroll)
 	m.HandleFunc("/api/bootstrap",s.bootstrap)
 	m.HandleFunc("/api/tunnels",s.tunnels)
+	m.HandleFunc("/api/path-probes",s.pathProbes)
+	m.HandleFunc("/api/path-probes/cancel",s.pathProbeCancel)
+	m.HandleFunc("/api/path-discovery",s.pathDiscoveryAPI)
+	m.HandleFunc("/api/path-graph",s.pathGraphAPI)
 	m.HandleFunc("/api/tunnels/cancel",s.tunnelCancel)
 	m.HandleFunc("/api/tunnels/plan",s.tunnelPlan)
 	m.HandleFunc("/api/tunnels/decommission/plan",s.tunnelDecommissionPlan)
@@ -245,6 +249,8 @@ func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 		s.mutationMu.Lock();defer s.mutationMu.Unlock()
 		var in struct{
 			ID,Alias,Address,Role,PublicKey string
+			PathIPv4 string `json:"path_ipv4"`
+			PathIPv6 string `json:"path_ipv6"`
 			AgentTokenEnv string
 			AgentToken string
 			AgentTokenEnvSnake string `json:"agent_token_env"`
@@ -263,8 +269,8 @@ func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 			agentToken,ok=os.LookupEnv(envName)
 			if !ok||agentToken==""{http.Error(w,"agent token environment variable is empty",400);return}
 		}
-		details:=map[string]any{"alias":in.Alias,"address":in.Address,"role":in.Role,"public_key":in.PublicKey,"agent_token_env":envName}
-		n,err:=s.store.UpsertNode(Node{ID:in.ID,Alias:in.Alias,Address:in.Address,Role:in.Role,PublicKey:in.PublicKey},agentToken)
+		details:=map[string]any{"alias":in.Alias,"address":in.Address,"path_ipv4":in.PathIPv4,"path_ipv6":in.PathIPv6,"role":in.Role,"public_key":in.PublicKey,"agent_token_env":envName}
+		n,err:=s.store.UpsertNode(Node{ID:in.ID,Alias:in.Alias,Address:in.Address,PathIPv4:in.PathIPv4,PathIPv6:in.PathIPv6,Role:in.Role,PublicKey:in.PublicKey},agentToken)
 		if err!=nil{s.auditFailure(w,r,"node.upsert",in.ID,details,err,http.StatusBadRequest);return}
 		if err:=s.auditAdmin(r,"node.upsert",in.ID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
 		writeJSON(w,http.StatusCreated,n)

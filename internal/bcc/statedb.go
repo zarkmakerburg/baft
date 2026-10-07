@@ -62,11 +62,14 @@ var stateMigrations = []string{
 	`CREATE TABLE smart_ingress_plans (route_id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 	// 10: durable security-audit intents committed with BCC state (SEC-002).
 	`CREATE TABLE security_audit_intents (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
+	// 11: enrolled-node path capability probes and discovery batches (OPS-P1).
+	`CREATE TABLE path_probes (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
+	 CREATE TABLE path_discoveries (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "security_audit_intents", "topology", "ingress_selections", "ingress_distributions", "smart_ingress_plans",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "security_audit_intents", "topology", "ingress_selections", "ingress_distributions", "smart_ingress_plans", "path_probes", "path_discoveries",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -223,6 +226,8 @@ func writeStateTx(tx *sql.Tx, st state) error {
 	for id, v := range st.IngressSelections { if err := put(`INSERT INTO ingress_selections VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.IngressDistributions { if err := put(`INSERT INTO ingress_distributions VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.SmartIngressPlans { if err := put(`INSERT INTO smart_ingress_plans VALUES (?, ?)`, id, v); err != nil { return err } }
+	for id, v := range st.PathProbes { if err := put(`INSERT INTO path_probes VALUES (?, ?)`, id, v); err != nil { return err } }
+	for id, v := range st.PathDiscoveries { if err := put(`INSERT INTO path_discoveries VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.Finance {
 		if err := put(`INSERT INTO finance VALUES (?, ?)`, id, v); err != nil {
 			return err
@@ -430,6 +435,18 @@ func readStateDB(path string) (state, error) {
 			var v SmartIngressPlan
 			err := decode("smart_ingress_plans", d, &v)
 			st.SmartIngressPlans[k] = v
+			return err
+		}},
+		{`SELECT id, 0, doc FROM path_probes`, func(k string, _ int64, d []byte) error {
+			var v PathProbe
+			err := decode("path_probes", d, &v)
+			st.PathProbes[k] = v
+			return err
+		}},
+		{`SELECT id, 0, doc FROM path_discoveries`, func(k string, _ int64, d []byte) error {
+			var v PathDiscovery
+			err := decode("path_discoveries", d, &v)
+			st.PathDiscoveries[k] = v
 			return err
 		}},
 		{`SELECT node_id, 0, doc FROM finance`, func(k string, _ int64, d []byte) error {

@@ -85,6 +85,8 @@ func normalizeState(st *state){
 	if st.IngressSelections==nil{st.IngressSelections=map[string]IngressSelection{}}
 	if st.IngressDistributions==nil{st.IngressDistributions=map[string]IngressDistribution{}}
 	if st.SmartIngressPlans==nil{st.SmartIngressPlans=map[string]SmartIngressPlan{}}
+	if st.PathProbes==nil{st.PathProbes=map[string]PathProbe{}}
+	if st.PathDiscoveries==nil{st.PathDiscoveries=map[string]PathDiscovery{}}
 	if st.Finance==nil{st.Finance=map[string]NodeFinance{}}
 	if st.Policies==nil{st.Policies=map[string]FinancePolicy{}}
 	if st.RateHistory==nil{st.RateHistory=map[string][]FinancePolicy{}}

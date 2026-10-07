@@ -18,6 +18,16 @@ const maxOutput = 16 << 10
 // executeFull runs a job and also returns its secret output, which goes to
 // BCC only in the ack and is never logged.
 func (a *Agent) executeFull(ctx context.Context, j agentjob.Job) (detail, output string, err error) {
+	if strings.HasPrefix(j.Action, "path_probe_") {
+		ev, e := a.pathProbe(ctx, j)
+		if e != nil {
+			return "", "", e
+		}
+		if j.Action == agentjob.ActionPathProbeInventory || j.Action == agentjob.ActionPathProbeRun || j.Action == agentjob.ActionPathProbeStop {
+			return "path probe evidence recorded", ev, nil
+		}
+		return ev, "", nil
+	}
 	if strings.HasPrefix(j.Action, "tunnel_") {
 		return a.tunnel(ctx, j)
 	}
