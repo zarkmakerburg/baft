@@ -65,11 +65,13 @@ var stateMigrations = []string{
 	// 11: enrolled-node path capability probes and discovery batches (OPS-P1).
 	`CREATE TABLE path_probes (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
 	 CREATE TABLE path_discoveries (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
+	// 12: append-only managed configuration change ledger (OPS-P5).
+	`CREATE TABLE change_ledger (seq INTEGER PRIMARY KEY, doc TEXT NOT NULL);`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "security_audit_intents", "topology", "ingress_selections", "ingress_distributions", "smart_ingress_plans", "path_probes", "path_discoveries",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "security_audit_intents", "topology", "ingress_selections", "ingress_distributions", "smart_ingress_plans", "path_probes", "path_discoveries", "change_ledger",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -226,6 +228,7 @@ func writeStateTx(tx *sql.Tx, st state) error {
 	for id, v := range st.IngressSelections { if err := put(`INSERT INTO ingress_selections VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.IngressDistributions { if err := put(`INSERT INTO ingress_distributions VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.SmartIngressPlans { if err := put(`INSERT INTO smart_ingress_plans VALUES (?, ?)`, id, v); err != nil { return err } }
+	for _, v := range st.ChangeLedger { if err := put(`INSERT INTO change_ledger VALUES (?, ?)`, v.Sequence, v); err != nil { return err } }
 	for id, v := range st.PathProbes { if err := put(`INSERT INTO path_probes VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.PathDiscoveries { if err := put(`INSERT INTO path_discoveries VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.Finance {
@@ -284,7 +287,7 @@ func writeStateTx(tx *sql.Tx, st state) error {
 		}
 	}
 	for name, v := range map[string]uint64{
-		"next_job": st.NextJob, "next_rate_version": st.NextRateVersion, "next_telemetry_ingest_id": st.NextTelemetryIngestID,
+		"next_job": st.NextJob, "next_rate_version": st.NextRateVersion, "next_telemetry_ingest_id": st.NextTelemetryIngestID, "next_change_sequence": st.NextChangeSequence,
 	} {
 		if _, err := tx.Exec(`INSERT INTO counters VALUES (?, ?)`, name, strconv.FormatUint(v, 10)); err != nil {
 			return err
@@ -437,6 +440,7 @@ func readStateDB(path string) (state, error) {
 			st.SmartIngressPlans[k] = v
 			return err
 		}},
+		{`SELECT '', seq, doc FROM change_ledger ORDER BY seq`, func(_ string, seq int64, d []byte) error { var v ChangeRecord; if err:=decode("change_ledger",d,&v);err!=nil{return err}; if v.Sequence==0{v.Sequence=uint64(seq)}; st.ChangeLedger=append(st.ChangeLedger,v); return nil }},
 		{`SELECT id, 0, doc FROM path_probes`, func(k string, _ int64, d []byte) error {
 			var v PathProbe
 			err := decode("path_probes", d, &v)
@@ -515,6 +519,8 @@ func readStateDB(path string) (state, error) {
 			switch k {
 			case "next_job":
 				st.NextJob = n
+			case "next_change_sequence":
+				st.NextChangeSequence = n
 			case "next_rate_version":
 				st.NextRateVersion = n
 			case "next_telemetry_ingest_id":

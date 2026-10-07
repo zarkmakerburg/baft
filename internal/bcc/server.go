@@ -199,6 +199,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/path-matrix",s.pathMatrixAPI)
 	m.HandleFunc("/api/route-doctor",s.routeDoctorAPI)
 	m.HandleFunc("/api/ssh-migration",s.sshMigrationAPI)
+	m.HandleFunc("/api/change-ledger",s.changeLedgerAPI)
 	m.HandleFunc("/api/tunnels/cancel",s.tunnelCancel)
 	m.HandleFunc("/api/tunnels/plan",s.tunnelPlan)
 	m.HandleFunc("/api/tunnels/decommission/plan",s.tunnelDecommissionPlan)
