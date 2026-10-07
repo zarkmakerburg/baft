@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/zarkmakerburg/baft/internal/sshmigrate"
 	"strconv"
 	"strings"
 
@@ -17,7 +18,39 @@ const maxOutput = 16 << 10
 
 // executeFull runs a job and also returns its secret output, which goes to
 // BCC only in the ack and is never logged.
+func (a *Agent) sshMigration(ctx context.Context, j agentjob.Job) error {
+	c := a.cfg.SSHMigration
+	if c.MainConfig == "" {
+		c = sshmigrate.DefaultConfig()
+	}
+	p := j.Params
+	switch j.Action {
+	case agentjob.ActionSSHMigrationStage:
+		oldPort, e1 := strconv.Atoi(p["old_port"])
+		newPort, e2 := strconv.Atoi(p["new_port"])
+		if e1 != nil || e2 != nil {
+			return errors.New("invalid SSH migration port")
+		}
+		return sshmigrate.Stage(ctx, c, a.cfg.System, oldPort, newPort)
+	case agentjob.ActionSSHMigrationCommit:
+		newPort, e := strconv.Atoi(p["new_port"])
+		if e != nil {
+			return errors.New("invalid SSH migration port")
+		}
+		return sshmigrate.Commit(ctx, c, a.cfg.System, newPort)
+	case agentjob.ActionSSHMigrationRollback:
+		return sshmigrate.Rollback(ctx, c, a.cfg.System)
+	}
+	return errors.New("unknown SSH migration action")
+}
+
 func (a *Agent) executeFull(ctx context.Context, j agentjob.Job) (detail, output string, err error) {
+	if strings.HasPrefix(j.Action, "ssh_migrate_") {
+		if e := a.sshMigration(ctx, j); e != nil {
+			return "", "", e
+		}
+		return "SSH migration step completed", "", nil
+	}
 	if strings.HasPrefix(j.Action, "path_probe_") {
 		ev, e := a.pathProbe(ctx, j)
 		if e != nil {

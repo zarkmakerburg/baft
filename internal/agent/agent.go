@@ -26,6 +26,7 @@ import (
 
 	"github.com/zarkmakerburg/baft/internal/agentjob"
 	"github.com/zarkmakerburg/baft/internal/release"
+	"github.com/zarkmakerburg/baft/internal/sshmigrate"
 	"github.com/zarkmakerburg/baft/internal/tunnelnode"
 )
 
@@ -49,9 +50,12 @@ type Config struct {
 	ReleaseRoot    ed25519.PublicKey // pinned release root
 	ReleaseBaseURL string            // assets at <base>/<version>/<file>
 	RevocationsURL string
-	ReleaseState   string // installer trust state, e.g. /opt/baft/release-state.json
-	BinDir         string // where baft and baft-pair live, e.g. /usr/local/bin
-	Arch           string // defaults to runtime.GOARCH
+	ReleaseState   string            // installer trust state, e.g. /opt/baft/release-state.json
+	BinDir         string            // where baft and baft-pair live, e.g. /usr/local/bin
+	SSHMigration   sshmigrate.Config // safe sshd drop-in paths/service; zero uses production defaults
+	Arch           string            // defaults to runtime.GOARCH
+	// SSHMigration sshmigrate.Config
+
 	// SettleTime is how long the service must stay active after an update.
 	SettleTime time.Duration
 
