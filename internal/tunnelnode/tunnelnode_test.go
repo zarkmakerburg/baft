@@ -149,6 +149,36 @@ func TestInstanceManagerScopesHostOwnership(t *testing.T) {
 	}
 }
 
+func TestScopedManagerCreatesTraversableInstanceNamespaces(t *testing.T) {
+	n := newNode(t)
+	m, err := n.Manager.ForInstance("slot-a", "127.0.0.1:9291")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the CI failure shape: MkdirAll may have created the shared
+	// config ancestor with a mode that the service group cannot traverse.
+	if err := os.MkdirAll(filepath.Dir(m.ConfigDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureScopedDirs(); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]os.FileMode{
+		filepath.Dir(m.ConfigDir): 0o750,
+		m.ConfigDir:               0o750,
+		filepath.Dir(m.StateDir):  0o700,
+		m.StateDir:                0o700,
+	} {
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := st.Mode().Perm(); got != want {
+			t.Fatalf("%s mode=%o want=%o", path, got, want)
+		}
+	}
+}
+
 // freePort returns a port that is free now and is bound again later by the
 // code under test. It is picked below the kernel's ephemeral range (Linux
 // default 32768-60999): a port from ":0" comes from that range, so an
@@ -665,6 +695,165 @@ func TestRollbackRefusesToOverwriteExternalEdits(t *testing.T) {
 	}
 	if msg, err := p.ex.Rollback(ctx, "e2"); err != nil || msg != "rolled back" {
 		t.Fatalf("rollback after restore: %q %v", msg, err)
+	}
+}
+
+func retireWant(l Live) RetireExpectation {
+	return RetireExpectation{
+		Generation: l.NodeGeneration, ConfigSHA256: l.ConfigSHA256,
+		UnitSHA256: l.UnitSHA256, MarkerSHA256: l.MarkerSHA256,
+	}
+}
+
+func TestRetireFinalizedManagedInstanceIsGuardedAndIdempotent(t *testing.T) {
+	p := newPair(t)
+	p.build(t, "retire1")
+	ctx := context.Background()
+	for _, n := range []*node{p.ex, p.ir} {
+		if _, err := n.Finalize(ctx, "retire1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A sibling's files live in different instance-scoped paths and must not
+	// be touched by retiring the historical singleton instance.
+	sibling, err := p.ex.Manager.ForInstance("sibling", "127.0.0.1:9299")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling.ConfigDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sibling.liveConfig(), []byte("sibling-config\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling.UnitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sibling.unitPath(), []byte("sibling-unit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, n := range map[string]*node{"ex": p.ex, "ir": p.ir} {
+		before := n.Inspect(ctx)
+		if !before.ConfigPresent || !before.UnitPresent || !before.MarkerPresent || !before.ServiceActive {
+			t.Fatalf("%s pre-retire state %+v", name, before)
+		}
+		ev, err := n.Retire(ctx, "retire1", retireWant(before))
+		if err != nil {
+			t.Fatalf("%s retire: %v", name, err)
+		}
+		if !ev.Before.ServiceActive || ev.After.ConfigPresent || ev.After.UnitPresent || ev.After.MarkerPresent || ev.After.ServiceActive {
+			t.Fatalf("%s evidence %+v", name, ev)
+		}
+		if n.host.active || n.host.enabled {
+			t.Fatalf("%s service still active/enabled", name)
+		}
+		if st, err := n.readRetireState("retire1"); err != nil || st.Phase != "complete" {
+			t.Fatalf("%s retire receipt %+v %v", name, st, err)
+		}
+		again, err := n.Retire(ctx, "retire1", retireWant(before))
+		if err != nil || !again.Already {
+			t.Fatalf("%s idempotent retry %+v %v", name, again, err)
+		}
+	}
+	if b, err := os.ReadFile(sibling.liveConfig()); err != nil || string(b) != "sibling-config\n" {
+		t.Fatalf("sibling config changed: %q %v", b, err)
+	}
+	if b, err := os.ReadFile(sibling.unitPath()); err != nil || string(b) != "sibling-unit\n" {
+		t.Fatalf("sibling unit changed: %q %v", b, err)
+	}
+}
+
+func TestRetireRefusesDriftBeforeAnyMutation(t *testing.T) {
+	p := newPair(t)
+	p.build(t, "retire-drift")
+	ctx := context.Background()
+	for _, n := range []*node{p.ex, p.ir} {
+		if _, err := n.Finalize(ctx, "retire-drift"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := p.ex
+	before := n.Inspect(ctx)
+	want := retireWant(before)
+	original, _ := os.ReadFile(n.liveConfig())
+	edited := append(append([]byte{}, original...), []byte("\n# external edit\n")...)
+	if err := os.WriteFile(n.liveConfig(), edited, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	calls := len(n.host.calls)
+	if _, err := n.Retire(ctx, "retire-drift", want); err == nil || !strings.Contains(err.Error(), "retire refused") {
+		t.Fatalf("external drift was retired: %v", err)
+	}
+	for _, call := range n.host.calls[calls:] {
+		if strings.HasPrefix(call, "stop ") || strings.HasPrefix(call, "disable ") || strings.HasPrefix(call, "daemon-reload") {
+			t.Fatalf("refused retire mutated systemd: %v", n.host.calls[calls:])
+		}
+	}
+	if now, _ := os.ReadFile(n.liveConfig()); string(now) != string(edited) {
+		t.Fatal("refused retire changed edited config")
+	}
+	if _, err := os.Stat(n.retirePath("retire-drift")); !os.IsNotExist(err) {
+		t.Fatalf("refused retire created receipt: %v", err)
+	}
+
+	// Restoring bytes but presenting a stale generation still fails closed.
+	if err := os.WriteFile(n.liveConfig(), original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	wrong := want
+	wrong.Generation++
+	if _, err := n.Retire(ctx, "retire-drift", wrong); err == nil || !strings.Contains(err.Error(), "generation") {
+		t.Fatalf("stale generation accepted: %v", err)
+	}
+}
+
+func TestRetireRefusesUnfinalizedTunnel(t *testing.T) {
+	p := newPair(t)
+	p.build(t, "retire-not-final")
+	ctx := context.Background()
+	before := p.ex.Inspect(ctx)
+	want := retireWant(before)
+	if _, err := p.ex.Retire(ctx, "retire-not-final", want); err == nil || !strings.Contains(err.Error(), "not finalized") {
+		t.Fatalf("unfinalized retire accepted: %v", err)
+	}
+	if !p.ex.Inspect(ctx).ConfigPresent || !p.ex.host.active {
+		t.Fatal("refused unfinalized retire changed the live instance")
+	}
+	if _, err := os.Stat(p.ex.retirePath("retire-not-final")); !os.IsNotExist(err) {
+		t.Fatalf("unfinalized retire created a receipt: %v", err)
+	}
+}
+
+func TestRetireResumesOnlyAfterDurableStartedReceipt(t *testing.T) {
+	p := newPair(t)
+	p.build(t, "retire-resume")
+	ctx := context.Background()
+	if _, err := p.ex.Finalize(ctx, "retire-resume"); err != nil {
+		t.Fatal(err)
+	}
+	before := p.ex.Inspect(ctx)
+	want := retireWant(before)
+	st := retireState{
+		TunnelID: "retire-resume", Instance: p.ex.Instance,
+		RetireExpectation: want, Phase: "started", Updated: time.Now().UTC(),
+	}
+	if err := writeJSON(p.ex.retirePath("retire-resume"), st, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(p.ex.liveConfig()); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := p.ex.Retire(ctx, "retire-resume", want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.After.ConfigPresent || ev.After.UnitPresent || ev.After.MarkerPresent || ev.After.ServiceActive {
+		t.Fatalf("resume did not finish retire: %+v", ev.After)
+	}
+	if st, _ := p.ex.readRetireState("retire-resume"); st.Phase != "complete" {
+		t.Fatalf("resume receipt phase %q", st.Phase)
 	}
 }
 

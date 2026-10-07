@@ -42,7 +42,7 @@ const (
 	JobTunnelRollback  = agentjob.ActionTunnelRollback
 )
 
-// Tunnel phases. active, superseded, rolled_back and rollback_failed are final.
+// Tunnel phases. active, superseded, rolled_back, rollback_failed, decommissioned and decommission_failed are final.
 const (
 	TunnelPreparingEX    = "preparing_ex"
 	TunnelPreparingIR    = "preparing_ir"
@@ -95,6 +95,11 @@ type Tunnel struct {
 	// config, unit and ownership marker each node reported when BCC verified
 	// the change. Nothing a node says later is compared with a node-held hash.
 	Digests map[string]NodeDigests `json:"digests,omitempty"`
+
+	// Decommission state is durable so BCC restart or a partial IR->EX
+	// retirement can resume without touching a node that already completed.
+	DecommissionPlanHash string          `json:"decommission_plan_hash,omitempty"`
+	DecommissionedNodes  map[string]bool `json:"decommissioned_nodes,omitempty"`
 
 	// Drift is the result of the last drift check (active tunnels only);
 	// DriftJobs are the inspect jobs of a check in progress.
@@ -156,7 +161,7 @@ type TunnelRequest struct {
 
 func terminalTunnel(p string) bool {
 	switch p {
-	case TunnelActive, TunnelSuperseded, TunnelRolledBack, TunnelRollbackFailed:
+	case TunnelActive, TunnelSuperseded, TunnelRolledBack, TunnelRollbackFailed, TunnelDecommissioned, TunnelDecommissionFailed:
 		return true
 	}
 	return false
@@ -344,7 +349,7 @@ func (s *Store) resolveTunnelLocked(req TunnelRequest, now time.Time) (Tunnel, N
 		if !tunnelsShareNode(t, other) {
 			continue
 		}
-		if mixedLegacyScope(t, other) && (other.Phase == TunnelActive || !terminalTunnel(other.Phase) || other.Phase == TunnelRollbackFailed) {
+		if mixedLegacyScope(t, other) && (other.Phase == TunnelActive || !terminalTunnel(other.Phase) || other.Phase == TunnelRollbackFailed || other.Phase == TunnelDecommissionFailed) {
 			return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s uses the legacy singleton on a shared node; migrate it explicitly before creating scoped instances", other.ID)
 		}
 		if sameManagedSlot(t, other) {
@@ -354,8 +359,11 @@ func (s *Store) resolveTunnelLocked(req TunnelRequest, now time.Time) (Tunnel, N
 			if other.Phase == TunnelRollbackFailed {
 				return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s could not be rolled back in the same BAFT instance; fix that first", other.ID)
 			}
+			if other.Phase == TunnelDecommissionFailed {
+				return Tunnel{}, Node{}, Node{}, fmt.Errorf("tunnel %s has an incomplete decommission in the same BAFT instance; retry or repair it first", other.ID)
+			}
 		}
-		if other.Phase == TunnelActive || !terminalTunnel(other.Phase) || other.Phase == TunnelRollbackFailed {
+		if other.Phase == TunnelActive || !terminalTunnel(other.Phase) || other.Phase == TunnelRollbackFailed || other.Phase == TunnelDecommissionFailed {
 			if why := tunnelResourceConflict(t, other); why != "" {
 				return Tunnel{}, Node{}, Node{}, errors.New(why)
 			}
@@ -483,7 +491,9 @@ func (s *Store) CancelTunnel(id, reason string, now time.Time) (Tunnel, error) {
 	switch t.Phase {
 	case TunnelRollingBack:
 		return t, errors.New("tunnel is already rolling back")
-	case TunnelActive, TunnelSuperseded, TunnelRolledBack:
+	case TunnelDecommissioningIR, TunnelDecommissioningEX:
+		return t, errors.New("tunnel decommission is already in progress; wait for status and retry decommission if it fails")
+	case TunnelActive, TunnelSuperseded, TunnelRolledBack, TunnelDecommissioned, TunnelDecommissionFailed:
 		return t, fmt.Errorf("tunnel is %s; nothing to cancel", t.Phase)
 	}
 	t.Error = "cancelled by operator"
@@ -543,8 +553,10 @@ func (s *Store) failLocked(t *Tunnel, reason string, now time.Time) {
 func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	beforeState,err:=cloneState(s.st)
-	if err!=nil{return nil,err}
+	beforeState, err := cloneState(s.st)
+	if err != nil {
+		return nil, err
+	}
 	var events []TunnelEvent
 	changed := false
 	ids := make([]string, 0, len(s.st.Tunnels))
@@ -587,6 +599,19 @@ func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 	}
 	rotEvents, rotChanged := s.advanceRotationsLocked(now.UTC())
 	events = append(events, rotEvents...)
+	for _, e := range events {
+		if e.Action != "tunnel.decommissioned" && e.Action != "tunnel.decommission_failed" {
+			continue
+		}
+		outcome := "success"
+		if e.Action == "tunnel.decommission_failed" {
+			outcome = "failure"
+		}
+		if _, err := s.enqueueSecurityAuditLocked(securityAuditEvent(now, e.Action, e.TunnelID, outcome, e.Detail)); err != nil {
+			s.st = beforeState
+			return nil, err
+		}
+	}
 	for _, e := range rotEvents {
 		outcome := "failure"
 		switch e.Action {
@@ -594,23 +619,26 @@ func (s *Store) AdvanceTunnels(now time.Time) ([]TunnelEvent, error) {
 			outcome = "success"
 		}
 		if _, err := s.enqueueSecurityAuditLocked(securityAuditEvent(now, e.Action, e.TunnelID, outcome, e.Detail)); err != nil {
-			s.st=beforeState
+			s.st = beforeState
 			return nil, err
 		}
 	}
 	if !changed && !rotChanged {
 		return nil, nil
 	}
-	if err:=s.saveLocked();err!=nil{
-		s.st=beforeState
-		return nil,err
+	if err := s.saveLocked(); err != nil {
+		s.st = beforeState
+		return nil, err
 	}
-	return events,nil
+	return events, nil
 }
 
 func (s *Store) advanceLocked(t *Tunnel, now time.Time) *TunnelEvent {
 	if t.Phase == TunnelRollingBack {
 		return s.advanceRollbackLocked(t, now)
+	}
+	if t.Phase == TunnelDecommissioningIR || t.Phase == TunnelDecommissioningEX {
+		return s.advanceDecommissionLocked(t, now)
 	}
 	j, ok := s.st.Jobs[t.JobID]
 	if !ok {
@@ -792,12 +820,12 @@ func (s *Server) AdvanceTunnels() {
 	}
 	_ = s.FlushSecurityAuditIntents()
 	for _, e := range events {
-		if strings.HasPrefix(e.Action, "cert.rotation.") {
+		if strings.HasPrefix(e.Action, "cert.rotation.") || strings.HasPrefix(e.Action, "tunnel.decommission") {
 			continue
 		}
 		outcome := "success"
 		switch e.Action {
-		case "tunnel.active", "tunnel.in_sync":
+		case "tunnel.active", "tunnel.in_sync", "tunnel.decommissioned":
 		default:
 			outcome = "failure"
 		}

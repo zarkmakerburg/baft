@@ -98,3 +98,46 @@ func TestAgentRefusesForgedMisdirectedStaleAndReplayedJobs(t *testing.T) {
 	_, err = Verifier{BCCKey: pub, NodeID: "ex-1"}.Verify(confused, now)
 	wantErr(t, err, "payload type")
 }
+
+func TestTunnelRetireActionRequiresExactManagedProof(t *testing.T) {
+	base := job(ActionTunnelRetire, map[string]string{
+		"tunnel_id":     "tun-1",
+		"generation":    "4",
+		"config_sha256": strings.Repeat("a", 64),
+		"unit_sha256":   strings.Repeat("b", 64),
+		"marker_sha256": strings.Repeat("c", 64),
+		"instance_id":   "de-main",
+	})
+	base.SchemaVersion = SchemaVersion
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid retire job rejected: %v", err)
+	}
+	for _, k := range []string{"generation", "config_sha256", "unit_sha256", "marker_sha256"} {
+		j := base
+		j.Params = map[string]string{}
+		for pk, pv := range base.Params {
+			j.Params[pk] = pv
+		}
+		delete(j.Params, k)
+		if err := j.Validate(); err == nil {
+			t.Errorf("retire job without %s accepted", k)
+		}
+	}
+	for name, mutate := range map[string]func(map[string]string){
+		"zero generation":   func(p map[string]string) { p["generation"] = "0" },
+		"bad config digest": func(p map[string]string) { p["config_sha256"] = "abc" },
+		"bad unit digest":   func(p map[string]string) { p["unit_sha256"] = strings.Repeat("z", 64) },
+		"path instance":     func(p map[string]string) { p["instance_id"] = "../other" },
+		"extra command":     func(p map[string]string) { p["cmd"] = "stop-all" },
+	} {
+		j := base
+		j.Params = map[string]string{}
+		for pk, pv := range base.Params {
+			j.Params[pk] = pv
+		}
+		mutate(j.Params)
+		if err := j.Validate(); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}

@@ -194,6 +194,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/tunnels",s.tunnels)
 	m.HandleFunc("/api/tunnels/cancel",s.tunnelCancel)
 	m.HandleFunc("/api/tunnels/plan",s.tunnelPlan)
+	m.HandleFunc("/api/tunnels/decommission/plan",s.tunnelDecommissionPlan)
+	m.HandleFunc("/api/tunnels/decommission",s.tunnelDecommission)
 	m.HandleFunc("/api/tunnels/drift",s.tunnelDrift)
 	m.HandleFunc("/api/tunnels/rotate-cert",s.certRotationStart)
 	m.HandleFunc("/api/topology",s.topologyAPI)

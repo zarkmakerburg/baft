@@ -244,6 +244,54 @@ func TestTopologyRollbackFailedBlocksAutomaticRetry(t *testing.T) {
 	}
 }
 
+func TestTopologyDecommissionedIsMissingAndDecommissionFailedIsBlocked(t *testing.T) {
+	s := desiredTopologyStore(t)
+	now := time.Unix(550, 0).UTC()
+	spec := TopologySpec{
+		IRMembers: []IRPoolMember{{NodeID: "ir-1", Enabled: true}},
+		EXRoutes:  []ExplicitEXRoute{{ID: "de", EXNode: "ex-1", Enabled: true}},
+	}
+	if _, err := s.SetTopologySpec(spec, now); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.ReconcileTopology(now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := r.Edges[0].TunnelID
+
+	s.mu.Lock()
+	tun := s.st.Tunnels[id]
+	tun.Phase = TunnelDecommissioned
+	s.st.Tunnels[id] = tun
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+	r = s.GetTopology(now.Add(2 * time.Second))
+	if r.Edges[0].Status != topologyStatusMissing {
+		t.Fatalf("decommissioned status=%s, want MISSING", r.Edges[0].Status)
+	}
+
+	s.mu.Lock()
+	tun = s.st.Tunnels[id]
+	tun.Phase = TunnelDecommissionFailed
+	s.st.Tunnels[id] = tun
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	s.mu.Unlock()
+	r = s.GetTopology(now.Add(3 * time.Second))
+	if r.Edges[0].Status != topologyStatusBlocked {
+		t.Fatalf("decommission_failed status=%s, want BLOCKED", r.Edges[0].Status)
+	}
+	if len(r.Edges[0].Problems) == 0 || !strings.Contains(r.Edges[0].Problems[0], "decommission_failed") {
+		t.Fatalf("decommission_failed problem missing: %+v", r.Edges[0].Problems)
+	}
+}
+
 func TestTopologyInstanceIDsAreStableAndBounded(t *testing.T) {
 	ids := []string{
 		topologyInstanceID("ir-main", "de"),

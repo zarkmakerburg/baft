@@ -352,4 +352,94 @@ for kf in keyfiles:
         if tok in text:
             print("leaked from", kf); sys.exit(1)
 PY
+log "M-018C: decommission the legacy test tunnel before the scoped-instance lifecycle test"
+DPLAN="$(api -d "{\"id\":\"$T1\"}" "$BCC/api/tunnels/decommission/plan")"
+[[ "$(printf '%s' "$DPLAN" | jfield '["ok"]')" == "True" ]] || fail "legacy decommission plan is blocked: $DPLAN"
+DHASH="$(printf '%s' "$DPLAN" | jfield '["hash"]')"
+api -d "{\"id\":\"$T1\",\"plan_hash\":\"$DHASH\"}" "$BCC/api/tunnels/decommission" >/dev/null
+phase="$(wait_tunnel "$T1" 240 decommissioned decommission_failed)" || true
+[[ "$phase" == "decommissioned" ]] || fail "legacy tunnel decommission ended as '$phase'"
+python3 - <<'PY' || fail "legacy decommission left route/listener reachable"
+import socket
+for port in (1443, 18443):
+    sock=socket.socket(); sock.settimeout(.5)
+    try:
+        rc=sock.connect_ex(("127.0.0.1", port))
+    finally:
+        sock.close()
+    assert rc != 0, port
+PY
+
+log "M-018C: two instance-scoped sibling tunnels carry traffic independently"
+UNITS+=(baft-ex-slot-a baft-ir-slot-a baft-ex-slot-b baft-ir-slot-b)
+REQ_A='{"instance_id":"slot-a","ex_node":"ex-e2e","ir_node":"ir-e2e","public_address":"127.0.0.1","port":19443,"route_listen":"127.0.0.1:15443","route_id":"service-a","ex_metrics_listen":"127.0.0.1:9391","ir_metrics_listen":"127.0.0.1:9392"}'
+REQ_B='{"instance_id":"slot-b","ex_node":"ex-e2e","ir_node":"ir-e2e","public_address":"127.0.0.1","port":19444,"route_listen":"127.0.0.1:15444","route_id":"service-b","ex_metrics_listen":"127.0.0.1:9393","ir_metrics_listen":"127.0.0.1:9394"}'
+deploy_scoped() {
+  local req="$1" plan hash id phase
+  plan="$(api -d "$req" "$BCC/api/tunnels/plan")"
+  [[ "$(printf '%s' "$plan" | jfield '["ok"]')" == "True" ]] || fail "scoped deployment plan blocked: $plan"
+  hash="$(printf '%s' "$plan" | jfield '["hash"]')"
+  id="$(api -d "${req%\}},\"plan_hash\":\"$hash\"}" "$BCC/api/tunnels" | jfield '["id"]')"
+  phase="$(wait_tunnel "$id" 240 active rolled_back rollback_failed)" || true
+  [[ "$phase" == "active" ]] || fail "scoped tunnel $id ended as '$phase'"
+  echo "$id"
+}
+SA="$(deploy_scoped "$REQ_A")"
+SB="$(deploy_scoped "$REQ_B")"
+for port in 15443 15444; do
+  ok=false
+  for _ in $(seq 1 15); do
+    if python3 tests/e2e/echo.py send "$port" 2 2 >"$WORK/traffic-$port.log" 2>&1; then ok=true; break; fi
+    sleep 2
+  done
+  [[ "$ok" == true ]] || fail "scoped route $port carries no verified traffic"
+done
+
+log "M-018C: external edit must fail closed before any retirement"
+cp /etc/baft-ir/instances/slot-a/baft.yaml "$WORK/slot-a-ir.keep"
+printf '\n# M-018C external edit\n' >> /etc/baft-ir/instances/slot-a/baft.yaml
+DPLAN="$(api -d "{\"id\":\"$SA\"}" "$BCC/api/tunnels/decommission/plan")"
+[[ "$(printf '%s' "$DPLAN" | jfield '["ok"]')" == "True" ]] || fail "slot-a pre-drift decommission plan unexpectedly blocked: $DPLAN"
+DHASH="$(printf '%s' "$DPLAN" | jfield '["hash"]')"
+api -d "{\"id\":\"$SA\",\"plan_hash\":\"$DHASH\"}" "$BCC/api/tunnels/decommission" >/dev/null
+phase="$(wait_tunnel "$SA" 120 decommission_failed decommissioned)" || true
+[[ "$phase" == "decommission_failed" ]] || fail "externally edited slot-a ended as '$phase', want decommission_failed"
+grep -q 'M-018C external edit' /etc/baft-ir/instances/slot-a/baft.yaml || fail "failed decommission did not preserve external edit"
+systemctl is-active baft-ir-slot-a >/dev/null || fail "failed decommission stopped the edited IR instance"
+python3 tests/e2e/echo.py send 15443 1 1 >"$WORK/traffic-slot-a-after-refusal.log" 2>&1 || fail "failed decommission disrupted slot-a traffic"
+cat "$WORK/slot-a-ir.keep" > /etc/baft-ir/instances/slot-a/baft.yaml
+log "M-018C: edited material restored; retry decommission from explicit failed state"
+log "M-018C: decommission slot-a only; slot-b must remain live"
+DPLAN="$(api -d "{\"id\":\"$SA\"}" "$BCC/api/tunnels/decommission/plan")"
+[[ "$(printf '%s' "$DPLAN" | jfield '["ok"]')" == "True" ]] || fail "slot-a decommission plan blocked: $DPLAN"
+DHASH="$(printf '%s' "$DPLAN" | jfield '["hash"]')"
+api -d "{\"id\":\"$SA\",\"plan_hash\":\"$DHASH\"}" "$BCC/api/tunnels/decommission" >/dev/null
+phase="$(wait_tunnel "$SA" 240 decommissioned decommission_failed)" || true
+[[ "$phase" == "decommissioned" ]] || fail "slot-a decommission ended as '$phase'"
+[[ "$(api "$BCC/api/tunnels?id=$SB" | jfield '["phase"]')" == "active" ]] || fail "slot-b lost active state"
+
+python3 - <<'PY' || fail "slot-a endpoints remain reachable or slot-b endpoints disappeared"
+import socket
+def openp(port):
+    sock=socket.socket(); sock.settimeout(.5)
+    try: return sock.connect_ex(("127.0.0.1", port)) == 0
+    finally: sock.close()
+assert not openp(15443), "retired IR route still accepts"
+assert not openp(19443), "retired EX listener still accepts"
+assert openp(15444), "sibling IR route disappeared"
+assert openp(19444), "sibling EX listener disappeared"
+PY
+python3 tests/e2e/echo.py send 15444 4 2 >"$WORK/traffic-sibling-after-decommission.log" 2>&1 \
+  || fail "sibling tunnel stopped carrying verified traffic after slot-a decommission"
+[[ ! -e /etc/baft-ex/instances/slot-a/baft.yaml && ! -e /etc/baft-ir/instances/slot-a/baft.yaml ]] \
+  || fail "selected slot-a managed config survived decommission"
+[[ -e /etc/baft-ex/instances/slot-b/baft.yaml && -e /etc/baft-ir/instances/slot-b/baft.yaml ]] \
+  || fail "sibling slot-b managed config was removed"
+grep -q '"tunnel.decommissioned"' "$WORK"/s.json.audit.jsonl || fail "audit lacks tunnel.decommissioned"
+log "M-018C decommission PASS: selected route/listener gone; sibling traffic still passes"
+if grep -aqE 'BAFTPAIR1:|BAFTREPLY1:' "$WORK"/s.json*; then fail "M-018C left a pairing code in BCC state"; fi
+for root in /var/lib/baft-ex/instances /var/lib/baft-ir/instances; do
+  [[ -d "$root" ]] || continue
+  if find "$root" \( -name psk -o -name pending.json -o -name pairing.pending.json \) -print -quit | grep -q .; then fail "M-018C left one-time pairing material in instance state"; fi
+done
 log "PASS"

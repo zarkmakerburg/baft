@@ -535,7 +535,7 @@ func (s *Store) topologyReportLocked(now time.Time) TopologyReport {
 		if t.TopologyKey == "" || desired[t.TopologyKey] {
 			continue
 		}
-		if t.Phase == TunnelActive || !terminalTunnel(t.Phase) || t.Phase == TunnelRollbackFailed {
+		if t.Phase == TunnelActive || !terminalTunnel(t.Phase) || t.Phase == TunnelRollbackFailed || t.Phase == TunnelDecommissionFailed {
 			extras = append(extras, TopologyExtra{Key: t.TopologyKey, TunnelID: t.ID, Phase: t.Phase})
 		}
 	}
@@ -563,7 +563,7 @@ func (s *Store) edgeStatusLocked(b TopologyBinding) TopologyEdgeStatus {
 			latest = &t
 			break
 		}
-		if !terminalTunnel(t.Phase) {
+		if !terminalTunnel(t.Phase) || t.Phase == TunnelDecommissionFailed {
 			latest = &t
 		}
 	}
@@ -577,12 +577,16 @@ func (s *Store) edgeStatusLocked(b TopologyBinding) TopologyEdgeStatus {
 		out.Status = topologyStatusBlocked
 		out.Problems = []string{"the last topology tunnel has rollback_failed; operator repair is required"}
 		return out
+	case t.Phase == TunnelDecommissionFailed:
+		out.Status = topologyStatusBlocked
+		out.Problems = []string{"the last topology tunnel has decommission_failed; operator retry or repair is required"}
+		return out
 	case !terminalTunnel(t.Phase):
 		out.Status = topologyStatusBuilding
 	case t.Phase == TunnelActive:
 		out.Status = topologyStatusActive
 	default:
-		// rolled_back/superseded are historical, not a live realization.
+		// rolled_back/superseded/decommissioned are historical, not a live realization.
 		out.Status = topologyStatusMissing
 		return out
 	}

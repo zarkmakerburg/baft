@@ -81,6 +81,17 @@ func (a *Agent) tunnel(ctx context.Context, j agentjob.Job) (string, string, err
 	case agentjob.ActionTunnelRollback:
 		d, err := t.Rollback(ctx, id)
 		return d, "", err
+	case agentjob.ActionTunnelRetire:
+		generation, _ := strconv.Atoi(p["generation"])
+		ev, err := t.Retire(ctx, id, tunnelnode.RetireExpectation{
+			Generation: generation, ConfigSHA256: p["config_sha256"],
+			UnitSHA256: p["unit_sha256"], MarkerSHA256: p["marker_sha256"],
+		})
+		if err != nil {
+			return "", "", err
+		}
+		b, err := json.Marshal(ev)
+		return string(b), "", err
 	}
 	if strings.HasPrefix(j.Action, "tunnel_cert_") {
 		return a.certRotation(ctx, t, j)

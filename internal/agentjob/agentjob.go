@@ -54,6 +54,9 @@ const (
 	ActionTunnelDiscover = "tunnel_discover"
 	ActionTunnelFinalize = "tunnel_finalize"
 	ActionTunnelRollback = "tunnel_rollback"
+	// ActionTunnelRetire removes one finalized BAFT-owned instance only when
+	// BCC-provided generation and live file digests still match.
+	ActionTunnelRetire = "tunnel_retire"
 
 	// Certificate rotation of a built tunnel (A4 Stage F). Only public
 	// certificates and digests travel in parameters; new private keys never
@@ -105,6 +108,7 @@ var paramRules = map[string]map[string]*regexp.Regexp{
 	ActionTunnelDiscover:  {},
 	ActionTunnelFinalize:  {"tunnel_id": tunnelIDRe},
 	ActionTunnelRollback:  {"tunnel_id": tunnelIDRe},
+	ActionTunnelRetire:    {"tunnel_id": tunnelIDRe, "generation": epochRe, "config_sha256": sha256Re, "unit_sha256": sha256Re, "marker_sha256": sha256Re},
 
 	ActionCertPrepareEX:  {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe, "epoch": epochRe},
 	ActionCertTrustIR:    {"tunnel_id": tunnelIDRe, "rotation_id": tunnelIDRe, "epoch": epochRe, "ca_der": derB64Re, "ca_sha256": sha256Re},
@@ -130,6 +134,7 @@ var optionalParamRules = map[string]map[string]*regexp.Regexp{
 	ActionTunnelInspect:   {"instance_id": instanceIDRe},
 	ActionTunnelFinalize:  {"instance_id": instanceIDRe},
 	ActionTunnelRollback:  {"instance_id": instanceIDRe},
+	ActionTunnelRetire:    {"instance_id": instanceIDRe},
 	ActionCertPrepareEX:   {"instance_id": instanceIDRe},
 	ActionCertTrustIR:     {"instance_id": instanceIDRe},
 	ActionCertVerifyEX:    {"instance_id": instanceIDRe},
