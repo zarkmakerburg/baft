@@ -189,6 +189,7 @@ type state struct {
 	PathProbes       map[string]PathProbe         `json:"path_probes,omitempty"`
 	PathDiscoveries  map[string]PathDiscovery     `json:"path_discoveries,omitempty"`
 	RouteDoctorRuns map[string]RouteDoctorRun    `json:"route_doctor_runs,omitempty"`
+	SSHMigrations map[string]SSHMigration `json:"ssh_migrations,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`
@@ -207,7 +208,7 @@ type Store struct {
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
 	if err:=recoverRestoreTransaction(path);err!=nil{return nil,fmt.Errorf("recover interrupted restore: %w",err)}
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},SecurityAuditIntents:map[string]AuditEntry{},IngressSelections:map[string]IngressSelection{},IngressDistributions:map[string]IngressDistribution{},SmartIngressPlans:map[string]SmartIngressPlan{},PathProbes:map[string]PathProbe{},PathDiscoveries:map[string]PathDiscovery{},RouteDoctorRuns:map[string]RouteDoctorRun{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},SecurityAuditIntents:map[string]AuditEntry{},IngressSelections:map[string]IngressSelection{},IngressDistributions:map[string]IngressDistribution{},SmartIngressPlans:map[string]SmartIngressPlan{},PathProbes:map[string]PathProbe{},PathDiscoveries:map[string]PathDiscovery{},RouteDoctorRuns:map[string]RouteDoctorRun{},SSHMigrations:map[string]SSHMigration{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
 	b,err:=os.ReadFile(path)
 	switch {
 	case err==nil&&isSQLiteFile(b):

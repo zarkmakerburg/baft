@@ -312,3 +312,36 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 }
 
 func (l *limitedBuffer) String() string { return l.b.String() }
+
+// VerifyAuthenticated proves that the requested endpoint accepts the supplied
+// credentials and presents exactly the pinned host key. Credentials are used
+// only for this call and are never returned or persisted.
+func VerifyAuthenticated(ctx context.Context, t Target, auth Auth, pinned string) error {
+	if err := ValidateTarget(t); err != nil {
+		return err
+	}
+	if t.User == "" {
+		return errors.New("ssh user is required")
+	}
+	if !strings.HasPrefix(pinned, "SHA256:") {
+		return errors.New("a confirmed SHA256 host key fingerprint is required")
+	}
+	methods, err := authMethods(auth)
+	if err != nil {
+		return err
+	}
+	cfg := &ssh.ClientConfig{User: t.User, Auth: methods, HostKeyCallback: func(_ string, _ net.Addr, k ssh.PublicKey) error {
+		got := Fingerprint(k)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(pinned)) != 1 {
+			return fmt.Errorf("host key mismatch: server presented %s", got)
+		}
+		return nil
+	}, Timeout: dialTimeout}
+	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	c, err := dial(ctx, t.addr(), cfg)
+	if err != nil {
+		return scrub(err, Request{Target: t, Auth: auth})
+	}
+	return c.Close()
+}

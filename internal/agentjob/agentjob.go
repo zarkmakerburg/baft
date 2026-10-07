@@ -41,6 +41,10 @@ const (
 	ActionReload     = "reload"
 	ActionUpdateBAFT = "update_baft"
 
+	ActionSSHMigrationStage    = "ssh_migrate_stage"
+	ActionSSHMigrationCommit   = "ssh_migrate_commit"
+	ActionSSHMigrationRollback = "ssh_migrate_rollback"
+
 	ActionPathProbeInventory = "path_probe_inventory"
 	ActionPathProbeListen    = "path_probe_listen"
 	ActionPathProbeRun       = "path_probe_run"
@@ -104,14 +108,17 @@ var (
 // paramRules lists, per action, the parameters it takes and how each is
 // checked. A job with a missing, extra or malformed parameter is refused.
 var paramRules = map[string]map[string]*regexp.Regexp{
-	ActionHealth:             {},
-	ActionRestart:            {},
-	ActionReload:             {},
-	ActionUpdateBAFT:         {"version": versionRe},
-	ActionPathProbeInventory: {"discovery_id": tunnelIDRe},
-	ActionPathProbeListen:    {"probe_id": tunnelIDRe, "family": familyRe, "port": portRe, "ttl_seconds": probeSecondsRe},
-	ActionPathProbeRun:       {"probe_id": tunnelIDRe, "family": familyRe, "target": endpointRe, "payload_bytes": probeBytesRe, "attempts": probeAttemptsRe, "trickle_bytes": probeBytesRe, "trickle_ms": probeDelayRe},
-	ActionPathProbeStop:      {"probe_id": tunnelIDRe},
+	ActionHealth:               {},
+	ActionRestart:              {},
+	ActionReload:               {},
+	ActionUpdateBAFT:           {"version": versionRe},
+	ActionSSHMigrationStage:    {"old_port": portRe, "new_port": portRe},
+	ActionSSHMigrationCommit:   {"new_port": portRe},
+	ActionSSHMigrationRollback: {},
+	ActionPathProbeInventory:   {"discovery_id": tunnelIDRe},
+	ActionPathProbeListen:      {"probe_id": tunnelIDRe, "family": familyRe, "port": portRe, "ttl_seconds": probeSecondsRe},
+	ActionPathProbeRun:         {"probe_id": tunnelIDRe, "family": familyRe, "target": endpointRe, "payload_bytes": probeBytesRe, "attempts": probeAttemptsRe, "trickle_bytes": probeBytesRe, "trickle_ms": probeDelayRe},
+	ActionPathProbeStop:        {"probe_id": tunnelIDRe},
 
 	ActionTunnelPrepareEX: {"tunnel_id": tunnelIDRe, "public_address": addressRe, "port": portRe, "target": fixedTargetR, "route_id": tunnelIDRe, "record_shaping": boolRe},
 	ActionTunnelPrepareIR: {"tunnel_id": tunnelIDRe, "code": pairCodeRe, "route_listen": loopbackListenR, "route_id": tunnelIDRe},
