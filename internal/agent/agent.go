@@ -64,9 +64,11 @@ type Config struct {
 }
 
 type Agent struct {
-	cfg  Config
-	mu   sync.Mutex
-	seen map[string]time.Time
+	cfg            Config
+	mu             sync.Mutex
+	seen           map[string]time.Time
+	probeMu        sync.Mutex
+	probeListeners map[string]*pathProbeListener
 	// unacked holds results BCC did not receive (network error, rate limit,
 	// BCC restarting). They are sent again on the next poll so a finished
 	// step does not wait for BCC's step timeout. Memory only: an output may
@@ -107,7 +109,7 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	a := &Agent{cfg: cfg, seen: map[string]time.Time{}}
+	a := &Agent{cfg: cfg, seen: map[string]time.Time{}, probeListeners: map[string]*pathProbeListener{}}
 	if err := a.loadSeen(); err != nil {
 		return nil, err
 	}

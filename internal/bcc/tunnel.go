@@ -846,6 +846,8 @@ func (s *Server) StartTunnelLoop(ctx context.Context, interval time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				s.AdvancePathDiscoveries()
+				s.AdvancePathProbes()
 				s.AdvanceTunnels()
 			}
 		}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"regexp"
 	"sort"
@@ -31,6 +32,8 @@ type Node struct {
 	ID             string    `json:"id"`
 	Alias          string    `json:"alias"`
 	Address        string    `json:"address"`
+	PathIPv4       string    `json:"path_ipv4,omitempty"`
+	PathIPv6       string    `json:"path_ipv6,omitempty"`
 	Role           string    `json:"role"`
 	PublicKey      string    `json:"public_key,omitempty"`
 	AgentTokenHash           string    `json:"agent_token_hash,omitempty"`
@@ -183,6 +186,8 @@ type state struct {
 	IngressDistributions map[string]IngressDistribution `json:"ingress_distributions,omitempty"`
 	// SmartIngressPlans are M-017's durable provider-independent publication intents.
 	SmartIngressPlans map[string]SmartIngressPlan `json:"smart_ingress_plans,omitempty"`
+	PathProbes       map[string]PathProbe         `json:"path_probes,omitempty"`
+	PathDiscoveries  map[string]PathDiscovery     `json:"path_discoveries,omitempty"`
 	NextJob         uint64                       `json:"next_job"`
 	NextRateVersion       uint64                 `json:"next_rate_version,omitempty"`
 	NextTelemetryIngestID uint64                 `json:"next_telemetry_ingest_id,omitempty"`
@@ -201,7 +206,7 @@ type Store struct {
 func OpenStore(path string) (*Store, error) {
 	if strings.TrimSpace(path)=="" { return nil, errors.New("state path is required") }
 	if err:=recoverRestoreTransaction(path);err!=nil{return nil,fmt.Errorf("recover interrupted restore: %w",err)}
-	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},SecurityAuditIntents:map[string]AuditEntry{},IngressSelections:map[string]IngressSelection{},IngressDistributions:map[string]IngressDistribution{},SmartIngressPlans:map[string]SmartIngressPlan{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
+	s:=&Store{path:path,st:state{Nodes:map[string]Node{},Jobs:map[string]Job{},Finance:map[string]NodeFinance{},Policies:map[string]FinancePolicy{},RateHistory:map[string][]FinancePolicy{},Telemetry:map[string]TelemetryCursor{},History:map[string][]HistoryPoint{},ActiveAlerts:map[string]Alert{},RetiredBootIDs:map[string]map[string]bool{},SecurityAuditIntents:map[string]AuditEntry{},IngressSelections:map[string]IngressSelection{},IngressDistributions:map[string]IngressDistribution{},SmartIngressPlans:map[string]SmartIngressPlan{},PathProbes:map[string]PathProbe{},PathDiscoveries:map[string]PathDiscovery{},NextJob:1,NextRateVersion:1,NextTelemetryIngestID:1}}
 	b,err:=os.ReadFile(path)
 	switch {
 	case err==nil&&isSQLiteFile(b):
@@ -248,6 +253,8 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	if strings.TrimSpace(n.ID)==""||len(n.ID)>128{return Node{},errors.New("node id is required")}
 	if strings.TrimSpace(n.Alias)==""{n.Alias=n.ID}
 	if strings.TrimSpace(n.Address)==""{return Node{},errors.New("node address is required")}
+	if n.PathIPv4!=""{ip:=net.ParseIP(strings.TrimSpace(n.PathIPv4));if ip==nil||ip.To4()==nil{return Node{},errors.New("path_ipv4 must be a literal IPv4 address")};n.PathIPv4=ip.To4().String()}
+	if n.PathIPv6!=""{ip:=net.ParseIP(strings.TrimSpace(n.PathIPv6));if ip==nil||ip.To4()!=nil||ip.To16()==nil{return Node{},errors.New("path_ipv6 must be a literal IPv6 address")};n.PathIPv6=ip.String()}
 	switch n.Role {case "foreign","worker","master":default:return Node{},errors.New("node role must be foreign, worker, or master")}
 	s.mu.Lock();defer s.mu.Unlock()
 	old,exists:=s.st.Nodes[n.ID]
@@ -259,6 +266,8 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 		n.RevokedAt=old.RevokedAt
 		n.RevokeReason=old.RevokeReason
 		if n.AgentSeen.IsZero(){n.AgentSeen=old.AgentSeen}
+		if n.PathIPv4==""{n.PathIPv4=old.PathIPv4}
+		if n.PathIPv6==""{n.PathIPv6=old.PathIPv6}
 		n.AppliedGeneration=old.AppliedGeneration
 		if len(old.AppliedGenerations)>0{
 			n.AppliedGenerations=make(map[string]int,len(old.AppliedGenerations))

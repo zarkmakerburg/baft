@@ -141,3 +141,31 @@ func TestTunnelRetireActionRequiresExactManagedProof(t *testing.T) {
 		}
 	}
 }
+
+func TestPathProbeActionsAreStrictlyBounded(t *testing.T) {
+	valid := []Job{
+		job(ActionPathProbeInventory, map[string]string{"discovery_id": "pd-1234"}),
+		job(ActionPathProbeListen, map[string]string{"probe_id": "pp-1234", "family": "4", "port": "443", "ttl_seconds": "45"}),
+		job(ActionPathProbeRun, map[string]string{"probe_id": "pp-1234", "family": "6", "target": "[2001:db8::9]:443", "payload_bytes": "65536", "attempts": "3", "trickle_bytes": "16384", "trickle_ms": "200"}),
+		job(ActionPathProbeStop, map[string]string{"probe_id": "pp-1234"}),
+	}
+	for _, j := range valid {
+		j.SchemaVersion = SchemaVersion
+		if err := j.Validate(); err != nil {
+			t.Fatalf("%s rejected: %v", j.Action, err)
+		}
+	}
+	bad := []Job{
+		job(ActionPathProbeInventory, map[string]string{"discovery_id": "../escape"}),
+		job(ActionPathProbeListen, map[string]string{"probe_id": "pp-1", "family": "5", "port": "443", "ttl_seconds": "45"}),
+		job(ActionPathProbeRun, map[string]string{"probe_id": "pp-1", "family": "4", "target": "example.com:443", "payload_bytes": "65536", "attempts": "3", "trickle_bytes": "16384", "trickle_ms": "200"}),
+		job(ActionPathProbeRun, map[string]string{"probe_id": "pp-1", "family": "4", "target": "203.0.113.5:443", "payload_bytes": "99999999", "attempts": "3", "trickle_bytes": "16384", "trickle_ms": "200"}),
+		job(ActionPathProbeStop, map[string]string{"probe_id": "../escape"}),
+	}
+	for _, j := range bad {
+		j.SchemaVersion = SchemaVersion
+		if err := j.Validate(); err == nil {
+			t.Errorf("malformed %s job accepted: %+v", j.Action, j.Params)
+		}
+	}
+}
