@@ -33,6 +33,10 @@ type PathMatrixCell struct {
 	DestinationNode string                `json:"destination_node"`
 	State           string                `json:"state"`
 	Candidates      []PathMatrixCandidate `json:"candidates,omitempty"`
+	BestDirect      *PathMatrixCandidate  `json:"best_direct,omitempty"`
+	Recommendation  *PathRecommendation   `json:"recommendation,omitempty"`
+	HopCount        int                   `json:"hop_count,omitempty"`
+	LimitingEdge    *PathMatrixCandidate  `json:"limiting_edge,omitempty"`
 }
 
 type PathMatrix struct {
@@ -73,7 +77,6 @@ func matrixStateRank(v string) int {
 func (s *Store) PathMatrix(now time.Time) PathMatrix {
 	now = now.UTC()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	active := make(map[string]bool)
 	nodes := make([]string, 0, len(s.st.Nodes))
@@ -140,6 +143,32 @@ func (s *Store) PathMatrix(now time.Time) PathMatrix {
 				state = cs[0].State
 			}
 			out.Cells = append(out.Cells, PathMatrixCell{SourceNode: src, DestinationNode: dst, State: state, Candidates: cs})
+		}
+	}
+	s.mu.Unlock()
+
+	graph := s.PathGraph(now)
+	recs := make(map[string]PathRecommendation, len(graph.Recommendations))
+	for _, rec := range graph.Recommendations {
+		recs[rec.SourceNode+"\x00"+rec.DestinationNode] = rec
+	}
+	for i := range out.Cells {
+		cell := &out.Cells[i]
+		for j := range cell.Candidates {
+			candidate := &cell.Candidates[j]
+			if candidate.State == PathMatrixPass && cell.BestDirect == nil {
+				copy := *candidate
+				cell.BestDirect = &copy
+			}
+			if candidate.State != PathMatrixPass && candidate.State != PathMatrixStale && cell.LimitingEdge == nil {
+				copy := *candidate
+				cell.LimitingEdge = &copy
+			}
+		}
+		if rec, ok := recs[cell.SourceNode+"\x00"+cell.DestinationNode]; ok {
+			copy := rec
+			cell.Recommendation = &copy
+			cell.HopCount = len(copy.Hops)
 		}
 	}
 	return out

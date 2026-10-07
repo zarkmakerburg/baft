@@ -73,3 +73,28 @@ func TestPathMatrixExcludesRevokedNodesAndIsDeterministic(t *testing.T) {
 		t.Fatalf("cells not deterministic: %+v", m.Cells)
 	}
 }
+
+func TestPathMatrixExposesMultiHopRecommendationAndLimitingDirectEvidence(t *testing.T) {
+	s := newGenericDiscoveryStore(t, "A", "B", "C")
+	now := time.Now().UTC()
+	s.mu.Lock()
+	putGraphProbe(s, "ac-limit", "A", "C", "4", "192.0.2.3", 443, PathByteCeiling, 2, now)
+	p := s.st.PathProbes["ac-limit"]
+	p.Candidates[0].ByteCeiling = 8688
+	p.Candidates[0].Detail = "direct path ceiling"
+	s.st.PathProbes[p.ID] = p
+	putGraphProbe(s, "ab-good", "A", "B", "4", "192.0.2.2", 443, PathFullData, 5, now)
+	putGraphProbe(s, "bc-good", "B", "C", "4", "192.0.2.3", 8443, PathFullData, 7, now)
+	s.mu.Unlock()
+
+	cell := matrixCell(t, s.PathMatrix(now.Add(time.Minute)), "A", "C")
+	if cell.State != PathMatrixDegraded || cell.LimitingEdge == nil || cell.LimitingEdge.ByteCeiling != 8688 {
+		t.Fatalf("direct limiting evidence missing: %+v", cell)
+	}
+	if cell.Recommendation == nil || cell.Recommendation.Direct || cell.HopCount != 2 {
+		t.Fatalf("multi-hop recommendation missing: %+v", cell.Recommendation)
+	}
+	if len(cell.Recommendation.Hops) != 2 || cell.Recommendation.Hops[0].DestinationNode != "B" || cell.Recommendation.Hops[1].DestinationNode != "C" {
+		t.Fatalf("unexpected recommendation: %+v", cell.Recommendation)
+	}
+}
