@@ -1,0 +1,26 @@
+name: BCC V3 UI contract tests
+on:
+  pull_request:
+    paths:
+      - 'web/bcc-*v3.js'
+      - 'web/tests/bcc-v3-*.test.cjs'
+      - '.github/workflows/bcc-v3-ui-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check
+        run: |
+          node --check web/bcc-globe-v3.js
+          node --check web/bcc-live-adapter-v3.js
+          node --check web/bcc-topology-snapshot-v3.js
+      - name: Contract tests
+        run: node --test web/tests/bcc-v3-adapter.test.cjs
