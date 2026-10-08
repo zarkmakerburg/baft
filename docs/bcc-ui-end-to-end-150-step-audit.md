@@ -31,7 +31,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 24. [ ] IMPLEMENTED IN V3 PREVIEW — added bilingual welcome heading context clarifying demo entry is not real sign-in (160289e7). Browser visual/FA-EN acceptance pending step 25.
 25. [ ] PARTIAL / NOT ACCEPTED — Chrome headless DOM smoke on authorized Mac: page rendered, Persian/RTL, welcome context, hidden preview, dashboard heading present. No interactive keyboard/click, FA/EN toggle, light/dark, mobile viewport or console-error verification yet; do not claim browser PASS. Further browser gate required.
 26. [ ] PREVIEW ONLY — explicitly associated demo entry button with its no-authentication disclaimer via aria-describedby (6138f099). No actual BCC auth route implemented or accepted; production auth route review remains pending.
-27. [ ] TODO — session safety
+27. [ ] PREVIEW ONLY — one-time in-memory demo entry guard prevents repeated transition (56a5ede1). This is NOT authentication/session security; real BCC session lifecycle and logout/security checks remain pending.
 28. [ ] TODO — CSRF safety
 29. [ ] TODO — rate limits
 30. [ ] TODO — login integration gate
