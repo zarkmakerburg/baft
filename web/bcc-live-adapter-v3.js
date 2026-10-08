@@ -43,8 +43,7 @@ btn.addEventListener('click',async()=>{
  if(location.protocol!=='https:'&&!(location.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(location.hostname)))throw Error('Authenticated BCC API requires HTTPS or local development origin. Do not enter a token in file:// preview.');
  const raw=$('bccCoordinates').value;if(raw.length>16384)throw Error('Coordinates input exceeds 16 KiB');const loc=safeCoordinates(raw);
  if(!adminToken){adminToken=prompt('BCC admin token (used in memory for this page only):')||'';if(!adminToken){msg('Token required.');return}}
- const ts=await get('/api/tunnels');if(ts.length>300)throw Error('Too many tunnels for preview');
- if(!Array.isArray(ts))throw Error('Unexpected BCC API response');
+ const ts=await get('/api/tunnels');if(!Array.isArray(ts))throw Error('Unexpected BCC API response');if(ts.length>300)throw Error('Too many tunnels for preview');
  const d=build(ts,loc);window.dispatchEvent(new CustomEvent('baft:topology',{detail:d}));
  msg('Read-only BCC snapshot: '+d.links.length+' mapped tunnels; all link health UNKNOWN until link-scoped telemetry is available. Node telemetry is not link telemetry.');
  }catch(e){msg('Read-only load failed: '+e.message)}finally{btn.disabled=false}
