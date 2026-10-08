@@ -11,12 +11,12 @@ let examples=[
 {id:'tr',name:'Istanbul (demo)',lat:41.0082,lon:28.9784},
 {id:'ca',name:'Toronto (demo)',lat:43.6532,lon:-79.3832}
 ];
-let links=examples.slice(1).map((n,i)=>({id:'demo-'+n.id,source:'ir',destination:n.id,status:i===3?'down':'unknown',rttMs:null,upBps:null,downBps:null,updatedAt:null}));
+let links=examples.slice(1).map((n,i)=>({id:'demo-'+n.id,source:'ir',destination:n.id,status:'unknown',rttMs:null,upBps:null,downBps:null,updatedAt:null}));
 const canvas=document.getElementById('baftGlobe');if(!canvas)return;
 const ctx=canvas.getContext('2d');if(!ctx)return;
 const label=document.getElementById('globeSelection');
 const inspector={id:document.getElementById('linkId'),health:document.getElementById('health'),rtt:document.getElementById('linkRtt'),up:document.getElementById('linkUp'),down:document.getElementById('linkDown'),updated:document.getElementById('linkUpdated')};
-window.addEventListener('baft:topology',e=>{const d=e.detail;if(!d||!Array.isArray(d.nodes)||!Array.isArray(d.links))return;examples=d.nodes;links=d.links;selected=null;hovered=null;if(label)label.textContent='Topology snapshot loaded · '+links.length+' connections';if(inspector.id)inspector.id.textContent='—';if(inspector.health)inspector.health.textContent='UNKNOWN';if(pause)draw(0)});
+window.addEventListener('baft:topology',e=>{const d=e.detail;if(!d||!Array.isArray(d.nodes)||!Array.isArray(d.links))return;examples=d.nodes;links=d.links;selected=null;hovered=null;if(label)label.textContent='Topology snapshot loaded · '+links.length+' connections';if(inspector.id)inspector.id.textContent='—';if(inspector.health){inspector.health.textContent='UNKNOWN';inspector.health.className='status'}for(const k of ['rtt','up','down','updated'])if(inspector[k])inspector[k].textContent='—';const kpis=document.querySelectorAll('.stats .stat strong');if(kpis.length>=4){kpis[0].textContent=examples.length;kpis[1].textContent=links.length;kpis[2].textContent='—';kpis[3].textContent='—'}if(pause)draw(0)});
 const pause=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 let w=1,h=1,rotLon=25*R,rotLat=24*R,zoom=1,selected=null,hovered=null,drag=false,lastX=0,lastY=0,focus=null,focusStart=0,focusDuration=900;
 function xyz(lat,lon){let a=lat*R,b=lon*R;return [Math.cos(a)*Math.sin(b),Math.sin(a),Math.cos(a)*Math.cos(b)]}
