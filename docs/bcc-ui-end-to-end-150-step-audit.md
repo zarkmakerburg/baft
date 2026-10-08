@@ -42,7 +42,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 33. [x] PREVIEW-ONLY — RTL bidi hardening: Persian-friendly Tahoma first, LTR coordinate JSON textarea, isolated brand and dynamic metric identifiers, wrapping language/theme controls, localized aria-labels. Commit 9f1b0805. Source review only; actual RTL browser regression and mobile matrix pending at step 35.
 34. [x] PREVIEW-ONLY — LTR alignment hardening: English-mode card/detail alignment, minimum 44px toggle targets, explicit LTR topology-file control, and localized document title. Commit 91fa33b1. Source reviewed; actual browser matrix scheduled for step 35, not yet PASS.
 35. [x] PREVIEW CHROME QA PASS — authorized Mac Chrome/Puppeteer 8/8 viewport×language×theme matrix (1440x900, 390x844 emulation; FA/EN; dark/light), welcome→dashboard interaction, H1 focus, localized title/button/aria, no horizontal overflow, zero captured JS page/console errors. No physical mobile, real BCC auth, server CSRF, API integration, or production acceptance. Logical-properties deep audit remains open for subsequent step.
-36. [ ] TODO — date formats
+36. [x] PREVIEW-ONLY — selected-link updatedAt timestamps now render via Intl.DateTimeFormat fa-IR/en-GB, explicit UTC and stable date/time parts; missing/invalid values show em dash. Commit 0e0b4610. Static review only; runtime timestamp browser regression pending next browser gate. No BCC API production acceptance.
 37. [ ] TODO — number formats
 38. [ ] TODO — IP text direction
 39. [ ] TODO — status labels
