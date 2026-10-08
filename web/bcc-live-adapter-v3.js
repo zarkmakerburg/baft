@@ -53,6 +53,6 @@ btn.addEventListener('click',async()=>{
  const ts=await get('/api/tunnels');if(!Array.isArray(ts))throw Error('Unexpected BCC API response');if(ts.length>300)throw Error('Too many tunnels for preview');
  const d=build(ts,loc);window.dispatchEvent(new CustomEvent('baft:topology',{detail:d}));
  msg(tr('نمای فقط‌خواندنی BCC: '+d.links.length+' تونل مکان‌یابی‌شده؛ وضعیت سلامت اتصال‌ها تا دریافت دادهٔ اختصاصی هر تونل نامشخص است.','Read-only BCC snapshot: '+d.links.length+' mapped tunnels; all link health UNKNOWN until link-scoped telemetry is available. Node telemetry is not link telemetry.'));
- }catch(e){msg(tr('بارگذاری فقط‌خواندنی ناموفق بود. جزئیات فنی: ','Read-only load failed: ')+e.message)}finally{btn.disabled=false}
+ }catch(e){adminToken='';msg(tr('بارگذاری فقط‌خواندنی ناموفق بود. اتصال و دسترسی را بررسی کنید.','Read-only load failed. Check connectivity and authorization.'))}finally{btn.disabled=false}
 });
 })();
