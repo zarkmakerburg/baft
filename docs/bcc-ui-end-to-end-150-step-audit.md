@@ -29,7 +29,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 22. [ ] IMPLEMENTED IN V3 PREVIEW — guarded entry CTA against duplicate activation, visible focus style, dashboard heading focus handoff and scroll-to-start (commit cd6d39f5). Browser keyboard/click acceptance pending at step 25.
 23. [ ] IMPLEMENTED IN V3 PREVIEW — entry CTA targets `main h1` explicitly, guards absent heading, and adds visible focus outline (cb605572). Browser keyboard/mobile acceptance pending step 25.
 24. [ ] IMPLEMENTED IN V3 PREVIEW — added bilingual welcome heading context clarifying demo entry is not real sign-in (160289e7). Browser visual/FA-EN acceptance pending step 25.
-25. [ ] TODO — preview gate
+25. [ ] PARTIAL / NOT ACCEPTED — Chrome headless DOM smoke on authorized Mac: page rendered, Persian/RTL, welcome context, hidden preview, dashboard heading present. No interactive keyboard/click, FA/EN toggle, light/dark, mobile viewport or console-error verification yet; do not claim browser PASS. Further browser gate required.
 26. [ ] TODO — auth routes
 27. [ ] TODO — session safety
 28. [ ] TODO — CSRF safety
