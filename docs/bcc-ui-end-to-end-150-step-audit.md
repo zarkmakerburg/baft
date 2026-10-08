@@ -93,16 +93,16 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 78. [x] PREVIEW-ONLY — management address column; dash until trusted source. Commit 679a2541.
 79. [x] PREVIEW-ONLY — IPv4 column; dash until trusted source. Commit 679a2541.
 80. [x] PREVIEW-ONLY — IPv6 column; dash until trusted source; Chrome Step80 8/8 smoke PASS. Commit 679a2541.
-81. [ ] TODO — role
-82. [ ] TODO — public key
-83. [ ] TODO — agent token
-84. [ ] TODO — save node
-85. [ ] TODO — SSH host
-86. [ ] TODO — SSH port
-87. [ ] TODO — SSH user
-88. [ ] TODO — host key scan
-89. [ ] TODO — fingerprint verification
-90. [ ] TODO — agent install
+81. [x] PREVIEW-ONLY — disabled node role selector. Commit 6f00e2c3.
+82. [x] PREVIEW-ONLY — disabled read-only public key field. Commit 6f00e2c3.
+83. [x] PREVIEW-ONLY — redacted token status, never accepts credentials. Commit 6f00e2c3.
+84. [x] PREVIEW-ONLY — disabled save action. Commit 6f00e2c3.
+85. [x] PREVIEW-ONLY — disabled SSH host field. Commit 6f00e2c3.
+86. [x] PREVIEW-ONLY — disabled SSH port field. Commit 6f00e2c3.
+87. [x] PREVIEW-ONLY — disabled SSH user field. Commit 6f00e2c3.
+88. [x] PREVIEW-ONLY — disabled host key scan action. Commit 6f00e2c3.
+89. [x] PREVIEW-ONLY — independent host fingerprint verification warning. Commit 6f00e2c3.
+90. [x] PREVIEW-ONLY — disabled agent install action; Step90 Mac Chrome smoke 8/8 PASS. Commit 6f00e2c3.
 
 ## Tunnels and discovery
 91. [ ] TODO — existing tunnels
