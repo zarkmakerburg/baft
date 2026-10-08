@@ -47,11 +47,11 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 38. [x] PREVIEW-ONLY — CSS [data-ip]/.ip-address explicit LTR isolation, overflow-wrap and selected link identifier dir=auto. Commit c2dca310. Browser matrix at Step40 verified IPv6 LTR.
 39. [x] PREVIEW-ONLY — bilingual UP/DOWN/UNKNOWN/STALE status mapping, localized aria-label and status class. Commit 54e66a80. Browser Step40 verified UNKNOWN labels FA/EN.
 40. [x] PREVIEW CHROME QA PASS — safe bilingual INVALID_FILE/NETWORK_ERROR/UNAUTHORIZED/UNKNOWN error mapping with generic fallback and alert role. Commit 5c90ae07. Real Mac Chrome/Puppeteer Step40 8/8 combinations desktop 1440, mobile 390 emulated × FA/EN × dark/light: numbers fa-IR/en-GB, UNKNOWN status, INVALID_FILE error, IPv6 LTR, H1 focus, no overflow, zero JS console/page errors. No real BCC auth/API, no physical mobile or production acceptance.
-41. [ ] TODO — button labels
-42. [ ] TODO — tooltips
-43. [ ] TODO — screen reader language
-44. [ ] TODO — language preference
-45. [ ] TODO — missing translations
+41. [x] PREVIEW-ONLY — button labels — explicit button type and bilingual aria-pressed state on language/theme controls. Code commit 6983d0ed.
+42. [x] PREVIEW-ONLY — tooltips — localized title tooltips for language/theme controls. Code commit 6983d0ed.
+43. [x] PREVIEW-ONLY — screen reader language — document lang/dir and localized nav span lang; removed mixed-language nav aria suffix. Code commit 6983d0ed.
+44. [x] PREVIEW-ONLY — language preference — validated persisted fa/en and dark/light values, browser-locale default, safe localStorage fallback. Code commit 6983d0ed.
+45. [x] PREVIEW-ONLY — missing translations — guarded dictionary lookup and explicit fallback instead of undefined text; Mac Chrome 8/8 regression matrix PASS (1440/390 × FA/EN × dark/light, zero captured JS errors/overflow), focused H1; deeper accessibility tests remain open. Code commit 6983d0ed.
 
 ## Theme and accessibility
 46. [ ] TODO — navy gold
