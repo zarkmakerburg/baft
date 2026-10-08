@@ -161,16 +161,16 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 138. [x] PREVIEW-ONLY — backend versioning/effective date requirement disclosed. Commit 4b0a2158.
 139. [x] PREVIEW-ONLY — start/end date inputs. Commit 4b0a2158.
 140. [x] PREVIEW-ONLY — client-side date order validation and Step140 Chrome smoke 8/8. Commit 4b0a2158.
-141. [ ] TODO — load report
-142. [ ] TODO — CSV download
-143. [ ] TODO — loading state
-144. [ ] TODO — empty state
-145. [ ] TODO — error state
-146. [ ] TODO — currency
-147. [ ] TODO — units
-148. [ ] TODO — precision
-149. [ ] TODO — table overflow
-150. [ ] TODO — download feedback
+141. [x] PREVIEW-ONLY — disabled report fetch control pending authenticated backend. Commit bb930f5a.
+142. [x] PREVIEW-ONLY — disabled CSV export control pending validated report. Commit bb930f5a.
+143. [x] PREVIEW-ONLY — loading-state requirement disclosure, no fake spinner. Commit bb930f5a.
+144. [x] PREVIEW-ONLY — accessible no-report empty state. Commit bb930f5a.
+145. [x] PREVIEW-ONLY — safe error-display requirement disclosure. Commit bb930f5a.
+146. [x] PREVIEW-ONLY — currency column, no invented currency. Commit bb930f5a.
+147. [x] PREVIEW-ONLY — traffic column labeled GiB, backend contract pending. Commit bb930f5a.
+148. [x] PREVIEW-ONLY — no client-side rounding of unknown amounts. Commit bb930f5a.
+149. [x] PREVIEW-ONLY — horizontally scrollable finance table wrapper. Commit bb930f5a.
+150. [x] PREVIEW-ONLY — download disabled status feedback; Chrome gate150 8/8 smoke PASS. Commit bb930f5a.
 
 ## Acceptance
 
@@ -234,3 +234,6 @@ UI now supports local node selection only; no real deploy, jobs, audit, RBAC or 
 
 ### Integration status — Steps 131–140
 Security/audit and finance views are local-only. No verified live node finance, immutable audit records, token rotation, kill-switch or write API invocation. Local rate and report date checks do not establish backend authorization, persisted rate versions or report correctness. Step140 Mac Chrome smoke 8/8 passed (FA/EN, light/dark, desktop/mobile), no captured errors/overflow. Independent interaction validation still required.
+
+## 150-step preview audit closure — NOT a production acceptance
+All 150 UI audit checklist steps now marked at their actual PREVIEW-ONLY or implemented scope. Step150 Mac Chrome smoke 8/8 PASS (FA/EN × dark/light × 1440/390), no captured JS errors/overflow. This is smoke coverage only. Outstanding mandatory gates: feature-level interactive browser tests; authenticated isolated BCC API read-only integration; verify schemas and auth/RBAC for nodes/tunnels/jobs/monitoring/finance/audit; safe unknown/stale states; security tests; staging deployment; backups/rollback and operator acceptance. Production cutover NOT AUTHORIZED. No Ashkan device used.
