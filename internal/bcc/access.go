@@ -463,7 +463,11 @@ func (s *Server) accessHandler(api http.Handler) http.Handler {
 			}
 			s.access.drop(r)
 			http.SetCookie(w, s.access.cookie(a.SecretPath, "", -1))
-			http.Redirect(w, r, base, http.StatusSeeOther)
+			target := base
+			if r.URL.Query().Get("ui") == "v3" {
+				target = base + "v3/"
+			}
+			http.Redirect(w, r, target, http.StatusSeeOther)
 		case strings.HasPrefix(tail, "api/"):
 			r2 := r.Clone(context.WithValue(r.Context(), viaSecretKey{}, true))
 			r2.URL.Path = "/" + tail
@@ -523,11 +527,19 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, bas
 	if blocked, wait := s.loginLim.check(user, now); blocked {
 		_ = s.auditLogin(r, "blocked")
 		w.Header().Set("Retry-After", retryAfter(wait))
+		if r.URL.Query().Get("ui") == "v3" {
+			s.serveCommandCenterV3(w, r, a, base, "too many failed sign-ins, try again later", http.StatusTooManyRequests)
+			return
+		}
 		http.Error(w, "too many failed sign-ins, try again later", http.StatusTooManyRequests)
 		return
 	}
 	if !s.hashing.acquire(2 * time.Second) {
 		w.Header().Set("Retry-After", "2")
+		if r.URL.Query().Get("ui") == "v3" {
+			s.serveCommandCenterV3(w, r, a, base, "busy, try again", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "busy, try again", http.StatusServiceUnavailable)
 		return
 	}
@@ -650,7 +662,7 @@ func renderWelcome(loginURL string) string {
 
 // serveCommandCenterV3 reuses the existing access gate and native POST login.
 // The UI is an explicit /<secret>/v3/ staging opt-in; legacy operations stay available.
-func (s *Server) serveCommandCenterV3(w http.ResponseWriter, r *http.Request, a AccessFile, base, loginError string) {
+func (s *Server) serveCommandCenterV3(w http.ResponseWriter, r *http.Request, a AccessFile, base, loginError string, status ...int) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -663,7 +675,11 @@ func (s *Server) serveCommandCenterV3(w http.ResponseWriter, r *http.Request, a 
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if loginError != "" {
-		w.WriteHeader(http.StatusUnauthorized)
+		code := http.StatusUnauthorized
+		if len(status) > 0 {
+			code = status[0]
+		}
+		w.WriteHeader(code)
 	}
 	config := webui.Config{Mode: mode, Base: base, LoginAction: base + "login?ui=v3", Error: loginError}
 	if sess := s.access.lookup(r, s.now(), a.Generation); sess != nil {

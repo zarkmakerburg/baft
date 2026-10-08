@@ -6,8 +6,9 @@ Authority: #67 PRODUCTIZATION RESET and owner 150-step instruction.
 ## Acceptance ledger
 
 The earlier audit is retained unchanged. Its preview checkmarks are not product acceptance.
-Current accepted checkpoint: 10/150, source commit 2e2851c.
-Steps 11–30 and native integration are in progress; later ranges remain OPEN.
+Current execution checkpoint: 30/150. Checkpoint 20 source: 17be92b.
+This counts implemented foundation work, not final visual or operational acceptance.
+Later ranges remain OPEN; the entire product has not passed final acceptance.
 
 Completed foundation work: HQ/audit/source inventory; all supplied references inspected; actual
 braided BAFT asset bundled; original branch/worktree preserved; shared palettes and navigation;
@@ -59,3 +60,31 @@ during acceptance. This is one repository and one BCC binary, not a disconnected
 - Geographic outlines: johan/world.geo.json countries.geo.json:
   https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json
   Rounded/simplified for local rendering; no server locations inferred from geography.
+
+## Checkpoints 20 and 30
+
+20: native session integration, seven real read-only APIs, eight viewport/language/theme
+cells, bad and successful login, logout invalidation and zero browser errors passed.
+30: native public header and localized login/error/rate-limit states corrected; local
+Vazirmatn variable font bundled with OFL; authenticated pages no longer expose a demo
+entry CTA or demo document title. Original operations use isolated selectors and native
+CSRF. The first Save Node browser attempt returned 201 but raised ops_q undefined: an
+over-broad rewrite had changed a local variable. Removed that rewrite; dynamic selectors
+are scoped by fallback lookup. Retest saved a disposable loopback fixture, kept an unsafe
+node ID as text, and rejected a write without CSRF (401); browser errors=0.
+
+Chrome source checks: web/qa/bcc-native-chrome.cjs, bcc-local-mutation-chrome.cjs,
+bcc-globe-chrome.cjs. Native empty state, seven GETs, eight layout cells, session/logout,
+mutation/XSS-negative/CSRF-negative, actual WebGL texture and reduced motion all exercised.
+These are Mac Chrome runs in isolated profiles against loopback only. They do not certify
+SSH, active tunnels, backup recovery, deployment, or complete visual fidelity.
+
+Font: Vazirmatn variable WOFF2 from the official rastikerdar/vazirmatn repository,
+https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/webfonts/Vazirmatn%5Bwght%5D.woff2
+License preserved in web/assets/Vazirmatn-OFL.txt.
+
+Checkpoint 30 repeat evidence: a chained run passed native checks, then timed out waiting
+for network-idle navigation. Isolated mutation rerun passed. Another rapid repeat returned
+429 on the missing-CSRF negative instead of 401, due to protective request limiting; this
+was not counted as PASS. Use fresh disposable state for each mutation suite and wait for
+DOMContentLoaded plus the authenticated page mode rather than background network silence.
