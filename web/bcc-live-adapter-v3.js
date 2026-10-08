@@ -11,6 +11,8 @@ async function get(path){
  const headers={'Accept':'application/json'};if(adminToken)headers['Authorization']='Bearer '+adminToken;
  const r=await fetch(path,{method:'GET',headers,credentials:'same-origin',cache:'no-store',redirect:'error'});
  if(!r.ok){if(r.status===401||r.status===403)adminToken='';throw Error(path+': HTTP '+r.status)}
+ if(r.url&&new URL(r.url,location.href).origin!==location.origin)throw Error('Cross-origin API response rejected');
+ const contentType=r.headers&&r.headers.get&&r.headers.get('content-type');if(contentType&&!/^application\/(?:[\w.-]+\+)?json(?:\s*;|\s*$)/i.test(contentType))throw Error('Expected JSON API response');
  return r.json();
 }
 function coordsFromText(raw){
