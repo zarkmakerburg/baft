@@ -7,3 +7,13 @@ test('no outbound login API or credential storage',()=>{assert.doesNotMatch(html
 test('bilingual text and direction support',()=>{assert.match(html,/fa:\{/);assert.match(html,/en:\{/);assert.match(html,/root\.dir=lang==='fa'\?'rtl':'ltr'/)});
 test('safe preview metadata',()=>{assert.match(html,/noindex,nofollow/);assert.match(html,/no-referrer/);assert.match(html,/prefers-reduced-motion/);assert.match(html,/class="skip"/)});
 test('logo is external official asset path, never an invented replacement',()=>{assert.match(html,/assets\/baft-official-logo\.png/);assert.match(html,/img\.addEventListener\('error'/)});
+
+test('welcome page does not expose a live credential submission route',()=>{assert.doesNotMatch(html,/<form[^>]+action=/i);assert.match(html,/<button type="submit"[^>]*disabled/i);});
+test('all localization keys are present in both languages',()=>{
+ const keys=[...html.matchAll(/data-i="([^"]+)"/g)].map(m=>m[1]);
+ const fa=html.split('fa:{')[1].split('},\nen:{')[0],en=html.split('en:{')[1].split('}};')[0];
+ for(const key of keys){assert.ok(fa.includes(key+':'), 'Missing Persian: '+key);assert.ok(en.includes(key+':'),'Missing English: '+key)}
+});
+test('primary anchors point to real sections',()=>{for(const id of ['signin','capabilities'])assert.match(html,new RegExp('href="#'+id+'"'));});
+test('all interactive controls have labels',()=>{assert.match(html,/<label for="user"/);assert.match(html,/<label for="password"/);assert.match(html,/id="lang"[^>]+aria-label=/);assert.match(html,/id="theme"[^>]+aria-label=/);});
+test('mobile layout and reduced-motion support are present',()=>{assert.match(html,/@media\(max-width:850px\)/);assert.match(html,/@media\(max-width:520px\)/);assert.match(html,/@media\(prefers-reduced-motion:reduce\)/);});
