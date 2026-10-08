@@ -242,3 +242,7 @@ All 150 UI audit checklist steps now marked at their actual PREVIEW-ONLY or impl
 - server.go confirms admin-gated GET /api/nodes, /api/monitoring, /api/finance/report and /api/audit. Finance report returns {period, timezone, rows} JSON and supports CSV via format=csv. Bearer or authenticated admin session is checked by admin(); 401 on failed auth.
 - /api/tunnels and /api/jobs routes exist, but their handler response schemas still require independent inspection.
 - Isolated test gates: unauthorized/invalid/authorized GET cases, JSON schema and redaction, monitoring freshness, finance JSON/CSV parity and escaping, no write calls, no real credentials or production BCC access. No live integration claim.
+
+## Integration error-path QA — synthetic HTTP failures
+- Mac Node isolated adapter harness simulated GET /api/tunnels returning 401, 403 and 500; all 3 cases PASS with generic error text, one GET only and button re-enabled. No BCC credentials or server contacted.
+- This is mocked runtime testing, not Chrome UI integration, not proof of token clearing after reattempt, and not authenticated staging acceptance.
