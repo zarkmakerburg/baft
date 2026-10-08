@@ -24,7 +24,7 @@ function normalizeCoords(c){
  return {lat:c.lat,lon:c.lon};
 }
 function validId(s){return typeof s==='string'&&/^[\w-]{1,64}$/.test(s)}
-function safeCoordinates(raw){const obj=coordsFromText(raw);if(Object.keys(obj).length>100)throw Error('Too many node coordinates');return obj}
+function safeCoordinates(raw){const obj=coordsFromText(raw);if(Object.keys(obj).length>100)throw Error('Too many node coordinates');for(const key of Object.keys(obj))if(!validId(key)||!normalizeCoords(obj[key]))throw Error('Invalid node coordinate mapping');return obj}
 function build(tunnels,locations){
  const used=new Set(),links=[],nodes=[];
  for(const t of tunnels){
