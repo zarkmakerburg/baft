@@ -3,10 +3,10 @@
 Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no production deployment.
 
 ## Navigation and design foundation
-1. [ ] TODO — inventory sections
-2. [ ] TODO — inventory buttons
-3. [ ] TODO — inventory inputs
-4. [ ] TODO — inventory selectors
+1. [ ] IN PROGRESS — inventory sections; backend dashboard sections identified, pending full dynamic verification
+2. [x] SOURCE INVENTORY — 31 static `<button>` elements in `internal/bcc/dashboard.go` (dynamic buttons remain in step 8)
+3. [x] SOURCE INVENTORY — 29 static `<input>` elements in `internal/bcc/dashboard.go`
+4. [x] SOURCE INVENTORY — 10 static `<select>` elements in `internal/bcc/dashboard.go`
 5. [ ] TODO — inventory links
 6. [ ] TODO — inventory badges
 7. [ ] TODO — inventory dialogs
@@ -178,3 +178,9 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Original BAFT logo not yet verified; no substitute logo.
 - CI and browser QA required; no merge/deploy without explicit approval.
 - First actual dashboard harmonization commit: 914a869.
+
+## Execution ledger — numbered progress
+
+- Steps **2–4/150**: static source inventory counted from live branch: 31 button tags, 29 input tags, 10 select tags. These are **source-inventory only**, not interaction, browser, accessibility or security PASS. Dynamic controls still need step 8.
+- Current phase: **150-step audit, inventory subphase**; 50-step welcome/login acceptance remains open (logo, contrast, browser and auth review).
+- Report every subsequent action with exact phase and step number; do not infer completion from commits alone.
