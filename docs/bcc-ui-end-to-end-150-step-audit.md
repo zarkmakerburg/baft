@@ -27,7 +27,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 20. [ ] IMPLEMENTED + CHROME DOM SMOKE — responsive inline SVG network illustration implemented (commit 885b0345); Chrome headless rendered DOM confirmed welcome, CTA, SVG, RTL and initially hidden dashboard. Full interaction, visual viewport and JS console acceptance pending.
 21. [ ] IMPLEMENTED IN V3 PREVIEW — three bilingual responsive feature cards (Topology, Status/sample data, Management/preview) added to Welcome in commit 6d3aaebe. No false live status; browser/keyboard/mobile acceptance pending at step 25.
 22. [ ] IMPLEMENTED IN V3 PREVIEW — guarded entry CTA against duplicate activation, visible focus style, dashboard heading focus handoff and scroll-to-start (commit cd6d39f5). Browser keyboard/click acceptance pending at step 25.
-23. [ ] TODO — anchor focus
+23. [ ] IMPLEMENTED IN V3 PREVIEW — entry CTA targets `main h1` explicitly, guards absent heading, and adds visible focus outline (cb605572). Browser keyboard/mobile acceptance pending step 25.
 24. [ ] TODO — sign-in heading
 25. [ ] TODO — preview gate
 26. [ ] TODO — auth routes
