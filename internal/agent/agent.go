@@ -473,6 +473,14 @@ func (a *Agent) update(ctx context.Context, version string) (string, error) {
 			return "", err
 		}
 	}
+	// Prepare the complete rollback set before replacing even one binary.
+	// A backup failure must never leave a partially updated installation.
+	for _, n := range names {
+		target := filepath.Join(a.cfg.BinDir, n)
+		if err := copyFile(target, target+".prev", 0o755); err != nil {
+			return "", fmt.Errorf("rollback backup %s: %w", n, err)
+		}
+	}
 	var swapped []string
 	rollback := func() {
 		for _, n := range swapped {
@@ -482,10 +490,6 @@ func (a *Agent) update(ctx context.Context, version string) (string, error) {
 	}
 	for _, n := range names {
 		target := filepath.Join(a.cfg.BinDir, n)
-		if err := copyFile(target, target+".prev", 0o755); err != nil && !errors.Is(err, os.ErrNotExist) {
-			rollback()
-			return "", err
-		}
 		if err := os.Rename(filepath.Join(a.cfg.BinDir, "."+n+".new"), target); err != nil {
 			rollback()
 			return "", err
