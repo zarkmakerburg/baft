@@ -10,7 +10,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 5. [ ] TODO — inventory links
 6. [ ] TODO — inventory badges
 7. [ ] TODO — inventory dialogs
-8. [ ] TODO — inventory dynamic controls
+8. [x] SOURCE INVENTORY — 8 dynamic `<button>` templates with `onclick` in `internal/bcc/dashboard.go`; verify generated DOM and permissions separately
 9. [ ] TODO — detect dead controls
 10. [ ] TODO — navigation map
 11. [ ] TODO — color tokens
@@ -184,3 +184,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Steps **2–4/150**: static source inventory counted from live branch: 31 button tags, 29 input tags, 10 select tags. These are **source-inventory only**, not interaction, browser, accessibility or security PASS. Dynamic controls still need step 8.
 - Current phase: **150-step audit, inventory subphase**; 50-step welcome/login acceptance remains open (logo, contrast, browser and auth review).
 - Report every subsequent action with exact phase and step number; do not infer completion from commits alone.
+
+- Step **8/150**: source inspection found 8 dynamic button templates in dashboard rendering (node token rotation/revoke, tunnel deploy/plan clear, drift, certificate rotation, decommission/cancel). This is a source inventory, **not** a browser/permission PASS. Counts include repeated decommission templates and exclude any DOM created outside button templates.
