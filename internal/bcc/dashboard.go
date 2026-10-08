@@ -18,6 +18,22 @@ table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.kpi{background:#0b1019;border-radius:12px;padding:12px}.kpi b{display:block;font-size:20px;margin-top:4px}
 canvas{width:100%;height:240px;background:#0b1019;border-radius:12px;margin-top:12px}
 @media(max-width:820px){.grid,.kpis{grid-template-columns:1fr 1fr}.wrap{padding:12px}.tablewrap{overflow:auto}}@media(max-width:520px){.grid,.kpis{grid-template-columns:1fr}}
+
+/* BCC V3 visual harmonization foundation — presentation-only; no API or auth changes. */
+:root{--bcc-bg:#090c12;--bcc-panel:#141a24;--bcc-field:#0c121c;--bcc-line:#34343b;--bcc-text:#f1eee8;--bcc-muted:#a4a8b1;--bcc-gold:#d5b578;--bcc-focus:#e8c887}
+body{background:radial-gradient(ellipse at 70% 0%,#202b38,var(--bcc-bg) 54%);color:var(--bcc-text);line-height:1.55}
+.card{background:var(--bcc-panel);border-color:var(--bcc-line);border-radius:16px;box-shadow:0 8px 28px #0002}
+.muted{color:var(--bcc-muted)}.kpi{background:var(--bcc-field);border:1px solid var(--bcc-line)}
+button{min-height:40px;border-radius:10px;background:var(--bcc-gold);color:#18130d;transition:filter .15s ease}button.alt{background:#253044;color:var(--bcc-text);border:1px solid var(--bcc-line)}
+button:hover:not(:disabled){filter:brightness(1.1)}button:disabled{opacity:.52;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--bcc-focus);outline-offset:3px}
+.grid input,.grid select,select,textarea{background:var(--bcc-field);border:1px solid var(--bcc-line);color:var(--bcc-text);min-height:40px}
+input::placeholder,textarea::placeholder{color:var(--bcc-muted);opacity:.9}
+table{width:100%}th{color:var(--bcc-muted);font-weight:650}th,td{border-color:var(--bcc-line)}
+.tablewrap{max-width:100%;overflow-x:auto}details>summary{cursor:pointer}
+@media(max-width:820px){.top{flex-wrap:wrap}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.actions{flex-wrap:wrap}}
+@media(max-width:520px){.grid,.kpis{grid-template-columns:minmax(0,1fr)}.card{padding:14px}.wrap{padding:12px}button{max-width:100%}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 </style></head>
 <body><div class="wrap">
 <div class="top"><div><h1>BAFT Command Center</h1><div class="muted">Operational monitoring, finance & hardening · Step 5.4</div></div><button class="alt" onclick="setToken()">Admin Token</button></div>
