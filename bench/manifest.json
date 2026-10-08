@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "description": "BAFT Stage E benchmark foundation. Initial scenarios are informational and do not change production acceptance gates.",
+  "scenarios": [
+    {
+      "id": "B01",
+      "name": "Record-shape CPU and allocation baseline (formal 60s x5)",
+      "kind": "micro",
+      "command": [
+        "go",
+        "test",
+        "./internal/recordshape",
+        "-run",
+        "^$",
+        "-bench",
+        ".",
+        "-benchmem",
+        "-benchtime=60s",
+        "-count=5"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 1800,
+      "informational": true
+    },
+    {
+      "id": "B02",
+      "name": "Active-flow carrier replacement survival",
+      "kind": "recovery",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestRuntimeCarrierReplacementPreservesActiveFlow$",
+        "-count=20",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
+    },
+    {
+      "id": "B03",
+      "name": "Multi-flow replacement duplicate/loss regression",
+      "kind": "recovery",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestMultiFlowCarrierReplacementNoDuplicateOrLoss$",
+        "-count=10",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
+    },
+    {
+      "id": "B04",
+      "name": "Topology x ECRL authority-isolation matrix",
+      "kind": "correctness-stress",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "TestTopologyPrepareRecoveryCommitAuthorityIsolation|TestTopologyCommitDuringRecoveryPrepared|TestTopologyCommitDuringCommitUncertainty|TestTopologyCommitDuringFinalizationUncertainty|TestTopologyMutationDuringReplayOutstanding|TestTopologyPermutationDuringRecoveryNoChurn|TestTopologyAddUnrelatedNodeDuringRecovery|TestTopologyRemoveUnrelatedNodeDuringRecovery|TestStaleTopologyCommitCannotAffectRecovery|TestStaleRecoveryCallbackCannotAffectTopology",
+        "-count=5",
+        "-timeout",
+        "30m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 2100,
+      "informational": true
+    },
+    {
+      "id": "B05",
+      "name": "Runtime pair FD/resource lifetime soak",
+      "kind": "resource",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestRecoveryRuntimePairDoesNotLeakResources$",
+        "-count=5",
+        "-timeout",
+        "20m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 1500,
+      "informational": true
+    },
+    {
+      "id": "B06",
+      "name": "Loopback multi-flow BAFT throughput measurement",
+      "kind": "performance",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureMultiFlowThroughput$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
+    },
+    {
+      "id": "B07",
+      "name": "Carrier-cut recovery statistics at 64-flow shard ceiling",
+      "kind": "recovery-performance",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureRecovery$",
+        "-count=25",
+        "-timeout",
+        "30m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 2100,
+      "informational": true
+    },
+    {
+      "id": "B08",
+      "name": "Direct TCP loopback throughput control",
+      "kind": "control-performance",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureDirectTCPThroughput$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
+    },
+    {
+      "id": "B09",
+      "name": "Test-only frame-coalesced BAFT throughput A/B",
+      "kind": "diagnostic-performance",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureFrameCoalescedThroughput$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
+    },
+    {
+      "id": "B10",
+      "name": "BAFT Session over raw loopback TCP",
+      "kind": "cost-decomposition",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasurePlainTCPSessionThroughput$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
+    },
+    {
+      "id": "B11",
+      "name": "protocol.Decode 32KiB allocation cost",
+      "kind": "cost-decomposition",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureProtocolDecodeAllocation$",
+        "-count=5",
+        "-timeout",
+        "10m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 900,
+      "informational": true
+    },
+    {
+      "id": "B12",
+      "name": "WAN-emulated BAFT throughput and TTFB",
+      "kind": "wan-emulation",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureMultiFlowThroughput$",
+        "-count=3",
+        "-timeout",
+        "15m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 1200,
+      "informational": true
+    },
+    {
+      "id": "B13",
+      "name": "WAN-emulated carrier-cut recovery",
+      "kind": "wan-emulation",
+      "command": [
+        "go",
+        "test",
+        "./tests/integration",
+        "-run",
+        "^TestStageEMeasureRecovery$",
+        "-count=5",
+        "-timeout",
+        "20m",
+        "-v"
+      ],
+      "repetitions": 1,
+      "timeout_seconds": 1500,
+      "informational": true
+    }
+  ]
+}
