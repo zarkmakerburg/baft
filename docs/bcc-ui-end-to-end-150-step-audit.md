@@ -20,7 +20,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 15. [ ] SOURCE AUDIT — backend dashboard defines box-shadow:0 8px 28px #0002 and mixes hard-coded borders with --bcc-line; V3 preview has no explicit box-shadow, uses --line borders. Focus outlines differ (--bcc-focus vs --gold); no explicit z-index in either inspected CSS. Shared elevation tokens and overlay/browser acceptance pending.
 
 ## Welcome and login
-16. [ ] TODO — welcome layout
+16. [ ] SOURCE AUDIT — V3 preview begins at topology overview (`<main><h1>`) with header/nav and local JSON demo upload; no distinct Welcome/Login screen identified in inspected preview markup. Operational dashboard begins at Command Center view; welcome/login composition and responsive/browser acceptance are unverified.
 17. [ ] TODO — original logo asset
 18. [ ] TODO — logo fallback
 19. [ ] TODO — hero readability
@@ -201,3 +201,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Step **14/150**: inspected CSS radius rules in backend dashboard and V3 preview. Button 10px is aligned, card 16px vs 15px diverges, and the preview does not expose a complete form/badge radius system in inspected CSS. **SOURCE GAP / NOT ACCEPTED**. Next: standardize control/card/small-card/pill radius tokens and validate generated dialogs/forms and responsive states in browser.
 
 - Step **15/150**: inspected shadow, border, focus and stacking CSS in operational dashboard and V3 preview. **SOURCE GAP / NOT ACCEPTED**: visual elevation language diverges; lack of explicit z-index alone does not prove overlay failure. Proposed elevation tiers: flat/bordered, raised, overlay; check dark/light contrast, focus visibility and stacking in rendered browser before acceptance. No production changes.
+
+- Step **16/150**: inspected V3 preview layout source and operational dashboard structure. V3 is a standalone dashboard preview (header, navigation, main topology overview, demo JSON snapshot), not evidence of a complete welcome/login flow. **SOURCE GAP / NOT ACCEPTED**. Next: explicitly define Welcome/Login entry states, hierarchy, brand presentation, CTA and safe transition into authenticated dashboard; test mobile/desktop and accessibility before PASS.
