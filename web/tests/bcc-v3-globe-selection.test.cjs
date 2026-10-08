@@ -16,3 +16,5 @@ test('Escape clears pin and restores home',()=>{
 test('new topology clears previous pin',()=>{
  assert.match(js,/selected=null;hovered=null;pinned=false;focus=null;home=null/);
 });
+
+test('hover inspects without stealing camera focus',()=>{assert.match(js,/if\(hovered&&!pinned&&selected!==hovered\)inspect\(hovered,false\)/);});
