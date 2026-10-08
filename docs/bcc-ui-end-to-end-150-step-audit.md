@@ -34,7 +34,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 27. [ ] PREVIEW ONLY — one-time in-memory demo entry guard prevents repeated transition (56a5ede1). This is NOT authentication/session security; real BCC session lifecycle and logout/security checks remain pending.
 28. [ ] PREVIEW-ONLY BOUNDARY — read-only BCC adapter uses GET, same-origin credentials, no body, no-referrer, no token persistence (039d0992). This is NOT a CSRF security test or proof of server-side enforcement; audit all real mutating BCC routes, anti-CSRF tokens and Origin checks before acceptance.
 29. [ ] PREVIEW ONLY — client-side 3-second minimum interval between BCC snapshot attempts, with existing in-flight button disable (99ca4a10). Not a security rate limit: server-side auth/IP/user throttling, 429 responses and distributed abuse handling still require audit and tests.
-30. [ ] TODO — login integration gate
+30. [ ] BLOCKED / NOT ACCEPTED — login integration gate: preview has no real BCC authentication, server-side CSRF and rate-limit checks not verified, session lifecycle not tested, and step 25 interactive/mobile/browser gate remains partial. Do not label PASS or deploy. Evidence required: real auth route inventory, unauthorized/expired session tests, CSRF negative tests, 429/rate-limit tests, keyboard/FA-EN/light-dark/mobile browser matrix.
 
 ## Localization and RTL
 31. [ ] TODO — Persian strings
