@@ -3,7 +3,7 @@
 (function(){
 'use strict';
 const R=Math.PI/180, TWO=Math.PI*2;
-const examples=[
+let examples=[
 {id:'ir',name:'Tehran (demo)',lat:35.6892,lon:51.3890},
 {id:'de',name:'Frankfurt (demo)',lat:50.1109,lon:8.6821},
 {id:'nl',name:'Amsterdam (demo)',lat:52.3676,lon:4.9041},
@@ -11,10 +11,11 @@ const examples=[
 {id:'tr',name:'Istanbul (demo)',lat:41.0082,lon:28.9784},
 {id:'ca',name:'Toronto (demo)',lat:43.6532,lon:-79.3832}
 ];
-const links=examples.slice(1).map((n,i)=>({id:'demo-'+n.id,source:'ir',destination:n.id,status:i===3?'down':'unknown',rttMs:null,upBps:null,downBps:null,updatedAt:null}));
+let links=examples.slice(1).map((n,i)=>({id:'demo-'+n.id,source:'ir',destination:n.id,status:i===3?'down':'unknown',rttMs:null,upBps:null,downBps:null,updatedAt:null}));
 const canvas=document.getElementById('baftGlobe');if(!canvas)return;
 const ctx=canvas.getContext('2d');if(!ctx)return;
 const label=document.getElementById('globeSelection');
+window.addEventListener('baft:topology',e=>{const d=e.detail;if(!d||!Array.isArray(d.nodes)||!Array.isArray(d.links))return;examples=d.nodes;links=d.links;selected=null;hovered=null;if(label)label.textContent='Topology snapshot loaded · '+links.length+' connections';if(pause)draw(0)});
 const pause=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 let w=1,h=1,rotLon=25*R,rotLat=24*R,zoom=1,selected=null,hovered=null,drag=false,lastX=0,lastY=0,anim=0,focus=null,focusStart=0,focusDuration=900;
 function xyz(lat,lon){let a=lat*R,b=lon*R;return [Math.cos(a)*Math.sin(b),Math.sin(a),Math.cos(a)*Math.cos(b)]}
@@ -38,7 +39,7 @@ ctx.font='12px system-ui';ctx.textAlign='center';for(const n of examples){let v=
 if(!pause)requestAnimationFrame(draw)
 }
 function hit(x,y){let best=null,dist=14;for(const l of links){let a=examples.find(n=>n.id===l.source),b=examples.find(n=>n.id===l.destination),prev=arc(a,b,0);for(let i=1;i<=55;i++){let next=arc(a,b,i/55),d=pointDist(x,y,prev,next);if(d<dist){dist=d;best=l.id}prev=next}}return best}
-function inspect(id,autoFocus=false){selected=id;const l=links.find(x=>x.id===id);if(!l)return;const a=examples.find(n=>n.id===l.source),b=examples.find(n=>n.id===l.destination);if(label)label.textContent=a.name+' → '+b.name+' | '+l.status.toUpperCase()+' | RTT: unknown | Up/Down: unknown | Updated: never (demo)';if(autoFocus&&!pause){const targetLon=Math.atan2(Math.sin((a.lon+b.lon)*R/2),Math.cos((a.lon+b.lon)*R/2));let delta=targetLon-rotLon;while(delta>Math.PI)delta-=TWO;while(delta< -Math.PI)delta+=TWO;focus={fromLon:rotLon,toLon:rotLon+delta,fromLat:rotLat,toLat:Math.max(-.7,Math.min(.7,(a.lat+b.lat)*R/2*.5)),fromZoom:zoom,toZoom:1.15};focusStart=performance.now();}}
+function inspect(id,autoFocus=false){selected=id;const l=links.find(x=>x.id===id);if(!l)return;const a=examples.find(n=>n.id===l.source),b=examples.find(n=>n.id===l.destination);if(label)label.textContent=a.name+' → '+b.name+' | '+l.status.toUpperCase()+' | RTT: '+(l.rttMs==null?'unknown':l.rttMs+' ms')+' | Up: '+(l.upBps==null?'unknown':Math.round(l.upBps/1000)+' kbps')+' | Down: '+(l.downBps==null?'unknown':Math.round(l.downBps/1000)+' kbps')+' | Updated: '+(l.updatedAt||'never');if(autoFocus&&!pause){const targetLon=Math.atan2(Math.sin((a.lon+b.lon)*R/2),Math.cos((a.lon+b.lon)*R/2));let delta=targetLon-rotLon;while(delta>Math.PI)delta-=TWO;while(delta< -Math.PI)delta+=TWO;focus={fromLon:rotLon,toLon:rotLon+delta,fromLat:rotLat,toLat:Math.max(-.7,Math.min(.7,(a.lat+b.lat)*R/2*.5)),fromZoom:zoom,toZoom:1.15};focusStart=performance.now();}}
 canvas.addEventListener('pointerdown',e=>{drag=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture(e.pointerId)});
 canvas.addEventListener('pointermove',e=>{if(drag){focus=null;rotLon+=(e.clientX-lastX)*.006;rotLat=Math.max(-1.1,Math.min(1.1,rotLat+(e.clientY-lastY)*.006));lastX=e.clientX;lastY=e.clientY;if(pause)draw(0)}else{let q=coords(e);hovered=hit(q.x,q.y);canvas.style.cursor=hovered?'pointer':'grab';if(hovered&&selected!==hovered)inspect(hovered,true);if(pause)draw(0)}});
 canvas.addEventListener('pointerup',e=>{drag=false;const q=coords(e),id=hit(q.x,q.y);if(id)inspect(id,true)});
