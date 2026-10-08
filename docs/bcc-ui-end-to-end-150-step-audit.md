@@ -81,18 +81,18 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 68. [x] PREVIEW-ONLY — available snapshot RTT shown in ms, not independently measured health latency. Commit fbe983f1.
 69. [x] PREVIEW-ONLY — dedicated column; dash until metric exists. Commit fbe983f1.
 70. [x] PREVIEW-ONLY — snapshot updatedAt formatted per language; Step70 Chrome 8/8 smoke PASS. Commit fbe983f1.
-71. [ ] TODO — sessions
-72. [ ] TODO — routes
-73. [ ] TODO — history selector
-74. [ ] TODO — history chart
-75. [ ] TODO — history legend
+71. [x] PREVIEW-ONLY — sessions KPI placeholder (no source metric). Commit 679a2541.
+72. [x] PREVIEW-ONLY — routes KPI placeholder (no source metric). Commit 679a2541.
+73. [x] PREVIEW-ONLY — 1h/24h/7d range selector. Commit 679a2541.
+74. [x] PREVIEW-ONLY — accessible SVG empty-state chart; no invented history. Commit 679a2541.
+75. [x] PREVIEW-ONLY — bilingual no-data legend. Commit 679a2541.
 
 ## Nodes and SSH
-76. [ ] TODO — node ID
-77. [ ] TODO — alias
-78. [ ] TODO — management address
-79. [ ] TODO — IPv4
-80. [ ] TODO — IPv6
+76. [x] PREVIEW-ONLY — safe textContent node ID from validated snapshot. Commit 679a2541.
+77. [x] PREVIEW-ONLY — safe textContent node name/alias from validated snapshot. Commit 679a2541.
+78. [x] PREVIEW-ONLY — management address column; dash until trusted source. Commit 679a2541.
+79. [x] PREVIEW-ONLY — IPv4 column; dash until trusted source. Commit 679a2541.
+80. [x] PREVIEW-ONLY — IPv6 column; dash until trusted source; Chrome Step80 8/8 smoke PASS. Commit 679a2541.
 81. [ ] TODO — role
 82. [ ] TODO — public key
 83. [ ] TODO — agent token
