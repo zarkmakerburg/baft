@@ -13,7 +13,7 @@ test('all localization keys are present in both languages',()=>{
  const keys=[...html.matchAll(/data-i="([^"]+)"/g)].map(m=>m[1]);
  const match=html.match(/const tr=\{\s*fa:\{([\s\S]*?)\},\s*en:\{([\s\S]*?)\}\};/);
  assert.ok(match,'Missing bilingual translation dictionary');
- for(const [index,language] of [[1,'Persian'],[2,'English']]){
+ for(const [index,language] of [[1,'Persian'],[2,'English']){
   const found=new Set([...match[index].matchAll(/(?:^|,)\s*([a-zA-Z][a-zA-Z0-9]*):/g)].map(m=>m[1]));
   for(const key of keys)assert.ok(found.has(key),'Missing '+language+': '+key);
  }
