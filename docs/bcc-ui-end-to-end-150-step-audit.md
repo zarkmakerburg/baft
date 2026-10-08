@@ -22,7 +22,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 ## Welcome and login
 16. [ ] IMPLEMENTED IN V3 PREVIEW — separate bilingual Welcome view, explicit demo-only entry CTA, focus handoff and responsive styling added in commit 7d75ff9a; browser/mobile/keyboard acceptance still pending. This is NOT BCC authentication.
 17. [ ] PARTIAL IMPLEMENTATION — responsive accessible BAFT monogram placeholder implemented in V3 Welcome (commit b16407b3); official owner-approved GoldApp logo asset still missing and must not be invented. Browser acceptance pending.
-18. [ ] TODO — logo fallback
+18. [ ] IMPLEMENTED IN V3 PREVIEW — `setApprovedWelcomeLogo(assetUrl)` validates a relative image path, loads owner-approved logo, swaps on success and preserves accessible BAFT monogram on image error (commit 88e2110a). Needs actual approved asset and browser tests before PASS.
 19. [ ] TODO — hero readability
 20. [ ] TODO — illustration
 21. [ ] TODO — feature cards
@@ -207,3 +207,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Implementation follow-up: unlike prior source-only audits, step 16 now has an actual UI code change in `web/bcc-command-center-v3-preview.html` (commit `7d75ff9a`). This is demo entry only; no auth integration, no production deployment. Browser verification required before marking [x].
 
 - Step **17/150**: actual Welcome brand placeholder implemented; official GoldApp logo not substituted without verified asset. Browser checks scheduled at step 20; previous headless attempts yielded no verified PASS.
+
+- Step **18/150**: implemented error-resilient official-logo opt-in and monogram fallback in preview. No real asset path set, no auth or production change; browser verification due step 20.
