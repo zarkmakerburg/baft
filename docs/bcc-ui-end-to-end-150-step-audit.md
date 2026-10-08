@@ -32,7 +32,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 25. [ ] PARTIAL / NOT ACCEPTED — Chrome headless DOM smoke on authorized Mac: page rendered, Persian/RTL, welcome context, hidden preview, dashboard heading present. No interactive keyboard/click, FA/EN toggle, light/dark, mobile viewport or console-error verification yet; do not claim browser PASS. Further browser gate required.
 26. [ ] PREVIEW ONLY — explicitly associated demo entry button with its no-authentication disclaimer via aria-describedby (6138f099). No actual BCC auth route implemented or accepted; production auth route review remains pending.
 27. [ ] PREVIEW ONLY — one-time in-memory demo entry guard prevents repeated transition (56a5ede1). This is NOT authentication/session security; real BCC session lifecycle and logout/security checks remain pending.
-28. [ ] TODO — CSRF safety
+28. [ ] PREVIEW-ONLY BOUNDARY — read-only BCC adapter uses GET, same-origin credentials, no body, no-referrer, no token persistence (039d0992). This is NOT a CSRF security test or proof of server-side enforcement; audit all real mutating BCC routes, anti-CSRF tokens and Origin checks before acceptance.
 29. [ ] TODO — rate limits
 30. [ ] TODO — login integration gate
 
