@@ -25,7 +25,7 @@ function arc(a,b,t){const va=xyz(a.lat,a.lon),vb=xyz(b.lat,b.lon),dot=Math.max(-
 function coords(e){const b=canvas.getBoundingClientRect();return {x:(e.clientX-b.left)*w/b.width,y:(e.clientY-b.top)*h/b.height}}
 function pointDist(x,y,a,b){let dx=b.x-a.x,dy=b.y-a.y,t=Math.max(0,Math.min(1,((x-a.x)*dx+(y-a.y)*dy)/(dx*dx+dy*dy||1)));return Math.hypot(x-a.x-t*dx,y-a.y-t*dy)}
 function draw(time){
-if(focus){const t=Math.min(1,(time-focusStart)/focusDuration),ease=t*t*(3-2*t);rotLon=focus.fromLon+(focus.toLon-focus.fromLon)*ease;rotLat=focus.fromLat+(focus.toLat-focus.fromLat)*ease;zoom=focus.fromZoom+(focus.toZoom-focus.fromZoom)*ease;if(t>=1)focus=null;}
+if(focus){const t=Math.max(0,Math.min(1,(time-focusStart)/focusDuration)),ease=t*t*(3-2*t);rotLon=focus.fromLon+(focus.toLon-focus.fromLon)*ease;rotLat=focus.fromLat+(focus.toLat-focus.fromLat)*ease;zoom=focus.fromZoom+(focus.toZoom-focus.fromZoom)*ease;if(t>=1)focus=null;}
 ctx.clearRect(0,0,w,h);const p=project(0,0),radius=p.radius;
 let g=ctx.createRadialGradient(w*.43,h*.36,radius*.15,w/2,h/2,radius*1.2);g.addColorStop(0,'#385b71');g.addColorStop(.65,'#172a3b');g.addColorStop(1,'#07101a');
 ctx.beginPath();ctx.arc(w/2,h/2,radius,0,TWO);ctx.fillStyle=g;ctx.fill();ctx.strokeStyle='rgba(209,176,113,.35)';ctx.lineWidth=2;ctx.stroke();
