@@ -18,9 +18,9 @@ function parse(raw){
  for(const l of data.links){
  if(!l||typeof l.id!=='string'||!/^[\w-]{1,64}$/.test(l.id)||linkIds.has(l.id)||!ids.has(l.source)||!ids.has(l.destination)||l.source===l.destination||!['healthy','degraded','down','unknown'].includes(l.status)||!optionalNumber(l.rttMs)||!optionalNumber(l.upBps)||!optionalNumber(l.downBps))throw Error('Invalid connection');
  linkIds.add(l.id);
- const ts=typeof l.updatedAt==='string'?Date.parse(l.updatedAt):NaN;
- const fresh=Number.isFinite(ts)&&ts<=now+30000&&now-ts<=MAX_AGE_MS;
- links.push({id:l.id,source:l.source,destination:l.destination,status:fresh?l.status:'unknown',rttMs:fresh?l.rttMs:null,upBps:fresh?l.upBps:null,downBps:fresh?l.downBps:null,updatedAt:Number.isFinite(ts)?new Date(ts).toISOString():null});
+ const ts=typeof l.updatedAt==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(l.updatedAt)?Date.parse(l.updatedAt):NaN;
+ const fresh=Number.isFinite(ts)&&ts<=now&&now-ts<=MAX_AGE_MS;
+ links.push({id:l.id,source:l.source,destination:l.destination,status:fresh?l.status:'unknown',rttMs:fresh&&l.status!=='unknown'?(l.rttMs??null):null,upBps:fresh&&l.status!=='unknown'?(l.upBps??null):null,downBps:fresh&&l.status!=='unknown'?(l.downBps??null):null,updatedAt:Number.isFinite(ts)?new Date(ts).toISOString():null});
  }
  return {nodes,links};
 }
