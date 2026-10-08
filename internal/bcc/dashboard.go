@@ -18,8 +18,31 @@ table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.kpi{background:#0b1019;border-radius:12px;padding:12px}.kpi b{display:block;font-size:20px;margin-top:4px}
 canvas{width:100%;height:240px;background:#0b1019;border-radius:12px;margin-top:12px}
 @media(max-width:820px){.grid,.kpis{grid-template-columns:1fr 1fr}.wrap{padding:12px}.tablewrap{overflow:auto}}@media(max-width:520px){.grid,.kpis{grid-template-columns:1fr}}
+
+/* BCC GoldApp UI v1: Swiss dark/gold navigation; existing APIs and forms unchanged. */
+:root{--gold:#e8b54a;--surface:#101724;--line:#2b3648}
+body{background:linear-gradient(145deg,#080c13,#111b2d 55%,#080c13);color:#f4f6fa}
+.wrap{max-width:1520px;padding:28px 28px 60px 260px}
+.top h1{letter-spacing:-.035em;font-size:clamp(22px,2.2vw,30px)}
+.card{background:linear-gradient(150deg,#141e2e,#0e1521);border-color:var(--line);box-shadow:0 12px 38px #0002}
+.card:focus-within{border-color:#987638}
+button{transition:filter .15s,transform .15s}button:hover{filter:brightness(1.1)}button:active{transform:translateY(1px)}
+input:focus-visible,select:focus-visible,button:focus-visible,.bcc-nav-btn:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.bcc-sidebar{position:fixed;inset:0 auto 0 0;width:216px;background:#0b101a;border-right:1px solid #283245;padding:24px 14px;z-index:30;overflow-y:auto}
+.bcc-brand{display:flex;align-items:center;gap:12px;padding:8px 12px 24px;border-bottom:1px solid #273246;margin-bottom:16px}
+.bcc-brand-mark{display:grid;place-items:center;width:38px;height:38px;border:1px solid #a98237;border-radius:13px;background:linear-gradient(145deg,#4b3818,#1c2230);color:#f4c65b;font-weight:900}
+.bcc-brand strong{display:block;font-size:16px;letter-spacing:.02em}.bcc-brand small{display:block;color:#8f9db0;font-size:11px;margin-top:3px}
+.bcc-nav-btn{display:flex;width:100%;align-items:center;gap:10px;text-align:left;background:transparent;color:#b8c5d7;border:1px solid transparent;padding:12px;border-radius:10px;font-size:13px;font-weight:600;margin:3px 0;cursor:pointer}
+.bcc-nav-btn:hover{background:#1c2637;color:white}.bcc-nav-btn[aria-current="page"]{background:#2c281f;color:#ffd785;border-color:#6c5630}
+.bcc-nav-icon{width:22px;text-align:center;font-size:17px}
+.bcc-section-title{margin:18px 0 4px;font-size:12px;color:#d4ac60;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.bcc-section-subtitle{color:#92a0b3;font-size:13px;margin:4px 0 18px}
+.bcc-hidden{display:none!important}
+.bcc-sidebar-foot{padding:20px 12px;color:#8492a5;font-size:11px;line-height:1.7}
+@media(max-width:900px){.bcc-sidebar{position:static;width:auto;border-right:0;border-bottom:1px solid #283245;padding:10px}.bcc-brand{padding:6px 8px 12px;margin-bottom:8px}.bcc-nav{display:flex;gap:5px;overflow-x:auto}.bcc-nav-btn{min-width:max-content;padding:9px}.bcc-sidebar-foot{display:none}.wrap{padding:16px;max-width:100%}}
+@media(max-width:520px){.bcc-nav-btn{font-size:12px}.bcc-nav-icon{font-size:14px}.card{padding:14px}.top{flex-wrap:wrap}}
 </style></head>
-<body><div class="wrap">
+<body><aside class="bcc-sidebar" aria-label="BCC sections"><div class="bcc-brand"><span class="bcc-brand-mark">G</span><div><strong>GoldApp BCC</strong><small>BAFT Command Center</small></div></div><nav class="bcc-nav" id="bccNav" aria-label="Main navigation"></nav><div class="bcc-sidebar-foot">CONTROL CENTER<br>Dark / Gold Edition<br>Existing operational controls preserved</div></aside><div class="wrap">
 <div class="top"><div><h1>BAFT Command Center</h1><div class="muted">Operational monitoring, finance & hardening · Step 5.4</div></div><button class="alt" onclick="setToken()">Admin Token</button></div>
 
 <div class="card">
@@ -177,4 +200,31 @@ function stopPolling(){if(fastPollTimer!==null){clearInterval(fastPollTimer);fas
 function startPolling(){stopPolling();if(document.hidden)return;fastPollTimer=setInterval(loadFast,fastPollMS);slowPollTimer=setInterval(loadSlow,slowPollMS)}
 document.addEventListener('visibilitychange',()=>{if(document.hidden){stopPolling();return}loadFast();loadSlow();startPolling()});
 initReportDates();loadAll();startPolling();
+</script><script>
+(function(){
+const sections=[
+["overview","Overview","◈",[0,1,5]],
+["servers","Servers","▣",[2,3,10,11]],
+["tunnels","Tunnels","⇄",[4,6,8,9]],
+["monitoring","Monitoring","◷",[1,5,10]],
+["security","Security","◇",[7,8,12]],
+["ssl","SSL & Access","⬡",[3,8]],
+["backups","Backups","▤",[]],
+["updates","Updates","↻",[]],
+["settings","Settings","⚙",[2,13,14]]
+];
+const cards=Array.from(document.querySelectorAll('.wrap > .card'));
+const nav=document.getElementById('bccNav');
+const title=document.createElement('h2');title.id='bccSectionTitle';title.className='bcc-section-title';
+const sub=document.createElement('p');sub.id='bccSectionSubtitle';sub.className='bcc-section-subtitle';
+const header=document.querySelector('.wrap > .top');
+if(header){header.insertAdjacentElement('afterend',sub);header.insertAdjacentElement('afterend',title)}
+const messages={backups:'Backup and restore controls are not exposed on this page. Use the approved backup workflow; no action has been executed.',updates:'Upgrade and rollback require an approved change plan. No update has been initiated.'};
+const empty=document.createElement('div');empty.className='card bcc-hidden';empty.id='bccEmpty';empty.setAttribute('role','status');
+if(sub)sub.insertAdjacentElement('afterend',empty);
+sections.forEach(([id,label,icon])=>{const b=document.createElement('button');b.type='button';b.className='bcc-nav-btn';b.dataset.section=id;b.innerHTML='<span class="bcc-nav-icon" aria-hidden="true">'+icon+'</span><span>'+label+'</span>';b.addEventListener('click',()=>{location.hash='bcc-'+id;show(id)});nav.appendChild(b)});
+function show(id){let section=sections.find(s=>s[0]===id)||sections[0];const active=new Set(section[3]);cards.forEach((card,i)=>card.classList.toggle('bcc-hidden',!active.has(i)));nav.querySelectorAll('button').forEach(b=>{if(b.dataset.section===section[0])b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});title.textContent=section[1];sub.textContent=section[0]==='overview'?'Live health, traffic and operational overview':'BAFT / '+section[1];empty.textContent=messages[section[0]]||'';empty.classList.toggle('bcc-hidden',!messages[section[0]])}
+window.addEventListener('hashchange',()=>show(location.hash.replace('#bcc-','')));
+show(location.hash.replace('#bcc-',''));
+})();
 </script></body></html>`
