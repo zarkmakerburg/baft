@@ -17,7 +17,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 12. [ ] SOURCE AUDIT — dashboard and V3 preview use divergent hard-coded spacing values (dashboard 24/18/12/10/6px; preview 26/25/22/20/18/15/14/13/12/8/7px). Breakpoints differ: dashboard 820/520px, preview 950/550px. Shared spacing scale and responsive acceptance pending.
 13. [ ] SOURCE AUDIT — backend dashboard uses Inter/system-ui with explicit 11/13/20/24px sizes, line-height 1.55, html lang=en; V3 preview uses Inter/Tahoma/system-ui with explicit 9–26px sizes, line-height 1.8, initial fa/RTL and language-direction switching. Shared typography scale, Persian fallback and browser zoom/readability acceptance pending.
 14. [ ] SOURCE AUDIT — backend dashboard: card 16px, button/form 10px, KPI/canvas 12px, badge pill 999px; V3 preview: card 15px, button/nav 10px. No shared semantic radius tokens; form/dialog/badge browser verification pending.
-15. [ ] TODO — shadow tokens
+15. [ ] SOURCE AUDIT — backend dashboard defines box-shadow:0 8px 28px #0002 and mixes hard-coded borders with --bcc-line; V3 preview has no explicit box-shadow, uses --line borders. Focus outlines differ (--bcc-focus vs --gold); no explicit z-index in either inspected CSS. Shared elevation tokens and overlay/browser acceptance pending.
 
 ## Welcome and login
 16. [ ] TODO — welcome layout
@@ -199,3 +199,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Step **13/150**: source typography inventory completed for backend dashboard and V3 preview. 9px/10px labels in preview require legibility and zoom checks; avoid declaring WCAG PASS from CSS inspection. **SOURCE GAP / NOT ACCEPTED**. Proposed next gate: semantic text-size tokens, minimum readable metadata, RTL/LTR language-specific line-height and 200% zoom/browser tests.
 
 - Step **14/150**: inspected CSS radius rules in backend dashboard and V3 preview. Button 10px is aligned, card 16px vs 15px diverges, and the preview does not expose a complete form/badge radius system in inspected CSS. **SOURCE GAP / NOT ACCEPTED**. Next: standardize control/card/small-card/pill radius tokens and validate generated dialogs/forms and responsive states in browser.
+
+- Step **15/150**: inspected shadow, border, focus and stacking CSS in operational dashboard and V3 preview. **SOURCE GAP / NOT ACCEPTED**: visual elevation language diverges; lack of explicit z-index alone does not prove overlay failure. Proposed elevation tiers: flat/bordered, raised, overlay; check dark/light contrast, focus visibility and stacking in rendered browser before acceptance. No production changes.
