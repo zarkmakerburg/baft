@@ -6,7 +6,7 @@ Authority: #67 PRODUCTIZATION RESET and owner 150-step instruction.
 ## Acceptance ledger
 
 The earlier audit is retained unchanged. Its preview checkmarks are not product acceptance.
-Current execution checkpoint: 30/150. Checkpoint 20 source: 17be92b.
+Current execution checkpoint: 40/150. Checkpoint 20 source: 17be92b.
 This counts implemented foundation work, not final visual or operational acceptance.
 Later ranges remain OPEN; the entire product has not passed final acceptance.
 
@@ -88,3 +88,14 @@ for network-idle navigation. Isolated mutation rerun passed. Another rapid repea
 429 on the missing-CSRF negative instead of 401, due to protective request limiting; this
 was not counted as PASS. Use fresh disposable state for each mutation suite and wait for
 DOMContentLoaded plus the authenticated page mode rather than background network silence.
+
+## Checkpoint 40 — native login
+
+31–40: shared textured Earth art in sign-in; original brand; labeled bounded native fields;
+required-field errors; correction clears field errors; show/hide password; correct localized
+toggle state; duplicate-submit busy state; localized native bad-login response; four responsive
+theme/width cells. Real Mac Chrome bcc-login-chrome.cjs PASS: empty fields sent no POST,
+password toggles correctly, native failure remained styled after language change, no overflow
+or JS errors. Native full login/logout/API/matrix retest PASS on fresh loopback BCC.
+Screenshot /tmp/baft-login-1440-dark.png reviewed against reference composite: brand/globe
+and gold-black language are shared; final page proportions and whole-product fidelity OPEN.

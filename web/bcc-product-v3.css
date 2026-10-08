@@ -8,3 +8,5 @@
 .layout{direction:ltr}.layout nav,.layout main{direction:rtl}.stage,.stats{direction:ltr}.stage .card,.stats .card{direction:rtl}header{direction:ltr}html[dir=ltr] .layout nav,html[dir=ltr] .layout main,html[dir=ltr] .stage .card,html[dir=ltr] .stats .card{direction:ltr}
 
 :root{font-family:Vazirmatn,Tahoma,system-ui,sans-serif}
+
+.signin-art{position:relative;min-height:500px;display:flex;flex-direction:column;justify-content:center;align-items:center;isolation:isolate}.signin-art #welcomeGlobe{position:absolute;inset:0;width:100%;height:100%;max-width:none;margin:0;opacity:.45;z-index:-1}.signin-art .product-logo{width:150px;height:200px}.signin-art p{max-width:38ch}.field-error{display:block;color:var(--bad);font-size:12px;margin-top:8px;min-height:1.3em}.login-card input[aria-invalid=true]{border-color:var(--bad)}.login-card button:disabled{opacity:.6;cursor:wait}@media(max-width:760px){.signin-art{display:none}}
