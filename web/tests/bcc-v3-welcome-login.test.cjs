@@ -17,3 +17,5 @@ test('all localization keys are present in both languages',()=>{
 test('primary anchors point to real sections',()=>{for(const id of ['signin','capabilities'])assert.match(html,new RegExp('href="#'+id+'"'));});
 test('all interactive controls have labels',()=>{assert.match(html,/<label for="user"/);assert.match(html,/<label for="password"/);assert.match(html,/id="lang"[^>]+aria-label=/);assert.match(html,/id="theme"[^>]+aria-label=/);});
 test('mobile layout and reduced-motion support are present',()=>{assert.match(html,/@media\(max-width:850px\)/);assert.match(html,/@media\(max-width:520px\)/);assert.match(html,/@media\(prefers-reduced-motion:reduce\)/);});
+
+test('accessible labels follow language and theme changes',()=>{for(const label of ['تغییر زبان به انگلیسی','Switch language to Persian','فعال‌کردن حالت روشن','فعال‌کردن حالت تاریک','Switch to light theme','Switch to dark theme','امکانات مرکز فرماندهی','Command Center capabilities'])assert.ok(html.includes(label),'Missing localized label: '+label);assert.match(html,/document\.title=lang==='fa'/);});
