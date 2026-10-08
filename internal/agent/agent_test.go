@@ -362,3 +362,22 @@ func TestMarkSeenPersistsPrivateAtomicJournal(t *testing.T) {
 		t.Fatalf("temporary seen journals leaked: %v", matches)
 	}
 }
+
+func TestSignedUpdateRejectsMissingRollbackBinary(t *testing.T) {
+	r := newRig(t)
+	r.publish("v1.1.0")
+	if err := os.Remove(filepath.Join(r.binDir, "baft-pair")); err != nil {
+		t.Fatal(err)
+	}
+	r.deploy("v1.1.0")
+	res := r.runOne()
+	if res.Status != "failed" || !strings.Contains(res.Detail, "rollback preflight") {
+		t.Fatalf("unexpected update result %+v", res)
+	}
+	if got := r.bin("baft"); got != "old baft" {
+		t.Fatalf("existing binary mutated: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(r.binDir, "baft.prev")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected backup created: %v", err)
+	}
+}

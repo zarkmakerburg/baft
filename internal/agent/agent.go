@@ -456,6 +456,14 @@ func (a *Agent) update(ctx context.Context, version string) (string, error) {
 		return "", fmt.Errorf("asked for %s but the signed release is %s; nothing changed", version, verified.Version)
 	}
 
+	// Refuse to mutate a node without a complete local rollback set.
+	// A missing binary would otherwise be silently ignored by the swap loop,
+	// leaving no recoverable target after a failed service restart.
+	for _, name := range []string{"baft", "baft-pair"} {
+		info, err := os.Stat(filepath.Join(a.cfg.BinDir, name))
+		if err != nil { return "", fmt.Errorf("rollback preflight %s: %w", name, err) }
+		if !info.Mode().IsRegular() { return "", fmt.Errorf("rollback preflight %s: not a regular file", name) }
+	}
 	// Stage next to the targets, keep the current binaries, then swap.
 	names := []string{"baft", "baft-pair"}
 	sort.Strings(names)
