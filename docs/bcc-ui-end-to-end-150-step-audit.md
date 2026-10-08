@@ -24,7 +24,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 17. [ ] PARTIAL IMPLEMENTATION — responsive accessible BAFT monogram placeholder implemented in V3 Welcome (commit b16407b3); official owner-approved GoldApp logo asset still missing and must not be invented. Browser acceptance pending.
 18. [ ] IMPLEMENTED IN V3 PREVIEW — `setApprovedWelcomeLogo(assetUrl)` validates a relative image path, loads owner-approved logo, swaps on success and preserves accessible BAFT monogram on image error (commit 88e2110a). Needs actual approved asset and browser tests before PASS.
 19. [ ] IMPLEMENTED IN V3 PREVIEW — welcome heading balanced line wrapping and line-height, constrained readable text width, mobile typography/padding, CTA width, forced-colors borders (commit 1647e6ad); browser contrast, viewport and keyboard acceptance pending.
-20. [ ] TODO — illustration
+20. [ ] IMPLEMENTED + CHROME DOM SMOKE — responsive inline SVG network illustration implemented (commit 885b0345); Chrome headless rendered DOM confirmed welcome, CTA, SVG, RTL and initially hidden dashboard. Full interaction, visual viewport and JS console acceptance pending.
 21. [ ] TODO — feature cards
 22. [ ] TODO — entry CTA
 23. [ ] TODO — anchor focus
@@ -211,3 +211,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Step **18/150**: implemented error-resilient official-logo opt-in and monogram fallback in preview. No real asset path set, no auth or production change; browser verification due step 20.
 
 - Step **19/150**: implemented Welcome hero readability CSS changes. Browser verification scheduled at step 20; source change alone is not a visual PASS.
+
+- Step **20/150** browser batch (steps 16–20): On Mac Google Chrome headless, exact GitHub preview HTML saved to `/tmp/baft-v3-step20.html`, Chrome dumped 15,354-byte DOM; checks: `welcome=True`, `enterPreview=True`, `welcome-illustration=True`, `previewApp hidden=True`, `dir=rtl=True`. **DOM smoke PASS only**. Chrome stderr included CVDisplayLink and process policy warnings; no claim of interaction/viewport/console PASS. Need click, language/theme, mobile screenshots, missing asset checks in subsequent browser run.
