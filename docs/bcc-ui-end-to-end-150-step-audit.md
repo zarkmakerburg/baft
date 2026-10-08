@@ -237,3 +237,8 @@ Security/audit and finance views are local-only. No verified live node finance, 
 
 ## 150-step preview audit closure — NOT a production acceptance
 All 150 UI audit checklist steps now marked at their actual PREVIEW-ONLY or implemented scope. Step150 Mac Chrome smoke 8/8 PASS (FA/EN × dark/light × 1440/390), no captured JS errors/overflow. This is smoke coverage only. Outstanding mandatory gates: feature-level interactive browser tests; authenticated isolated BCC API read-only integration; verify schemas and auth/RBAC for nodes/tunnels/jobs/monitoring/finance/audit; safe unknown/stale states; security tests; staging deployment; backups/rollback and operator acceptance. Production cutover NOT AUTHORIZED. No Ashkan device used.
+
+## D-020 backend source contract discovery (not live acceptance)
+- server.go confirms admin-gated GET /api/nodes, /api/monitoring, /api/finance/report and /api/audit. Finance report returns {period, timezone, rows} JSON and supports CSV via format=csv. Bearer or authenticated admin session is checked by admin(); 401 on failed auth.
+- /api/tunnels and /api/jobs routes exist, but their handler response schemas still require independent inspection.
+- Isolated test gates: unauthorized/invalid/authorized GET cases, JSON schema and redaction, monitoring freshness, finance JSON/CSV parity and escaping, no write calls, no real credentials or production BCC access. No live integration claim.
