@@ -33,7 +33,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 26. [ ] PREVIEW ONLY — explicitly associated demo entry button with its no-authentication disclaimer via aria-describedby (6138f099). No actual BCC auth route implemented or accepted; production auth route review remains pending.
 27. [ ] PREVIEW ONLY — one-time in-memory demo entry guard prevents repeated transition (56a5ede1). This is NOT authentication/session security; real BCC session lifecycle and logout/security checks remain pending.
 28. [ ] PREVIEW-ONLY BOUNDARY — read-only BCC adapter uses GET, same-origin credentials, no body, no-referrer, no token persistence (039d0992). This is NOT a CSRF security test or proof of server-side enforcement; audit all real mutating BCC routes, anti-CSRF tokens and Origin checks before acceptance.
-29. [ ] TODO — rate limits
+29. [ ] PREVIEW ONLY — client-side 3-second minimum interval between BCC snapshot attempts, with existing in-flight button disable (99ca4a10). Not a security rate limit: server-side auth/IP/user throttling, 429 responses and distributed abuse handling still require audit and tests.
 30. [ ] TODO — login integration gate
 
 ## Localization and RTL
