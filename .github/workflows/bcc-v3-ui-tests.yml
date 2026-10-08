@@ -5,6 +5,8 @@ on:
       - 'web/bcc-*v3.js'
       - 'web/bcc-*-v3-preview.html'
       - 'docs/bcc-welcome-login-v3-50-steps.md'
+      - 'docs/bcc-ui-end-to-end-150-step-audit.md'
+      - 'internal/bcc/dashboard.go'
       - 'web/tests/bcc-v3-*.test.cjs'
       - '.github/workflows/bcc-v3-ui-tests.yml'
   workflow_dispatch:
