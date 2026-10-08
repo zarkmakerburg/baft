@@ -24,7 +24,8 @@ function project(lat,lon){let [x,y,z]=xyz(lat,lon),c=Math.cos(rotLon),s=Math.sin
 function arc(a,b,t){const va=xyz(a.lat,a.lon),vb=xyz(b.lat,b.lon),dot=Math.max(-1,Math.min(1,va.reduce((v,x,i)=>v+x*vb[i],0))),theta=Math.acos(dot);let v;if(theta<1e-6)v=va;else if(Math.PI-theta<1e-5){const axis=Math.abs(va[1])<.9?[0,1,0]:[1,0,0];let cross=[va[1]*axis[2]-va[2]*axis[1],va[2]*axis[0]-va[0]*axis[2],va[0]*axis[1]-va[1]*axis[0]];const norm=Math.hypot(...cross);cross=cross.map(x=>x/norm);v=va.map((x,i)=>x*Math.cos(Math.PI*t)+cross[i]*Math.sin(Math.PI*t))}else{let k=Math.sin(theta),aa=Math.sin((1-t)*theta)/k,bb=Math.sin(t*theta)/k;v=va.map((x,i)=>aa*x+bb*vb[i])}let m=Math.hypot(...v),lat=Math.asin(v[1]/m)/R,lon=Math.atan2(v[0],v[2])/R;let p=project(lat,lon),height=1+0.18*Math.sin(Math.PI*t);return {...p,x:w/2+(p.x-w/2)*height,y:h/2+(p.y-h/2)*height,z:p.z*height}}
 function coords(e){const b=canvas.getBoundingClientRect();return {x:(e.clientX-b.left)*w/b.width,y:(e.clientY-b.top)*h/b.height}}
 function pointDist(x,y,a,b){let dx=b.x-a.x,dy=b.y-a.y,t=Math.max(0,Math.min(1,((x-a.x)*dx+(y-a.y)*dy)/(dx*dx+dy*dy||1)));return Math.hypot(x-a.x-t*dx,y-a.y-t*dy)}
-function draw(time){
+let lastFrame=0;function draw(time){
+if(!pause&&(time-lastFrame<32||canvas.closest('[hidden]')||document.hidden)){requestAnimationFrame(draw);return}lastFrame=time;
 if(focus){const t=Math.max(0,Math.min(1,(time-focusStart)/focusDuration)),ease=t*t*(3-2*t);rotLon=focus.fromLon+(focus.toLon-focus.fromLon)*ease;rotLat=focus.fromLat+(focus.toLat-focus.fromLat)*ease;zoom=focus.fromZoom+(focus.toZoom-focus.fromZoom)*ease;if(t>=1)focus=null;}
 ctx.clearRect(0,0,w,h);const p=project(0,0),radius=p.radius;
 let g=ctx.createRadialGradient(w*.43,h*.36,radius*.15,w/2,h/2,radius*1.2);g.addColorStop(0,'#273b47');g.addColorStop(.65,'#10202b');g.addColorStop(1,'#07101a');
@@ -49,5 +50,5 @@ function restoreHome(){if(!home||pinned)return;const target=home;home=null;if(pa
 canvas.addEventListener('wheel',e=>{e.preventDefault();focus=null;home=null;zoom=Math.max(.65,Math.min(1.45,zoom-e.deltaY*.001));if(pause)draw(0)},{passive:false});
 canvas.addEventListener('keydown',e=>{if(e.key==='ArrowLeft')rotLon-=.1;else if(e.key==='ArrowRight')rotLon+=.1;else if(e.key==='ArrowUp')rotLat=Math.min(1.1,rotLat+.1);else if(e.key==='ArrowDown')rotLat=Math.max(-1.1,rotLat-.1);else if(e.key==='Enter'&&links.length){pinned=true;inspect(links[(links.findIndex(l=>l.id===selected)+1)%links.length].id,true)}else if(e.key==='Escape'){pinned=false;selected=null;hovered=null;restoreHome()}else return;e.preventDefault();if(pause)draw(0)});
 function resize(){const rect=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);w=Math.max(1,Math.round(rect.width*dpr));h=Math.max(1,Math.round(rect.height*dpr));canvas.width=w;canvas.height=h;if(pause)draw(0)}
-new ResizeObserver(resize).observe(canvas);resize();if(!pause)requestAnimationFrame(draw);
+window.addEventListener('baft:earth-ready',()=>{if(pause)draw(0)});new ResizeObserver(resize).observe(canvas);resize();if(!pause)requestAnimationFrame(draw);
 })();

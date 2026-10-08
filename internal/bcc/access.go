@@ -20,8 +20,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	webui "github.com/zarkmakerburg/baft/web"
 	"html"
 	"io"
+	"io/fs"
 	"math/big"
 	"net/http"
 	"os"
@@ -435,6 +437,21 @@ func (s *Server) accessHandler(api http.Handler) http.Handler {
 		switch {
 		case r.URL.Path == "/"+a.SecretPath:
 			http.Redirect(w, r, base, http.StatusSeeOther)
+		case tail == "v3":
+			http.Redirect(w, r, base+"v3/", http.StatusSeeOther)
+		case tail == "v3/":
+			s.serveCommandCenterV3(w, r, a, base, "")
+		case strings.HasPrefix(tail, "v3/"):
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			name := strings.TrimPrefix(tail, "v3/")
+			if !fs.ValidPath(name) || strings.Contains(name, "..") || name == "assets.go" || name == "bcc-command-center-v3-preview.html" {
+				http.NotFound(w, r)
+				return
+			}
+			http.StripPrefix(base+"v3/", http.FileServer(http.FS(webui.FS))).ServeHTTP(w, r)
 		case tail == "":
 			s.serveDashboardOrLogin(w, r, a, base, "")
 		case tail == "login":
@@ -459,6 +476,10 @@ func (s *Server) accessHandler(api http.Handler) http.Handler {
 }
 
 func (s *Server) serveDashboardOrLogin(w http.ResponseWriter, r *http.Request, a AccessFile, base, loginError string) {
+	if r.URL.Query().Get("ui") == "v3" {
+		s.serveCommandCenterV3(w, r, a, base, loginError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	sess := s.access.lookup(r, s.now(), a.Generation)
 	if sess == nil {
@@ -482,6 +503,10 @@ func (s *Server) serveDashboardOrLogin(w http.ResponseWriter, r *http.Request, a
 func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, base string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method != http.MethodPost {
+		if r.URL.Query().Get("ui") == "v3" {
+			s.serveCommandCenterV3(w, r, a, base, "")
+			return
+		}
 		_, _ = io.WriteString(w, renderLogin(base+"login", ""))
 		return
 	}
@@ -514,6 +539,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, bas
 		s.loginLim.failed(user, now)
 		_ = s.auditLogin(r, "failure")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Query().Get("ui") == "v3" {
+			s.serveCommandCenterV3(w, r, a, base, "Wrong username or password.")
+			return
+		}
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, renderLogin(base+"login", "Wrong username or password."))
 		return
@@ -530,7 +559,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, bas
 		return
 	}
 	http.SetCookie(w, s.access.cookie(a.SecretPath, token, int(sessionMaxLifetime/time.Second)))
-	http.Redirect(w, r, base, http.StatusSeeOther)
+	target := base
+	if r.URL.Query().Get("ui") == "v3" {
+		target = base + "v3/"
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 func (s *Server) auditLogin(r *http.Request, outcome string) error {
@@ -613,4 +646,42 @@ func renderLogin(action, errText string) string {
 
 func renderWelcome(loginURL string) string {
 	return strings.NewReplacer("{{LOGIN}}", html.EscapeString(loginURL)).Replace(welcomeHTML)
+}
+
+// serveCommandCenterV3 reuses the existing access gate and native POST login.
+// The UI is an explicit /<secret>/v3/ staging opt-in; legacy operations stay available.
+func (s *Server) serveCommandCenterV3(w http.ResponseWriter, r *http.Request, a AccessFile, base, loginError string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mode := "welcome"
+	if s.access.lookup(r, s.now(), a.Generation) != nil {
+		mode = "dashboard"
+	} else if strings.HasSuffix(r.URL.Path, "login") || loginError != "" {
+		mode = "signin"
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if loginError != "" {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	config := webui.Config{Mode: mode, Base: base, LoginAction: base + "login?ui=v3", Error: loginError}
+	if sess := s.access.lookup(r, s.now(), a.Generation); sess != nil {
+		config.CSRF = sess.csrf
+		config.CSRFHeader = csrfHeader
+		begin := strings.Index(dashboardHTML, "<body>")
+		end := strings.Index(dashboardHTML, "<script>")
+		close := strings.Index(dashboardHTML[end:], "</script>")
+		if begin >= 0 && end > begin && close >= 0 {
+			config.OperationsHTML = dashboardHTML[begin:end]
+			config.OperationsJS = dashboardHTML[end+8 : end+close]
+		}
+	}
+	page := webui.Page(config)
+	// A native POST failure is served at /<secret>/login: point relative assets back to /v3/.
+	if strings.HasSuffix(r.URL.Path, "login") {
+		page = strings.ReplaceAll(page, "./bcc-", base+"v3/bcc-")
+		page = strings.ReplaceAll(page, "./assets/", base+"v3/assets/")
+	}
+	_, _ = io.WriteString(w, page)
 }
