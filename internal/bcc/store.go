@@ -652,6 +652,9 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 		f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
 		return f,true,nil
 	}
+	// A failed database write must not advance the replay cursor or finance
+	// ledger in RAM: a retried report must be applied exactly once.
+	before,err:=cloneState(s.st);if err!=nil{return NodeFinance{},false,err}
 	var din,dout uint64
 	if prev.BootID==report.BootID && prev.BootID!="" {
 		if report.IngressBytes<prev.IngressBytes||report.EgressBytes<prev.EgressBytes||report.HandshakeErrors<prev.HandshakeErrors{
@@ -673,7 +676,7 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	if ingestID==0{ingestID=1}
 	if ingestID==^uint64(0){return NodeFinance{},false,errors.New("telemetry ingestion id exhausted")}
 	s.st.NextTelemetryIngestID=ingestID+1
-	if err:=s.appendFinanceLocked(report.NodeID,ts,din,dout);err!=nil{return NodeFinance{},false,err}
+	if err:=s.appendFinanceLocked(report.NodeID,ts,din,dout);err!=nil{s.st=before;return NodeFinance{},false,err}
 	f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
 	rateMilli:=int64(0)
 	if prev.BootID==report.BootID && !prev.LastTelemetry.IsZero() && ts.After(prev.LastTelemetry) {
@@ -701,7 +704,7 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	keep=append(keep,point)
 	if len(keep)>10080 { keep=keep[len(keep)-10080:] }
 	s.st.History[report.NodeID]=keep
-	if err:=s.saveLocked();err!=nil{return NodeFinance{},false,err}
+	if err:=s.saveLocked();err!=nil{s.st=before;return NodeFinance{},false,err}
 	return f,false,nil
 }
 
