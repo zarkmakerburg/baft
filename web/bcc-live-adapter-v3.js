@@ -6,6 +6,8 @@
 const $=id=>document.getElementById(id),status=$('bccLiveStatus'),btn=$('bccLiveLoad');
 if(!btn)return;
 let adminToken='';
+let lastAttemptAt=0;
+const minRequestIntervalMs=3000; // Client-side preview throttle only; server rate limits remain mandatory.
 function msg(t){if(status)status.textContent=t}
 async function get(path){
  const headers={'Accept':'application/json'};if(adminToken)headers['Authorization']='Bearer '+adminToken;
@@ -42,6 +44,7 @@ function build(tunnels,locations){
  return {nodes,links};
 }
 btn.addEventListener('click',async()=>{
+ const now=Date.now();if(now-lastAttemptAt<minRequestIntervalMs){msg('Please wait before requesting another BCC snapshot.');return}lastAttemptAt=now;
  btn.disabled=true;try{
  if(location.protocol!=='https:'&&!(location.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(location.hostname)))throw Error('Authenticated BCC API requires HTTPS or local development origin. Do not enter a token in file:// preview.');
  const raw=$('bccCoordinates').value;if(raw.length>16384)throw Error('Coordinates input exceeds 16 KiB');const loc=safeCoordinates(raw);
