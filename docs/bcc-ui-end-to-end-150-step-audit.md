@@ -40,7 +40,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 31. [x] PREVIEW-ONLY — localized user-facing BCC read-only adapter messages (throttle, token prompt/required, snapshot summary, load error) according to document lang fa/en. Commit e5c9e993. Static source reviewed; browser re-test of adapter paths not performed, production API/auth NOT accepted.
 32. [x] PREVIEW-ONLY — added FA/EN translations for previously hardcoded dashboard snapshot import label, initial snapshot status, read-only BCC API heading/notice, load button, initial BCC status and globe selection text. Commit 655c1843. Static change; browser re-test pending. Runtime-updated messages remain owned by adapter/snapshot/globe scripts; not a production localization acceptance.
 33. [x] PREVIEW-ONLY — RTL bidi hardening: Persian-friendly Tahoma first, LTR coordinate JSON textarea, isolated brand and dynamic metric identifiers, wrapping language/theme controls, localized aria-labels. Commit 9f1b0805. Source review only; actual RTL browser regression and mobile matrix pending at step 35.
-34. [ ] TODO — LTR
+34. [x] PREVIEW-ONLY — LTR alignment hardening: English-mode card/detail alignment, minimum 44px toggle targets, explicit LTR topology-file control, and localized document title. Commit 91fa33b1. Source reviewed; actual browser matrix scheduled for step 35, not yet PASS.
 35. [ ] TODO — logical properties
 36. [ ] TODO — date formats
 37. [ ] TODO — number formats
