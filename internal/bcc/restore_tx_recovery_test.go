@@ -8,6 +8,8 @@ import (
     "os"
     "path/filepath"
     "testing"
+    "strings"
+    "time"
 )
 
 // A failed rollback must preserve the prepared journal and refuse to claim
@@ -57,5 +59,40 @@ func TestRestoreJournalRollbackIOFailureThenRecovery(t *testing.T) {
     }
     if _, err := os.Stat(journalPath); !errors.Is(err, os.ErrNotExist) {
         t.Fatalf("journal should be removed after recovery: %v", err)
+    }
+}
+
+// An in-process restore can fail after swapping state, and its rollback can
+// independently fail. Both failures must reach the caller while the journal
+// remains available for startup recovery.
+func TestRestoreReportsRollbackIOFailure(t *testing.T) {
+    dir := t.TempDir()
+    statePath := filepath.Join(dir, "state.db")
+    store, err := OpenStore(statePath)
+    if err != nil { t.Fatal(err) }
+    app, err := NewServer(store, "admin")
+    if err != nil { t.Fatal(err) }
+    backupPath := filepath.Join(dir, "snapshot.baftbak")
+    key := backupTestKey()
+    if _, err := app.BackupToFile(backupPath, key, time.Now().UTC()); err != nil { t.Fatal(err) }
+
+    cause := errors.New("injected after state commit")
+    obstacle := statePath + ".tmp"
+    app.restoreFault = func(stage string) error {
+        if stage != "after_state_commit" { return nil }
+        if err := os.Mkdir(obstacle, 0700); err != nil { return err }
+        return cause
+    }
+    err = app.RestoreFromFile(backupPath, key)
+    if !errors.Is(err, cause) || !strings.Contains(err.Error(), "restore rollback failed") {
+        t.Fatalf("must report commit and rollback failures, got %v", err)
+    }
+    if _, err := os.Stat(restoreJournalPath(statePath)); err != nil {
+        t.Fatalf("prepared journal must survive rollback failure: %v", err)
+    }
+    if err := os.Remove(obstacle); err != nil { t.Fatal(err) }
+    if err := recoverRestoreTransaction(statePath); err != nil { t.Fatal(err) }
+    if _, err := os.Stat(restoreJournalPath(statePath)); !errors.Is(err, os.ErrNotExist) {
+        t.Fatalf("journal should clear after recovery: %v", err)
     }
 }
