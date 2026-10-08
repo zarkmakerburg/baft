@@ -71,16 +71,16 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 60. [x] PREVIEW-ONLY — prefers-reduced-motion disables animations/transitions and smooth scrolling; Mac Chrome 8/8 smoke PASS. Code commit 79fbf45a.
 
 ## Monitoring and history
-61. [ ] TODO — monitor header
-62. [ ] TODO — node KPI
-63. [ ] TODO — UP KPI
-64. [ ] TODO — DOWN KPI
-65. [ ] TODO — UNKNOWN KPI
-66. [ ] TODO — monitor table
-67. [ ] TODO — noise RTT
-68. [ ] TODO — health latency
-69. [ ] TODO — error rate
-70. [ ] TODO — last seen
+61. [x] PREVIEW-ONLY — bilingual monitoring section and explanation. Commit fbe983f1.
+62. [x] PREVIEW-ONLY — snapshot node count or dash without data. Commit fbe983f1.
+63. [x] PREVIEW-ONLY — healthy-link count. Commit fbe983f1.
+64. [x] PREVIEW-ONLY — down-link count. Commit fbe983f1.
+65. [x] PREVIEW-ONLY — unknown/degraded/stale-link count. Commit fbe983f1.
+66. [x] PREVIEW-ONLY — responsive table, textContent-only rows. Commit fbe983f1.
+67. [x] PREVIEW-ONLY — dedicated column; dash until metric exists. Commit fbe983f1.
+68. [x] PREVIEW-ONLY — available snapshot RTT shown in ms, not independently measured health latency. Commit fbe983f1.
+69. [x] PREVIEW-ONLY — dedicated column; dash until metric exists. Commit fbe983f1.
+70. [x] PREVIEW-ONLY — snapshot updatedAt formatted per language; Step70 Chrome 8/8 smoke PASS. Commit fbe983f1.
 71. [ ] TODO — sessions
 72. [ ] TODO — routes
 73. [ ] TODO — history selector
