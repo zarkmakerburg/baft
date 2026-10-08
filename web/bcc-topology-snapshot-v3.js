@@ -7,7 +7,7 @@ function finiteCoord(v,min,max){return typeof v==='number'&&Number.isFinite(v)&&
 function optionalNumber(v){return v==null||typeof v==='number'&&Number.isFinite(v)&&v>=0}
 function parse(raw){
  const data=JSON.parse(raw);
- if(!data||data.schemaVersion!==1||!Array.isArray(data.nodes)||!Array.isArray(data.links))throw Error('Unsupported topology snapshot');
+ if(!data||Array.isArray(data)||data.schemaVersion!==1||!Array.isArray(data.nodes)||!Array.isArray(data.links))throw Error('Unsupported topology snapshot');
  if(data.nodes.length>100||data.links.length>300)throw Error('Too many nodes or connections');
  const ids=new Set(),nodes=[];
  for(const n of data.nodes){
