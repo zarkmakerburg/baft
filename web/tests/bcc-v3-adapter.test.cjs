@@ -6,7 +6,7 @@ const source=fs.readFileSync(path.join(__dirname,'..','bcc-live-adapter-v3.js'),
 function harness(tunnels,options={}){
  const elements={bccLiveStatus:{textContent:''},bccLiveLoad:{disabled:false,addEventListener(_,fn){this.click=fn}},bccCoordinates:{value:JSON.stringify(options.coords||{ir:{lat:35.6892,lon:51.389},de:{lat:50.1109,lon:8.6821}})}};
  const emitted=[],calls=[];
- const sandbox={document:{getElementById:id=>elements[id]},window:{dispatchEvent:e=>emitted.push(e.detail)},CustomEvent:class{constructor(_,v){this.detail=v.detail}},prompt:()=>options.token===undefined?'test-token':options.token,fetch:async(url,opts)=>{calls.push({url,opts});return {ok:options.httpStatus===undefined,status:options.httpStatus||200,json:async()=>tunnels}},console};
+ const sandbox={location:{protocol:options.protocol||'https:',hostname:options.hostname||'bcc.example.test'},document:{getElementById:id=>elements[id]},window:{dispatchEvent:e=>emitted.push(e.detail)},CustomEvent:class{constructor(_,v){this.detail=v.detail}},prompt:()=>options.token===undefined?'test-token':options.token,fetch:async(url,opts)=>{calls.push({url,opts});return {ok:options.httpStatus===undefined,status:options.httpStatus||200,json:async()=>tunnels}},console};
  vm.runInNewContext(source,sandbox);
  return {elements,emitted,calls,run:()=>elements.bccLiveLoad.click()};
 }
@@ -30,6 +30,7 @@ test('401 fails closed and emits no topology',async()=>{
  assert.equal(h.emitted.length,0);assert.match(h.elements.bccLiveStatus.textContent,/401/);
  assert.equal(h.elements.bccLiveLoad.disabled,false);
 });
+test('insecure origin refuses token and network',async()=>{const h=harness([],{protocol:'file:'});await h.run();assert.equal(h.calls.length,0);assert.match(h.elements.bccLiveStatus.textContent,/HTTPS/)});
 test('missing token does not call BCC',async()=>{
  const h=harness([],{token:''});await h.run();assert.equal(h.calls.length,0);
 });
