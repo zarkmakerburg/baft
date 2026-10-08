@@ -27,7 +27,7 @@ function parse(raw){
 const input=byId('topologyFile'),status=byId('snapshotStatus');
 if(!input)return;
 input.addEventListener('change',async()=>{
- try{const f=input.files&&input.files[0];if(!f)return;if(f.size>MAX_BYTES)throw Error('File exceeds 512 KiB');
+ try{const f=input.files&&input.files[0];if(!f)return;if(!Number.isFinite(f.size)||f.size<0||typeof f.text!=='function')throw Error('Invalid snapshot file');if(f.size>MAX_BYTES)throw Error('File exceeds 512 KiB');
  const raw=await f.text();if(typeof raw!=='string'||new TextEncoder().encode(raw).length>MAX_BYTES)throw Error('File exceeds 512 KiB');const topology=parse(raw);window.dispatchEvent(new CustomEvent('baft:topology',{detail:topology}));
  if(status)status.textContent='Imported '+topology.nodes.length+' nodes and '+topology.links.length+' connections (stale states set to unknown).';
  }catch(e){if(status)status.textContent='Import rejected: '+e.message}finally{input.value=''}
