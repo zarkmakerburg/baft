@@ -72,6 +72,8 @@ func TestRestoreReportsRollbackIOFailure(t *testing.T) {
     if err != nil { t.Fatal(err) }
     app, err := NewServer(store, "admin")
     if err != nil { t.Fatal(err) }
+    if _, err := store.UpsertNode(Node{ID: "fixture-node", Alias: "Fixture", Address: "127.0.0.1:21001", Role: "foreign"}, ""); err != nil { t.Fatal(err) }
+    if _, err := os.Stat(statePath); err != nil { t.Fatalf("persistent state precondition: %v", err) }
     backupPath := filepath.Join(dir, "snapshot.baftbak")
     key := backupTestKey()
     if _, err := app.BackupToFile(backupPath, key, time.Now().UTC()); err != nil { t.Fatal(err) }
