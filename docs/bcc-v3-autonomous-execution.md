@@ -38,8 +38,8 @@ Implemented, awaiting final acceptance:
 5. Corrected native Chrome test PASS: bad/successful native login, session GETs, expected
    unconfigured-backup error, eight viewport/language/theme cells, API 401 after logout,
    captured JS errors=0. This used an isolated loopback BCC and empty disposable database.
-6. Full internal/bcc Go suite is running; do not claim its result until process completes.
-7. Final source build/browser/mutation/reduced-motion checks remain pending.
+6. Full internal/bcc Go suite PASS (218.158s); web package compile PASS.
+7. Final source browser check first failed an inventory expectation: 16 top-level cards vs 17 headings; corrected expectation. Mutation/reduced-motion checks remain pending.
 
 Screenshots on the authorized Mac: /tmp/baft-product-landing.png,
  /tmp/baft-product-login.png, /tmp/baft-product-dashboard.png,
