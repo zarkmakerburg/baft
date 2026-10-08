@@ -24,7 +24,7 @@
 15. **Implemented** — تغییر زبان بدون بارگذاری
 16. **Implemented** — حالت تاریک
 17. **Implemented** — حالت روشن
-18. **Implemented** — کنتراست متنی
+18. **Pending WCAG measurement** — رنگ‌ها تعیین شده‌اند؛ کنتراست باید اندازه‌گیری شود
 19. **Implemented** — نمای فوکوس کیبورد
 20. **Implemented** — لینک پرش به محتوا
 
@@ -41,7 +41,7 @@
 30. **Implemented** — عدم ارسال referrer
 
 ## جزئیات رابط
-31. **Implemented** — لوگوی رسمی با مسیر asset مشخص
+31. **Pending asset verification** — مسیر لوگوی رسمی مشخص است؛ فایل اصلی هنوز تأیید نشده
 32. **Implemented** — fallback نوشتاری BAFT
 33. **Implemented** — سایز واکنش‌گرای لوگو
 34. **Implemented** — دکمه تغییر تم
@@ -53,7 +53,7 @@
 40. **Implemented** — کاهش حرکت طبق ترجیح کاربر
 
 ## آمادگی اتصال واقعی
-41. **Pending official asset** — جداسازی کامل از backend
+41. **Implemented (preview-only)** — جداسازی کامل از backend
 42. **Implemented** — عدم تغییر مسیرهای API
 43. **Implemented** — عدم تغییر middleware امنیتی
 44. **Implemented** — عدم تغییر کوکی یا نشست
@@ -62,7 +62,7 @@
 47. **Implemented** — عدم تغییر تونل‌ها
 48. **Implemented** — مستندسازی نیاز به asset اصلی
 49. **Planned** — برنامه بررسی ورود واقعی در مرحله بعد
-50. **Pending verification** — نیاز به تست و بازبینی پیش از انتشار
+50. **Pending verification** — نیاز به تست مرورگر، بازبینی امنیت و تأیید قبل از انتشار
 
 ## Acceptance gates
 
@@ -71,3 +71,9 @@
 - Review backend authentication routes, session management, CSRF, rate limiting and security headers separately before enabling a live form.
 - Do not connect a preview password form to an API or invent a login endpoint.
 - Do not merge or deploy without explicit acceptance and test evidence.
+## Execution evidence — iteration 1
+
+- CI workflow updated to trigger on welcome/login HTML and this ledger, in addition to JS and test files.
+- Logo fallback now handles cached images; the actual original BAFT asset remains missing and must not be fabricated.
+- Anchor scroll margin and image dimensions improved.
+- These steps are **source-level implementation**, not 50 independent QA passes. Never mark contrast, browser QA, asset verification or live auth as accepted without evidence.
