@@ -14,7 +14,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 9. [ ] SOURCE STATIC CHECK — 30 distinct onclick expressions across 31 static button tags (including 8 dynamic templates); all named functions have declarations in dashboard.go. No browser, API, authz, disabled-state, or generated-DOM PASS yet.
 10. [ ] SOURCE AUDIT — backend dashboard.go contains zero <nav> elements and zero <a> links; API-backed functional sections exist but no explicit navigation landmark or link map. Needs browser/keyboard/RTL/mobile acceptance and V3 prototype comparison.
 11. [ ] SOURCE AUDIT — operational dashboard declares 8 --bcc-* color tokens but retains multiple hard-coded legacy colors and dark-only color-scheme; V3 preview defines 8 shared-named theme variables in each of light/dark themes. Shared semantic token system and browser contrast checks remain pending.
-12. [ ] TODO — spacing tokens
+12. [ ] SOURCE AUDIT — dashboard and V3 preview use divergent hard-coded spacing values (dashboard 24/18/12/10/6px; preview 26/25/22/20/18/15/14/13/12/8/7px). Breakpoints differ: dashboard 820/520px, preview 950/550px. Shared spacing scale and responsive acceptance pending.
 13. [ ] TODO — type scale
 14. [ ] TODO — radius tokens
 15. [ ] TODO — shadow tokens
@@ -192,3 +192,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Step **10/150**: source audit identified no semantic navigation landmark or anchor in the backend dashboard template (`internal/bcc/dashboard.go`), while API-driven sections exist. **GAP / NOT ACCEPTED**; do not infer that the V3 prototype has the same limitation. Next: design navigation IA and validate focus, active-state, RTL and route/section access before implementation acceptance.
 
 - Step **11/150**: inspected `internal/bcc/dashboard.go` and `web/bcc-command-center-v3-preview.html` at the UI branch. Identified a dark-only operational dashboard and separate light/dark preview palette; colors are not unified. **SOURCE GAP / NOT ACCEPTED**. Proposed semantic roles: bg, surface, field, border, text, muted, accent, focus, success, warning, error, unknown. Do not claim WCAG contrast PASS before browser/computed-style testing.
+
+- Step **12/150**: source CSS inspection shows no shared spacing token system and divergent responsive breakpoints between backend dashboard and V3 preview. **SOURCE GAP / NOT ACCEPTED**; next: define common spacing/breakpoint tokens and test narrow-width overflow, RTL and keyboard/touch in browser. No production UI changed.
