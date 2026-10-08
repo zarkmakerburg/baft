@@ -26,5 +26,6 @@ jobs:
           node --check web/bcc-globe-v3.js
           node --check web/bcc-live-adapter-v3.js
           node --check web/bcc-topology-snapshot-v3.js
+          for test_file in web/tests/bcc-v3-*.test.cjs; do node --check "$test_file"; done
       - name: Contract tests
         run: node --test web/tests/bcc-v3-*.test.cjs
