@@ -38,7 +38,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 
 ## Localization and RTL
 31. [x] PREVIEW-ONLY — localized user-facing BCC read-only adapter messages (throttle, token prompt/required, snapshot summary, load error) according to document lang fa/en. Commit e5c9e993. Static source reviewed; browser re-test of adapter paths not performed, production API/auth NOT accepted.
-32. [ ] TODO — English strings
+32. [x] PREVIEW-ONLY — added FA/EN translations for previously hardcoded dashboard snapshot import label, initial snapshot status, read-only BCC API heading/notice, load button, initial BCC status and globe selection text. Commit 655c1843. Static change; browser re-test pending. Runtime-updated messages remain owned by adapter/snapshot/globe scripts; not a production localization acceptance.
 33. [ ] TODO — RTL
 34. [ ] TODO — LTR
 35. [ ] TODO — logical properties
