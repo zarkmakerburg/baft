@@ -115,18 +115,18 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 98. [x] PREVIEW-ONLY — empty-state plan preview disclosure. Commit f202ac8c.
 99. [x] PREVIEW-ONLY — disabled confirmation checkbox. Commit f202ac8c.
 100. [x] PREVIEW-ONLY — disabled deploy button; Chrome Step100 smoke 8/8 results observed. Commit f202ac8c.
-101. [ ] TODO — cancel
-102. [ ] TODO — drift check
-103. [ ] TODO — cert rotation
-104. [ ] TODO — decommission
-105. [ ] TODO — retry decommission
+101. [x] PREVIEW-ONLY — disabled cancel control. Commit 98b8605d.
+102. [x] PREVIEW-ONLY — disabled drift-check control. Commit 98b8605d.
+103. [x] PREVIEW-ONLY — disabled certificate-rotation control. Commit 98b8605d.
+104. [x] PREVIEW-ONLY — disabled decommission control. Commit 98b8605d.
+105. [x] PREVIEW-ONLY — disabled retry-decommission control. Commit 98b8605d.
 
 ## Connectivity and recovery
-106. [ ] TODO — change history
-107. [ ] TODO — history refresh
-108. [ ] TODO — SSH migration plan
-109. [ ] TODO — dual listen
-110. [ ] TODO — access verification
+106. [x] PREVIEW-ONLY — bilingual empty-state change history table. Commit 98b8605d.
+107. [x] PREVIEW-ONLY — disabled history refresh control. Commit 98b8605d.
+108. [x] PREVIEW-ONLY — SSH migration rollback/fallback disclosure. Commit 98b8605d.
+109. [x] PREVIEW-ONLY — disabled dual-listen checkbox. Commit 98b8605d.
+110. [x] PREVIEW-ONLY — explicit warning against removing old SSH path before new access verified; Chrome smoke 8/8. Commit 98b8605d.
 111. [ ] TODO — route doctor
 112. [ ] TODO — diagnosis result
 113. [ ] TODO — path graph refresh
@@ -222,3 +222,6 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 ## HQ parallel integration directive — effective from Step 101
 
 User-approved integration work runs alongside Steps 101–150: inventory existing BCC APIs/contracts; connect authenticated read-only data in isolated test environment; validate server/tunnel/monitoring values and UNKNOWN semantics; only then consider lab write paths with security/RBAC/integration QA; after Step 150 prepare staged rollout with backup/rollback and explicit acceptance. No production mutations/cutover, secrets exposure, use of Ashkan, or unapproved paid resources. Browser QA every 10 steps (next 110). Integration completion requires evidence, not UI smoke tests.
+
+### Parallel BCC integration discovery — Steps 101–110
+Code search on repository default branch identified `internal/bcc/server.go` API routes and `internal/bcc/dashboard.go` browser client. Confirmed route names: `GET /api/tunnels`, `POST /api/tunnels/cancel`, `/api/tunnels/drift`, `/api/tunnels/rotate-cert`, `/api/tunnels/decommission/plan`, `/api/tunnels/decommission`, `GET /api/change-ledger`. Existing `web/bcc-live-adapter-v3.js` supports same-origin authenticated read-only `GET /api/tunnels`, mapping only explicitly verified coordinates and treating tunnel health as UNKNOWN. This is CONTRACT DISCOVERY ONLY: no authenticated staging API request, backend connectivity validation or production mutation performed. Next integration gate: verify response schema/auth and test against isolated BCC environment.
