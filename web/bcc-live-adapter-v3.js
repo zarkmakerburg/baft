@@ -39,6 +39,7 @@ function build(tunnels,locations){
 }
 btn.addEventListener('click',async()=>{
  btn.disabled=true;try{
+ if(location.protocol!=='https:'&&!(location.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(location.hostname)))throw Error('Authenticated BCC API requires HTTPS or local development origin. Do not enter a token in file:// preview.');
  const loc=coordsFromText($('bccCoordinates').value);
  if(!adminToken){adminToken=prompt('BCC admin token (used in memory for this page only):')||'';if(!adminToken){msg('Token required.');return}}
  const ts=await get('/api/tunnels');
