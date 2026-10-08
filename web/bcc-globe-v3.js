@@ -27,12 +27,14 @@ function pointDist(x,y,a,b){let dx=b.x-a.x,dy=b.y-a.y,t=Math.max(0,Math.min(1,((
 function draw(time){
 if(focus){const t=Math.max(0,Math.min(1,(time-focusStart)/focusDuration)),ease=t*t*(3-2*t);rotLon=focus.fromLon+(focus.toLon-focus.fromLon)*ease;rotLat=focus.fromLat+(focus.toLat-focus.fromLat)*ease;zoom=focus.fromZoom+(focus.toZoom-focus.fromZoom)*ease;if(t>=1)focus=null;}
 ctx.clearRect(0,0,w,h);const p=project(0,0),radius=p.radius;
-let g=ctx.createRadialGradient(w*.43,h*.36,radius*.15,w/2,h/2,radius*1.2);g.addColorStop(0,'#385b71');g.addColorStop(.65,'#172a3b');g.addColorStop(1,'#07101a');
+let g=ctx.createRadialGradient(w*.43,h*.36,radius*.15,w/2,h/2,radius*1.2);g.addColorStop(0,'#273b47');g.addColorStop(.65,'#10202b');g.addColorStop(1,'#07101a');
 ctx.beginPath();ctx.arc(w/2,h/2,radius,0,TWO);ctx.fillStyle=g;ctx.fill();ctx.strokeStyle='rgba(209,176,113,.35)';ctx.lineWidth=2;ctx.stroke();
-ctx.save();ctx.beginPath();ctx.arc(w/2,h/2,radius,0,TWO);ctx.clip();
+const textured=window.BAFT_EARTH?.(ctx,w/2,h/2,radius,rotLon,rotLat);ctx.save();ctx.beginPath();ctx.arc(w/2,h/2,radius,0,TWO);ctx.clip();
 ctx.strokeStyle='rgba(178,202,211,.15)';ctx.lineWidth=1;
 for(let lat=-75;lat<=75;lat+=15){ctx.beginPath();let started=false;for(let lon=-180;lon<=180;lon+=3){let v=project(lat,lon);if(v.z<0){started=false;continue}if(!started){ctx.moveTo(v.x,v.y);started=true}else ctx.lineTo(v.x,v.y)}ctx.stroke()}
-for(let lon=-180;lon<180;lon+=15){ctx.beginPath();let started=false;for(let lat=-90;lat<=90;lat+=3){let v=project(lat,lon);if(v.z<0){started=false;continue}if(!started){ctx.moveTo(v.x,v.y);started=true}else ctx.lineTo(v.x,v.y)}ctx.stroke()}ctx.restore();
+for(let lon=-180;lon<180;lon+=15){ctx.beginPath();let started=false;for(let lat=-90;lat<=90;lat+=3){let v=project(lat,lon);if(v.z<0){started=false;continue}if(!started){ctx.moveTo(v.x,v.y);started=true}else ctx.lineTo(v.x,v.y)}ctx.stroke()}ctx.fillStyle='#344047';ctx.strokeStyle='rgba(225,186,104,.48)';ctx.lineWidth=.65;
+for(const ring of (textured?[]:window.BAFT_LAND||[])){ctx.beginPath();let on=false,count=0;for(const [lon,lat] of ring){const q=project(lat,lon);if(q.z>0){count++;if(on)ctx.lineTo(q.x,q.y);else ctx.moveTo(q.x,q.y);on=true}else on=false}if(count>ring.length*.85){ctx.closePath();ctx.fill()}ctx.stroke()}
+ctx.restore();
 for(const l of links){let a=examples.find(n=>n.id===l.source),b=examples.find(n=>n.id===l.destination);if(!a||!b)continue;const active=l.id===(selected||hovered),color=l.status==='down'?'#e66b72':l.status==='healthy'?'#d6b16d':'#9ba8b2';ctx.strokeStyle=color;ctx.lineWidth=active?3.7:1.7;ctx.shadowColor=color;ctx.shadowBlur=active?13:5;ctx.beginPath();for(let i=0;i<=70;i++){let v=arc(a,b,i/70);if(i===0)ctx.moveTo(v.x,v.y);else ctx.lineTo(v.x,v.y)}ctx.stroke();ctx.shadowBlur=0;
 if(l.status!=='unknown'&&!pause){let t=((time/4000)%1);let v=arc(a,b,t);ctx.beginPath();ctx.arc(v.x,v.y,active?4:2.5,0,TWO);ctx.fillStyle=color;ctx.fill()}
 if(l.status==='down'&&!pause){let v=arc(a,b,.5);ctx.globalAlpha=.4+.6*Math.abs(Math.sin(time/500));ctx.beginPath();ctx.arc(v.x,v.y,active?7:4,0,TWO);ctx.fillStyle=color;ctx.fill();ctx.globalAlpha=1}}
