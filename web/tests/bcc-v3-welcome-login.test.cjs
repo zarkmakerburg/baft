@@ -11,8 +11,12 @@ test('logo is external official asset path, never an invented replacement',()=>{
 test('welcome page does not expose a live credential submission route',()=>{assert.doesNotMatch(html,/<form[^>]+action=/i);assert.match(html,/<button type="submit"[^>]*disabled/i);});
 test('all localization keys are present in both languages',()=>{
  const keys=[...html.matchAll(/data-i="([^"]+)"/g)].map(m=>m[1]);
- const fa=html.split('fa:{')[1].split('},\nen:{')[0],en=html.split('en:{')[1].split('}};')[0];
- for(const key of keys){assert.ok(fa.includes(key+':'), 'Missing Persian: '+key);assert.ok(en.includes(key+':'),'Missing English: '+key)}
+ const match=html.match(/const tr=\{\s*fa:\{([\s\S]*?)\},\s*en:\{([\s\S]*?)\}\};/);
+ assert.ok(match,'Missing bilingual translation dictionary');
+ for(const [index,language] of [[1,'Persian'],[2,'English']]){
+  const found=new Set([...match[index].matchAll(/(?:^|,)\s*([a-zA-Z][a-zA-Z0-9]*):/g)].map(m=>m[1]));
+  for(const key of keys)assert.ok(found.has(key),'Missing '+language+': '+key);
+ }
 });
 test('primary anchors point to real sections',()=>{for(const id of ['signin','capabilities'])assert.match(html,new RegExp('href="#'+id+'"'));});
 test('all interactive controls have labels',()=>{assert.match(html,/<label for="user"/);assert.match(html,/<label for="password"/);assert.match(html,/<button(?=[^>]*id="lang")(?=[^>]*aria-label=)[^>]*>/);assert.match(html,/<button(?=[^>]*id="theme")(?=[^>]*aria-label=)[^>]*>/);});
