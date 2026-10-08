@@ -149,18 +149,18 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 128. [x] PREVIEW-ONLY — job failure column with no fabricated data. Commit e4c44844.
 129. [x] PREVIEW-ONLY — explicit backend immutable-audit evidence requirement. Commit e4c44844.
 130. [x] PREVIEW-ONLY — disabled audit refresh; Step130 Chrome smoke 8/8 passed. Commit e4c44844.
-131. [ ] TODO — audit readability
-132. [ ] TODO — audit pagination
-133. [ ] TODO — token rotation
-134. [ ] TODO — kill switch warning
-135. [ ] TODO — destructive confirmation
+131. [x] PREVIEW-ONLY — audit evidence requirements note. Commit 4b0a2158.
+132. [x] PREVIEW-ONLY — disabled audit pagination controls. Commit 4b0a2158.
+133. [x] PREVIEW-ONLY — disabled token rotation control. Commit 4b0a2158.
+134. [x] PREVIEW-ONLY — visible kill switch interruption warning. Commit 4b0a2158.
+135. [x] PREVIEW-ONLY — disabled destructive confirmation checkbox. Commit 4b0a2158.
 
 ## Finance and reports
-136. [ ] TODO — node finance
-137. [ ] TODO — rate input
-138. [ ] TODO — versioned rate
-139. [ ] TODO — report dates
-140. [ ] TODO — date validation
+136. [x] PREVIEW-ONLY — per-node finance verified-data empty state. Commit 4b0a2158.
+137. [x] PREVIEW-ONLY — local nonnegative bounded rate input. Commit 4b0a2158.
+138. [x] PREVIEW-ONLY — backend versioning/effective date requirement disclosed. Commit 4b0a2158.
+139. [x] PREVIEW-ONLY — start/end date inputs. Commit 4b0a2158.
+140. [x] PREVIEW-ONLY — client-side date order validation and Step140 Chrome smoke 8/8. Commit 4b0a2158.
 141. [ ] TODO — load report
 142. [ ] TODO — CSV download
 143. [ ] TODO — loading state
@@ -231,3 +231,6 @@ Confirmed from `internal/bcc/server.go` that BCC routes include `/api/route-doct
 
 ### Integration gate status — Steps 121–130
 UI now supports local node selection only; no real deploy, jobs, audit, RBAC or staging API evidence. The backend endpoints `/api/nodes`, `/api/jobs`, `/api/deploy`, `/api/audit`, `/api/change-ledger` were identified earlier in `internal/bcc/server.go`, but method/schema/auth compatibility and staging connectivity still require verification. Step130 Chrome/Puppeteer 8/8 smoke scenarios passed (FA/EN × light/dark × desktop/mobile); this is not backend or selected-node interaction coverage.
+
+### Integration status — Steps 131–140
+Security/audit and finance views are local-only. No verified live node finance, immutable audit records, token rotation, kill-switch or write API invocation. Local rate and report date checks do not establish backend authorization, persisted rate versions or report correctness. Step140 Mac Chrome smoke 8/8 passed (FA/EN, light/dark, desktop/mobile), no captured errors/overflow. Independent interaction validation still required.
