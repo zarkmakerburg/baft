@@ -1,0 +1,9 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const html=fs.readFileSync(path.join(__dirname,'..','bcc-welcome-login-v3-preview.html'),'utf8');
+test('welcome and login sections are present',()=>{for(const id of ['welcome','capabilities','signin','demoLogin','user','password','officialLogo'])assert.match(html,new RegExp('id="'+id+'"'))});
+test('sign-in controls are disabled until backend security review',()=>{assert.match(html,/<input id="user"[^>]*disabled/);assert.match(html,/<input id="password"[^>]*disabled/);assert.match(html,/<button type="submit"[^>]*disabled/)});
+test('no outbound login API or credential storage',()=>{assert.doesNotMatch(html,/\bfetch\s*\(|XMLHttpRequest|localStorage|sessionStorage|sendBeacon/);assert.match(html,/preventDefault\(\)/)});
+test('bilingual text and direction support',()=>{assert.match(html,/fa:\{/);assert.match(html,/en:\{/);assert.match(html,/root\.dir=lang==='fa'\?'rtl':'ltr'/)});
+test('safe preview metadata',()=>{assert.match(html,/noindex,nofollow/);assert.match(html,/no-referrer/);assert.match(html,/prefers-reduced-motion/);assert.match(html,/class="skip"/)});
+test('logo is external official asset path, never an invented replacement',()=>{assert.match(html,/assets\/baft-official-logo\.png/);assert.match(html,/img\.addEventListener\('error'/)});
