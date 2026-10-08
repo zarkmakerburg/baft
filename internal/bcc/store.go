@@ -283,7 +283,11 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	if n.LastChecked.IsZero()&&!exists{n.LatencyMS=-1}
 	n.UpdatedAt=time.Now().UTC()
 	s.st.Nodes[n.ID]=n
-	return publicNode(n),s.saveLocked()
+	if err:=s.saveLocked();err!=nil{
+		if exists{s.st.Nodes[n.ID]=old}else{delete(s.st.Nodes,n.ID)}
+		return Node{},err
+	}
+	return publicNode(n),nil
 }
 
 func publicNode(n Node) Node {
