@@ -438,15 +438,18 @@ func (s *Store) noteAgentSeenLocked(nodeID string,now time.Time){
 func (s *Store) PullJobs(nodeID,token string) ([]Job,error) {
 	s.mu.Lock();defer s.mu.Unlock()
 	if !s.authorizedLocked(nodeID,token){return nil,ErrAgentAuthentication}
+	before,err:=cloneState(s.st);if err!=nil{return nil,err}
 	s.noteAgentSeenLocked(nodeID,time.Now().UTC())
 	var out []Job
+	changed:=false
 	for id,j:=range s.st.Jobs{
 		if j.NodeID!=nodeID||j.Status!="queued"{continue}
+		changed=true
 		if j.Type==jobEnrollPeerLegacy{j.Status="failed";j.Message="retired job type: build tunnels with /api/tunnels";j.UpdatedAt=time.Now().UTC();s.st.Jobs[id]=j;continue}
 		j.Status="dispatched";j.UpdatedAt=time.Now().UTC();s.st.Jobs[id]=j;out=append(out,j)
 	}
 	sort.Slice(out,func(i,j int)bool{return out[i].CreatedAt.Before(out[j].CreatedAt)})
-	if len(out)>0{if err:=s.saveLocked();err!=nil{return nil,err}}
+	if changed{if err:=s.saveLocked();err!=nil{s.st=before;return nil,err}}
 	return out,nil
 }
 
@@ -465,11 +468,13 @@ func (s *Store) AckJobOutput(nodeID,token,jobID,status,message,output string) er
 	if !s.authorizedLocked(nodeID,token){return ErrAgentAuthentication}
 	j,ok:=s.st.Jobs[jobID];if !ok||j.NodeID!=nodeID{return errors.New("job not found")}
 	if j.Status!="dispatched"&&j.Status!="queued"{return errors.New("job already completed")}
+	previous:=j
 	j.Status=status;j.Message=message;j.UpdatedAt=time.Now().UTC()
 	if status=="succeeded"{j.Output=output}
 	wipeSecretParams(&j)
 	s.st.Jobs[jobID]=j
-	return s.saveLocked()
+	if err:=s.saveLocked();err!=nil{s.st.Jobs[jobID]=previous;return err}
+	return nil
 }
 
 func (s *Store) SetHealth(nodeID,health string,latencyMS int64,checked time.Time) error {
