@@ -37,7 +37,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 30. [ ] BLOCKED / NOT ACCEPTED — login integration gate: preview has no real BCC authentication, server-side CSRF and rate-limit checks not verified, session lifecycle not tested, and step 25 interactive/mobile/browser gate remains partial. Do not label PASS or deploy. Evidence required: real auth route inventory, unauthorized/expired session tests, CSRF negative tests, 429/rate-limit tests, keyboard/FA-EN/light-dark/mobile browser matrix.
 
 ## Localization and RTL
-31. [ ] TODO — Persian strings
+31. [x] PREVIEW-ONLY — localized user-facing BCC read-only adapter messages (throttle, token prompt/required, snapshot summary, load error) according to document lang fa/en. Commit e5c9e993. Static source reviewed; browser re-test of adapter paths not performed, production API/auth NOT accepted.
 32. [ ] TODO — English strings
 33. [ ] TODO — RTL
 34. [ ] TODO — LTR
