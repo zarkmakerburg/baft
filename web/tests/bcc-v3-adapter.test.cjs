@@ -40,3 +40,6 @@ test('invalid JSON is rejected without any network request',async()=>{
 
 test('excessive coordinate input is rejected before authentication',async()=>{const h=harness([]);h.elements.bccCoordinates.value=' '.repeat(16385);await h.run();assert.equal(h.calls.length,0);assert.match(h.elements.bccLiveStatus.textContent,/16 KiB/)});
 test('oversized tunnel response is rejected without dispatch',async()=>{const ts=Array.from({length:301},(_,i)=>({id:'t'+i,ir_node:'ir',ex_node:'de'}));const h=harness(ts);await h.run();assert.equal(h.emitted.length,0);assert.match(h.elements.bccLiveStatus.textContent,/Too many tunnels/)});
+
+test('non-array API response fails closed',async()=>{const h=harness({tunnels:[]});await h.run();assert.equal(h.emitted.length,0);assert.match(h.elements.bccLiveStatus.textContent,/Unexpected BCC API response/)});
+test('invalid tunnel entries are skipped safely',async()=>{const h=harness([null,{id:'valid',ir_node:'ir',ex_node:'de'},{id:'bad',ir_node:'ir',ex_node:'ir'}]);await h.run();assert.equal(h.emitted[0].links.length,1)});
