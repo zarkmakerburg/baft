@@ -33,7 +33,7 @@ function build(tunnels,monitor,locations){
   const m=byId.get(t.ir_node),n=byId.get(t.ex_node);
   // Node health is NOT tunnel health. Tunnel phase 'active' is NOT live proof.
   // Without tunnel-scoped evidence, do not mark an active tunnel healthy.
-  let status='unknown';if(['decommissioned','decommission_failed','rolled_back','rollback_failed'].includes(t.phase))status='down';
+  let status='unknown'; // lifecycle phase cannot prove current packet-path health
   links.push({id:t.id,source:t.ir_node,destination:t.ex_node,status,rttMs:null,upBps:null,downBps:null,updatedAt:null});
  }
  const ids=new Set();for(const l of links){ids.add(l.source);ids.add(l.destination)}
@@ -47,7 +47,7 @@ btn.addEventListener('click',async()=>{
  const [ts,ms]=await Promise.all([get('/api/tunnels'),get('/api/monitoring')]);
  if(!Array.isArray(ts)||!Array.isArray(ms))throw Error('Unexpected BCC API response');
  const d=build(ts,ms,loc);window.dispatchEvent(new CustomEvent('baft:topology',{detail:d}));
- msg('Read-only BCC snapshot: '+d.links.length+' mapped tunnels; all link health UNKNOWN unless terminal phase. Node telemetry is not link telemetry.');
+ msg('Read-only BCC snapshot: '+d.links.length+' mapped tunnels; all link health UNKNOWN until link-scoped telemetry is available. Node telemetry is not link telemetry.');
  }catch(e){msg('Read-only load failed: '+e.message)}finally{btn.disabled=false}
 });
 })();
