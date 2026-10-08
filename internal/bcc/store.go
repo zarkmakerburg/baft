@@ -340,13 +340,21 @@ func (s *Store) CreateDeployJobs(nodeIDs []string,version string) ([]Job,error) 
 	if !validVersion(version){return nil,errors.New("invalid BAFT version")}
 	if len(nodeIDs)==0{return nil,errors.New("at least one node is required")}
 	s.mu.Lock();defer s.mu.Unlock()
-	seen:=map[string]struct{}{};out:=make([]Job,0,len(nodeIDs))
+	seen:=map[string]struct{}{};ids:=make([]string,0,len(nodeIDs))
 	for _,id:=range nodeIDs{
 		if _,dup:=seen[id];dup{continue};seen[id]=struct{}{}
 		if _,ok:=s.st.Nodes[id];!ok{return nil,fmt.Errorf("unknown node %s",id)}
-		out=append(out,s.newJobLocked(Job{Type:JobDeployBAFT,NodeID:id,Version:version}))
+		ids=append(ids,id)
 	}
-	return out,s.saveLocked()
+	startJob:=s.st.NextJob
+	out:=make([]Job,0,len(ids))
+	for _,id:=range ids{out=append(out,s.newJobLocked(Job{Type:JobDeployBAFT,NodeID:id,Version:version}))}
+	if err:=s.saveLocked();err!=nil{
+		for _,job:=range out{delete(s.st.Jobs,job.ID)}
+		s.st.NextJob=startJob
+		return nil,err
+	}
+	return out,nil
 }
 
 func (s *Store) authorizedHashLocked(nodeID,token string,now time.Time)(string,bool) {
