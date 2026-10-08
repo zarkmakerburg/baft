@@ -1,0 +1,207 @@
+name: stage-e-d012-ab
+
+on:
+  push:
+    branches:
+      - bench/stage-e-current-20261008
+    paths:
+      - '.github/workflows/stage-e-d012-ab.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage-e-d012-ab
+  cancel-in-progress: false
+
+jobs:
+  ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    env:
+      OLD_SHA: f6821113678d905c3d244545e6b8f9a8d8f872d4
+      MAIN_SHA: 5f1502d4f228584611db3af31d2a7725025b9ebc
+      HARNESS_SHA: cd4d3c6d8377f177c7a8797ed8e0960631ed9d65
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Record runner provenance
+        run: |
+          set -euxo pipefail
+          OUT="$RUNNER_TEMP/d012"
+          mkdir -p "$OUT"
+          {
+            echo "workflow_sha=$GITHUB_SHA"
+            echo "old_sha=$OLD_SHA"
+            echo "main_sha=$MAIN_SHA"
+            echo "harness_sha=$HARNESS_SHA"
+            echo "go=$(go version)"
+            echo "uname=$(uname -a)"
+            lscpu
+            tc -V
+          } | tee "$OUT/provenance.txt"
+          sudo -n true
+
+      - name: Same-host exact-SHA A/B plus B13
+        run: |
+          set -u
+          OUT="$RUNNER_TEMP/d012"
+          ROOT="$GITHUB_WORKSPACE"
+          export GOMODCACHE="$RUNNER_TEMP/gomodcache"
+          mkdir -p "$GOMODCACHE"
+
+          copy_harness() {
+            WT="$1"
+            mkdir -p "$WT/bench" "$WT/cmd/baft-bench" "$WT/tests/integration"
+            cp "$ROOT/bench/manifest.json" "$ROOT/bench/analyze_b07.py" "$ROOT/bench/analyze_cost.py" "$ROOT/bench/analyze_wan.py" "$WT/bench/"
+            cp "$ROOT/cmd/baft-bench/main.go" "$ROOT/cmd/baft-bench/main_test.go" "$WT/cmd/baft-bench/"
+            cp "$ROOT/tests/integration/stage_e_benchmark_test.go" "$ROOT/tests/integration/stage_e_cost_test.go" "$ROOT/tests/integration/stage_e_netem_test.go" "$WT/tests/integration/"
+          }
+
+          run_scenario() {
+            LABEL="$1"; SCENARIO="$2"; DEST="$3"
+            mkdir -p "$DEST"
+            echo "COMMAND: go run ./cmd/baft-bench -scenario $SCENARIO -out $DEST" | tee -a "$OUT/$LABEL/commands.txt"
+            set +e
+            go run ./cmd/baft-bench -scenario "$SCENARIO" -out "$DEST" >"$DEST/runner.log" 2>&1
+            RC=$?
+            set -e
+            echo "$RC" >"$DEST/exit_code.txt"
+            cat "$DEST/runner.log"
+            return 0
+          }
+
+          for SPEC in "f682:$OLD_SHA" "main:$MAIN_SHA"; do
+            LABEL="${SPEC%%:*}"
+            SHA="${SPEC#*:}"
+            WT="$RUNNER_TEMP/wt-$LABEL"
+            git worktree add --detach "$WT" "$SHA"
+            copy_harness "$WT"
+            cd "$WT"
+            mkdir -p "$OUT/$LABEL"
+            {
+              echo "production_sha=$(git rev-parse HEAD)"
+              echo "harness_sha=$HARNESS_SHA"
+              echo "label=$LABEL"
+            } | tee "$OUT/$LABEL/provenance.txt"
+
+            export GOCACHE="$RUNNER_TEMP/gocache-$LABEL"
+            set +e
+            go test ./cmd/baft-bench -count=1 >"$OUT/$LABEL/harness-validation.log" 2>&1
+            echo "$?" >"$OUT/$LABEL/harness-validation.exit"
+            set -e
+            cat "$OUT/$LABEL/harness-validation.log"
+
+            for S in B07 B06 B09 B08 B10 B11; do
+              run_scenario "$LABEL" "$S" "$OUT/$LABEL/loopback/$S"
+            done
+
+            mkdir -p "$OUT/$LABEL/profile"
+            set +e
+            go test ./tests/integration -run '^TestStageEMeasureMultiFlowThroughput$' -count=1 -timeout 10m -v               -cpuprofile="$OUT/$LABEL/profile/cpu.pprof"               -memprofile="$OUT/$LABEL/profile/heap.pprof"               -blockprofile="$OUT/$LABEL/profile/block.pprof"               >"$OUT/$LABEL/profile/test.log" 2>&1
+            PRC=$?
+            set -e
+            echo "$PRC" >"$OUT/$LABEL/profile/exit_code.txt"
+            if [ "$PRC" -eq 0 ]; then
+              go tool pprof -top -nodecount=80 "$OUT/$LABEL/profile/cpu.pprof" >"$OUT/$LABEL/profile/cpu-top.txt" || true
+              go tool pprof -top -nodecount=80 -sample_index=alloc_space "$OUT/$LABEL/profile/heap.pprof" >"$OUT/$LABEL/profile/heap-top.txt" || true
+              go tool pprof -top -nodecount=80 "$OUT/$LABEL/profile/block.pprof" >"$OUT/$LABEL/profile/block-top.txt" || true
+            fi
+
+            for RTT in 50 150 300; do
+              for LOSS in 0 1 3; do
+                CELL="rtt${RTT}-loss${LOSS}"
+                export BAFT_STAGE_E_FLOW_COUNT=8
+                export BAFT_STAGE_E_BYTES_PER_FLOW=1048576
+                export BAFT_STAGE_E_RECOVERY_FLOWS=32
+                export BAFT_STAGE_E_NETEM_RTT_MS="$RTT"
+                export BAFT_STAGE_E_NETEM_LOSS_PCT="$LOSS"
+                export BAFT_STAGE_E_NETEM_RATE_MBIT=1000
+                run_scenario "$LABEL" B12 "$OUT/$LABEL/netem/$CELL/B12"
+                run_scenario "$LABEL" B13 "$OUT/$LABEL/netem/$CELL/B13"
+                sudo -n tc qdisc del dev lo root 2>/dev/null || true
+              done
+            done
+
+            unset BAFT_STAGE_E_FLOW_COUNT BAFT_STAGE_E_BYTES_PER_FLOW BAFT_STAGE_E_RECOVERY_FLOWS BAFT_STAGE_E_NETEM_RTT_MS BAFT_STAGE_E_NETEM_LOSS_PCT BAFT_STAGE_E_NETEM_RATE_MBIT
+            cd "$ROOT"
+            git worktree remove --force "$WT"
+          done
+
+      - name: B15 current-main comparators
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          OUT="$RUNNER_TEMP/d012"
+          ROOT="$GITHUB_WORKSPACE"
+          WT="$RUNNER_TEMP/wt-main-b15"
+          git worktree add --detach "$WT" "$MAIN_SHA"
+          mkdir -p "$WT/bench/comparators"
+          cp "$ROOT/bench/comparators/run.sh" "$ROOT/bench/comparators/tput.py" "$WT/bench/comparators/"
+          cd "$WT"
+          set +e
+          REPS=5 MIB=16 CONNS=1 CELLS="0:0 50:0 150:0 300:0 150:1"             bash bench/comparators/run.sh "$OUT/B15" >"$OUT/B15-run.log" 2>&1
+          RC=$?
+          set -e
+          echo "$RC" >"$OUT/B15-exit_code.txt"
+          cat "$OUT/B15-run.log"
+          cd "$ROOT"
+          git worktree remove --force "$WT"
+
+      - name: Summarize evidence
+        if: always()
+        run: |
+          python3 - <<'PY' | tee "$RUNNER_TEMP/d012/summary.md"
+          import glob, json, os, statistics
+          root=os.environ["RUNNER_TEMP"]+"/d012"
+          print("# D-012 same-host A/B summary")
+          for label in ("f682","main"):
+              print("\n##",label)
+              files=glob.glob(root+"/"+label+"/**/metrics.json",recursive=True)
+              by={}
+              for f in files:
+                  try:o=json.load(open(f))
+                  except Exception:continue
+                  for sid,ms in o.get("metrics",{}).items():
+                      by.setdefault(sid,[]).extend(ms)
+              for sid in ("B07","B06","B09","B08","B10","B11","B12","B13"):
+                  ms=by.get(sid,[])
+                  if not ms: continue
+                  if sid in ("B06","B09","B08","B10","B12"):
+                      vals=[float(m["tx_mbps"]) for m in ms if "tx_mbps" in m]
+                      if vals: print(sid,"n",len(vals),"median_mbps",round(statistics.median(vals),3))
+                  elif sid=="B07":
+                      samples=[x for m in ms for x in m.get("recovery_samples_ms",[])]
+                      samples.sort()
+                      if samples:
+                          p=lambda q:samples[int((len(samples)-1)*q)]
+                          print("B07","samples",len(samples),"p50_ms",round(p(.5),3),"p99_ms",round(p(.99),3),
+                                "survived",sum(m.get("flows_survived",0) for m in ms),"/",sum(m.get("flows",0) for m in ms))
+                  elif sid=="B11":
+                      vals=[float(m["bytes_allocated_per_decode"]) for m in ms]
+                      print("B11","n",len(vals),"bytes_per_decode_median",round(statistics.median(vals),3))
+                  elif sid=="B13":
+                      print("B13","records",len(ms),"survived",
+                            sum(m.get("flows_survived",0) for m in ms),"/",sum(m.get("flows",0) for m in ms))
+          b15=root+"/B15/summary.md"
+          if os.path.exists(b15):
+              print("\n## B15")
+              print(open(b15).read())
+          PY
+          cat "$RUNNER_TEMP/d012/summary.md" >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-e-d012-${{ github.sha }}
+          path: ${{ runner.temp }}/d012
+          if-no-files-found: error
+          retention-days: 30
