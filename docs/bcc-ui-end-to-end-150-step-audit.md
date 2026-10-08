@@ -139,16 +139,16 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 120. [x] PREVIEW-ONLY — localized empty states; Step120 Chrome first run failed JS syntax, fixed f7ff8bd3 and rerun 8/8 PASS. Commits 6f7dec8d, f7ff8bd3.
 
 ## Cluster and audit
-121. [ ] TODO — cluster nodes
-122. [ ] TODO — selected deployment
-123. [ ] TODO — selection state
-124. [ ] TODO — preflight
-125. [ ] TODO — deploy confirmation
-126. [ ] TODO — recent jobs
-127. [ ] TODO — job progress
-128. [ ] TODO — job failure
-129. [ ] TODO — immutable audit
-130. [ ] TODO — audit refresh
+121. [x] PREVIEW-ONLY — selectable node inventory sourced from local snapshot. Commit e4c44844.
+122. [x] PREVIEW-ONLY — selected-deployment action visible but disabled. Commit e4c44844.
+123. [x] PREVIEW-ONLY — local selection state updates without network mutations. Commit e4c44844.
+124. [x] PREVIEW-ONLY — disabled preflight gate. Commit e4c44844.
+125. [x] PREVIEW-ONLY — disabled confirmation checkbox. Commit e4c44844.
+126. [x] PREVIEW-ONLY — read-only jobs empty-state table. Commit e4c44844.
+127. [x] PREVIEW-ONLY — job progress column with no fabricated data. Commit e4c44844.
+128. [x] PREVIEW-ONLY — job failure column with no fabricated data. Commit e4c44844.
+129. [x] PREVIEW-ONLY — explicit backend immutable-audit evidence requirement. Commit e4c44844.
+130. [x] PREVIEW-ONLY — disabled audit refresh; Step130 Chrome smoke 8/8 passed. Commit e4c44844.
 131. [ ] TODO — audit readability
 132. [ ] TODO — audit pagination
 133. [ ] TODO — token rotation
@@ -228,3 +228,6 @@ Code search on repository default branch identified `internal/bcc/server.go` API
 
 ### Parallel integration discovery — Steps 111–120
 Confirmed from `internal/bcc/server.go` that BCC routes include `/api/route-doctor`, `/api/path-graph`, `/api/path-matrix`, `/api/path-probes`, `/api/path-discovery`, `/api/monitoring`, `/api/history`, `/api/health`, `/api/nodes` and `/api/tunnels`. `internal/bcc/route_doctor.go` defines PASS/FAIL/NOT_ASSESSED verdicts and staged evidence; `internal/bcc/pathprobe.go` defines probe classes FULL_DATA/BYTE_CEILING/HANDSHAKE_ONLY/CONNECT_ONLY/TIMEOUT_UNREACHABLE/LOCAL_CONFLICT/UNKNOWN. Discovery is static code review only: no authenticated test BCC available, no live API schema verified, no actual probe executed. Step120 Chrome gate initially caught JavaScript syntax error (render undefined), repaired in f7ff8bd3 and rerun 8/8 smoke passed. Retain initial failure in evidence.
+
+### Integration gate status — Steps 121–130
+UI now supports local node selection only; no real deploy, jobs, audit, RBAC or staging API evidence. The backend endpoints `/api/nodes`, `/api/jobs`, `/api/deploy`, `/api/audit`, `/api/change-ledger` were identified earlier in `internal/bcc/server.go`, but method/schema/auth compatibility and staging connectivity still require verification. Step130 Chrome/Puppeteer 8/8 smoke scenarios passed (FA/EN × light/dark × desktop/mobile); this is not backend or selected-node interaction coverage.
