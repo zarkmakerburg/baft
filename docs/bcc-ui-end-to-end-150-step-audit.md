@@ -127,16 +127,16 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 108. [x] PREVIEW-ONLY — SSH migration rollback/fallback disclosure. Commit 98b8605d.
 109. [x] PREVIEW-ONLY — disabled dual-listen checkbox. Commit 98b8605d.
 110. [x] PREVIEW-ONLY — explicit warning against removing old SSH path before new access verified; Chrome smoke 8/8. Commit 98b8605d.
-111. [ ] TODO — route doctor
-112. [ ] TODO — diagnosis result
-113. [ ] TODO — path graph refresh
-114. [ ] TODO — path graph
-115. [ ] TODO — connectivity matrix
-116. [ ] TODO — pair probe
-117. [ ] TODO — probe result
-118. [ ] TODO — stale data
-119. [ ] TODO — error retry
-120. [ ] TODO — empty state
+111. [x] PREVIEW-ONLY — disabled route doctor action. Commits 6f7dec8d, f7ff8bd3.
+112. [x] PREVIEW-ONLY — accessible diagnosis empty-state status. Commits 6f7dec8d, f7ff8bd3.
+113. [x] PREVIEW-ONLY — disabled path graph refresh action. Commits 6f7dec8d, f7ff8bd3.
+114. [x] PREVIEW-ONLY — snapshot-driven read-only edge table. Commits 6f7dec8d, f7ff8bd3.
+115. [x] PREVIEW-ONLY — connectivity matrix count placeholder, no verified pair matrix. Commits 6f7dec8d, f7ff8bd3.
+116. [x] PREVIEW-ONLY — disabled pair probe action. Commits 6f7dec8d, f7ff8bd3.
+117. [x] PREVIEW-ONLY — probe result empty state. Commits 6f7dec8d, f7ff8bd3.
+118. [x] PREVIEW-ONLY — stale-data warning. Commits 6f7dec8d, f7ff8bd3.
+119. [x] PREVIEW-ONLY — disabled retry with no invented error. Commits 6f7dec8d, f7ff8bd3.
+120. [x] PREVIEW-ONLY — localized empty states; Step120 Chrome first run failed JS syntax, fixed f7ff8bd3 and rerun 8/8 PASS. Commits 6f7dec8d, f7ff8bd3.
 
 ## Cluster and audit
 121. [ ] TODO — cluster nodes
@@ -225,3 +225,6 @@ User-approved integration work runs alongside Steps 101–150: inventory existin
 
 ### Parallel BCC integration discovery — Steps 101–110
 Code search on repository default branch identified `internal/bcc/server.go` API routes and `internal/bcc/dashboard.go` browser client. Confirmed route names: `GET /api/tunnels`, `POST /api/tunnels/cancel`, `/api/tunnels/drift`, `/api/tunnels/rotate-cert`, `/api/tunnels/decommission/plan`, `/api/tunnels/decommission`, `GET /api/change-ledger`. Existing `web/bcc-live-adapter-v3.js` supports same-origin authenticated read-only `GET /api/tunnels`, mapping only explicitly verified coordinates and treating tunnel health as UNKNOWN. This is CONTRACT DISCOVERY ONLY: no authenticated staging API request, backend connectivity validation or production mutation performed. Next integration gate: verify response schema/auth and test against isolated BCC environment.
+
+### Parallel integration discovery — Steps 111–120
+Confirmed from `internal/bcc/server.go` that BCC routes include `/api/route-doctor`, `/api/path-graph`, `/api/path-matrix`, `/api/path-probes`, `/api/path-discovery`, `/api/monitoring`, `/api/history`, `/api/health`, `/api/nodes` and `/api/tunnels`. `internal/bcc/route_doctor.go` defines PASS/FAIL/NOT_ASSESSED verdicts and staged evidence; `internal/bcc/pathprobe.go` defines probe classes FULL_DATA/BYTE_CEILING/HANDSHAKE_ONLY/CONNECT_ONLY/TIMEOUT_UNREACHABLE/LOCAL_CONFLICT/UNKNOWN. Discovery is static code review only: no authenticated test BCC available, no live API schema verified, no actual probe executed. Step120 Chrome gate initially caught JavaScript syntax error (render undefined), repaired in f7ff8bd3 and rerun 8/8 smoke passed. Retain initial failure in evidence.
