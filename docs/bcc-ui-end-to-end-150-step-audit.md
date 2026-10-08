@@ -13,7 +13,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 8. [x] SOURCE INVENTORY — 8 dynamic `<button>` templates with `onclick` in `internal/bcc/dashboard.go`; verify generated DOM and permissions separately
 9. [ ] SOURCE STATIC CHECK — 30 distinct onclick expressions across 31 static button tags (including 8 dynamic templates); all named functions have declarations in dashboard.go. No browser, API, authz, disabled-state, or generated-DOM PASS yet.
 10. [ ] SOURCE AUDIT — backend dashboard.go contains zero <nav> elements and zero <a> links; API-backed functional sections exist but no explicit navigation landmark or link map. Needs browser/keyboard/RTL/mobile acceptance and V3 prototype comparison.
-11. [ ] TODO — color tokens
+11. [ ] SOURCE AUDIT — operational dashboard declares 8 --bcc-* color tokens but retains multiple hard-coded legacy colors and dark-only color-scheme; V3 preview defines 8 shared-named theme variables in each of light/dark themes. Shared semantic token system and browser contrast checks remain pending.
 12. [ ] TODO — spacing tokens
 13. [ ] TODO — type scale
 14. [ ] TODO — radius tokens
@@ -190,3 +190,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Step **9/150**: static handler-name scan found 30 distinct onclick expressions and no missing named function declarations in `internal/bcc/dashboard.go`; **PARTIAL / NOT ACCEPTED**. Next: runtime generated DOM, API/authorization mapping, loading/error/disabled behavior and navigation dead ends.
 
 - Step **10/150**: source audit identified no semantic navigation landmark or anchor in the backend dashboard template (`internal/bcc/dashboard.go`), while API-driven sections exist. **GAP / NOT ACCEPTED**; do not infer that the V3 prototype has the same limitation. Next: design navigation IA and validate focus, active-state, RTL and route/section access before implementation acceptance.
+
+- Step **11/150**: inspected `internal/bcc/dashboard.go` and `web/bcc-command-center-v3-preview.html` at the UI branch. Identified a dark-only operational dashboard and separate light/dark preview palette; colors are not unified. **SOURCE GAP / NOT ACCEPTED**. Proposed semantic roles: bg, surface, field, border, text, muted, accent, focus, success, warning, error, unknown. Do not claim WCAG contrast PASS before browser/computed-style testing.
