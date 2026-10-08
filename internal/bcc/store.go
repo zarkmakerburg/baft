@@ -511,15 +511,25 @@ func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosP
 		NodeID:nodeID,CostMicrosPerGiB:costMicrosPerGiB,RevenueMicrosPerGiB:revenueMicrosPerGiB,
 		Currency:currency,EffectiveFrom:effectiveFrom,Version:s.st.NextRateVersion,
 	}
+	previousVersion:=s.st.NextRateVersion
+	previousPolicy,hadPolicy:=s.st.Policies[nodeID]
+	previousHistory,hadHistory:=s.st.RateHistory[nodeID]
 	s.st.NextRateVersion++
-	h:=append(s.st.RateHistory[nodeID],p)
+	// Sorting an appended slice can otherwise overwrite the old backing array.
+	h:=append(append([]FinancePolicy(nil),previousHistory...),p)
 	sort.SliceStable(h,func(i,j int)bool{
 		if h[i].EffectiveFrom.Equal(h[j].EffectiveFrom){return h[i].Version<h[j].Version}
 		return h[i].EffectiveFrom.Before(h[j].EffectiveFrom)
 	})
 	s.st.RateHistory[nodeID]=h
 	s.st.Policies[nodeID]=p
-	return s.saveLocked()
+	if err:=s.saveLocked();err!=nil{
+		s.st.NextRateVersion=previousVersion
+		if hadPolicy{s.st.Policies[nodeID]=previousPolicy}else{delete(s.st.Policies,nodeID)}
+		if hadHistory{s.st.RateHistory[nodeID]=previousHistory}else{delete(s.st.RateHistory,nodeID)}
+		return err
+	}
+	return nil
 }
 
 // moneyForBytes returns the whole micros owed for bytes at rate, plus the new
