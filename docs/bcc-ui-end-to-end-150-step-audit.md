@@ -105,16 +105,16 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 90. [x] PREVIEW-ONLY — disabled agent install action; Step90 Mac Chrome smoke 8/8 PASS. Commit 6f00e2c3.
 
 ## Tunnels and discovery
-91. [ ] TODO — existing tunnels
-92. [ ] TODO — discover all
-93. [ ] TODO — discovery refresh
-94. [ ] TODO — layered health
-95. [ ] TODO — health refresh
-96. [ ] TODO — tunnel table
-97. [ ] TODO — tunnel refresh
-98. [ ] TODO — plan preview
-99. [ ] TODO — plan confirmation
-100. [ ] TODO — deploy
+91. [x] PREVIEW-ONLY — snapshot links shown as existing connections, not verified deployed tunnels. Commit f202ac8c.
+92. [x] PREVIEW-ONLY — discover-all action visible and disabled. Commit f202ac8c.
+93. [x] PREVIEW-ONLY — discovery refresh visible and disabled. Commit f202ac8c.
+94. [x] PREVIEW-ONLY — control/carrier/data-plane verification notice. Commit f202ac8c.
+95. [x] PREVIEW-ONLY — health refresh visible and disabled. Commit f202ac8c.
+96. [x] PREVIEW-ONLY — snapshot-backed bilingual tunnel table. Commit f202ac8c.
+97. [x] PREVIEW-ONLY — tunnel refresh visible and disabled. Commit f202ac8c.
+98. [x] PREVIEW-ONLY — empty-state plan preview disclosure. Commit f202ac8c.
+99. [x] PREVIEW-ONLY — disabled confirmation checkbox. Commit f202ac8c.
+100. [x] PREVIEW-ONLY — disabled deploy button; Chrome Step100 smoke 8/8 results observed. Commit f202ac8c.
 101. [ ] TODO — cancel
 102. [ ] TODO — drift check
 103. [ ] TODO — cert rotation
