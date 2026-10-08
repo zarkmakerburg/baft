@@ -67,11 +67,13 @@ var stateMigrations = []string{
 	 CREATE TABLE path_discoveries (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 	// 12: append-only managed configuration change ledger (OPS-P5).
 	`CREATE TABLE change_ledger (seq INTEGER PRIMARY KEY, doc TEXT NOT NULL);`,
+	// 13: durable non-dispatching canary plans.
+	`CREATE TABLE canary_rollouts (id TEXT PRIMARY KEY, doc TEXT NOT NULL);`,
 }
 
 var stateTables = []string{
 	"nodes", "jobs", "finance", "finance_policies", "finance_rate_history", "finance_ledger",
-	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "security_audit_intents", "topology", "ingress_selections", "ingress_distributions", "smart_ingress_plans", "path_probes", "path_discoveries", "change_ledger",
+	"finance_remainders", "telemetry", "history", "active_alerts", "retired_boot_ids", "counters", "tunnels", "node_health", "node_discovery", "cert_rotations", "security_audit_intents", "topology", "ingress_selections", "ingress_distributions", "smart_ingress_plans", "path_probes", "path_discoveries", "change_ledger", "canary_rollouts",
 }
 
 func isSQLiteFile(b []byte) bool { return bytes.HasPrefix(b, []byte(sqliteMagic)) }
@@ -228,6 +230,7 @@ func writeStateTx(tx *sql.Tx, st state) error {
 	for id, v := range st.IngressSelections { if err := put(`INSERT INTO ingress_selections VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.IngressDistributions { if err := put(`INSERT INTO ingress_distributions VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.SmartIngressPlans { if err := put(`INSERT INTO smart_ingress_plans VALUES (?, ?)`, id, v); err != nil { return err } }
+	for id, v := range st.CanaryRollouts { if err := put(`INSERT INTO canary_rollouts VALUES (?, ?)`, id, v); err != nil { return err } }
 	for _, v := range st.ChangeLedger { if err := put(`INSERT INTO change_ledger VALUES (?, ?)`, v.Sequence, v); err != nil { return err } }
 	for id, v := range st.PathProbes { if err := put(`INSERT INTO path_probes VALUES (?, ?)`, id, v); err != nil { return err } }
 	for id, v := range st.PathDiscoveries { if err := put(`INSERT INTO path_discoveries VALUES (?, ?)`, id, v); err != nil { return err } }
@@ -434,6 +437,7 @@ func readStateDB(path string) (state, error) {
 			st.IngressDistributions[k] = v
 			return err
 		}},
+		{`SELECT id, 0, doc FROM canary_rollouts`, func(k string, _ int64, d []byte) error { var v CanaryRollout; if err:=decode("canary_rollouts",d,&v);err!=nil{return err}; st.CanaryRollouts[k]=v; return nil }},
 		{`SELECT route_id, 0, doc FROM smart_ingress_plans`, func(k string, _ int64, d []byte) error {
 			var v SmartIngressPlan
 			err := decode("smart_ingress_plans", d, &v)

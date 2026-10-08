@@ -153,6 +153,7 @@ type MonitoringNode struct {
 }
 
 type state struct {
+ CanaryRollouts map[string]CanaryRollout `json:"canary_rollouts,omitempty"`
 	Nodes    map[string]Node          `json:"nodes"`
 	Jobs     map[string]Job           `json:"jobs"`
 	Finance   map[string]NodeFinance      `json:"finance,omitempty"`

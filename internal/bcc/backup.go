@@ -72,6 +72,7 @@ func newAEAD(key []byte)(cipher.AEAD,error){
 }
 
 func normalizeState(st *state){
+ if st.CanaryRollouts==nil {st.CanaryRollouts=map[string]CanaryRollout{}}
 	if st.Nodes==nil{st.Nodes=map[string]Node{}}
 	if st.Jobs==nil{st.Jobs=map[string]Job{}}
 	if st.Tunnels==nil{st.Tunnels=map[string]Tunnel{}}
