@@ -12,7 +12,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 7. [ ] TODO — inventory dialogs
 8. [x] SOURCE INVENTORY — 8 dynamic `<button>` templates with `onclick` in `internal/bcc/dashboard.go`; verify generated DOM and permissions separately
 9. [ ] SOURCE STATIC CHECK — 30 distinct onclick expressions across 31 static button tags (including 8 dynamic templates); all named functions have declarations in dashboard.go. No browser, API, authz, disabled-state, or generated-DOM PASS yet.
-10. [ ] TODO — navigation map
+10. [ ] SOURCE AUDIT — backend dashboard.go contains zero <nav> elements and zero <a> links; API-backed functional sections exist but no explicit navigation landmark or link map. Needs browser/keyboard/RTL/mobile acceptance and V3 prototype comparison.
 11. [ ] TODO — color tokens
 12. [ ] TODO — spacing tokens
 13. [ ] TODO — type scale
@@ -188,3 +188,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Step **8/150**: source inspection found 8 dynamic button templates in dashboard rendering (node token rotation/revoke, tunnel deploy/plan clear, drift, certificate rotation, decommission/cancel). This is a source inventory, **not** a browser/permission PASS. Counts include repeated decommission templates and exclude any DOM created outside button templates.
 
 - Step **9/150**: static handler-name scan found 30 distinct onclick expressions and no missing named function declarations in `internal/bcc/dashboard.go`; **PARTIAL / NOT ACCEPTED**. Next: runtime generated DOM, API/authorization mapping, loading/error/disabled behavior and navigation dead ends.
+
+- Step **10/150**: source audit identified no semantic navigation landmark or anchor in the backend dashboard template (`internal/bcc/dashboard.go`), while API-driven sections exist. **GAP / NOT ACCEPTED**; do not infer that the V3 prototype has the same limitation. Next: design navigation IA and validate focus, active-state, RTL and route/section access before implementation acceptance.
