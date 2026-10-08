@@ -26,7 +26,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 19. [ ] IMPLEMENTED IN V3 PREVIEW — welcome heading balanced line wrapping and line-height, constrained readable text width, mobile typography/padding, CTA width, forced-colors borders (commit 1647e6ad); browser contrast, viewport and keyboard acceptance pending.
 20. [ ] IMPLEMENTED + CHROME DOM SMOKE — responsive inline SVG network illustration implemented (commit 885b0345); Chrome headless rendered DOM confirmed welcome, CTA, SVG, RTL and initially hidden dashboard. Full interaction, visual viewport and JS console acceptance pending.
 21. [ ] IMPLEMENTED IN V3 PREVIEW — three bilingual responsive feature cards (Topology, Status/sample data, Management/preview) added to Welcome in commit 6d3aaebe. No false live status; browser/keyboard/mobile acceptance pending at step 25.
-22. [ ] TODO — entry CTA
+22. [ ] IMPLEMENTED IN V3 PREVIEW — guarded entry CTA against duplicate activation, visible focus style, dashboard heading focus handoff and scroll-to-start (commit cd6d39f5). Browser keyboard/click acceptance pending at step 25.
 23. [ ] TODO — anchor focus
 24. [ ] TODO — sign-in heading
 25. [ ] TODO — preview gate
@@ -215,3 +215,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Step **20/150** browser batch (steps 16–20): On Mac Google Chrome headless, exact GitHub preview HTML saved to `/tmp/baft-v3-step20.html`, Chrome dumped 15,354-byte DOM; checks: `welcome=True`, `enterPreview=True`, `welcome-illustration=True`, `previewApp hidden=True`, `dir=rtl=True`. **DOM smoke PASS only**. Chrome stderr included CVDisplayLink and process policy warnings; no claim of interaction/viewport/console PASS. Need click, language/theme, mobile screenshots, missing asset checks in subsequent browser run.
 
 - Step **21/150**: implemented Welcome feature cards in HTML/CSS and FA/EN dictionary. No production change. Browser regression batch due step 25.
+
+- Step **22/150**: implemented Welcome CTA interaction hardening. No auth bypass, production changes, or browser PASS claimed; batch browser test due at 25.
