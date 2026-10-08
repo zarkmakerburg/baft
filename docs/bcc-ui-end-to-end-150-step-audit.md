@@ -44,9 +44,9 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 35. [x] PREVIEW CHROME QA PASS — authorized Mac Chrome/Puppeteer 8/8 viewport×language×theme matrix (1440x900, 390x844 emulation; FA/EN; dark/light), welcome→dashboard interaction, H1 focus, localized title/button/aria, no horizontal overflow, zero captured JS page/console errors. No physical mobile, real BCC auth, server CSRF, API integration, or production acceptance. Logical-properties deep audit remains open for subsequent step.
 36. [x] PREVIEW-ONLY — selected-link updatedAt timestamps now render via Intl.DateTimeFormat fa-IR/en-GB, explicit UTC and stable date/time parts; missing/invalid values show em dash. Commit 0e0b4610. Static review only; runtime timestamp browser regression pending next browser gate. No BCC API production acceptance.
 37. [x] PREVIEW-ONLY — added locale-aware Intl.NumberFormat fa-IR/en-GB helper and opt-in data-number formatting in render(), with finite-number guard, up to 2 fractional digits, auto direction. Commit f09ba6fd. Source-only check; numeric runtime regression pending Step 40 browser gate. No real BCC data.
-38. [ ] TODO — IP text direction
-39. [ ] TODO — status labels
-40. [ ] TODO — error labels
+38. [x] PREVIEW-ONLY — CSS [data-ip]/.ip-address explicit LTR isolation, overflow-wrap and selected link identifier dir=auto. Commit c2dca310. Browser matrix at Step40 verified IPv6 LTR.
+39. [x] PREVIEW-ONLY — bilingual UP/DOWN/UNKNOWN/STALE status mapping, localized aria-label and status class. Commit 54e66a80. Browser Step40 verified UNKNOWN labels FA/EN.
+40. [x] PREVIEW CHROME QA PASS — safe bilingual INVALID_FILE/NETWORK_ERROR/UNAUTHORIZED/UNKNOWN error mapping with generic fallback and alert role. Commit 5c90ae07. Real Mac Chrome/Puppeteer Step40 8/8 combinations desktop 1440, mobile 390 emulated × FA/EN × dark/light: numbers fa-IR/en-GB, UNKNOWN status, INVALID_FILE error, IPv6 LTR, H1 focus, no overflow, zero JS console/page errors. No real BCC auth/API, no physical mobile or production acceptance.
 41. [ ] TODO — button labels
 42. [ ] TODO — tooltips
 43. [ ] TODO — screen reader language
