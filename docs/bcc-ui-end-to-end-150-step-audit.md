@@ -59,16 +59,16 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 48. [x] PREVIEW-ONLY — dark theme palette retained with explicit warning token. Commit b3b1da45.
 49. [x] PREVIEW-ONLY — semantic success color token and .status.good/[data-severity=success]. Commit b3b1da45.
 50. [x] PREVIEW-ONLY — semantic warning token and .status.warning/[data-severity=warning]; Mac Chrome 8/8 regression PASS; contrast audit pending. Commit b3b1da45.
-51. [ ] TODO — error color
-52. [ ] TODO — unknown color
-53. [ ] TODO — normal contrast
-54. [ ] TODO — small text contrast
-55. [ ] TODO — control contrast
-56. [ ] TODO — focus rings
-57. [ ] TODO — disabled states
-58. [ ] TODO — hover states
-59. [ ] TODO — pressed states
-60. [ ] TODO — reduced motion
+51. [x] PREVIEW-ONLY — semantic error severity color. Code commit 79fbf45a.
+52. [x] PREVIEW-ONLY — semantic unknown color per theme. Code commit 79fbf45a.
+53. [x] PREVIEW-ONLY — base text palette retained; WCAG numerical audit pending. Code commit 79fbf45a.
+54. [x] PREVIEW-ONLY — note/logo-note min font 12px; WCAG numerical audit pending. Code commit 79fbf45a.
+55. [x] PREVIEW-ONLY — gold border on interactive hover; contrast audit pending. Code commit 79fbf45a.
+56. [x] PREVIEW-ONLY — 3px keyboard focus rings for buttons/inputs/textarea/select/globe. Code commit 79fbf45a.
+57. [x] PREVIEW-ONLY — disabled opacity and non-interactive cursor. Code commit 79fbf45a.
+58. [x] PREVIEW-ONLY — hover border/filter state. Code commit 79fbf45a.
+59. [x] PREVIEW-ONLY — active press transform/background. Code commit 79fbf45a.
+60. [x] PREVIEW-ONLY — prefers-reduced-motion disables animations/transitions and smooth scrolling; Mac Chrome 8/8 smoke PASS. Code commit 79fbf45a.
 
 ## Monitoring and history
 61. [ ] TODO — monitor header
