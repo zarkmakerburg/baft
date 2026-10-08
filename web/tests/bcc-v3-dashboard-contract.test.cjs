@@ -6,3 +6,5 @@ for(const name of ['Live Monitoring','7-Day Traffic & Uptime','Register / update
 });
 test('BCC visual tokens and focus states are present',()=>{for(const token of ['--bcc-bg','--bcc-panel','--bcc-line','--bcc-gold','--bcc-focus'])assert.ok(go.includes(token));assert.ok(go.includes('button:focus-visible'));assert.ok(go.includes('prefers-reduced-motion'))});
 test('BCC dashboard remains wired to existing operational loaders',()=>{for(const fn of ['loadNodes','loadMonitoring','loadJobs','loadAudit','loadFinance','loadHistory','loadTunnels','loadAll'])assert.ok(go.includes('function '+fn+'('),'Missing loader: '+fn)});
+
+test('operational dashboard includes focus-visible and disabled control styles',()=>{assert.match(go,/button:focus-visible/);assert.match(go,/button:disabled/);assert.match(go,/@media\s*\(max-width:/);});
