@@ -4,7 +4,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),vm=require(
 const src=fs.readFileSync(path.join(__dirname,'..','bcc-topology-snapshot-v3.js'),'utf8');
 function harness(snapshot){
  const events=[],input={files:[{size:Buffer.byteLength(snapshot),text:async()=>snapshot}],value:'',addEventListener(_,fn){this.change=fn}},status={textContent:''};
- const sandbox={document:{getElementById:id=>({topologyFile:input,snapshotStatus:status})[id]},window:{dispatchEvent:e=>events.push(e.detail)},CustomEvent:class{constructor(_,v){this.detail=v.detail}},Date,JSON,Set,Error,Number,Array,Math};
+ const sandbox={document:{getElementById:id=>({topologyFile:input,snapshotStatus:status})[id]},window:{dispatchEvent:e=>events.push(e.detail)},CustomEvent:class{constructor(_,v){this.detail=v.detail}},TextEncoder,Date,JSON,Set,Error,Number,Array,Math};
  vm.runInNewContext(src,sandbox);return {input,status,events,run:()=>input.change()};
 }
 const base=(link={})=>JSON.stringify({schemaVersion:1,nodes:[{id:'ir',name:'Iran',lat:35.6892,lon:51.389},{id:'de',name:'Germany',lat:50.1109,lon:8.6821}],links:[{id:'t1',source:'ir',destination:'de',status:'healthy',rttMs:50,upBps:1000,downBps:2000,updatedAt:new Date().toISOString(),...link}]});
