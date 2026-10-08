@@ -54,11 +54,11 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 45. [x] PREVIEW-ONLY — missing translations — guarded dictionary lookup and explicit fallback instead of undefined text; Mac Chrome 8/8 regression matrix PASS (1440/390 × FA/EN × dark/light, zero captured JS errors/overflow), focused H1; deeper accessibility tests remain open. Code commit 6983d0ed.
 
 ## Theme and accessibility
-46. [ ] TODO — navy gold
-47. [ ] TODO — light palette
-48. [ ] TODO — dark palette
-49. [ ] TODO — success color
-50. [ ] TODO — warning color
+46. [x] PREVIEW-ONLY — consolidated gold-soft/focus-ring navy-gold token usage. Commit b3b1da45.
+47. [x] PREVIEW-ONLY — light theme palette preserved, success/warning contrast adjusted. Commit b3b1da45.
+48. [x] PREVIEW-ONLY — dark theme palette retained with explicit warning token. Commit b3b1da45.
+49. [x] PREVIEW-ONLY — semantic success color token and .status.good/[data-severity=success]. Commit b3b1da45.
+50. [x] PREVIEW-ONLY — semantic warning token and .status.warning/[data-severity=warning]; Mac Chrome 8/8 regression PASS; contrast audit pending. Commit b3b1da45.
 51. [ ] TODO — error color
 52. [ ] TODO — unknown color
 53. [ ] TODO — normal contrast
