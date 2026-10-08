@@ -217,3 +217,8 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Step **21/150**: implemented Welcome feature cards in HTML/CSS and FA/EN dictionary. No production change. Browser regression batch due step 25.
 
 - Step **22/150**: implemented Welcome CTA interaction hardening. No auth bypass, production changes, or browser PASS claimed; batch browser test due at 25.
+
+
+## HQ parallel integration directive — effective from Step 101
+
+User-approved integration work runs alongside Steps 101–150: inventory existing BCC APIs/contracts; connect authenticated read-only data in isolated test environment; validate server/tunnel/monitoring values and UNKNOWN semantics; only then consider lab write paths with security/RBAC/integration QA; after Step 150 prepare staged rollout with backup/rollback and explicit acceptance. No production mutations/cutover, secrets exposure, use of Ashkan, or unapproved paid resources. Browser QA every 10 steps (next 110). Integration completion requires evidence, not UI smoke tests.
