@@ -11,7 +11,7 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 6. [ ] TODO — inventory badges
 7. [ ] TODO — inventory dialogs
 8. [x] SOURCE INVENTORY — 8 dynamic `<button>` templates with `onclick` in `internal/bcc/dashboard.go`; verify generated DOM and permissions separately
-9. [ ] TODO — detect dead controls
+9. [ ] SOURCE STATIC CHECK — 30 distinct onclick expressions across 31 static button tags (including 8 dynamic templates); all named functions have declarations in dashboard.go. No browser, API, authz, disabled-state, or generated-DOM PASS yet.
 10. [ ] TODO — navigation map
 11. [ ] TODO — color tokens
 12. [ ] TODO — spacing tokens
@@ -186,3 +186,5 @@ Status: IN PROGRESS; unchecked items are not verified. Draft PR #159 only; no pr
 - Report every subsequent action with exact phase and step number; do not infer completion from commits alone.
 
 - Step **8/150**: source inspection found 8 dynamic button templates in dashboard rendering (node token rotation/revoke, tunnel deploy/plan clear, drift, certificate rotation, decommission/cancel). This is a source inventory, **not** a browser/permission PASS. Counts include repeated decommission templates and exclude any DOM created outside button templates.
+
+- Step **9/150**: static handler-name scan found 30 distinct onclick expressions and no missing named function declarations in `internal/bcc/dashboard.go`; **PARTIAL / NOT ACCEPTED**. Next: runtime generated DOM, API/authorization mapping, loading/error/disabled behavior and navigation dead ends.
