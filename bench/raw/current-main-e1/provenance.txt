@@ -1,0 +1,6 @@
+SHA=cd4d3c6d8377f177c7a8797ed8e0960631ed9d65
+BASE=5f1502d4f228584611db3af31d2a7725025b9ebc
+Darwin Amirs-MacBook-Air.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:05:27 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T8103 arm64
+MacBookAir10,1
+8
+go version go1.27.1 darwin/arm64

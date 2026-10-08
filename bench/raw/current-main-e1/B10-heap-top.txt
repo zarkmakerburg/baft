@@ -1,0 +1,62 @@
+File: integration.test
+Type: alloc_space
+Time: 2026-10-08 15:11:24 +0330
+Showing nodes accounting for 109.43MB, 94.73% of 115.52MB total
+Dropped 66 nodes (cum <= 0.58MB)
+      flat  flat%   sum%        cum   cum%
+   59.83MB 51.79% 51.79%    59.83MB 51.79%  github.com/zarkmakerburg/baft/internal/session.(*flow).commitSend
+   32.01MB 27.71% 79.50%    32.01MB 27.71%  github.com/zarkmakerburg/baft/tests/integration_test.runStageEMeasureMultiFlowThroughput.func5
+    4.80MB  4.16% 83.66%     4.80MB  4.16%  github.com/zarkmakerburg/baft/internal/session.(*receiveRing).Grow
+    2.89MB  2.50% 86.16%     4.89MB  4.24%  modernc.org/libc/honnef.co/go/netdb.init.0
+       2MB  1.73% 87.89%        2MB  1.73%  strings.genSplit
+    1.72MB  1.49% 89.38%     1.72MB  1.49%  runtime/pprof.StartCPUProfile
+    1.53MB  1.33% 90.71%     1.53MB  1.33%  github.com/zarkmakerburg/baft/internal/protocol.DecodeReuse
+       1MB  0.87% 91.58%        1MB  0.87%  runtime.mallocgc
+       1MB  0.87% 92.44%        1MB  0.87%  sync.(*Pool).pinSlow
+       1MB  0.87% 93.31%        1MB  0.87%  github.com/zarkmakerburg/baft/internal/session.(*outboundSender).sendControl
+       1MB  0.87% 94.17%        1MB  0.87%  github.com/zarkmakerburg/baft/internal/session.(*outboundSender).sendDataWithProducer
+    0.64MB  0.55% 94.73%     0.64MB  0.55%  compress/flate.NewWriter (inline)
+         0     0% 94.73%     0.64MB  0.55%  compress/gzip.(*Writer).Write
+         0     0% 94.73%     2.03MB  1.76%  github.com/zarkmakerburg/baft/internal/carrier/h2.HandlerWithRevocation.func1
+         0     0% 94.73%     1.04MB   0.9%  github.com/zarkmakerburg/baft/internal/protocol.Encode
+         0     0% 94.73%     3.03MB  2.63%  github.com/zarkmakerburg/baft/internal/session.(*Peer).Run (inline)
+         0     0% 94.73%     5.30MB  4.59%  github.com/zarkmakerburg/baft/internal/session.(*Peer).grantReceive
+         0     0% 94.73%     4.80MB  4.16%  github.com/zarkmakerburg/baft/internal/session.(*Peer).growReceiveWindow
+         0     0% 94.73%        1MB  0.87%  github.com/zarkmakerburg/baft/internal/session.(*Peer).handleData
+         0     0% 94.73%     1.50MB  1.30%  github.com/zarkmakerburg/baft/internal/session.(*Peer).handleFrame
+         0     0% 94.73%     1.50MB  1.30%  github.com/zarkmakerburg/baft/internal/session.(*Peer).handleFrameFrom
+         0     0% 94.73%    60.83MB 52.66%  github.com/zarkmakerburg/baft/internal/session.(*Peer).pumpLocal
+         0     0% 94.73%     5.30MB  4.59%  github.com/zarkmakerburg/baft/internal/session.(*Peer).pumpTarget
+         0     0% 94.73%     5.83MB  5.05%  github.com/zarkmakerburg/baft/internal/session.(*Peer).reserveReceiveWindow
+         0     0% 94.73%     3.03MB  2.63%  github.com/zarkmakerburg/baft/internal/session.(*Peer).run
+         0     0% 94.73%     1.54MB  1.33%  github.com/zarkmakerburg/baft/internal/session.(*Peer).run.func1
+         0     0% 94.73%    60.83MB 52.66%  github.com/zarkmakerburg/baft/internal/session.(*Peer).startPump.func1
+         0     0% 94.73%     5.30MB  4.59%  github.com/zarkmakerburg/baft/internal/session.(*Peer).startTargetPump.func1
+         0     0% 94.73%     1.54MB  1.33%  github.com/zarkmakerburg/baft/internal/session.(*outboundSender).run
+         0     0% 94.73%     1.04MB   0.9%  github.com/zarkmakerburg/baft/internal/session.(*outboundSender).writeFrame
+         0     0% 94.73%        1MB  0.87%  github.com/zarkmakerburg/baft/internal/tunnelnode.init
+         0     0% 94.73%     2.03MB  1.76%  github.com/zarkmakerburg/baft/tests/integration_test.runStageEMeasureMultiFlowThroughput.func2
+         0     0% 94.73%        1MB  0.87%  github.com/zarkmakerburg/baft/tests/integration_test.runStageEMeasureMultiFlowThroughput.func3
+         0     0% 94.73%     2.22MB  1.92%  main.main
+         0     0% 94.73%     2.03MB  1.76%  net/http.HandlerFunc.ServeHTTP
+         0     0% 94.73%     2.03MB  1.76%  net/http.http2Handler.ServeHTTP
+         0     0% 94.73%     2.03MB  1.76%  net/http.serverHandler.ServeHTTP
+         0     0% 94.73%     2.03MB  1.76%  net/http/internal/http2.(*serverConn).runHandler
+         0     0% 94.73%        1MB  0.87%  regexp.Compile (inline)
+         0     0% 94.73%        1MB  0.87%  regexp.MustCompile
+         0     0% 94.73%        1MB  0.87%  regexp.compile
+         0     0% 94.73%     6.40MB  5.54%  runtime.doInit (inline)
+         0     0% 94.73%     6.40MB  5.54%  runtime.doInit1
+         0     0% 94.73%     8.62MB  7.46%  runtime.main
+         0     0% 94.73%        1MB  0.87%  runtime.newobject
+         0     0% 94.73%     1.14MB  0.99%  runtime/pprof.(*profileBuilder).appendLocsForStack
+         0     0% 94.73%     1.14MB  0.99%  runtime/pprof.(*profileBuilder).build
+         0     0% 94.73%     0.64MB  0.55%  runtime/pprof.(*profileBuilder).emitLocation
+         0     0% 94.73%     0.64MB  0.55%  runtime/pprof.(*profileBuilder).flush
+         0     0% 94.73%     1.14MB  0.99%  runtime/pprof.profileWriter
+         0     0% 94.73%     1.50MB  1.30%  strings.SplitN (inline)
+         0     0% 94.73%     1.54MB  1.33%  sync.(*Pool).Get
+         0     0% 94.73%        1MB  0.87%  sync.(*Pool).pin
+         0     0% 94.73%     2.22MB  1.92%  testing.(*M).Run
+         0     0% 94.73%     2.22MB  1.92%  testing.(*M).before
+         0     0% 94.73%     1.72MB  1.49%  testing/internal/testdeps.TestDeps.StartCPUProfile

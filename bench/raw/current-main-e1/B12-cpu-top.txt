@@ -1,0 +1,67 @@
+File: integration.test
+Type: cpu
+Time: 2026-10-08 15:11:23 +0330
+Duration: 709.82ms, Total samples = 1.63s (229.64%)
+Showing nodes accounting for 1.63s, 100% of 1.63s total
+Showing top 60 nodes out of 172
+      flat  flat%   sum%        cum   cum%
+     1.03s 63.19% 63.19%      1.03s 63.19%  syscall.rawsyscalln
+     0.17s 10.43% 73.62%      0.36s 22.09%  github.com/zarkmakerburg/baft/tests/integration_test.runStageEMeasureMultiFlowThroughput.func5
+     0.08s  4.91% 78.53%      0.08s  4.91%  runtime.usleep
+     0.07s  4.29% 82.82%      0.07s  4.29%  runtime.kevent
+     0.06s  3.68% 86.50%      0.06s  3.68%  runtime.memmove
+     0.06s  3.68% 90.18%      0.06s  3.68%  runtime.pthread_cond_wait
+     0.04s  2.45% 92.64%      0.04s  2.45%  crypto/internal/fips140/sha256.blockSHA2
+     0.02s  1.23% 93.87%      0.02s  1.23%  runtime.madvise
+     0.02s  1.23% 95.09%      0.02s  1.23%  runtime.scanObjectsSmall
+     0.01s  0.61% 95.71%      0.01s  0.61%  crypto/internal/fips140/aes/gcm.gcmAesEnc
+     0.01s  0.61% 96.32%      0.01s  0.61%  encoding/json/v2.makeStructFields.func3
+     0.01s  0.61% 96.93%      0.01s  0.61%  runtime.(*mspan).typePointersOfUnchecked
+     0.01s  0.61% 97.55%      0.01s  0.61%  runtime.(*stkframe).getStackMap
+     0.01s  0.61% 98.16%      0.01s  0.61%  runtime.asyncPreempt
+     0.01s  0.61% 98.77%      0.01s  0.61%  runtime.pthread_cond_signal
+     0.01s  0.61% 99.39%      0.01s  0.61%  runtime.pthread_kill
+     0.01s  0.61%   100%      0.01s  0.61%  runtime.typePointers.nextFast
+         0     0%   100%      0.13s  7.98%  bufio.(*Reader).Read
+         0     0%   100%      0.16s  9.82%  bufio.(*Writer).Flush
+         0     0%   100%      0.22s 13.50%  bufio.(*Writer).Write
+         0     0%   100%      0.01s  0.61%  bytes.(*Reader).WriteTo
+         0     0%   100%      0.01s  0.61%  crypto/internal/fips140/aes/gcm.(*GCM).sealAfterIndicator
+         0     0%   100%      0.01s  0.61%  crypto/internal/fips140/aes/gcm.(*GCMWithXORCounterNonce).Seal
+         0     0%   100%      0.01s  0.61%  crypto/internal/fips140/aes/gcm.seal
+         0     0%   100%      0.04s  2.45%  crypto/internal/fips140/sha256.(*Digest).Write
+         0     0%   100%      0.04s  2.45%  crypto/internal/fips140/sha256.block
+         0     0%   100%      0.04s  2.45%  crypto/sha256.Sum256
+         0     0%   100%      0.25s 15.34%  crypto/tls.(*Conn).Read
+         0     0%   100%      0.38s 23.31%  crypto/tls.(*Conn).Write
+         0     0%   100%      0.25s 15.34%  crypto/tls.(*Conn).readFromUntil
+         0     0%   100%      0.25s 15.34%  crypto/tls.(*Conn).readRecord (inline)
+         0     0%   100%      0.25s 15.34%  crypto/tls.(*Conn).readRecordOrCCS
+         0     0%   100%      0.37s 22.70%  crypto/tls.(*Conn).write
+         0     0%   100%      0.38s 23.31%  crypto/tls.(*Conn).writeRecordLocked
+         0     0%   100%      0.01s  0.61%  crypto/tls.(*halfConn).encrypt
+         0     0%   100%      0.01s  0.61%  crypto/tls.(*xorNonceAEAD).Seal
+         0     0%   100%      0.01s  0.61%  encoding/json.Marshal (inline)
+         0     0%   100%      0.01s  0.61%  encoding/json/v2.Marshal
+         0     0%   100%      0.01s  0.61%  encoding/json/v2.makeStructArshaler.func1
+         0     0%   100%      0.01s  0.61%  encoding/json/v2.makeStructArshaler.func2
+         0     0%   100%      0.01s  0.61%  encoding/json/v2.makeStructFields
+         0     0%   100%      0.01s  0.61%  encoding/json/v2.marshalEncode
+         0     0%   100%      0.02s  1.23%  github.com/zarkmakerburg/baft/internal/carrier/h2.HandlerWithRevocation.func1
+         0     0%   100%      0.05s  3.07%  github.com/zarkmakerburg/baft/internal/protocol.DecodeReuse
+         0     0%   100%      0.01s  0.61%  github.com/zarkmakerburg/baft/internal/protocol.EncodeControl
+         0     0%   100%      0.08s  4.91%  github.com/zarkmakerburg/baft/internal/session.(*Peer).Run (inline)
+         0     0%   100%      0.01s  0.61%  github.com/zarkmakerburg/baft/internal/session.(*Peer).ackRemoteFin
+         0     0%   100%      0.01s  0.61%  github.com/zarkmakerburg/baft/internal/session.(*Peer).handleData
+         0     0%   100%      0.01s  0.61%  github.com/zarkmakerburg/baft/internal/session.(*Peer).handleFin
+         0     0%   100%      0.02s  1.23%  github.com/zarkmakerburg/baft/internal/session.(*Peer).handleFrame
+         0     0%   100%      0.02s  1.23%  github.com/zarkmakerburg/baft/internal/session.(*Peer).handleFrameFrom
+         0     0%   100%      0.12s  7.36%  github.com/zarkmakerburg/baft/internal/session.(*Peer).pumpLocal
+         0     0%   100%      0.11s  6.75%  github.com/zarkmakerburg/baft/internal/session.(*Peer).pumpTarget
+         0     0%   100%      0.08s  4.91%  github.com/zarkmakerburg/baft/internal/session.(*Peer).run
+         0     0%   100%      0.01s  0.61%  github.com/zarkmakerburg/baft/internal/session.(*Peer).sendHello
+         0     0%   100%      0.12s  7.36%  github.com/zarkmakerburg/baft/internal/session.(*Peer).startPump.func1
+         0     0%   100%      0.11s  6.75%  github.com/zarkmakerburg/baft/internal/session.(*Peer).startTargetPump.func1
+         0     0%   100%      0.01s  0.61%  github.com/zarkmakerburg/baft/internal/session.(*flow).acceptData
+         0     0%   100%      0.05s  3.07%  github.com/zarkmakerburg/baft/internal/session.(*flow).commitSend
+         0     0%   100%      0.01s  0.61%  github.com/zarkmakerburg/baft/internal/session.(*receiveRing).Write

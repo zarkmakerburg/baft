@@ -1,0 +1,5 @@
+=== RUN   TestStageEMeasureMultiFlowThroughput
+    stage_e_benchmark_test.go:375: BAFT_BENCH_METRIC {"aggregate_mbps":1294.0083590816746,"elapsed_ms":414.889833,"fd_after":-1,"fd_before":-1,"flows":8,"goroutines_after":15,"goroutines_before":60,"heap_alloc_after_bytes":19711648,"heap_alloc_before_bytes":40194080,"measurement":"loopback_multiflow_throughput","netem_loss_pct":"","netem_rate_mbit":0,"netem_rtt_ms":0,"rx_bytes":33554432,"rx_mbps":647.0041795408373,"scenario":"B06","scope":"loopback BAFT Session + H2/mTLS; warmed flows; not public-network throughput","ttfb_ms_p50":15.871083,"ttfb_ms_p99":16.104417,"ttfb_samples_ms":[7.856666,8.002208,15.16075,15.871083,15.913,16.013084,16.104417,16.274333],"tx_bytes":33554432,"tx_mbps":647.0041795408373}
+--- PASS: TestStageEMeasureMultiFlowThroughput (0.55s)
+PASS
+ok  	github.com/zarkmakerburg/baft/tests/integration	1.560s

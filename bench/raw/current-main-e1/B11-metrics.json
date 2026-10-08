@@ -1,0 +1,70 @@
+{
+  "metadata": {
+    "started_at": "2026-10-08T11:41:10Z",
+    "git_sha": "cd4d3c6d8377f177c7a8797ed8e0960631ed9d65",
+    "go_version": "go version go1.27.1 darwin/arm64",
+    "goos": "darwin",
+    "goarch": "arm64",
+    "hostname": "Amirs-MacBook-Air.local",
+    "manifest": "bench/manifest.json"
+  },
+  "metrics": {
+    "B11": [
+      {
+        "allocated_bytes_per_payload_byte": 1.000734814453125,
+        "allocs_per_decode": 2,
+        "bytes_allocated_per_decode": 32792.0784,
+        "encoded_frame_bytes": 32792,
+        "iterations": 10000,
+        "measurement": "protocol_decode_allocation",
+        "payload_bytes": 32768,
+        "scenario": "B11",
+        "scope": "protocol.Decode 32KiB DATA frame allocation; bytes.Reader reused; production implementation unchanged"
+      },
+      {
+        "allocated_bytes_per_payload_byte": 1.0007508544921875,
+        "allocs_per_decode": 2,
+        "bytes_allocated_per_decode": 32792.604,
+        "encoded_frame_bytes": 32792,
+        "iterations": 10000,
+        "measurement": "protocol_decode_allocation",
+        "payload_bytes": 32768,
+        "scenario": "B11",
+        "scope": "protocol.Decode 32KiB DATA frame allocation; bytes.Reader reused; production implementation unchanged"
+      },
+      {
+        "allocated_bytes_per_payload_byte": 1.0007328125,
+        "allocs_per_decode": 2,
+        "bytes_allocated_per_decode": 32792.0128,
+        "encoded_frame_bytes": 32792,
+        "iterations": 10000,
+        "measurement": "protocol_decode_allocation",
+        "payload_bytes": 32768,
+        "scenario": "B11",
+        "scope": "protocol.Decode 32KiB DATA frame allocation; bytes.Reader reused; production implementation unchanged"
+      },
+      {
+        "allocated_bytes_per_payload_byte": 1.000734521484375,
+        "allocs_per_decode": 2,
+        "bytes_allocated_per_decode": 32792.0688,
+        "encoded_frame_bytes": 32792,
+        "iterations": 10000,
+        "measurement": "protocol_decode_allocation",
+        "payload_bytes": 32768,
+        "scenario": "B11",
+        "scope": "protocol.Decode 32KiB DATA frame allocation; bytes.Reader reused; production implementation unchanged"
+      },
+      {
+        "allocated_bytes_per_payload_byte": 1.000733447265625,
+        "allocs_per_decode": 2,
+        "bytes_allocated_per_decode": 32792.0336,
+        "encoded_frame_bytes": 32792,
+        "iterations": 10000,
+        "measurement": "protocol_decode_allocation",
+        "payload_bytes": 32768,
+        "scenario": "B11",
+        "scope": "protocol.Decode 32KiB DATA frame allocation; bytes.Reader reused; production implementation unchanged"
+      }
+    ]
+  }
+}
