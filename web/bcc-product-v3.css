@@ -22,3 +22,5 @@ main h1[tabindex="-1"]:focus{outline:none}
 #previewApp main h1[tabindex="-1"]:focus{outline:none}
 
 .hero-actions .hero-docs{display:inline-flex;align-items:center;justify-content:center;padding:13px 28px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--text);font-size:14px;text-decoration:none}.hero-actions .hero-docs:hover{border-color:var(--gold);color:var(--gold)}@media(max-width:760px){.hero-actions .hero-docs{flex:1}}
+
+@media(min-width:1101px){.hero-art{transform:scale(1.35);transform-origin:center}}
