@@ -90,4 +90,11 @@
 - The official transparent logo asset remains unverified (step 31); live authentication and final acceptance (steps 49–50) remain open. This documentation-only checkpoint does not approve the 50-step program or BCC audit 150/150.
 - No production tunnel/server, merge, deployment, release or tag is authorized by this checkpoint.
 
+## CI verification checkpoint — 2026-10-09, follow-up (evidence only)
+
+- Verified branch tip before this update: `f7ca400f21f9b8ffb753df743f1c280864ba5602` (`compare_commits` reported `identical`, ahead=0, behind=0).
+- All four GitHub Actions runs associated with **that exact SHA** completed successfully: `ci` run `37910985804`, `static-analysis` run `37910985738`, `BCC V3 UI contract tests` run `37910985794`, and `r3.1-probabilistic-morphing` run `37910985733`.
+- These are workflow results for the preceding documentation checkpoint; they do **not** establish a full WCAG computed-style/screen-reader acceptance, an owner-verified transparent logo, or approved real login operation. Welcome/Login steps **18, 31, 49 and 50** remain open for their respective acceptance evidence.
+- BCC 150-step final gate remains **BLOCKED**: approved isolated enrolled IR/EX agents, real link-scoped telemetry, visual fidelity and remaining operational localization are not accepted. No production tunnel, deployment, merge, tag or release is authorized.
+
 </div>
