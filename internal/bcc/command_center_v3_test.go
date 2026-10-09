@@ -81,3 +81,22 @@ func TestCommandCenterV3NativeSession(t *testing.T) {
 		t.Fatal("logout left session active")
 	}
 }
+
+func TestCommandCenterV3LoginFailureStates(t *testing.T) {
+	r := newAccessRig(t)
+	req := httptest.NewRequest("POST", r.base()+"login?ui=v3", strings.NewReader("password="+strings.Repeat("x", 5000)))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := r.do(req)
+	if rr.Code != 400 || !strings.Contains(rr.Body.String(), `"mode":"signin"`) || !strings.Contains(rr.Body.String(), `"error":"bad request"`) {
+		t.Fatal("oversized request lost native error state")
+	}
+	for i := 0; i < 20; i++ {
+		r.app.loginLim.failed(r.creds.Username, r.clock)
+	}
+	req = httptest.NewRequest("POST", r.base()+"login?ui=v3", strings.NewReader("username="+url.QueryEscape(r.creds.Username)+"&password=wrong"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr = r.do(req)
+	if rr.Code != 429 || rr.Header().Get("Retry-After") == "" || !strings.Contains(rr.Body.String(), `"mode":"signin"`) {
+		t.Fatal("limited login lost native error state")
+	}
+}

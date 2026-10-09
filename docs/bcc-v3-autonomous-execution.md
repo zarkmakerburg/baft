@@ -6,7 +6,7 @@ Authority: #67 PRODUCTIZATION RESET and owner 150-step instruction.
 ## Acceptance ledger
 
 The earlier audit is retained unchanged. Its preview checkmarks are not product acceptance.
-Current execution checkpoint: 40/150. Checkpoint 20 source: 17be92b.
+Current execution checkpoint: 50/150. Checkpoint 20 source: 17be92b.
 This counts implemented foundation work, not final visual or operational acceptance.
 Later ranges remain OPEN; the entire product has not passed final acceptance.
 
@@ -99,3 +99,31 @@ password toggles correctly, native failure remained styled after language change
 or JS errors. Native full login/logout/API/matrix retest PASS on fresh loopback BCC.
 Screenshot /tmp/baft-login-1440-dark.png reviewed against reference composite: brand/globe
 and gold-black language are shared; final page proportions and whole-product fidelity OPEN.
+
+## Checkpoint 50 — dashboard integrity and session handling
+
+41–45: oversized native POST has a styled 400/translated error and successful keyboard
+login; Go checks 400 and native 429 with Retry-After. 46–50: telemetry chart uses
+real timestamps, valid non-resetting byte deltas, Mbps and separate empty/loading/error
+states; 401 clears protected DOM and opens native sign-in. Live dashboard now shows
+the chart/server list (a native-only hide rule was corrected). Globe selection status
+localizes and becomes UNKNOWN with blank measurements after three minutes on the page.
+
+Mac Chrome PASS: form/400/keyboard, GL/reduced-motion/staleness, real session
+invalidation with protected data removed, chart deterministic API fixture including
+reset/future counter and 503 error, and prior native login/API/matrix. Synthetic chart
+fixture is explicitly test-only; no telemetry is claimed live. 40 JS tests and
+selected Go access/security tests PASS.
+
+Failures recorded: after Mac automation sessions rotated, an old loopback staging
+process held 18772 while the control file referred to a new failed instance; the
+404/selector timeout was resolved by verifying/killing only that old disposable
+process and starting a fresh one. A history browser check found native dashboardLower
+hidden by the legacy-section rule; corrected, rebuilt embedded binary and retested.
+A globe QA assertion expected title case though the source English status is uppercase;
+corrected the assertion and mapped Persian health statuses explicitly.
+
+Native Chrome replay on a reused staging process reached 429 after logout instead
+of the unauthenticated 401. This rate-limit result remains recorded as a failed
+run. A fresh isolated BCC session then passed all seven GETs/eight display cells,
+logout 401 and the separately labeled deterministic history fixture.

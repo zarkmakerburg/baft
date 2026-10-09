@@ -517,6 +517,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, a AccessFile, bas
 	ip := s.clientIP(r)
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {
+		if r.URL.Query().Get("ui") == "v3" {
+			s.serveCommandCenterV3(w, r, a, base, "bad request", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
