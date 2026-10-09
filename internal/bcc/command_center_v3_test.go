@@ -60,6 +60,11 @@ func TestCommandCenterV3NativeSession(t *testing.T) {
 	if !strings.Contains(page.Body.String(), `"mode":"dashboard"`) {
 		t.Fatal("authenticated mode missing")
 	}
+	req = httptest.NewRequest("GET", r.base()+"api/alerts", nil)
+	req.AddCookie(cookie)
+	if r.do(req).Code != 200 {
+		t.Fatal("session alerts GET failed")
+	}
 	req = httptest.NewRequest("GET", r.base()+"api/nodes", nil)
 	req.AddCookie(cookie)
 	if r.do(req).Code != 200 {

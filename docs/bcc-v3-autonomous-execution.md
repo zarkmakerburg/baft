@@ -6,7 +6,7 @@ Authority: #67 PRODUCTIZATION RESET and owner 150-step instruction.
 ## Acceptance ledger
 
 The earlier audit is retained unchanged. Its preview checkmarks are not product acceptance.
-Current execution checkpoint: 50/150. Checkpoint 20 source: 17be92b.
+Current execution checkpoint: 60/150. Checkpoint 20 source: 17be92b.
 This counts implemented foundation work, not final visual or operational acceptance.
 Later ranges remain OPEN; the entire product has not passed final acceptance.
 
@@ -127,3 +127,24 @@ Native Chrome replay on a reused staging process reached 429 after logout instea
 of the unauthenticated 401. This rate-limit result remains recorded as a failed
 run. A fresh isolated BCC session then passed all seven GETs/eight display cells,
 logout 401 and the separately labeled deterministic history fixture.
+
+## Checkpoint 60 — measured network overview
+
+Authenticated dashboard now reads protected nodes, tunnels, monitoring and active
+alerts. Server/tunnel/alert counts are from separate successful API responses;
+failures remain unknown (—), rather than false zero. Added GET-only /api/alerts with
+native session access and Go authentication check. The one-server traffic sample is
+explicitly labeled and selectable by node; rates derive from actual history deltas.
+Changing language/theme no longer refetches the same route repeatedly. Real
+monitoring status and latency populate the server list without inventing locations.
+
+Mac Chrome PASS on fresh loopback BCC: authenticated zero counts (0/0/0), empty
+traffic, seven read routes, eight viewport/language/theme states, logout 401, no JS
+errors; screenshot /tmp/baft-product-auth-dashboard.png reviewed. Deterministic
+history fixture PASS with two node options, valid deltas, reset/future rejection
+and 503 error distinction. Go access test and 40 JavaScript tests PASS.
+
+Visual discrepancy remains: without verified coordinates or telemetry, live globe
+correctly shows no routes and the chart has no measured samples. The reference
+images show populated networks; final comparison awaits approved non-production
+coordinates/telemetry. No real server or tunnel action was taken.

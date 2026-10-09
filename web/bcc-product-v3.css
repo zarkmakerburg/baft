@@ -12,3 +12,7 @@
 .signin-art{position:relative;min-height:500px;display:flex;flex-direction:column;justify-content:center;align-items:center;isolation:isolate}.signin-art #welcomeGlobe{position:absolute;inset:0;width:100%;height:100%;max-width:none;margin:0;opacity:.45;z-index:-1}.signin-art .product-logo{width:150px;height:200px}.signin-art p{max-width:38ch}.field-error{display:block;color:var(--bad);font-size:12px;margin-top:8px;min-height:1.3em}.login-card input[aria-invalid=true]{border-color:var(--bad)}.login-card button:disabled{opacity:.6;cursor:wait}@media(max-width:760px){.signin-art{display:none}}
 
 .masthead .wordmark{text-decoration:none}.layout nav a>span{padding:0;margin:0;background:none;border:0}.layout nav .menu-icon{flex:0 0 22px}.layout nav a{min-height:48px}
+
+#historyNode{max-width:175px;min-width:100px;min-height:32px;padding:4px 8px;font-size:11px;direction:auto}.server-row .status.down{color:var(--bad)}
+
+main h1[tabindex="-1"]:focus{outline:none}
