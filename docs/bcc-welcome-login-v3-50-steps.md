@@ -1,3 +1,5 @@
+<div dir="rtl" align="right" lang="fa">
+
 # BAFT Welcome + Login V3 — 50-step implementation ledger
 
 **Scope:** isolated static UI preview, not production login. Branch `ui/bcc-command-center-v3`; PR #159 remains Draft.
@@ -77,3 +79,5 @@
 - Logo fallback now handles cached images; the actual original BAFT asset remains missing and must not be fabricated.
 - Anchor scroll margin and image dimensions improved.
 - These steps are **source-level implementation**, not 50 independent QA passes. Never mark contrast, browser QA, asset verification or live auth as accepted without evidence.
+
+</div>
