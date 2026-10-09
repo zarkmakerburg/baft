@@ -229,3 +229,11 @@ SSL rotation history links to the existing reviewed tunnel rotation controls; Up
 Real Mac Chrome bcc-system-menus-chrome.cjs PASS after rebuilding the embedded BCC: protected SSL/Backups/Updates reads, actual disposable backup preview with rendered verdict, both contextual menu links navigated to Tunnels/Servers, Settings language/theme switched, and no JS errors. 40 JS tests PASS. There is no claim that a certificate was rotated, a server was deployed or a backup restored.
 
 Open: actual SSL rotation and update deployment need an approved isolated enrolled pair/node; full backup create/apply needs a safely specified and tested authenticated backend workflow.
+
+## Checkpoint 130 — bilingual operations and responsive shell
+
+The embedded native operations now translate more headings, table labels, actions and generated field labels in Persian, normalize mixed-language headings when switching back to English, and update the field's accessible name on language changes. The theme and route shell continue to use shared gold/black tokens and RTL/LTR direction.
+
+Real Mac Chrome bcc-system-menus-chrome.cjs PASS after rebuilding the native BCC: Settings language/theme controls, English and Persian registration labels/headings, SSL/Updates contextual navigation, backup restore preview, and 390 px viewport without document-wide horizontal overflow. 40 JS tests PASS.
+
+Open: several original operational descriptions, prompts, runtime messages and option labels remain English or mixed-language in Persian mode; a full bilingual acceptance audit is required. Other responsive device sizes and final visual reference comparison remain open.
