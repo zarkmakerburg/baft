@@ -6,7 +6,7 @@ Authority: #67 PRODUCTIZATION RESET and owner 150-step instruction.
 ## Acceptance ledger
 
 The earlier audit is retained unchanged. Its preview checkmarks are not product acceptance.
-Current execution checkpoint: 70/150. Checkpoint 20 source: 17be92b.
+Current execution checkpoint: 80/150. Checkpoint 20 source: 17be92b.
 This counts implemented foundation work, not final visual or operational acceptance.
 Later ranges remain OPEN; the entire product has not passed final acceptance.
 
@@ -169,3 +169,18 @@ A first QA attempt closed Chrome because the test held an unresolved element
 Promise; fixed the test handle and repeated on fresh disposable state. Broad
 dynamic localization observation was narrowed to inserted server rows. This
 does not certify SSH installation or deployment against a real host.
+
+## Checkpoint 80 — guarded server maintenance and tunnel planning
+
+On disposable loopback BCC, real Mac Chrome verified a staged environment-token
+rotation (200, secret value never entered into browser), safe invalid SSH migration
+plan (400) and Start blocked before a valid plan, followed by fixture revoke (200).
+The migration UI no longer leaves an unhandled rejection for a validation/network
+error and clears password/key fields after verification attempts. Actual migration
+and SSH agent install remain untested without an approved isolated host.
+
+Tunnel browser proof: two disposable EX/IR registrations (201 each), five visible
+tunnel operations, plan POST 200 with explicit missing-agent FAIL gates and an
+disabled Deploy button, discard action, no tunnel creation POST, Route Doctor
+refused an absent active tunnel. No real tunnel was started. Reproducer:
+web/qa/bcc-tunnels-chrome.cjs.
