@@ -107,3 +107,5 @@ html[dir=ltr] .hero-message{direction:ltr}
  .dashboard-overview .stage>.details{position:static;width:auto;max-height:none}
  #previewApp main[data-route=dashboard] .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+
+.welcome-panel h1 #heroPrefix{color:var(--gold);font-style:normal;text-shadow:0 0 28px #e5ad4c66}
