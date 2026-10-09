@@ -3,6 +3,7 @@ package bcc
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -53,5 +54,28 @@ func TestReconcileTopologyFailedSaveDoesNotKeepUnpersistedBindings(t *testing.T)
 	}
 	if len(reopened.st.TopologyBindings) != 0 {
 		t.Fatalf("failed reconcile reached disk: %+v", reopened.st.TopologyBindings)
+	}
+}
+
+func TestReconcileTopologyValidationFailureDoesNotKeepPartialBindings(t *testing.T) {
+	key := topologyEdgeKey("ir", "r2")
+	existing := TopologyBinding{Key: key, IRNode: "ir", RouteID: "r2", EXNode: "other"}
+	store := &Store{st: state{
+		IRPool: map[string]IRPoolMember{
+			"ir": {NodeID: "ir", Enabled: true},
+		},
+		EXRoutes: map[string]ExplicitEXRoute{
+			"r1": {ID: "r1", EXNode: "ex", Enabled: true},
+			"r2": {ID: "r2", EXNode: "ex", Enabled: true},
+		},
+		TopologyBindings: map[string]TopologyBinding{key: existing},
+	}}
+	before := cloneTopologyBindings(store.st.TopologyBindings)
+
+	if _, err := store.ReconcileTopology(time.Now().UTC()); err == nil {
+		t.Fatal("conflicting EX binding unexpectedly accepted")
+	}
+	if !reflect.DeepEqual(store.st.TopologyBindings, before) {
+		t.Fatalf("validation failure left a partial binding: %+v", store.st.TopologyBindings)
 	}
 }
