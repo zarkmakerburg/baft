@@ -144,21 +144,38 @@ func (s *Server) backupCreateAPI(w http.ResponseWriter, r *http.Request) {
 	now := s.now().UTC()
 	name := "manual-" + now.Format("20060102T150405.000000000Z") + "-" + hex.EncodeToString(nonce[:]) + ".baftbak"
 	path := filepath.Join(dir, name)
+	// A durable intent gives operators a name to reconcile even when the
+	// backup write or the subsequent completion audit has an uncertain outcome.
+	if err = s.auditAdmin(r, "backup.create", name, "attempt", nil); err != nil {
+		http.Error(w, "audit log failure", http.StatusInternalServerError)
+		return
+	}
 	if _, err = s.BackupToFile(path, key, now); err != nil {
-		http.Error(w, "backup creation failed", http.StatusInternalServerError)
+		backupCreateNeedsReview(w, name)
 		return
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		http.Error(w, "backup inventory failed", http.StatusInternalServerError)
+		backupCreateNeedsReview(w, name)
 		return
 	}
 	if err = s.auditAdmin(r, "backup.create", name, "success", map[string]any{"size": info.Size()}); err != nil {
-		_ = os.Remove(path)
-		http.Error(w, "audit log failure", http.StatusInternalServerError)
+		// Do not unlink a completed encrypted backup after an audit error:
+		// unlink can fail and the audit append itself can have committed.
+		backupCreateNeedsReview(w, name)
 		return
 	}
 	writeJSON(w, http.StatusCreated, BackupAdminEntry{Name: name, Size: info.Size(), ModifiedAt: info.ModTime().UTC()})
+}
+
+// The response never claims success; the committed attempt audit and filename
+// let an administrator reconcile the inventory and audit log explicitly.
+func backupCreateNeedsReview(w http.ResponseWriter, name string) {
+	writeJSON(w, http.StatusInternalServerError, map[string]any{
+		"error": "backup outcome requires reconciliation",
+		"name": name,
+		"reconciliation_required": true,
+	})
 }
 
 func (s *Server) backups(w http.ResponseWriter, r *http.Request) {
