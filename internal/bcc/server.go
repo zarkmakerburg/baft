@@ -274,9 +274,11 @@ func (s *Server) nodes(w http.ResponseWriter,r *http.Request){
 			if !ok||agentToken==""{http.Error(w,"agent token environment variable is empty",400);return}
 		}
 		details:=map[string]any{"alias":in.Alias,"address":in.Address,"path_ipv4":in.PathIPv4,"path_ipv6":in.PathIPv6,"role":in.Role,"public_key":in.PublicKey,"agent_token_env":envName}
-		n,err:=s.store.UpsertNode(Node{ID:in.ID,Alias:in.Alias,Address:in.Address,PathIPv4:in.PathIPv4,PathIPv6:in.PathIPv6,Role:in.Role,PublicKey:in.PublicKey},agentToken)
+		n,err:=s.store.UpsertNode(Node{ID:in.ID,Alias:in.Alias,Address:in.Address,PathIPv4:in.PathIPv4,PathIPv6:in.PathIPv6,Role:in.Role,PublicKey:in.PublicKey},agentToken,AuditEntry{
+			Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:s.clientIP(r),Details:withRequest(r,details),
+		})
 		if err!=nil{s.auditFailure(w,r,"node.upsert",in.ID,details,err,http.StatusBadRequest);return}
-		if err:=s.auditAdmin(r,"node.upsert",in.ID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
+		if err:=s.FlushSecurityAuditIntents();err!=nil{w.Header().Set("X-BAFT-Audit-State","pending")}
 		writeJSON(w,http.StatusCreated,n)
 	default:http.Error(w,"method not allowed",405)
 	}

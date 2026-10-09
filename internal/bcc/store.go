@@ -253,7 +253,8 @@ func (s *Store) saveLocked() error {
 	return writeStateDB(s.path,s.st)
 }
 
-func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
+func (s *Store) UpsertNode(n Node, agentToken string, audits ...AuditEntry) (Node,error) {
+	if len(audits)>1{return Node{},errors.New("at most one audit intent is allowed")}
 	if strings.TrimSpace(n.ID)==""||len(n.ID)>128{return Node{},errors.New("node id is required")}
 	if strings.TrimSpace(n.Alias)==""{n.Alias=n.ID}
 	if strings.TrimSpace(n.Address)==""{return Node{},errors.New("node address is required")}
@@ -261,6 +262,12 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	if n.PathIPv6!=""{ip:=net.ParseIP(strings.TrimSpace(n.PathIPv6));if ip==nil||ip.To4()!=nil||ip.To16()==nil{return Node{},errors.New("path_ipv6 must be a literal IPv6 address")};n.PathIPv6=ip.String()}
 	switch n.Role {case "foreign","worker","master":default:return Node{},errors.New("node role must be foreign, worker, or master")}
 	s.mu.Lock();defer s.mu.Unlock()
+	var before state
+	if len(audits)==1{
+		var err error
+		before,err=cloneState(s.st)
+		if err!=nil{return Node{},err}
+	}
 	old,exists:=s.st.Nodes[n.ID]
 	if agentToken!="" { n.AgentTokenHash=tokenHash(agentToken) } else if exists { n.AgentTokenHash=old.AgentTokenHash }
 	if exists {
@@ -283,8 +290,14 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	if n.LastChecked.IsZero()&&!exists{n.LatencyMS=-1}
 	n.UpdatedAt=time.Now().UTC()
 	s.st.Nodes[n.ID]=n
+	if len(audits)==1{
+		a:=audits[0]
+		a.Timestamp,a.Action,a.Target,a.Outcome=n.UpdatedAt,"node.upsert",n.ID,"success"
+		if a.Actor==""{a.Actor="admin"}
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return Node{},err}
+	}
 	if err:=s.saveLocked();err!=nil{
-		if exists{s.st.Nodes[n.ID]=old}else{delete(s.st.Nodes,n.ID)}
+		if len(audits)==1{s.st=before}else if exists{s.st.Nodes[n.ID]=old}else{delete(s.st.Nodes,n.ID)}
 		return Node{},err
 	}
 	return publicNode(n),nil
