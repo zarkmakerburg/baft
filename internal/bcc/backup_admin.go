@@ -1,6 +1,8 @@
 package bcc
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -113,6 +115,50 @@ func backupAdminHTTPStatus(err error) int {
 	default:
 		return http.StatusBadRequest
 	}
+}
+
+// backupCreateAPI writes one encrypted, server-named backup to the configured
+// directory. It returns inventory metadata only; neither key nor payload leaves BCC.
+func (s *Server) backupCreateAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.admin(w, r) {
+		return
+	}
+	dir, key, err := s.backupAdminConfig()
+	if err != nil {
+		http.Error(w, "backup administration is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		http.Error(w, "backup directory unavailable", http.StatusInternalServerError)
+		return
+	}
+	var nonce [8]byte
+	if _, err = rand.Read(nonce[:]); err != nil {
+		http.Error(w, "backup name unavailable", http.StatusInternalServerError)
+		return
+	}
+	now := s.now().UTC()
+	name := "manual-" + now.Format("20060102T150405.000000000Z") + "-" + hex.EncodeToString(nonce[:]) + ".baftbak"
+	path := filepath.Join(dir, name)
+	if _, err = s.BackupToFile(path, key, now); err != nil {
+		http.Error(w, "backup creation failed", http.StatusInternalServerError)
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		http.Error(w, "backup inventory failed", http.StatusInternalServerError)
+		return
+	}
+	if err = s.auditAdmin(r, "backup.create", name, "success", map[string]any{"size": info.Size()}); err != nil {
+		_ = os.Remove(path)
+		http.Error(w, "audit log failure", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, BackupAdminEntry{Name: name, Size: info.Size(), ModifiedAt: info.ModTime().UTC()})
 }
 
 func (s *Server) backups(w http.ResponseWriter, r *http.Request) {

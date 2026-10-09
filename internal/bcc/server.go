@@ -262,6 +262,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/history", s.history)
 	m.HandleFunc("/api/audit", s.auditEntries)
 	m.HandleFunc("/api/backups", s.backups)
+	m.HandleFunc("/api/backups/create", s.backupCreateAPI)
 	m.HandleFunc("/api/backups/restore-preview", s.restorePreviewAPI)
 	m.HandleFunc("/api/nodes/revoke", s.revokeNode)
 	m.HandleFunc("/api/nodes/rotate-token", s.rotateNodeToken)

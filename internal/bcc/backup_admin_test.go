@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,5 +110,63 @@ func TestAdminRestorePreviewDisabledWithoutBackupConfiguration(t *testing.T) {
 	app.Handler().ServeHTTP(rr, authReq(http.MethodGet, "/api/backups", "admin", nil))
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdminBackupCreateProducesInspectableEncryptedFile(t *testing.T) {
+	root := t.TempDir()
+	store, err := OpenStore(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewServer(store, "admin-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := app.Handler()
+	dir := filepath.Join(root, "backups")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, authReq(http.MethodPost, "/api/backups/create", "", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized=%d", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, authReq(http.MethodPost, "/api/backups/create", "admin-secret", nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled=%d", rr.Code)
+	}
+	if err := app.ConfigureBackupAdmin(dir, backupTestKey()); err != nil {
+		t.Fatal(err)
+	}
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, authReq(http.MethodPost, "/api/backups/create", "admin-secret", nil))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create=%d %s", rr.Code, rr.Body.String())
+	}
+	var entry BackupAdminEntry
+	if err := json.Unmarshal(rr.Body.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(entry.Name) != entry.Name || !strings.HasSuffix(entry.Name, ".baftbak") || entry.Size <= 0 {
+		t.Fatalf("invalid entry=%+v", entry)
+	}
+	info, err := os.Stat(filepath.Join(dir, entry.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("mode=%v", info.Mode())
+	}
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, authReq(http.MethodPost, "/api/backups/restore-preview", "admin-secret", map[string]string{"filename": entry.Name}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preview=%d %s", rr.Code, rr.Body.String())
+	}
+	var preview RestorePreview
+	if err := json.Unmarshal(rr.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if !preview.Verified || preview.WouldRefuse != "" {
+		t.Fatalf("not inspectable=%+v", preview)
 	}
 }
