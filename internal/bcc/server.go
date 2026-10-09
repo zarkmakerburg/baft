@@ -410,7 +410,11 @@ func (s *Server) finance(w http.ResponseWriter,r *http.Request){
 		});err!=nil{s.auditFailure(w,r,"finance.rate.change",in.NodeID,details,err,http.StatusBadRequest);return}
 		if err:=s.FlushSecurityAuditIntents();err!=nil{w.Header().Set("X-BAFT-Audit-State","pending")}
 		h:=s.store.RateHistory(in.NodeID)
-		writeJSON(w,http.StatusOK,map[string]any{"ok":true,"rate":h[len(h)-1]})
+		// History is ordered by effective time, which may be earlier than an
+		// existing policy. The response must identify this request's new version.
+		rate:=h[0]
+		for _,p:=range h[1:]{if p.Version>rate.Version{rate=p}}
+		writeJSON(w,http.StatusOK,map[string]any{"ok":true,"rate":rate})
 	default:http.Error(w,"method not allowed",405)
 	}
 }
