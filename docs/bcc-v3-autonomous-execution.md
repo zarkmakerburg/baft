@@ -213,3 +213,11 @@ The native Monitoring route exposes BCC monitoring and layered health; Security 
 Real Mac Chrome bcc-monitor-security-chrome.cjs PASS on a freshly rebuilt disposable BCC: protected monitoring/audit/finance/alerts GET 200, zero writes and JS exceptions. A browser-intercepted 503 cleared stale KPIs to — and rows to empty. A reused staging instance first hit 429; fresh isolated BCC passed. A QA selector was corrected from a nonexistent legacy card ID to routed cards. 40 JS tests PASS.
 
 Open: agent telemetry and alert delivery, chain verification against long-running evidence, finance mutations and exported reports require separate isolated acceptance. The 503 was a test fixture.
+
+## Checkpoint 110 — SSL, Backups, Updates and Settings
+
+Native routes read the protected BCC certificate rotation history, backup inventory and job queue. Backups now offer a selected-file restore preview with the BCC CSRF/session gate, explicit verified/refused outcome and node count comparison. It never restores data. The button is disabled without an eligible listed .baftbak file, and failed reads clear the selection. Settings language and theme controls work across the route shell.
+
+Real Mac Chrome bcc-system-menus-chrome.cjs PASS on freshly rebuilt disposable BCC: SSL, Backups and Updates GET 200 with their native panels; an actually listed disposable backup received restore-preview POST 200, and the rendered verdict matched the response; language and theme changed; no JavaScript exceptions. The preview POST is an audited inspection, not a restore. A first QA assertion wrongly assumed the scheduled staging backup inventory would be empty; it was corrected to handle both empty and populated inventories. 40 JS tests PASS.
+
+Open: BCC currently exposes backup inventory and restore preview, but no authenticated create/apply REST endpoints; do not claim full backup/restore operation. SSL rotation needs enrolled tunnel/agent evidence, and an actual update/deploy needs an approved isolated node. All remain unverified.
