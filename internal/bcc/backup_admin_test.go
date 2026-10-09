@@ -2,6 +2,7 @@ package bcc
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -169,4 +170,38 @@ func TestAdminBackupCreateProducesInspectableEncryptedFile(t *testing.T) {
 	if !preview.Verified || preview.WouldRefuse != "" {
 		t.Fatalf("not inspectable=%+v", preview)
 	}
+}
+
+func TestAdminBackupCreateAuditUncertaintyIsReconciliable(t *testing.T) {
+	root := t.TempDir()
+	store, err := OpenStore(filepath.Join(root, "state.db"))
+	if err != nil { t.Fatal(err) }
+	app, err := NewServer(store, "admin-secret")
+	if err != nil { t.Fatal(err) }
+	dir := filepath.Join(root, "backups")
+	if err := app.ConfigureBackupAdmin(dir, backupTestKey()); err != nil { t.Fatal(err) }
+	calls := 0
+	app.audit.syncDir = func(string) error {
+		calls++
+		if calls == 2 { return errors.New("injected completion audit directory sync failure") }
+		return nil
+	}
+	rr := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rr, authReq(http.MethodPost, "/api/backups/create", "admin-secret", nil))
+	if rr.Code != http.StatusInternalServerError { t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String()) }
+	var result struct {
+		Name string `json:"name"`
+		ReconciliationRequired bool `json:"reconciliation_required"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil { t.Fatal(err) }
+	if !result.ReconciliationRequired || !strings.HasSuffix(result.Name, ".baftbak") {
+		t.Fatalf("missing reconciliation handle: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(dir, result.Name)); err != nil { t.Fatalf("backup lost on audit uncertainty: %v", err) }
+	entries, err := app.audit.List(0)
+	if err != nil { t.Fatal(err) }
+	if len(entries) < 2 || entries[len(entries)-2].Action != "backup.create" || entries[len(entries)-2].Outcome != "attempt" || entries[len(entries)-2].Target != result.Name {
+		t.Fatalf("missing durable named intent: %+v", entries)
+	}
+	if err := app.audit.Verify(); err != nil { t.Fatalf("audit chain invalid: %v", err) }
 }
