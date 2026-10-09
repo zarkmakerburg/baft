@@ -39,14 +39,15 @@ baft-bcc restore-preview ... --json   # machine-readable
 
 ```text
 GET  /api/backups
+POST /api/backups/create            {}
 POST /api/backups/restore-preview   {"filename":"daily-...baftbak"}
 ```
 
 </div>
 
-هر دو endpoint فقط با احراز هویت Admin کار می‌کنند. فهرست فقط فایل‌های regular با پسوند `.baftbak` را نشان می‌دهد. Preview فقط **نام فایل** داخل همان پوشه را می‌پذیرد؛ path traversal، زیرپوشه و symlink رد می‌شوند. کلید backup فقط در حافظه نگه داشته می‌شود و هرگز در پاسخ API برنمی‌گردد. تلاش‌های preview با action `backup.restore.preview` و فقط metadata غیرمحرمانه audit می‌شوند.
+هر سه endpoint فقط با احراز هویت Admin کار می‌کنند. فهرست فقط فایل‌های regular با پسوند `.baftbak` را نشان می‌دهد. Preview فقط **نام فایل** داخل همان پوشه را می‌پذیرد؛ path traversal، زیرپوشه و symlink رد می‌شوند. کلید backup فقط در حافظه نگه داشته می‌شود و هرگز در پاسخ API برنمی‌گردد. تلاش‌های preview با action `backup.restore.preview` و فقط metadata غیرمحرمانه audit می‌شوند.
 
-این API فقط preview است و هیچ restore یا mutation روی state انجام نمی‌دهد.
+مسیر create یک فایل پشتیبان رمزشده با نام تولیدشده در سرور و مجوز 0600 در پوشه پشتیبان می‌نویسد و فقط مشخصات فهرست را برمی‌گرداند؛ کلید و محتوای پشتیبان برنمی‌گردند. رویداد backup.create ممیزی می‌شود. مسیر preview هیچ restore یا تغییری در state انجام نمی‌دهد.
 
 ## A6 — Restore محلی از CLI
 
@@ -71,6 +72,6 @@ baft-bcc restore --backup backups/daily-20261002T000000Z.baftbak --state-file bc
 
 ## آنچه اینجا نیست
 
-عمداً **هیچ Remote Restore API** و هیچ restore زنده از داخل Admin UI/API اضافه نشده است. A5 فقط preview از API است؛ A6 نیازمند دسترسی محلی به میزبان، BCC متوقف، کلید backup و `--yes` صریح است.
+عمداً **هیچ Remote Restore API** و هیچ restore زنده از داخل Admin UI/API اضافه نشده است. A5 ایجاد و پیش‌نمایش بکاپ را از API انجام می‌دهد ولی بازیابی از راه دور ندارد؛ A6 نیازمند دسترسی محلی به میزبان، BCC متوقف، کلید backup و `--yes` صریح است.
 
 </div>

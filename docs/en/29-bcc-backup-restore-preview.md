@@ -31,12 +31,13 @@ When encrypted backups are configured, BCC binds the admin API to the same `--ba
 
 ```text
 GET  /api/backups
+POST /api/backups/create            {}
 POST /api/backups/restore-preview   {"filename":"daily-...baftbak"}
 ```
 
-Both endpoints require BCC admin authentication. The list contains only regular `.baftbak` files. Preview accepts a **filename only** from that directory; path traversal, subdirectories and symlinks are rejected. The backup key is copied into server memory, is never returned, and the API cannot select an arbitrary host path. Preview attempts are recorded in the audit log as `backup.restore.preview` with only the filename and non-secret result metadata.
+All three endpoints require BCC admin authentication. The list contains only regular `.baftbak` files. Preview accepts a **filename only** from that directory; path traversal, subdirectories and symlinks are rejected. The backup key is copied into server memory, is never returned, and the API cannot select an arbitrary host path. Preview attempts are recorded in the audit log as `backup.restore.preview` with only the filename and non-secret result metadata.
 
-The API is preview-only: it cannot restore or mutate BCC state.
+The create endpoint writes a new encrypted, server-named 0600 backup file in the configured directory and returns inventory metadata only; it never returns the key or backup payload. It records backup.create in the audit log. The preview endpoint cannot restore or mutate BCC state.
 
 ## A6 — Local restore CLI
 
@@ -57,4 +58,4 @@ Exit codes: `0` committed, `1` safety/verification/restore failure, `2` usage or
 
 ## What is not here
 
-There is intentionally **no remote restore API** and no live in-process admin restore action. A5 is preview-only over the admin API; A6 requires local host access, a stopped BCC, the backup key, and explicit `--yes`.
+There is intentionally **no remote restore API** and no live in-process admin restore action. A5 creates and inspects backups but cannot apply a restore over the admin API; A6 requires local host access, a stopped BCC, the backup key, and explicit `--yes`.
