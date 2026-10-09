@@ -36,14 +36,17 @@ func TestRestoreJournalRollbackIOFailureThenRecovery(t *testing.T) {
     if err != nil { t.Fatal(err) }
     if err := os.WriteFile(journalPath, raw, 0600); err != nil { t.Fatal(err) }
 
-    // writeAtomic writes to statePath+".tmp"; a directory there simulates an
-    // independent rollback write failure without depending on root/chmod.
-    obstacle := statePath + ".tmp"
-    if err := os.Mkdir(obstacle, 0700); err != nil { t.Fatal(err) }
+    // A nonempty directory at the destination makes the final rename fail,
+    // regardless of how writeAtomic names its temporary file.
+    parked := statePath + ".parked"
+    if err := os.Rename(statePath, parked); err != nil { t.Fatal(err) }
+    if err := os.Mkdir(statePath, 0700); err != nil { t.Fatal(err) }
+    obstacle := filepath.Join(statePath, "blocker")
+    if err := os.WriteFile(obstacle, []byte("block"), 0600); err != nil { t.Fatal(err) }
     if err := rollbackFromJournal(j, statePath); err == nil {
         t.Fatal("rollback reported success despite I/O failure")
     }
-    for path, want := range map[string][]byte{statePath: currentState, auditPath: currentAudit, journalPath: raw} {
+    for path, want := range map[string][]byte{parked: currentState, auditPath: currentAudit, journalPath: raw} {
         got, err := os.ReadFile(path)
         if err != nil || !bytes.Equal(got, want) { t.Fatalf("after failure %s: err=%v got=%q", path, err, got) }
     }
@@ -52,6 +55,8 @@ func TestRestoreJournalRollbackIOFailureThenRecovery(t *testing.T) {
     }
 
     if err := os.Remove(obstacle); err != nil { t.Fatal(err) }
+    if err := os.Remove(statePath); err != nil { t.Fatal(err) }
+    if err := os.Remove(parked); err != nil { t.Fatal(err) }
     if err := recoverRestoreTransaction(statePath); err != nil { t.Fatal(err) }
     for path, want := range map[string][]byte{statePath: oldState, auditPath: oldAudit} {
         got, err := os.ReadFile(path)
@@ -79,10 +84,13 @@ func TestRestoreReportsRollbackIOFailure(t *testing.T) {
     if _, err := app.BackupToFile(backupPath, key, time.Now().UTC()); err != nil { t.Fatal(err) }
 
     cause := errors.New("injected after state commit")
-    obstacle := statePath + ".tmp"
+    parked := statePath + ".parked"
+    obstacle := filepath.Join(statePath, "blocker")
     app.restoreFault = func(stage string) error {
         if stage != "after_state_commit" { return nil }
-        if err := os.Mkdir(obstacle, 0700); err != nil { return err }
+        if err := os.Rename(statePath, parked); err != nil { return err }
+        if err := os.Mkdir(statePath, 0700); err != nil { return err }
+        if err := os.WriteFile(obstacle, []byte("block"), 0600); err != nil { return err }
         return cause
     }
     err = app.RestoreFromFile(backupPath, key)
@@ -93,6 +101,8 @@ func TestRestoreReportsRollbackIOFailure(t *testing.T) {
         t.Fatalf("prepared journal must survive rollback failure: %v", err)
     }
     if err := os.Remove(obstacle); err != nil { t.Fatal(err) }
+    if err := os.Remove(statePath); err != nil { t.Fatal(err) }
+    if err := os.Remove(parked); err != nil { t.Fatal(err) }
     if err := recoverRestoreTransaction(statePath); err != nil { t.Fatal(err) }
     if _, err := os.Stat(restoreJournalPath(statePath)); !errors.Is(err, os.ErrNotExist) {
         t.Fatalf("journal should clear after recovery: %v", err)
