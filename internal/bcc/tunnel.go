@@ -410,7 +410,8 @@ func (s *Store) CreateTunnel(req TunnelRequest, now time.Time) (Tunnel, error) {
 // the tunnel under one lock, so the state that was reviewed is the state it is
 // created against. On a mismatch it creates nothing and returns ErrStalePlan
 // carrying the fresh plan.
-func (s *Store) CreateTunnelFromPlan(req TunnelRequest, planHash string, now time.Time) (Tunnel, Plan, error) {
+func (s *Store) CreateTunnelFromPlan(req TunnelRequest, planHash string, now time.Time, audits ...AuditEntry) (Tunnel, Plan, error) {
+	if len(audits)>1{return Tunnel{},Plan{},errors.New("at most one audit intent is allowed")}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if planHash != "" {
@@ -422,15 +423,17 @@ func (s *Store) CreateTunnelFromPlan(req TunnelRequest, planHash string, now tim
 			return Tunnel{}, cur, ErrStalePlan{Current: cur}
 		}
 	}
-	t, err := s.createTunnelLocked(req, planHash, "", now)
+	t, err := s.createTunnelLocked(req, planHash, "", now, audits...)
 	return t, Plan{}, err
 }
 
-func (s *Store) createTunnelLocked(req TunnelRequest, planHash, topologyKey string, now time.Time) (Tunnel, error) {
+func (s *Store) createTunnelLocked(req TunnelRequest, planHash, topologyKey string, now time.Time, audits ...AuditEntry) (Tunnel, error) {
 	t, ex, ir, err := s.resolveTunnelLocked(req, now)
 	if err != nil {
 		return Tunnel{}, err
 	}
+	before,err:=cloneState(s.st)
+	if err!=nil{return Tunnel{},err}
 	t.PlanHash = planHash
 	t.TopologyKey = topologyKey
 	t.ExpectedGen = map[string]GenExpect{ex.ID: expectedGeneration(ex, t.InstanceID), ir.ID: expectedGeneration(ir, t.InstanceID)}
@@ -442,8 +445,15 @@ func (s *Store) createTunnelLocked(req TunnelRequest, planHash, topologyKey stri
 		s.st.Tunnels = map[string]Tunnel{}
 	}
 	s.st.Tunnels[t.ID] = t
+	if len(audits)==1{
+		a:=audits[0]
+		a.Action,a.Target,a.Outcome="tunnel.create",t.ID,"success"
+		if a.Actor==""{a.Actor="admin"}
+		a.Details=mergeAuditDetails(a.Details,map[string]any{"tunnel_id":t.ID,"job_id":t.JobID})
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return Tunnel{},err}
+	}
 	if err := s.saveLocked(); err != nil {
-		delete(s.st.Tunnels, t.ID)
+		s.st=before
 		return Tunnel{}, err
 	}
 	return t, nil
@@ -883,7 +893,9 @@ func (s *Server) tunnels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		details := map[string]any{"ex_node": in.EXNode, "ir_node": in.IRNode, "port": in.Port, "target": in.Target, "route_listen": in.RouteListen}
-		t, _, err := s.store.CreateTunnelFromPlan(in, in.PlanHash, s.now())
+		t, _, err := s.store.CreateTunnelFromPlan(in, in.PlanHash, s.now(), AuditEntry{
+			Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:s.clientIP(r),Details:withRequest(r,details),
+		})
 		if in.PlanHash != "" {
 			details["plan_hash"] = in.PlanHash
 		}
@@ -898,10 +910,8 @@ func (s *Server) tunnels(w http.ResponseWriter, r *http.Request) {
 			s.auditFailure(w, r, "tunnel.create", in.EXNode+"->"+in.IRNode, details, err, 400)
 			return
 		}
-		details["tunnel_id"], details["job_id"] = t.ID, t.JobID
-		if err := s.auditAdmin(r, "tunnel.create", t.ID, "success", details); err != nil {
-			http.Error(w, "audit log failure", 500)
-			return
+		if err := s.FlushSecurityAuditIntents(); err != nil {
+			w.Header().Set("X-BAFT-Audit-State", "pending")
 		}
 		writeJSON(w, 202, t)
 	default:
