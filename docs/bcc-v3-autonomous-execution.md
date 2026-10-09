@@ -205,3 +205,11 @@ unit suite; rerunning the correct web/tests/*.test.cjs passed all 40.
 
 Open: no approved isolated agent pair with verified end-to-end link telemetry,
 so deployment, decommission, path probes and true link health remain unverified.
+
+## Checkpoint 100 — Monitoring and Security read journeys
+
+The native Monitoring route exposes BCC monitoring and layered health; Security exposes the audit log and finance/report controls. Monitoring KPI placeholders remain unknown until a successful API response. A failed GET clears prior counts and rows. The panel has an explicit refresh control.
+
+Real Mac Chrome bcc-monitor-security-chrome.cjs PASS on a freshly rebuilt disposable BCC: protected monitoring/audit/finance/alerts GET 200, zero writes and JS exceptions. A browser-intercepted 503 cleared stale KPIs to — and rows to empty. A reused staging instance first hit 429; fresh isolated BCC passed. A QA selector was corrected from a nonexistent legacy card ID to routed cards. 40 JS tests PASS.
+
+Open: agent telemetry and alert delivery, chain verification against long-running evidence, finance mutations and exported reports require separate isolated acceptance. The 503 was a test fixture.
