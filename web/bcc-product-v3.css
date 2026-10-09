@@ -16,3 +16,5 @@
 #historyNode{max-width:175px;min-width:100px;min-height:32px;padding:4px 8px;font-size:11px;direction:auto}.server-row .status.down{color:var(--bad)}
 
 main h1[tabindex="-1"]:focus{outline:none}
+
+#operationalRoot button:disabled{opacity:.46;cursor:not-allowed}#operationalRoot input[aria-invalid=true]{border-color:var(--bad)}

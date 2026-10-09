@@ -6,7 +6,7 @@ Authority: #67 PRODUCTIZATION RESET and owner 150-step instruction.
 ## Acceptance ledger
 
 The earlier audit is retained unchanged. Its preview checkmarks are not product acceptance.
-Current execution checkpoint: 60/150. Checkpoint 20 source: 17be92b.
+Current execution checkpoint: 70/150. Checkpoint 20 source: 17be92b.
 This counts implemented foundation work, not final visual or operational acceptance.
 Later ranges remain OPEN; the entire product has not passed final acceptance.
 
@@ -148,3 +148,24 @@ Visual discrepancy remains: without verified coordinates or telemetry, live glob
 correctly shows no routes and the chart has no measured samples. The reference
 images show populated networks; final comparison awaits approved non-production
 coordinates/telemetry. No real server or tunnel action was taken.
+
+## Checkpoint 70 — Servers real operations
+
+The four original BCC server panels run inside V3 with native session/CSRF:
+registration, SSH enrollment, safe SSH port migration, and cluster nodes.
+Registration now blocks missing ID/address before POST, while the backend remains
+authoritative. The cluster deploy action is disabled until at least one node is
+selected. Dynamic Rotate/Kill labels localize without a global subtree observer.
+
+Real Mac Chrome bcc-servers-chrome.cjs on a fresh loopback fixture PASS:
+four visible panels; invalid fields emitted zero POST; registered one synthetic
+node (201); no execution from a quote-bearing ID; selection enabled/disabled
+deploy; search found the row; host-key scan against 127.0.0.1:1 failed safely
+while Install remained disabled; Kill cancellation left the node intact, then
+a confirmed fixture-only revoke returned 200 and row became REVOKED. Zero JS
+errors. No remote host was contacted. Go V3 test PASS.
+
+A first QA attempt closed Chrome because the test held an unresolved element
+Promise; fixed the test handle and repeated on fresh disposable state. Broad
+dynamic localization observation was narrowed to inserted server rows. This
+does not certify SSH installation or deployment against a real host.
