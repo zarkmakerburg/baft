@@ -221,3 +221,11 @@ Native routes read the protected BCC certificate rotation history, backup invent
 Real Mac Chrome bcc-system-menus-chrome.cjs PASS on freshly rebuilt disposable BCC: SSL, Backups and Updates GET 200 with their native panels; an actually listed disposable backup received restore-preview POST 200, and the rendered verdict matched the response; language and theme changed; no JavaScript exceptions. The preview POST is an audited inspection, not a restore. A first QA assertion wrongly assumed the scheduled staging backup inventory would be empty; it was corrected to handle both empty and populated inventories. 40 JS tests PASS.
 
 Open: BCC currently exposes backup inventory and restore preview, but no authenticated create/apply REST endpoints; do not claim full backup/restore operation. SSL rotation needs enrolled tunnel/agent evidence, and an actual update/deploy needs an approved isolated node. All remain unverified.
+
+## Checkpoint 120 — connected system-menu actions
+
+SSL rotation history links to the existing reviewed tunnel rotation controls; Updates job history links to selected-server deployment controls. These are navigable within the same native command center and introduce no automatic mutation. The Backup inspection selection remains confined to the listed encrypted files.
+
+Real Mac Chrome bcc-system-menus-chrome.cjs PASS after rebuilding the embedded BCC: protected SSL/Backups/Updates reads, actual disposable backup preview with rendered verdict, both contextual menu links navigated to Tunnels/Servers, Settings language/theme switched, and no JS errors. 40 JS tests PASS. There is no claim that a certificate was rotated, a server was deployed or a backup restored.
+
+Open: actual SSL rotation and update deployment need an approved isolated enrolled pair/node; full backup create/apply needs a safely specified and tested authenticated backend workflow.
