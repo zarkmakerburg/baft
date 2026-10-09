@@ -184,3 +184,24 @@ tunnel operations, plan POST 200 with explicit missing-agent FAIL gates and an
 disabled Deploy button, discard action, no tunnel creation POST, Route Doctor
 refused an absent active tunnel. No real tunnel was started. Reproducer:
 web/qa/bcc-tunnels-chrome.cjs.
+
+## Checkpoint 90 — authenticated, read-only topology
+
+The existing verified-coordinates importer is available in the native Settings
+route. It uses the current BCC session to GET tunnels, without asking for an
+admin bearer token. Coordinates must be explicitly entered as WGS84 JSON; the
+UI does not infer locations from IP addresses. A native import leaves the
+monitoring server list intact and never treats a tunnel phase or node metrics
+as link-scoped latency/health. The top banner identifies the authenticated BCC
+session without claiming that it is a particular staging deployment.
+
+Real Mac Chrome bcc-topology-chrome.cjs PASS: native login, Settings import,
+authenticated real GET /api/tunnels returning zero links, zero credential prompts,
+then an explicitly intercepted browser fixture with one active-phase tunnel and
+two approved coordinates. Keyboard selection showed UNKNOWN health and no RTT;
+zero JavaScript exceptions. The fixture is not live evidence. 40 JavaScript tests
+PASS. An initial command used a wrong test glob and exited 1 before running the
+unit suite; rerunning the correct web/tests/*.test.cjs passed all 40.
+
+Open: no approved isolated agent pair with verified end-to-end link telemetry,
+so deployment, decommission, path probes and true link health remain unverified.

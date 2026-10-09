@@ -5,7 +5,7 @@
 'use strict';
 const $=id=>document.getElementById(id),status=$('bccLiveStatus'),btn=$('bccLiveLoad');
 if(!btn)return;
-let adminToken='';
+const cfg=window.BAFT_UI||{},native=cfg.mode==='dashboard';let adminToken='';
 let lastAttemptAt=0;
 const minRequestIntervalMs=3000; // Client-side preview throttle only; server rate limits remain mandatory.
 function msg(t){if(status)status.textContent=t}
@@ -13,7 +13,7 @@ function tr(fa,en){return document.documentElement.lang==='fa'?fa:en}
 async function get(path){
  const headers={'Accept':'application/json'};if(adminToken)headers['Authorization']='Bearer '+adminToken;
  // Read-only GET with no request body or state-changing method; CSRF protection for actual BCC writes is a separate server-side gate.
- const r=await fetch(path,{method:'GET',headers,credentials:'same-origin',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer'});
+ const r=await fetch(native?cfg.base+path.slice(1):path,{method:'GET',headers,credentials:'same-origin',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer'});
  if(!r.ok){if(r.status===401||r.status===403)adminToken='';throw Error(path+': HTTP '+r.status)}
  if(r.url&&new URL(r.url,location.href).origin!==location.origin)throw Error('Cross-origin API response rejected');
  const contentType=r.headers&&r.headers.get&&r.headers.get('content-type');if(contentType&&!/^application\/(?:[\w.-]+\+)?json(?:\s*;|\s*$)/i.test(contentType))throw Error('Expected JSON API response');
@@ -49,7 +49,7 @@ btn.addEventListener('click',async()=>{
  btn.disabled=true;try{
  if(location.protocol!=='https:'&&!(location.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(location.hostname)))throw Error('Authenticated BCC API requires HTTPS or local development origin. Do not enter a token in file:// preview.');
  const raw=$('bccCoordinates').value;if(raw.length>16384)throw Error('Coordinates input exceeds 16 KiB');const loc=safeCoordinates(raw);
- if(!adminToken){adminToken=(prompt(tr('توکن مدیر BCC (فقط در حافظهٔ همین صفحه):','BCC admin token (used in memory for this page only):'))||'').trim();if(!adminToken){msg(tr('وارد کردن توکن الزامی است.','Token required.'));return}if(adminToken.length>4096||/[\r\n]/.test(adminToken)){adminToken='';throw Error('Invalid admin token')}}
+ if(!native&&!adminToken){adminToken=(prompt(tr('توکن مدیر BCC (فقط در حافظهٔ همین صفحه):','BCC admin token (used in memory for this page only):'))||'').trim();if(!adminToken){msg(tr('وارد کردن توکن الزامی است.','Token required.'));return}if(adminToken.length>4096||/[\r\n]/.test(adminToken)){adminToken='';throw Error('Invalid admin token')}}
  const ts=await get('/api/tunnels');if(!Array.isArray(ts))throw Error('Unexpected BCC API response');if(ts.length>300)throw Error('Too many tunnels for preview');
  const d=build(ts,loc);window.dispatchEvent(new CustomEvent('baft:topology',{detail:d}));
  msg(tr('نمای فقط‌خواندنی BCC: '+d.links.length+' تونل مکان‌یابی‌شده؛ وضعیت سلامت اتصال‌ها تا دریافت دادهٔ اختصاصی هر تونل نامشخص است.','Read-only BCC snapshot: '+d.links.length+' mapped tunnels; all link health UNKNOWN until link-scoped telemetry is available. Node telemetry is not link telemetry.'));
