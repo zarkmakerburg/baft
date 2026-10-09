@@ -20,3 +20,12 @@ Code syntax parsed before each commit; native and visual behavior on the new SHA
 - Welcome/Login step 31 asset-path check: commit `d687a550` corrected the static preview's missing image URL to the existing `web/assets/baft-brand.png` already used by the integrated product shell. This only fixes asset loading by source inspection. Owner-approved transparency and final Mac Chrome rendering remain unverified.
 - Welcome/Login steps 18 (full browser WCAG/keyboard/screen-reader), 31 (approved brand), 49 (real authenticated sign-in), 50 (final verification) remain OPEN. The 150-step BCC audit remains at 149/150 BLOCKED: current-head Chrome reference comparison, approved enrolled IR/EX lab telemetry, and final visual/localization fidelity remain unverified.
 - Safety boundary: documentation-only checkpoint; no operational tunnel/node changes, merge, deploy, tag, release or acceptance assertion.
+
+## Post-merge evidence checkpoint — 2026-10-10
+
+- GitHub PR #159 is now **MERGED** (2026-10-09 20:12:53 UTC), merge commit `f985ec6e3fe2e169f5b7279c3eebf0803a98b312`, from exact UI head `bfb728ce6bcd0f71e7fa8dac624c755a73ea8e0a`. The OPEN/DRAFT observation above is historical, not current. Issue #67 remains OPEN.
+- Exact-head GitHub Actions: CI `37981842955` SUCCESS; static-analysis `37981843142` SUCCESS; BCC V3 UI contract `37981842863` SUCCESS; r3.1 `37981842996` SUCCESS. These are automated tests only; they do not prove real Chrome acceptance or live telemetry.
+- **Ordered Welcome/Login remaining gates:** step 18 full browser keyboard/screen-reader/accessibility verification; step 31 owner-approved official logo and rendered transparency; step 49 real authenticated sign-in/session check; step 50 final visual and functional acceptance. All remain OPEN/UNVERIFIED. Existing asset-path correction is not logo approval.
+- **150-step BCC audit:** remains **149/150 BLOCKED**. Post-redesign Mac Chrome visual/responsive FA/EN dark/light comparisons were not rerun; enrolled IR/EX link telemetry remains unverified. No fabricated PASS or final delivery claim.
+- This checkpoint is documentation-only on the named UI branch after PR merge; it is **not** part of the already merged PR and is not automatically on `main`. No tunnel, node, server, deployment, release, tag or additional merge is authorized by this note.
+- Reproducible document checks before writing: pre-existing QA checkpoint and blocked acceptance present; new merge SHA and all four workflow run IDs recorded; acceptance gates explicitly remain open.
