@@ -306,11 +306,11 @@ func (s *Server) deploy(w http.ResponseWriter,r *http.Request){
 	var in struct{NodeIDs []string `json:"node_ids"`; Version string `json:"version"`}
 	if err:=decodeJSON(r,&in);err!=nil{http.Error(w,err.Error(),400);return}
 	details:=map[string]any{"node_ids":append([]string(nil),in.NodeIDs...),"version":in.Version}
-	jobs,err:=s.store.CreateDeployJobs(in.NodeIDs,in.Version)
+	jobs,err:=s.store.CreateDeployJobs(in.NodeIDs,in.Version,AuditEntry{
+		Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:s.clientIP(r),Details:withRequest(r,details),
+	})
 	if err!=nil{s.auditFailure(w,r,"deploy.create","cluster",details,err,http.StatusBadRequest);return}
-	jobIDs:=make([]string,0,len(jobs));for _,j:=range jobs{jobIDs=append(jobIDs,j.ID)}
-	details["job_ids"]=jobIDs
-	if err:=s.auditAdmin(r,"deploy.create","cluster","success",details);err!=nil{http.Error(w,"audit log failure",500);return}
+	if err:=s.FlushSecurityAuditIntents();err!=nil{w.Header().Set("X-BAFT-Audit-State","pending")}
 	writeJSON(w,http.StatusAccepted,jobs)
 }
 
@@ -405,8 +405,10 @@ func (s *Server) finance(w http.ResponseWriter,r *http.Request){
 			effective=parsed.UTC()
 		}
 		details:=map[string]any{"cost_micros_per_gib":in.CostMicrosPerGiB,"revenue_micros_per_gib":in.RevenueMicrosPerGiB,"currency":in.Currency,"effective_from":effective.Format(time.RFC3339)}
-		if err:=s.store.SetFinancePolicyAt(in.NodeID,in.CostMicrosPerGiB,in.RevenueMicrosPerGiB,in.Currency,effective);err!=nil{s.auditFailure(w,r,"finance.rate.change",in.NodeID,details,err,http.StatusBadRequest);return}
-		if err:=s.auditAdmin(r,"finance.rate.change",in.NodeID,"success",details);err!=nil{http.Error(w,"audit log failure",500);return}
+		if err:=s.store.SetFinancePolicyAt(in.NodeID,in.CostMicrosPerGiB,in.RevenueMicrosPerGiB,in.Currency,effective,AuditEntry{
+			Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:s.clientIP(r),Details:withRequest(r,details),
+		});err!=nil{s.auditFailure(w,r,"finance.rate.change",in.NodeID,details,err,http.StatusBadRequest);return}
+		if err:=s.FlushSecurityAuditIntents();err!=nil{w.Header().Set("X-BAFT-Audit-State","pending")}
 		h:=s.store.RateHistory(in.NodeID)
 		writeJSON(w,http.StatusOK,map[string]any{"ok":true,"rate":h[len(h)-1]})
 	default:http.Error(w,"method not allowed",405)

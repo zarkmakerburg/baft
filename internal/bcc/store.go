@@ -349,10 +349,17 @@ func validVersion(v string) bool {
 	return len(v)<=64&&deployVersionRe.MatchString(v)
 }
 
-func (s *Store) CreateDeployJobs(nodeIDs []string,version string) ([]Job,error) {
+func (s *Store) CreateDeployJobs(nodeIDs []string,version string,audits ...AuditEntry) ([]Job,error) {
 	if !validVersion(version){return nil,errors.New("invalid BAFT version")}
 	if len(nodeIDs)==0{return nil,errors.New("at least one node is required")}
+	if len(audits)>1{return nil,errors.New("at most one audit intent is allowed")}
 	s.mu.Lock();defer s.mu.Unlock()
+	var before state
+	if len(audits)==1{
+		var err error
+		before,err=cloneState(s.st)
+		if err!=nil{return nil,err}
+	}
 	seen:=map[string]struct{}{};ids:=make([]string,0,len(nodeIDs))
 	for _,id:=range nodeIDs{
 		if _,dup:=seen[id];dup{continue};seen[id]=struct{}{}
@@ -362,9 +369,19 @@ func (s *Store) CreateDeployJobs(nodeIDs []string,version string) ([]Job,error) 
 	startJob:=s.st.NextJob
 	out:=make([]Job,0,len(ids))
 	for _,id:=range ids{out=append(out,s.newJobLocked(Job{Type:JobDeployBAFT,NodeID:id,Version:version}))}
+	if len(audits)==1{
+		a:=audits[0]
+		a.Action,a.Target,a.Outcome="deploy.create","cluster","success"
+		if a.Actor==""{a.Actor="admin"}
+		jobIDs:=make([]string,0,len(out));for _,job:=range out{jobIDs=append(jobIDs,job.ID)}
+		a.Details=mergeAuditDetails(a.Details,map[string]any{"job_ids":jobIDs})
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return nil,err}
+	}
 	if err:=s.saveLocked();err!=nil{
-		for _,job:=range out{delete(s.st.Jobs,job.ID)}
-		s.st.NextJob=startJob
+		if len(audits)==1{s.st=before}else{
+			for _,job:=range out{delete(s.st.Jobs,job.ID)}
+			s.st.NextJob=startJob
+		}
 		return nil,err
 	}
 	return out,nil
@@ -514,7 +531,8 @@ func (s *Store) SetFinancePolicy(nodeID string,costMicrosPerGiB,revenueMicrosPer
 	return s.SetFinancePolicyAt(nodeID,costMicrosPerGiB,revenueMicrosPerGiB,"IRR",time.Unix(0,0).UTC())
 }
 
-func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64,currency string,effectiveFrom time.Time) error {
+func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64,currency string,effectiveFrom time.Time,audits ...AuditEntry) error {
+	if len(audits)>1{return errors.New("at most one audit intent is allowed")}
 	if costMicrosPerGiB<0||revenueMicrosPerGiB<0{return errors.New("finance rates must be non-negative")}
 	if costMicrosPerGiB>1_000_000_000||revenueMicrosPerGiB>1_000_000_000{return errors.New("finance rates are unreasonably large")}
 	currency=strings.ToUpper(strings.TrimSpace(currency))
@@ -525,6 +543,12 @@ func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosP
 
 	s.mu.Lock();defer s.mu.Unlock()
 	if _,ok:=s.st.Nodes[nodeID];!ok{return errors.New("node not found")}
+	var before state
+	if len(audits)==1{
+		var err error
+		before,err=cloneState(s.st)
+		if err!=nil{return err}
+	}
 	p:=FinancePolicy{
 		NodeID:nodeID,CostMicrosPerGiB:costMicrosPerGiB,RevenueMicrosPerGiB:revenueMicrosPerGiB,
 		Currency:currency,EffectiveFrom:effectiveFrom,Version:s.st.NextRateVersion,
@@ -541,10 +565,19 @@ func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosP
 	})
 	s.st.RateHistory[nodeID]=h
 	s.st.Policies[nodeID]=p
+	if len(audits)==1{
+		a:=audits[0]
+		a.Action,a.Target,a.Outcome="finance.rate.change",nodeID,"success"
+		if a.Actor==""{a.Actor="admin"}
+		a.Details=mergeAuditDetails(a.Details,map[string]any{"rate_version":p.Version})
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return err}
+	}
 	if err:=s.saveLocked();err!=nil{
-		s.st.NextRateVersion=previousVersion
-		if hadPolicy{s.st.Policies[nodeID]=previousPolicy}else{delete(s.st.Policies,nodeID)}
-		if hadHistory{s.st.RateHistory[nodeID]=previousHistory}else{delete(s.st.RateHistory,nodeID)}
+		if len(audits)==1{s.st=before}else{
+			s.st.NextRateVersion=previousVersion
+			if hadPolicy{s.st.Policies[nodeID]=previousPolicy}else{delete(s.st.Policies,nodeID)}
+			if hadHistory{s.st.RateHistory[nodeID]=previousHistory}else{delete(s.st.RateHistory,nodeID)}
+		}
 		return err
 	}
 	return nil
