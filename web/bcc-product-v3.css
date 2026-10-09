@@ -18,3 +18,7 @@
 main h1[tabindex="-1"]:focus{outline:none}
 
 #operationalRoot button:disabled{opacity:.46;cursor:not-allowed}#operationalRoot input[aria-invalid=true]{border-color:var(--bad)}
+
+#previewApp main h1[tabindex="-1"]:focus{outline:none}
+
+.hero-actions .hero-docs{display:inline-flex;align-items:center;justify-content:center;padding:13px 28px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--text);font-size:14px;text-decoration:none}.hero-actions .hero-docs:hover{border-color:var(--gold);color:var(--gold)}@media(max-width:760px){.hero-actions .hero-docs{flex:1}}
