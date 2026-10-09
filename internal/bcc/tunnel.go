@@ -491,7 +491,8 @@ func (s *Store) ListTunnels() []Tunnel {
 
 // CancelTunnel rolls a change back on request. A tunnel that is already
 // active is final: build a new change to alter it.
-func (s *Store) CancelTunnel(id, reason string, now time.Time) (Tunnel, error) {
+func (s *Store) CancelTunnel(id, reason string, now time.Time, audits ...AuditEntry) (Tunnel, error) {
+	if len(audits)>1{return Tunnel{},errors.New("at most one audit intent is allowed")}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.st.Tunnels[id]
@@ -506,13 +507,22 @@ func (s *Store) CancelTunnel(id, reason string, now time.Time) (Tunnel, error) {
 	case TunnelActive, TunnelSuperseded, TunnelRolledBack, TunnelDecommissioned, TunnelDecommissionFailed:
 		return t, fmt.Errorf("tunnel is %s; nothing to cancel", t.Phase)
 	}
+	before,err:=cloneState(s.st)
+	if err!=nil{return Tunnel{},err}
 	t.Error = "cancelled by operator"
 	if r := strings.TrimSpace(reason); r != "" {
 		t.Error += ": " + r
 	}
 	s.startRollbackLocked(&t, now)
 	s.st.Tunnels[id] = t
-	return t, s.saveLocked()
+	if len(audits)==1{
+		a:=audits[0]
+		a.Action,a.Target,a.Outcome="tunnel.cancel",id,"success"
+		if a.Actor==""{a.Actor="admin"}
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return Tunnel{},err}
+	}
+	if err:=s.saveLocked();err!=nil{s.st=before;return Tunnel{},err}
+	return t,nil
 }
 
 // startRollbackLocked cancels steps nobody has picked up yet, drops secrets
@@ -938,14 +948,15 @@ func (s *Server) tunnelCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	details := map[string]any{"reason": strings.TrimSpace(in.Reason)}
-	t, err := s.store.CancelTunnel(in.ID, in.Reason, s.now())
+	t, err := s.store.CancelTunnel(in.ID, in.Reason, s.now(), AuditEntry{
+		Timestamp:s.now().UTC(),Actor:"admin",RemoteIP:s.clientIP(r),Details:withRequest(r,details),
+	})
 	if err != nil {
 		s.auditFailure(w, r, "tunnel.cancel", in.ID, details, err, 400)
 		return
 	}
-	if err := s.auditAdmin(r, "tunnel.cancel", in.ID, "success", details); err != nil {
-		http.Error(w, "audit log failure", 500)
-		return
+	if err := s.FlushSecurityAuditIntents(); err != nil {
+		w.Header().Set("X-BAFT-Audit-State", "pending")
 	}
 	writeJSON(w, 200, t)
 }
