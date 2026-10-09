@@ -237,3 +237,9 @@ The embedded native operations now translate more headings, table labels, action
 Real Mac Chrome bcc-system-menus-chrome.cjs PASS after rebuilding the native BCC: Settings language/theme controls, English and Persian registration labels/headings, SSL/Updates contextual navigation, backup restore preview, and 390 px viewport without document-wide horizontal overflow. 40 JS tests PASS.
 
 Open: several original operational descriptions, prompts, runtime messages and option labels remain English or mixed-language in Persian mode; a full bilingual acceptance audit is required. Other responsive device sizes and final visual reference comparison remain open.
+
+## Checkpoint 140 — BCC session and backup preview access
+
+The native session path uses the BCC secret route, same-origin cookie and CSRF header on the restore inspection request. Real Mac Chrome on disposable BCC verified the listed encrypted backup preview with CSRF returned 200 and rendered the backend's verified/refused verdict. A direct POST without the CSRF header returned 401; the browser held no legacy bearer token in localStorage. The tested action never applied a restore. Targeted Go tests for native session/login states and backup inventory/preview bounds passed; the earlier Chrome system-menu and failure-state journeys remain recorded.
+
+Open: the real agent pair, live link-scoped telemetry, destructive backup apply and update deployment require separate isolated acceptance. No production BCC was contacted.
