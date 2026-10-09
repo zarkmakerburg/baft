@@ -663,8 +663,18 @@ func (s *Store) appendFinanceLocked(nodeID string,at time.Time,ingressBytes,egre
 func (s *Store) AddTraffic(nodeID,token string,ingressBytes,egressBytes uint64) (NodeFinance,error) {
 	s.mu.Lock();defer s.mu.Unlock()
 	if !s.authorizedLocked(nodeID,token){return NodeFinance{},ErrAgentAuthentication}
+	beforeFinance,hadFinance:=s.st.Finance[nodeID]
+	beforeRemainder,hadRemainder:=s.st.FinanceRemainders[nodeID]
+	hadRemainderMap:=s.st.FinanceRemainders!=nil
+	beforeLedger:=s.st.FinanceLedger
 	if err:=s.appendFinanceLocked(nodeID,time.Now().UTC(),ingressBytes,egressBytes);err!=nil{return NodeFinance{},err}
-	if err:=s.saveLocked();err!=nil{return NodeFinance{},err}
+	if err:=s.saveLocked();err!=nil{
+		if hadFinance{s.st.Finance[nodeID]=beforeFinance}else{delete(s.st.Finance,nodeID)}
+		if hadRemainder{s.st.FinanceRemainders[nodeID]=beforeRemainder}else{delete(s.st.FinanceRemainders,nodeID)}
+		if !hadRemainderMap{s.st.FinanceRemainders=nil}
+		s.st.FinanceLedger=beforeLedger
+		return NodeFinance{},err
+	}
 	return s.st.Finance[nodeID],nil
 }
 
