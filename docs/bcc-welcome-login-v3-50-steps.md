@@ -80,4 +80,14 @@
 - Anchor scroll margin and image dimensions improved.
 - These steps are **source-level implementation**, not 50 independent QA passes. Never mark contrast, browser QA, asset verification or live auth as accepted without evidence.
 
+
+## CI verification checkpoint — 2026-10-09 (evidence only)
+
+- Branch HEAD before this documentation update: `a43505ec417fba45315279634bbbea48a2a68eb8`.
+- GitHub Actions results on that exact SHA: `ci` **success** (run `37904600007`); `static-analysis` **success** (run `37904599968`); `BCC V3 UI contract tests` **success** (run `37904600025`); `r3.1-probabilistic-morphing` **success** (run `37904599939`).
+- Workflow `.github/workflows/bcc-v3-ui-tests.yml` now pins `actions/checkout` and `actions/setup-node` to full commit SHAs. The earlier unpinned-action CI failure is not overwritten or reclassified.
+- The contract test measures a defined set of palette-token foreground/background ratios; it is **not** a full computed-style, keyboard, screen-reader, or WCAG browser acceptance. Step 18 remains pending full measurement.
+- The official transparent logo asset remains unverified (step 31); live authentication and final acceptance (steps 49–50) remain open. This documentation-only checkpoint does not approve the 50-step program or BCC audit 150/150.
+- No production tunnel/server, merge, deployment, release or tag is authorized by this checkpoint.
+
 </div>
