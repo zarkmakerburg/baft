@@ -6,7 +6,7 @@ test('sign-in controls are disabled until backend security review',()=>{assert.m
 test('no outbound login API or credential storage',()=>{assert.doesNotMatch(html,/\bfetch\s*\(|XMLHttpRequest|localStorage|sessionStorage|sendBeacon/);assert.match(html,/preventDefault\(\)/)});
 test('bilingual text and direction support',()=>{assert.match(html,/fa:\{/);assert.match(html,/en:\{/);assert.match(html,/root\.dir=lang==='fa'\?'rtl':'ltr'/)});
 test('safe preview metadata',()=>{assert.match(html,/noindex,nofollow/);assert.match(html,/no-referrer/);assert.match(html,/prefers-reduced-motion/);assert.match(html,/class="skip"/)});
-test('logo is external official asset path, never an invented replacement',()=>{assert.match(html,/assets\/baft-official-logo\.png/);assert.match(html,/img\.addEventListener\('error'/)});
+test('welcome logo resolves to the same committed BAFT asset as the product shell',()=>{const src=html.match(/id="officialLogo"[^>]*src="\.\/assets\/([^"]+)"/)?.[1];assert.ok(src,'Missing external BAFT logo URL');assert.ok(fs.statSync(path.join(__dirname,'..','assets',src)).size>0,'BAFT logo asset missing or empty');const shell=fs.readFileSync(path.join(__dirname,'..','bcc-product-v3.js'),'utf8');assert.ok(shell.includes('assets/'+src),'Welcome and product logo assets differ');assert.match(html,/img\.addEventListener\('error'/)});
 
 test('welcome page does not expose a live credential submission route',()=>{assert.doesNotMatch(html,/<form[^>]+action=/i);assert.match(html,/<button type="submit"[^>]*disabled/i);});
 test('all localization keys are present in both languages',()=>{
