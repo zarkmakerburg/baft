@@ -202,6 +202,9 @@ type Store struct {
 	reconcileMu sync.Mutex
 	path        string
 	st          state
+	// Set when a commit's outcome cannot be established from durable state.
+	// Keep the process from overwriting a possibly committed transaction.
+	persistenceUncertain bool
 	// DriftEvery is how often active tunnels are checked for drift; zero
 	// disables the automatic check (a check can still be requested).
 	DriftEvery time.Duration
@@ -250,7 +253,17 @@ func tokenHash(v string) string {
 }
 
 func (s *Store) saveLocked() error {
-	return writeStateDB(s.path,s.st)
+	if s.persistenceUncertain {
+		return errStateCommitUncertain
+	}
+	return s.recordStateWrite(writeStateDB(s.path, s.st))
+}
+
+func (s *Store) recordStateWrite(err error) error {
+	if errors.Is(err, errStateCommitUncertain) {
+		s.persistenceUncertain = true
+	}
+	return err
 }
 
 func (s *Store) UpsertNode(n Node, agentToken string, audits ...AuditEntry) (Node,error) {
