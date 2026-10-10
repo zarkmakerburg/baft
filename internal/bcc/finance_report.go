@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	_ "time/tzdata"
 )
 
@@ -92,6 +93,21 @@ func (s *Store) FinanceReport(period,from,to,tz string)([]FinanceReportRow,error
 	return out,nil
 }
 
+// csvTextCell prevents spreadsheet applications from evaluating identifiers as
+// formulas. CSV quoting alone does not make a cell safe to open in a spreadsheet.
+func csvTextCell(s string) string {
+	trimmed := strings.TrimLeftFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || r < 0x20 || r == '\ufeff'
+	})
+	if s != "" && s[0] < ' ' {
+		return "'" + s
+	}
+	if trimmed != "" && strings.ContainsRune("=+-@", rune(trimmed[0])) {
+		return "'" + s
+	}
+	return s
+}
+
 func FinanceReportCSV(rows []FinanceReportRow)([]byte,error){
 	var b bytes.Buffer
 	w:=csv.NewWriter(&b)
@@ -101,10 +117,10 @@ func FinanceReportCSV(rows []FinanceReportRow)([]byte,error){
 	});err!=nil{return nil,err}
 	for _,r:=range rows{
 		if err:=w.Write([]string{
-			r.Period,r.Scope,r.NodeID,
+			csvTextCell(r.Period),csvTextCell(r.Scope),csvTextCell(r.NodeID),
 			strconv.FormatUint(r.IngressBytes,10),strconv.FormatUint(r.EgressBytes,10),
 			strconv.FormatInt(r.CostMicros,10),strconv.FormatInt(r.RevenueMicros,10),
-			strconv.FormatInt(r.ProfitMicros,10),r.Currency,
+			strconv.FormatInt(r.ProfitMicros,10),csvTextCell(r.Currency),
 		});err!=nil{return nil,err}
 	}
 	w.Flush()
