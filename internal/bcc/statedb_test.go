@@ -2,6 +2,7 @@ package bcc
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -188,4 +189,39 @@ func TestLedgerAppendsAndRewritesStayExact(t *testing.T) {
 	st.FinanceLedger = nil
 	writeStateDB(path, st)
 	check("emptied")
+}
+
+
+// v0.2.0 (tag 4d806e01) had precisely the first five state migrations.
+// Exercise the on-disk upgrade path with data, rather than opening an empty
+// current-schema database. This is an upgrade check, not a downgrade promise.
+func TestReleasedV020SchemaUpgradesWithoutLosingNode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil { t.Fatal(err) }
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil { t.Fatal(err) }
+	for i := 0; i < 5; i++ {
+		if _, err := db.Exec(stateMigrations[i]); err != nil { t.Fatalf("v0.2.0 migration %d: %v", i+1, err) }
+		if _, err := db.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, 'v0.2.0')`, i+1); err != nil { t.Fatal(err) }
+	}
+	want := Node{ID: "ex-old", Alias: "older EX", Address: "127.0.0.1:8443", Role: "foreign"}
+	doc, err := json.Marshal(want)
+	if err != nil { t.Fatal(err) }
+	if _, err := db.Exec(`INSERT INTO nodes (id, doc) VALUES (?, ?)`, want.ID, string(doc)); err != nil { t.Fatal(err) }
+	if err := db.Close(); err != nil { t.Fatal(err) }
+
+	store, err := OpenStore(path)
+	if err != nil { t.Fatalf("upgrade schema 5 to %d: %v", len(stateMigrations), err) }
+	if got := store.st.Nodes[want.ID]; got.ID != want.ID || got.Alias != want.Alias || got.Address != want.Address || got.Role != want.Role {
+		t.Fatalf("node changed during migration: got %+v, want %+v", got, want)
+	}
+	if v, err := stateSchemaVersion(path); err != nil || v != len(stateMigrations) {
+		t.Fatalf("upgraded schema version %d, %v", v, err)
+	}
+	var saved string
+	check, err := sql.Open("sqlite", path)
+	if err != nil { t.Fatal(err) }
+	defer check.Close()
+	if err := check.QueryRow(`SELECT doc FROM nodes WHERE id = ?`, want.ID).Scan(&saved); err != nil { t.Fatal(err) }
+	if saved != string(doc) { t.Fatalf("migration rewrote existing node: got %q, want %q", saved, doc) }
 }
