@@ -812,12 +812,16 @@ fail_point() { # test hook: BAFT_TEST_FAIL_AT=<point> makes the run fail there
 rollback_apply() {
   APPLYING=0
   log "apply failed: rolling back"
-  local f unit was_active
+  local f unit was_active rollback_failed=0
   if [[ "$BCC_ONLY" == "1" ]]; then unit="$BAFT_BCC_SERVICE.service"; was_active="$WAS_BCC_ACTIVE"
   elif [[ "$AGENT_ONLY" == "1" ]]; then unit="$BAFT_AGENT_UNIT.service"; was_active="$WAS_AGENT_ACTIVE"
   else unit="$BAFT_SERVICE.service"; was_active="$WAS_ACTIVE"; fi
-  if [[ "$TOUCHED_SERVICE" == 1 ]]; then systemctl stop "$unit" || true; fi
-  if [[ "$ENABLED_BY_RUN" == 1 ]]; then systemctl disable "$unit" || true; fi
+  if [[ "$TOUCHED_SERVICE" == 1 ]]; then
+    systemctl stop "$unit" || { rollback_failed=1; log "could not stop $unit for rollback"; }
+  fi
+  if [[ "$ENABLED_BY_RUN" == 1 ]]; then
+    systemctl disable "$unit" || { rollback_failed=1; log "could not disable $unit during rollback"; }
+  fi
   for f in "${BACKUP_MAP[@]}"; do
     local tmp
     tmp="$(dirname "$f")/.baft-rollback-$(basename "$f").$$"
@@ -825,13 +829,29 @@ rollback_apply() {
       :
     else
       rm -f -- "$tmp"
+      rollback_failed=1
       log "could not restore $f (copy kept in $BACKUP_DIR)"
     fi
   done
-  for f in "${CREATED[@]}"; do rm -f -- "$f"; done
-  systemctl daemon-reload || true
-  # A service this run never stopped or restarted is left alone.
-  if [[ "$TOUCHED_SERVICE" == 1 && "$was_active" == 1 ]]; then systemctl restart "$unit" || true; fi
+  for f in "${CREATED[@]}"; do
+    rm -f -- "$f" || { rollback_failed=1; log "could not remove newly created $f"; }
+  done
+  systemctl daemon-reload || { rollback_failed=1; log "could not reload systemd during rollback"; }
+  # Never restart with a known incomplete file or service rollback.
+  if [[ "$TOUCHED_SERVICE" == 1 && "$was_active" == 1 && "$rollback_failed" == 0 ]]; then
+    if ! systemctl restart "$unit"; then
+      rollback_failed=1
+      log "could not restart $unit after rollback"
+    elif [[ "$BCC_ONLY" == "1" ]] && ! wait_active "$unit" 5; then
+      rollback_failed=1
+      systemctl stop "$unit" || true
+      log "$unit did not stabilize on the restored BCC binary and state"
+    fi
+  fi
+  if [[ "$rollback_failed" != 0 ]]; then
+    log "rollback incomplete; service state is unverified (backup copies: ${BACKUP_DIR:-none})"
+    return 1
+  fi
   log "rolled back to the previous binaries, files and service state; the release state was not recorded"
 }
 
