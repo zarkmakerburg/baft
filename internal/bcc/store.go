@@ -202,6 +202,9 @@ type Store struct {
 	reconcileMu sync.Mutex
 	path        string
 	st          state
+	// Set when a commit's outcome cannot be established from durable state.
+	// Keep the process from overwriting a possibly committed transaction.
+	persistenceUncertain bool
 	// DriftEvery is how often active tunnels are checked for drift; zero
 	// disables the automatic check (a check can still be requested).
 	DriftEvery time.Duration
@@ -250,10 +253,21 @@ func tokenHash(v string) string {
 }
 
 func (s *Store) saveLocked() error {
-	return writeStateDB(s.path,s.st)
+	if s.persistenceUncertain {
+		return errStateCommitUncertain
+	}
+	return s.recordStateWrite(writeStateDB(s.path, s.st))
 }
 
-func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
+func (s *Store) recordStateWrite(err error) error {
+	if errors.Is(err, errStateCommitUncertain) {
+		s.persistenceUncertain = true
+	}
+	return err
+}
+
+func (s *Store) UpsertNode(n Node, agentToken string, audits ...AuditEntry) (Node,error) {
+	if len(audits)>1{return Node{},errors.New("at most one audit intent is allowed")}
 	if strings.TrimSpace(n.ID)==""||len(n.ID)>128{return Node{},errors.New("node id is required")}
 	if strings.TrimSpace(n.Alias)==""{n.Alias=n.ID}
 	if strings.TrimSpace(n.Address)==""{return Node{},errors.New("node address is required")}
@@ -261,6 +275,12 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	if n.PathIPv6!=""{ip:=net.ParseIP(strings.TrimSpace(n.PathIPv6));if ip==nil||ip.To4()!=nil||ip.To16()==nil{return Node{},errors.New("path_ipv6 must be a literal IPv6 address")};n.PathIPv6=ip.String()}
 	switch n.Role {case "foreign","worker","master":default:return Node{},errors.New("node role must be foreign, worker, or master")}
 	s.mu.Lock();defer s.mu.Unlock()
+	var before state
+	if len(audits)==1{
+		var err error
+		before,err=cloneState(s.st)
+		if err!=nil{return Node{},err}
+	}
 	old,exists:=s.st.Nodes[n.ID]
 	if agentToken!="" { n.AgentTokenHash=tokenHash(agentToken) } else if exists { n.AgentTokenHash=old.AgentTokenHash }
 	if exists {
@@ -283,7 +303,17 @@ func (s *Store) UpsertNode(n Node, agentToken string) (Node,error) {
 	if n.LastChecked.IsZero()&&!exists{n.LatencyMS=-1}
 	n.UpdatedAt=time.Now().UTC()
 	s.st.Nodes[n.ID]=n
-	return publicNode(n),s.saveLocked()
+	if len(audits)==1{
+		a:=audits[0]
+		a.Timestamp,a.Action,a.Target,a.Outcome=n.UpdatedAt,"node.upsert",n.ID,"success"
+		if a.Actor==""{a.Actor="admin"}
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return Node{},err}
+	}
+	if err:=s.saveLocked();err!=nil{
+		if len(audits)==1{s.st=before}else if exists{s.st.Nodes[n.ID]=old}else{delete(s.st.Nodes,n.ID)}
+		return Node{},err
+	}
+	return publicNode(n),nil
 }
 
 func publicNode(n Node) Node {
@@ -332,17 +362,42 @@ func validVersion(v string) bool {
 	return len(v)<=64&&deployVersionRe.MatchString(v)
 }
 
-func (s *Store) CreateDeployJobs(nodeIDs []string,version string) ([]Job,error) {
+func (s *Store) CreateDeployJobs(nodeIDs []string,version string,audits ...AuditEntry) ([]Job,error) {
 	if !validVersion(version){return nil,errors.New("invalid BAFT version")}
 	if len(nodeIDs)==0{return nil,errors.New("at least one node is required")}
+	if len(audits)>1{return nil,errors.New("at most one audit intent is allowed")}
 	s.mu.Lock();defer s.mu.Unlock()
-	seen:=map[string]struct{}{};out:=make([]Job,0,len(nodeIDs))
+	var before state
+	if len(audits)==1{
+		var err error
+		before,err=cloneState(s.st)
+		if err!=nil{return nil,err}
+	}
+	seen:=map[string]struct{}{};ids:=make([]string,0,len(nodeIDs))
 	for _,id:=range nodeIDs{
 		if _,dup:=seen[id];dup{continue};seen[id]=struct{}{}
 		if _,ok:=s.st.Nodes[id];!ok{return nil,fmt.Errorf("unknown node %s",id)}
-		out=append(out,s.newJobLocked(Job{Type:JobDeployBAFT,NodeID:id,Version:version}))
+		ids=append(ids,id)
 	}
-	return out,s.saveLocked()
+	startJob:=s.st.NextJob
+	out:=make([]Job,0,len(ids))
+	for _,id:=range ids{out=append(out,s.newJobLocked(Job{Type:JobDeployBAFT,NodeID:id,Version:version}))}
+	if len(audits)==1{
+		a:=audits[0]
+		a.Action,a.Target,a.Outcome="deploy.create","cluster","success"
+		if a.Actor==""{a.Actor="admin"}
+		jobIDs:=make([]string,0,len(out));for _,job:=range out{jobIDs=append(jobIDs,job.ID)}
+		a.Details=mergeAuditDetails(a.Details,map[string]any{"job_ids":jobIDs})
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return nil,err}
+	}
+	if err:=s.saveLocked();err!=nil{
+		if len(audits)==1{s.st=before}else{
+			for _,job:=range out{delete(s.st.Jobs,job.ID)}
+			s.st.NextJob=startJob
+		}
+		return nil,err
+	}
+	return out,nil
 }
 
 func (s *Store) authorizedHashLocked(nodeID,token string,now time.Time)(string,bool) {
@@ -426,15 +481,18 @@ func (s *Store) noteAgentSeenLocked(nodeID string,now time.Time){
 func (s *Store) PullJobs(nodeID,token string) ([]Job,error) {
 	s.mu.Lock();defer s.mu.Unlock()
 	if !s.authorizedLocked(nodeID,token){return nil,ErrAgentAuthentication}
+	before,err:=cloneState(s.st);if err!=nil{return nil,err}
 	s.noteAgentSeenLocked(nodeID,time.Now().UTC())
 	var out []Job
+	changed:=false
 	for id,j:=range s.st.Jobs{
 		if j.NodeID!=nodeID||j.Status!="queued"{continue}
+		changed=true
 		if j.Type==jobEnrollPeerLegacy{j.Status="failed";j.Message="retired job type: build tunnels with /api/tunnels";j.UpdatedAt=time.Now().UTC();s.st.Jobs[id]=j;continue}
 		j.Status="dispatched";j.UpdatedAt=time.Now().UTC();s.st.Jobs[id]=j;out=append(out,j)
 	}
 	sort.Slice(out,func(i,j int)bool{return out[i].CreatedAt.Before(out[j].CreatedAt)})
-	if len(out)>0{if err:=s.saveLocked();err!=nil{return nil,err}}
+	if changed{if err:=s.saveLocked();err!=nil{s.st=before;return nil,err}}
 	return out,nil
 }
 
@@ -453,11 +511,13 @@ func (s *Store) AckJobOutput(nodeID,token,jobID,status,message,output string) er
 	if !s.authorizedLocked(nodeID,token){return ErrAgentAuthentication}
 	j,ok:=s.st.Jobs[jobID];if !ok||j.NodeID!=nodeID{return errors.New("job not found")}
 	if j.Status!="dispatched"&&j.Status!="queued"{return errors.New("job already completed")}
+	previous:=j
 	j.Status=status;j.Message=message;j.UpdatedAt=time.Now().UTC()
 	if status=="succeeded"{j.Output=output}
 	wipeSecretParams(&j)
 	s.st.Jobs[jobID]=j
-	return s.saveLocked()
+	if err:=s.saveLocked();err!=nil{s.st.Jobs[jobID]=previous;return err}
+	return nil
 }
 
 func (s *Store) SetHealth(nodeID,health string,latencyMS int64,checked time.Time) error {
@@ -484,7 +544,8 @@ func (s *Store) SetFinancePolicy(nodeID string,costMicrosPerGiB,revenueMicrosPer
 	return s.SetFinancePolicyAt(nodeID,costMicrosPerGiB,revenueMicrosPerGiB,"IRR",time.Unix(0,0).UTC())
 }
 
-func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64,currency string,effectiveFrom time.Time) error {
+func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosPerGiB int64,currency string,effectiveFrom time.Time,audits ...AuditEntry) error {
+	if len(audits)>1{return errors.New("at most one audit intent is allowed")}
 	if costMicrosPerGiB<0||revenueMicrosPerGiB<0{return errors.New("finance rates must be non-negative")}
 	if costMicrosPerGiB>1_000_000_000||revenueMicrosPerGiB>1_000_000_000{return errors.New("finance rates are unreasonably large")}
 	currency=strings.ToUpper(strings.TrimSpace(currency))
@@ -495,19 +556,44 @@ func (s *Store) SetFinancePolicyAt(nodeID string,costMicrosPerGiB,revenueMicrosP
 
 	s.mu.Lock();defer s.mu.Unlock()
 	if _,ok:=s.st.Nodes[nodeID];!ok{return errors.New("node not found")}
+	var before state
+	if len(audits)==1{
+		var err error
+		before,err=cloneState(s.st)
+		if err!=nil{return err}
+	}
 	p:=FinancePolicy{
 		NodeID:nodeID,CostMicrosPerGiB:costMicrosPerGiB,RevenueMicrosPerGiB:revenueMicrosPerGiB,
 		Currency:currency,EffectiveFrom:effectiveFrom,Version:s.st.NextRateVersion,
 	}
+	previousVersion:=s.st.NextRateVersion
+	previousPolicy,hadPolicy:=s.st.Policies[nodeID]
+	previousHistory,hadHistory:=s.st.RateHistory[nodeID]
 	s.st.NextRateVersion++
-	h:=append(s.st.RateHistory[nodeID],p)
+	// Sorting an appended slice can otherwise overwrite the old backing array.
+	h:=append(append([]FinancePolicy(nil),previousHistory...),p)
 	sort.SliceStable(h,func(i,j int)bool{
 		if h[i].EffectiveFrom.Equal(h[j].EffectiveFrom){return h[i].Version<h[j].Version}
 		return h[i].EffectiveFrom.Before(h[j].EffectiveFrom)
 	})
 	s.st.RateHistory[nodeID]=h
 	s.st.Policies[nodeID]=p
-	return s.saveLocked()
+	if len(audits)==1{
+		a:=audits[0]
+		a.Action,a.Target,a.Outcome="finance.rate.change",nodeID,"success"
+		if a.Actor==""{a.Actor="admin"}
+		a.Details=mergeAuditDetails(a.Details,map[string]any{"rate_version":p.Version})
+		if _,err:=s.enqueueSecurityAuditLocked(a);err!=nil{s.st=before;return err}
+	}
+	if err:=s.saveLocked();err!=nil{
+		if len(audits)==1{s.st=before}else{
+			s.st.NextRateVersion=previousVersion
+			if hadPolicy{s.st.Policies[nodeID]=previousPolicy}else{delete(s.st.Policies,nodeID)}
+			if hadHistory{s.st.RateHistory[nodeID]=previousHistory}else{delete(s.st.RateHistory,nodeID)}
+		}
+		return err
+	}
+	return nil
 }
 
 // moneyForBytes returns the whole micros owed for bytes at rate, plus the new
@@ -590,8 +676,18 @@ func (s *Store) appendFinanceLocked(nodeID string,at time.Time,ingressBytes,egre
 func (s *Store) AddTraffic(nodeID,token string,ingressBytes,egressBytes uint64) (NodeFinance,error) {
 	s.mu.Lock();defer s.mu.Unlock()
 	if !s.authorizedLocked(nodeID,token){return NodeFinance{},ErrAgentAuthentication}
+	beforeFinance,hadFinance:=s.st.Finance[nodeID]
+	beforeRemainder,hadRemainder:=s.st.FinanceRemainders[nodeID]
+	hadRemainderMap:=s.st.FinanceRemainders!=nil
+	beforeLedger:=s.st.FinanceLedger
 	if err:=s.appendFinanceLocked(nodeID,time.Now().UTC(),ingressBytes,egressBytes);err!=nil{return NodeFinance{},err}
-	if err:=s.saveLocked();err!=nil{return NodeFinance{},err}
+	if err:=s.saveLocked();err!=nil{
+		if hadFinance{s.st.Finance[nodeID]=beforeFinance}else{delete(s.st.Finance,nodeID)}
+		if hadRemainder{s.st.FinanceRemainders[nodeID]=beforeRemainder}else{delete(s.st.FinanceRemainders,nodeID)}
+		if !hadRemainderMap{s.st.FinanceRemainders=nil}
+		s.st.FinanceLedger=beforeLedger
+		return NodeFinance{},err
+	}
 	return s.st.Finance[nodeID],nil
 }
 
@@ -625,6 +721,9 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 		f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
 		return f,true,nil
 	}
+	// A failed database write must not advance the replay cursor or finance
+	// ledger in RAM: a retried report must be applied exactly once.
+	before,err:=cloneState(s.st);if err!=nil{return NodeFinance{},false,err}
 	var din,dout uint64
 	if prev.BootID==report.BootID && prev.BootID!="" {
 		if report.IngressBytes<prev.IngressBytes||report.EgressBytes<prev.EgressBytes||report.HandshakeErrors<prev.HandshakeErrors{
@@ -646,7 +745,7 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	if ingestID==0{ingestID=1}
 	if ingestID==^uint64(0){return NodeFinance{},false,errors.New("telemetry ingestion id exhausted")}
 	s.st.NextTelemetryIngestID=ingestID+1
-	if err:=s.appendFinanceLocked(report.NodeID,ts,din,dout);err!=nil{return NodeFinance{},false,err}
+	if err:=s.appendFinanceLocked(report.NodeID,ts,din,dout);err!=nil{s.st=before;return NodeFinance{},false,err}
 	f:=s.st.Finance[report.NodeID];f.NodeID=report.NodeID
 	rateMilli:=int64(0)
 	if prev.BootID==report.BootID && !prev.LastTelemetry.IsZero() && ts.After(prev.LastTelemetry) {
@@ -674,7 +773,7 @@ func (s *Store) ApplyTelemetry(token,signature string,body []byte,report telemet
 	keep=append(keep,point)
 	if len(keep)>10080 { keep=keep[len(keep)-10080:] }
 	s.st.History[report.NodeID]=keep
-	if err:=s.saveLocked();err!=nil{return NodeFinance{},false,err}
+	if err:=s.saveLocked();err!=nil{s.st=before;return NodeFinance{},false,err}
 	return f,false,nil
 }
 

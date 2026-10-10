@@ -894,6 +894,26 @@ func installOneShotPostPublishUncertainty(p *recoveryRuntimePair) {
 	})
 }
 
+func TestDistributedCommitWriteErrorRequiresExactResolution(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	var writeFailed,statusQueried atomic.Bool
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="commit_send_error"&&writeFailed.CompareAndSwap(false,true){
+			return errors.New("injected COMMIT encoder failure")
+		}
+		if stage=="status_query_after_send"{statusQueried.Store(true)}
+		return nil
+	})
+	p.proxy.CutAll()
+	ir,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,3)
+	if !writeFailed.Load()||!statusQueried.Load(){
+		t.Fatalf("COMMIT write error bypassed exact status resolution: failed=%v queried=%v",
+			writeFailed.Load(),statusQueried.Load())
+	}
+	t.Logf("PASS COMMIT write uncertainty resolved before new epoch=%d hash=%x",ir.Epoch,h)
+}
+
 func TestDistributedCommitFaultCCommitACKWriteCutResolves(t *testing.T){
 	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
 	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
