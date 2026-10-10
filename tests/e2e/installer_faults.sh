@@ -33,7 +33,13 @@ case "$1" in
   is-enabled) [ -f "$S/enabled.$2" ] && echo enabled || echo disabled ;;
   enable) touch "$S/enabled.$2" ;;
   disable) rm -f "$S/enabled.$2" ;;
-  start|restart) touch "$S/active.$2" ;;
+  start) touch "$S/active.$2" ;;
+  restart)
+    if [ "${STUB_FAIL_RESTART:-0}" = 1 ]; then
+      rm -f "$S/active.$2"
+      exit 1
+    fi
+    touch "$S/active.$2" ;;
   stop) rm -f "$S/active.$2" ;;
   show) echo 4242 ;;
 esac
@@ -243,4 +249,14 @@ AGI BAFT_TEST_FAIL_AT=pre-commit --yes >"$W/o" 2>"$W/e" && fail "injected failur
 active baft-agent && fail "agent that was stopped is left running"
 enabled baft-agent && fail "agent that was disabled is left enabled"
 [[ "$(AH)" == "$A0" ]] || fail "agent files changed"
+
+log "4. a failed upgrade with a failed rollback restart reports incomplete and leaves the service stopped"
+C0="$(cfg_hash)"
+rc=0
+EXI $(rel "$W/rel2") STUB_FAIL_RESTART=1 --yes >"$W/o" 2>"$W/e" || rc=$?
+[[ "$rc" != 0 ]] || fail "restart failure reported success"
+grep -q 'rollback incomplete' "$W/e" || { cat "$W/e"; fail "failed rollback restart was hidden"; }
+! grep -q 'rolled back to the previous binaries' "$W/e" || fail "incomplete rollback claimed full success"
+active baft-ex && fail "failed rollback restart left EX marked active"
+[[ "$(cfg_hash)" == "$C0" ]] || fail "binary and configuration were not restored"
 log "PASS"
