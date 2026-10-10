@@ -122,9 +122,27 @@ func migrateStateDB(db *sql.DB) error {
 			tx.Rollback()
 			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return err
+		if err := commitStateMigration(db, v+1, tx.Commit); err != nil {
+			return fmt.Errorf("BCC state migration %d commit: %w", v+1, err)
 		}
+	}
+	return nil
+}
+
+// A Commit error can mean that the transaction completed but its
+// acknowledgment was lost. The migration marker and DDL share one SQLite
+// transaction, so the exact marker proves that migration was applied.
+func commitStateMigration(db *sql.DB, version int, commit func() error) error {
+	if err := commit(); err != nil {
+		var applied int
+		readErr := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&applied)
+		if readErr == nil && applied == 1 {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("migration commit outcome uncertain: %w (re-read: %v)", err, readErr)
+		}
+		return fmt.Errorf("migration marker %d absent after failed commit: %w", version, err)
 	}
 	return nil
 }
