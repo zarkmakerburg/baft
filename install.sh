@@ -822,6 +822,28 @@ rollback_apply() {
   if [[ "$ENABLED_BY_RUN" == 1 ]]; then
     systemctl disable "$unit" || { rollback_failed=1; log "could not disable $unit during rollback"; }
   fi
+  # If BCC migrated its database before apply failed, the restored older
+  # binary may no longer read it. Keep the verified candidate for explicit
+  # recovery; never overwrite live state with an earlier snapshot.
+  local bcc_candidate=""
+  if [[ "$BCC_ONLY" == "1" && -n "$BACKUP_DIR" && -f "$BAFT_BCC_BIN" ]]; then
+    for f in "${BACKUP_MAP[@]}"; do
+      if [[ "$f" == "$BAFT_BCC_BIN" ]] &&
+         ! same_file "$BAFT_BCC_BIN" "$BACKUP_DIR/$(backup_name "$f")"; then
+        bcc_candidate="$BACKUP_DIR/bcc-candidate-on-failed-apply"
+        if install -m 0700 -o root -g root "$BAFT_BCC_BIN" "$bcc_candidate" &&
+           ( cd "$BACKUP_DIR" && sha256sum -- "bcc-candidate-on-failed-apply" >"bcc-candidate.sha256" ); then
+          log "BCC recovery candidate retained at $bcc_candidate"
+        else
+          rm -f -- "$bcc_candidate" "$BACKUP_DIR/bcc-candidate.sha256"
+          bcc_candidate=""
+          rollback_failed=1
+          log "could not retain the BCC recovery candidate"
+        fi
+        break
+      fi
+    done
+  fi
   for f in "${BACKUP_MAP[@]}"; do
     local tmp
     tmp="$(dirname "$f")/.baft-rollback-$(basename "$f").$$"

@@ -259,4 +259,36 @@ grep -q 'rollback incomplete' "$W/e" || { cat "$W/e"; fail "failed rollback rest
 ! grep -q 'rolled back to the previous binaries' "$W/e" || fail "incomplete rollback claimed full success"
 active baft-ex && fail "failed rollback restart left EX marked active"
 [[ "$(cfg_hash)" == "$C0" ]] || fail "binary and configuration were not restored"
+log "5. BCC failed binary rollback retains the verified candidate without replacing state"
+BCC_STATE="$W/var-bcc/state.db"
+mkdir -p "$(dirname "$BCC_STATE")"
+printf 'existing BCC state; fake service does not open it\n' >"$BCC_STATE"
+bcc_env=(BAFT_PREFIX="$W/opt-bcc" BAFT_RELEASE_STATE="$W/opt-bcc/release-state.json"
+  BAFT_BCC_BIN="$W/bin/baft-bcc" BAFT_BCC_CONFIG_DIR="$W/etc-bcc"
+  BAFT_BCC_STATE_DIR="$W/var-bcc" BAFT_BCC_STATE_FILE="$BCC_STATE"
+  BAFT_BCC_BOOTSTRAP_SCRIPT="$W/opt-bcc/bcc-bootstrap/install.sh"
+  BAFT_BCC_SERVICE=baft-bcc-fault BAFT_NONINTERACTIVE=1)
+run $(rel "$W/rel1") "${bcc_env[@]}" bash install.sh --bcc-only --yes >"$W/o" 2>"$W/e" ||
+  { cat "$W/e"; fail "BCC fake-systemd fixture install failed"; }
+active baft-bcc-fault || fail "BCC fixture did not start"
+printf '\n' >>"$W/bin/baft-bcc" # Still executable, but distinct from the staged candidate.
+"$W/bin/baft-bcc" --help >/dev/null 2>&1 || fail "modified old BCC fixture does not run"
+old_bcc="$(sha256sum "$W/bin/baft-bcc" | cut -d ' ' -f1)"
+old_state="$(sha256sum "$BCC_STATE" | cut -d ' ' -f1)"
+rc=0
+run $(rel "$W/rel2") "${bcc_env[@]}" STUB_FAIL_RESTART=1 bash install.sh --bcc-only --yes >"$W/o" 2>"$W/e" || rc=$?
+[[ "$rc" != 0 ]] || fail "failed BCC restart reported success"
+grep -q 'rollback incomplete' "$W/e" || { cat "$W/e"; fail "BCC rollback failure was hidden"; }
+active baft-bcc-fault && fail "failed BCC rollback left service active"
+[[ "$(sha256sum "$BCC_STATE" | cut -d ' ' -f1)" == "$old_state" ]] || fail "BCC state changed during failed apply"
+[[ "$(sha256sum "$W/bin/baft-bcc" | cut -d ' ' -f1)" == "$old_bcc" ]] || fail "older BCC binary was not restored"
+candidate="$(find "$W/opt-bcc/backups" -name bcc-candidate-on-failed-apply -type f -print -quit)"
+[[ -n "$candidate" && -f "$candidate" ]] || fail "compatible BCC recovery candidate was lost"
+[[ "$(stat -c '%a %U' "$candidate")" == "700 root" ]] || fail "BCC recovery candidate is not root-only"
+( cd "$(dirname "$candidate")" && sha256sum -c bcc-candidate.sha256 ) >/dev/null ||
+  fail "BCC recovery candidate checksum mismatch"
+case "$(uname -m)" in x86_64) bcc_arch=amd64 ;; aarch64) bcc_arch=arm64 ;; *) fail "unsupported BCC test architecture" ;; esac
+cmp -s "$candidate" "$W/rel2/dist/baft-bcc-linux-$bcc_arch" ||
+  fail "retained BCC binary differs from verified release candidate"
+
 log "PASS"
