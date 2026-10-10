@@ -51,3 +51,11 @@ Code syntax parsed before each commit; native and visual behavior on the new SHA
 - Owner explicitly approved the BAFT logo in chat. This closes the **owner-design-approval sub-gate** of Welcome/Login step 31; it does not establish rendered-image acceptance.
 - Source check on `web/bcc-welcome-login-v3-preview.html` (blob `0ecf51fb4d9befab6e4a7075f909bc0073174114`): header image `id="officialLogo"` references `./assets/baft-brand.png`, with load/error handling and `object-fit:contain`. This is source-only evidence; no browser image-load, transparency, responsive, or visual comparison test was run.
 - Step 31 remains **TECHNICAL VERIFICATION PENDING** until actual approved asset identity and browser rendering are checked. Step 18 browser accessibility, step 49 real session, step 50 final acceptance remain OPEN. BCC 150-step audit remains 149/150 BLOCKED. No merge, deployment or operational tunnel changes.
+
+
+## Logo binary-format audit — 2026-10-10
+
+- **Direct blob verification:** fetched `web/assets/baft-brand.png` from the authorized UI branch as Base64, blob SHA `be3efae9e5fc2d5df6f7a92461a9424e325db7b8`. Its Base64 prefix `/9j/4AAQSkZJRgABAQ` decodes to a JPEG/JFIF header, **not a PNG signature**. Filename extension and actual content disagree. Header check: JPEG PASS; PNG FAIL. This is a binary-signature check, not a visual browser test.
+- Preview `web/bcc-welcome-login-v3-preview.html` blob `0ecf51fb4d9befab6e4a7075f909bc0073174114` points `#officialLogo` to `./assets/baft-brand.png`; its image load/error handling is present. Source path check PASS; rendered transparency and exact approved-artwork identity **NOT VERIFIED**.
+- **Next safe correction (not executed):** obtain the exact approved artwork as a genuine alpha-capable PNG, replace only this asset after byte-level/visual review, then perform browser responsive, FA/EN, dark/light and keyboard/screen-reader checks. Do not automatically convert the existing JPEG and claim transparency or artwork fidelity.
+- **Acceptance gates:** step 18 browser accessibility OPEN; step 31 owner design approved but technical asset/render gate BLOCKED; steps 49 and 50 OPEN. BCC 150-step audit remains 149/150 BLOCKED. PR #159 merged; post-merge UI branch diverged from main (ahead 7, behind 1 at this check). No merge, deploy, tunnel or live-server changes.
