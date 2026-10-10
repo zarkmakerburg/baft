@@ -77,6 +77,14 @@ func (r *Runtime) recoveryFail(stage string) error {
 	return fn(stage)
 }
 
+func (r *Runtime) writeRecoveryControl(stage string, out io.Writer, ctl session.RecoveryControl) error {
+	r.recoveryWriteMu.RLock()
+	fn:=r.recoveryWriteForTest
+	r.recoveryWriteMu.RUnlock()
+	if fn!=nil{return fn(stage,out,ctl)}
+	return session.EncodeRecoveryControl(out,ctl)
+}
+
 func (r *Runtime) nextRecoveryCandidate(shard int) string {
 	n:=r.recoverySeq.Add(1)
 	return fmt.Sprintf("shard-%d-replacement-%d",shard,n)
@@ -267,12 +275,12 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 		_ = sh.peer.MarkCommitUncertain(commitCtl)
 		return fmt.Errorf("%w: commit send: %v",session.ErrCommitUncertain,err)
 	}
-	if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{
+	if err:=r.writeRecoveryControl("dialer_commit",o.carrier.Out,commitCtl);err!=nil{
 		_ = sh.peer.MarkCommitUncertain(commitCtl)
 		return fmt.Errorf("%w: commit send: %v",session.ErrCommitUncertain,err)
 	}
 	for i:=1;i<commitCopies;i++{
-		if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{
+		if err:=r.writeRecoveryControl("dialer_commit",o.carrier.Out,commitCtl);err!=nil{
 			_ = sh.peer.MarkCommitUncertain(commitCtl)
 			return fmt.Errorf("%w: duplicate commit send: %v",session.ErrCommitUncertain,err)
 		}
