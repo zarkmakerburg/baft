@@ -65,6 +65,15 @@ func rollbackFromJournal(j restoreJournal,statePath string) error {
 	return nil
 }
 
+// rollbackRestoreError preserves both the triggering failure and a rollback
+// failure. A prepared journal is retained so startup recovery can retry.
+func rollbackRestoreError(j restoreJournal, statePath string, cause error) error {
+    if err := rollbackFromJournal(j, statePath); err != nil {
+        return errors.Join(cause, fmt.Errorf("restore rollback failed; recovery journal retained: %w", err))
+    }
+    return cause
+}
+
 func recoverRestoreTransaction(statePath string) error {
 	journalPath:=restoreJournalPath(statePath)
 	raw,err:=os.ReadFile(journalPath)
@@ -167,49 +176,39 @@ func (s *Server) restoreTransactional(path string,key []byte) error {
 	if err:=writeAtomic(restoreJournalPath(s.store.path),jraw,0600);err!=nil{return err}
 
 	if err:=s.restoreFail("before_commit");err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return err
+		return rollbackRestoreError(j,s.store.path,err)
 	}
 
 	if err:=os.Rename(stateStage,s.store.path);err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return err
+		return rollbackRestoreError(j,s.store.path,err)
 	}
 	if err:=fsyncDir(s.store.path);err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return err
+		return rollbackRestoreError(j,s.store.path,err)
 	}
 	if err:=s.restoreFail("after_state_commit");err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return err
+		return rollbackRestoreError(j,s.store.path,err)
 	}
 	if err:=os.Rename(auditStage,s.audit.path);err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return err
+		return rollbackRestoreError(j,s.store.path,err)
 	}
 	if err:=fsyncDir(s.audit.path);err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return err
+		return rollbackRestoreError(j,s.store.path,err)
 	}
 
 	reopened,err:=OpenAuditLog(s.audit.path)
 	if err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return fmt.Errorf("committed audit reopen: %w",err)
+		return rollbackRestoreError(j,s.store.path,fmt.Errorf("committed audit reopen: %w",err))
 	}
 	if err:=reopened.Verify();err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return fmt.Errorf("committed audit verify: %w",err)
+		return rollbackRestoreError(j,s.store.path,fmt.Errorf("committed audit verify: %w",err))
 	}
 
 	j.Phase="committed"
 	jraw,err=json.Marshal(j);if err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return err
+		return rollbackRestoreError(j,s.store.path,err)
 	}
 	if err:=writeAtomic(restoreJournalPath(s.store.path),jraw,0600);err!=nil{
-		_ = rollbackFromJournal(j,s.store.path)
-		return err
+		return rollbackRestoreError(j,s.store.path,err)
 	}
 
 	// RAM becomes visible only after both files are committed and verified.

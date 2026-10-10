@@ -117,14 +117,36 @@ func (s *Store) snapshotState()(state,error){
 	return cloneState(s.st)
 }
 
-func writeAtomic(path string,data []byte,mode os.FileMode) error {
-	if err:=os.MkdirAll(filepath.Dir(path),0700);err!=nil{return err}
-	tmp:=path+".tmp"
-	f,err:=os.OpenFile(tmp,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,mode);if err!=nil{return err}
-	if _,err=f.Write(data);err!=nil{_ = f.Close();_ = os.Remove(tmp);return err}
-	if err=f.Sync();err!=nil{_ = f.Close();_ = os.Remove(tmp);return err}
-	if err=f.Close();err!=nil{_ = os.Remove(tmp);return err}
-	if err=os.Rename(tmp,path);err!=nil{_ = os.Remove(tmp);return err}
+func writeAtomic(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	// A fixed path+".tmp" can be a symlink left by another process (or
+	// an interrupted write). CreateTemp opens a fresh file exclusively.
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
 	return fsyncDir(path)
 }
 
