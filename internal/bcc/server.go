@@ -266,10 +266,17 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/backups/restore-preview", s.restorePreviewAPI)
 	m.HandleFunc("/api/nodes/revoke", s.revokeNode)
 	m.HandleFunc("/api/nodes/rotate-token", s.rotateNodeToken)
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") && s.store.PersistenceUncertain() {
+			http.Error(w, "BCC state unavailable pending restart and reconciliation", http.StatusServiceUnavailable)
+			return
+		}
+		m.ServeHTTP(w, r)
+	})
 	if s.access != nil {
-		return s.harden(s.guard.middleware(s.now, s.clientIP, true, s.accessHandler(m)))
+		return s.harden(s.guard.middleware(s.now, s.clientIP, true, s.accessHandler(api)))
 	}
-	return s.harden(s.guard.middleware(s.now, s.clientIP, false, m))
+	return s.harden(s.guard.middleware(s.now, s.clientIP, false, api))
 }
 
 func (s *Server) nodes(w http.ResponseWriter, r *http.Request) {

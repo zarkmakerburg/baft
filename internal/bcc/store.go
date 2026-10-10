@@ -266,6 +266,14 @@ func (s *Store) recordStateWrite(err error) error {
 	return err
 }
 
+// PersistenceUncertain reports a failed commit whose durable outcome could not
+// be read back. Callers must not serve the in-memory snapshot as authoritative.
+func (s *Store) PersistenceUncertain() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.persistenceUncertain
+}
+
 func (s *Store) UpsertNode(n Node, agentToken string, audits ...AuditEntry) (Node,error) {
 	if len(audits)>1{return Node{},errors.New("at most one audit intent is allowed")}
 	if strings.TrimSpace(n.ID)==""||len(n.ID)>128{return Node{},errors.New("node id is required")}
