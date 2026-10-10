@@ -41,25 +41,26 @@ func TestEngineFINACKConfirmationIsSymmetricAndRequiresAcceptance(t *testing.T) 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			local, peer := validBaseSnapshotsForHarness()
+			lf, pf := &local.Flows[0], &peer.Flows[0]
 			if tc.localAck {
-				local.FinRecv = true
-				local.FinAckSent = true
-				peer.FinSent = true
+				lf.FinRecv = true
+				lf.FinAckSent = true
+				pf.FinSent = true
 				if tc.peerAccepted {
-					peer.FinAcked = true
+					pf.FinAcked = true
 				}
 				if tc.alreadyConfirmed {
-					local.FinAckConfirmed = true
+					lf.FinAckConfirmed = true
 				}
 			} else {
-				local.FinSent = true
-				peer.FinRecv = true
-				peer.FinAckSent = true
+				lf.FinSent = true
+				pf.FinRecv = true
+				pf.FinAckSent = true
 				if tc.peerAccepted {
-					local.FinAcked = true
+					lf.FinAcked = true
 				}
 				if tc.alreadyConfirmed {
-					peer.FinAckConfirmed = true
+					pf.FinAckConfirmed = true
 				}
 			}
 
