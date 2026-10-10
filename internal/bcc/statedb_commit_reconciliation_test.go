@@ -98,3 +98,37 @@ func TestCommitStateDoesNotAcceptUncommittedState(t *testing.T) {
 		t.Fatal("failed commit changed durable state")
 	}
 }
+
+func TestUncertainCommitBlocksLaterStoreWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStateDB(path, store.st); err != nil {
+		t.Fatal(err)
+	}
+	lostACK := errors.New("commit acknowledgment lost")
+	uncertain := commitStateWithReconciliation(
+		filepath.Join(t.TempDir(), "unreadable.db"),
+		store.st,
+		func() error { return lostACK },
+	)
+	if !errors.Is(uncertain, errStateCommitUncertain) {
+		t.Fatalf("failed durable re-read must report uncertainty: %v", uncertain)
+	}
+	if err := store.recordStateWrite(uncertain); !errors.Is(err, errStateCommitUncertain) {
+		t.Fatalf("store lost uncertain write: %v", err)
+	}
+	store.st.NextJob++
+	if err := store.saveLocked(); !errors.Is(err, errStateCommitUncertain) {
+		t.Fatalf("store accepted a later write after uncertain commit: %v", err)
+	}
+	persisted, err := readStateDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.NextJob == store.st.NextJob {
+		t.Fatal("uncertain store overwrote durable state")
+	}
+}
