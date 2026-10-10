@@ -155,7 +155,25 @@ func writeStateDB(path string, st state) error {
 		tx.Rollback()
 		return err
 	}
-	return tx.Commit()
+	return commitStateWithReconciliation(path, st, tx.Commit)
+}
+
+// A failed Commit can mean that SQLite committed but the caller lost the
+// acknowledgment. Re-read the durable database before the Store rolls its
+// in-memory state back. A failed re-read remains uncertain and must be
+// treated as such by callers; it is never reported as a successful write.
+func commitStateWithReconciliation(path string, st state, commit func() error) error {
+	if err := commit(); err != nil {
+		persisted, readErr := readStateDB(path)
+		if readErr == nil && bytes.Equal(canonicalStateJSON(st), canonicalStateJSON(persisted)) {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("BCC state commit outcome uncertain: %w (re-read: %v)", err, readErr)
+		}
+		return fmt.Errorf("BCC state commit did not persist requested state: %w", err)
+	}
+	return nil
 }
 
 func writeStateTx(tx *sql.Tx, st state) error {
