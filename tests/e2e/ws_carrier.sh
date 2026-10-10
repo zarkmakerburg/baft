@@ -12,18 +12,33 @@ cleanup() {
   local p
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
   [[ -n "${TARGET_PID:-}" ]] && kill "$TARGET_PID" 2>/dev/null || true
+  for p in "${PIDS[@]:-}"; do wait "$p" 2>/dev/null || true; done
+  [[ -n "${TARGET_PID:-}" ]] && wait "$TARGET_PID" 2>/dev/null || true
   rm -rf "$WORK"
   return 0
 }
 trap cleanup EXIT
 
-free_port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
+# Reserve every listener port together so IR/EX metrics cannot accidentally
+# receive the same free port as a route, carrier, target or each other.
+mapfile -t PORTS < <(python3 - <<'PY'
+import socket
+listeners = []
+for _ in range(5):
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    listeners.append(s)
+for s in listeners:
+    print(s.getsockname()[1])
+PY
+)
+TARGET="${PORTS[0]}"; CARRIER="${PORTS[1]}"; ENTRY="${PORTS[2]}"
+IR_METRICS="${PORTS[3]}"; EX_METRICS="${PORTS[4]}"
 wait_port() { for _ in $(seq 1 200); do python3 -c "import socket;socket.create_connection(('127.0.0.1',$1),0.2)" 2>/dev/null && return 0; sleep 0.1; done; log "port $1 never opened"; return 1; }
 
 BIN="$WORK/bin"; go build -o "$BIN/" ./cmd/baft ./cmd/baft-pair
 PAIR="$BIN/baft-pair"; BAFT="$BIN/baft"
 
-TARGET=$(free_port); CARRIER=$(free_port); ENTRY=$(free_port)
 EX="$WORK/ex"; IR="$WORK/ir"; mkdir -p "$EX" "$IR/state"
 python3 tests/e2e/echo.py serve "$TARGET" >"$WORK/target.log" 2>&1 & TARGET_PID=$!
 wait_port "$TARGET"
@@ -40,10 +55,10 @@ code=$("$PAIR" ex-code --key "$EX/k.json" --address "127.0.0.1:$CARRIER" --serve
   --identity urn:baft:node:ex-ws --ca-file "$EX/pki/ca.pem" --psk-out "$EX/p.psk" --pending-out "$EX/p.json" --ttl 10m)
 "$PAIR" keygen --file "$IR/k.json" >/dev/null
 reply=$("$PAIR" ir-apply --code "$code" --key "$IR/k.json" --state-dir "$IR/state" --config-out "$IR/baft.yaml" \
-  --transport ws "${UTLS_FLAG[@]}" --route-listen "127.0.0.1:$ENTRY" --metrics-listen "127.0.0.1:$(free_port)")
+  --transport ws "${UTLS_FLAG[@]}" --route-listen "127.0.0.1:$ENTRY" --metrics-listen "127.0.0.1:$IR_METRICS")
 "$PAIR" ex-accept --reply "$reply" --pending "$EX/p.json" --psk-file "$EX/p.psk" --key "$EX/k.json" \
   --transport ws "${UTLS_FLAG[@]}" --listen "127.0.0.1:$CARRIER" --ca-file "$EX/pki/ca.pem" --cert-file "$EX/pki/server.pem" \
-  --cert-key-file "$EX/pki/server.key" --target "127.0.0.1:$TARGET" --metrics-listen "127.0.0.1:$(free_port)" \
+  --cert-key-file "$EX/pki/server.key" --target "127.0.0.1:$TARGET" --metrics-listen "127.0.0.1:$EX_METRICS" \
   --unix-socket "$EX/admin.sock" --config-out "$EX/baft.yaml" >/dev/null
 
 grep -q '"primary": "ws"' "$EX/baft.yaml" || { log "EX config is not ws"; exit 1; }
