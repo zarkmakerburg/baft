@@ -44,3 +44,10 @@ Code syntax parsed before each commit; native and visual behavior on the new SHA
 - Targeted static source assertions: **14/14 PASS**. Checked skip-link and focusable `main` target, visible target outline, theme toggle `aria-pressed` initial/dynamic state, language/direction and localized control labels, reduced-motion behavior, existing logo asset path, disabled demo username/password/submit, prevented demo form submission, live status region, and non-production notice.
 - Previous source-only accessibility fixes now present in this branch include focusable skip target, theme `aria-pressed`, and visible target focus outline. This checkpoint does **not** establish keyboard/browser/screen-reader behavior, owner-approved logo rendering, actual authenticated login, or any live enrolled IR/EX telemetry.
 - **Acceptance remains blocked:** Welcome/Login steps 18, 31, 49, 50 OPEN; BCC audit 149/150 BLOCKED. Exact-head GitHub Actions runs for this post-merge branch were not observed in this checkpoint (the GitHub workflow query returned no matching PR-triggered runs). No live operations, main merge, deploy, tag or release.
+
+
+## Owner logo approval checkpoint — 2026-10-10
+
+- Owner explicitly approved the BAFT logo in chat. This closes the **owner-design-approval sub-gate** of Welcome/Login step 31; it does not establish rendered-image acceptance.
+- Source check on `web/bcc-welcome-login-v3-preview.html` (blob `0ecf51fb4d9befab6e4a7075f909bc0073174114`): header image `id="officialLogo"` references `./assets/baft-brand.png`, with load/error handling and `object-fit:contain`. This is source-only evidence; no browser image-load, transparency, responsive, or visual comparison test was run.
+- Step 31 remains **TECHNICAL VERIFICATION PENDING** until actual approved asset identity and browser rendering are checked. Step 18 browser accessibility, step 49 real session, step 50 final acceptance remain OPEN. BCC 150-step audit remains 149/150 BLOCKED. No merge, deployment or operational tunnel changes.
