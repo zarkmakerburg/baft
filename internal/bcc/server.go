@@ -266,10 +266,17 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/backups/restore-preview", s.restorePreviewAPI)
 	m.HandleFunc("/api/nodes/revoke", s.revokeNode)
 	m.HandleFunc("/api/nodes/rotate-token", s.rotateNodeToken)
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") && s.store.PersistenceUncertain() {
+			http.Error(w, "BCC state unavailable pending restart and reconciliation", http.StatusServiceUnavailable)
+			return
+		}
+		m.ServeHTTP(w, r)
+	})
 	if s.access != nil {
-		return s.harden(s.guard.middleware(s.now, s.clientIP, true, s.accessHandler(m)))
+		return s.harden(s.guard.middleware(s.now, s.clientIP, true, s.accessHandler(api)))
 	}
-	return s.harden(s.guard.middleware(s.now, s.clientIP, false, m))
+	return s.harden(s.guard.middleware(s.now, s.clientIP, false, api))
 }
 
 func (s *Server) nodes(w http.ResponseWriter, r *http.Request) {
@@ -322,14 +329,15 @@ func (s *Server) nodes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		details := map[string]any{"alias": in.Alias, "address": in.Address, "path_ipv4": in.PathIPv4, "path_ipv6": in.PathIPv6, "role": in.Role, "public_key": in.PublicKey, "agent_token_env": envName}
-		n, err := s.store.UpsertNode(Node{ID: in.ID, Alias: in.Alias, Address: in.Address, PathIPv4: in.PathIPv4, PathIPv6: in.PathIPv6, Role: in.Role, PublicKey: in.PublicKey}, agentToken)
+		n, err := s.store.UpsertNode(Node{ID: in.ID, Alias: in.Alias, Address: in.Address, PathIPv4: in.PathIPv4, PathIPv6: in.PathIPv6, Role: in.Role, PublicKey: in.PublicKey}, agentToken, AuditEntry{
+			Timestamp: s.now().UTC(), Actor: "admin", RemoteIP: s.clientIP(r), Details: withRequest(r, details),
+		})
 		if err != nil {
 			s.auditFailure(w, r, "node.upsert", in.ID, details, err, http.StatusBadRequest)
 			return
 		}
-		if err := s.auditAdmin(r, "node.upsert", in.ID, "success", details); err != nil {
-			http.Error(w, "audit log failure", 500)
-			return
+		if err := s.FlushSecurityAuditIntents(); err != nil {
+			w.Header().Set("X-BAFT-Audit-State", "pending")
 		}
 		writeJSON(w, http.StatusCreated, n)
 	default:
@@ -380,19 +388,15 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	details := map[string]any{"node_ids": append([]string(nil), in.NodeIDs...), "version": in.Version}
-	jobs, err := s.store.CreateDeployJobs(in.NodeIDs, in.Version)
+	jobs, err := s.store.CreateDeployJobs(in.NodeIDs, in.Version, AuditEntry{
+		Timestamp: s.now().UTC(), Actor: "admin", RemoteIP: s.clientIP(r), Details: withRequest(r, details),
+	})
 	if err != nil {
 		s.auditFailure(w, r, "deploy.create", "cluster", details, err, http.StatusBadRequest)
 		return
 	}
-	jobIDs := make([]string, 0, len(jobs))
-	for _, j := range jobs {
-		jobIDs = append(jobIDs, j.ID)
-	}
-	details["job_ids"] = jobIDs
-	if err := s.auditAdmin(r, "deploy.create", "cluster", "success", details); err != nil {
-		http.Error(w, "audit log failure", 500)
-		return
+	if err := s.FlushSecurityAuditIntents(); err != nil {
+		w.Header().Set("X-BAFT-Audit-State", "pending")
 	}
 	writeJSON(w, http.StatusAccepted, jobs)
 }
@@ -531,16 +535,24 @@ func (s *Server) finance(w http.ResponseWriter, r *http.Request) {
 			effective = parsed.UTC()
 		}
 		details := map[string]any{"cost_micros_per_gib": in.CostMicrosPerGiB, "revenue_micros_per_gib": in.RevenueMicrosPerGiB, "currency": in.Currency, "effective_from": effective.Format(time.RFC3339)}
-		if err := s.store.SetFinancePolicyAt(in.NodeID, in.CostMicrosPerGiB, in.RevenueMicrosPerGiB, in.Currency, effective); err != nil {
+		if err := s.store.SetFinancePolicyAt(in.NodeID, in.CostMicrosPerGiB, in.RevenueMicrosPerGiB, in.Currency, effective, AuditEntry{
+			Timestamp: s.now().UTC(), Actor: "admin", RemoteIP: s.clientIP(r), Details: withRequest(r, details),
+		}); err != nil {
 			s.auditFailure(w, r, "finance.rate.change", in.NodeID, details, err, http.StatusBadRequest)
 			return
 		}
-		if err := s.auditAdmin(r, "finance.rate.change", in.NodeID, "success", details); err != nil {
-			http.Error(w, "audit log failure", 500)
-			return
+		if err := s.FlushSecurityAuditIntents(); err != nil {
+			w.Header().Set("X-BAFT-Audit-State", "pending")
 		}
 		h := s.store.RateHistory(in.NodeID)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rate": h[len(h)-1]})
+		// History is ordered by effective time, so select the new version.
+		rate := h[0]
+		for _, p := range h[1:] {
+			if p.Version > rate.Version {
+				rate = p
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rate": rate})
 	default:
 		http.Error(w, "method not allowed", 405)
 	}

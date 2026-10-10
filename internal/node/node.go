@@ -90,6 +90,8 @@ type Runtime struct {
 	recoverySeq     atomic.Uint64
 	recoveryFaultMu sync.RWMutex
 	recoveryFault   func(string) error
+	recoveryWriteMu sync.RWMutex
+	recoveryWriteForTest func(string, io.Writer, session.RecoveryControl) error
 	recoveryControlMu sync.RWMutex
 	recoveryControlHook func(string,*session.RecoveryControl) int
 	bootID          string
@@ -265,6 +267,13 @@ func (r *Runtime) SetRecoveryFaultHookForTest(fn func(string) error) {
 	r.recoveryFaultMu.Lock()
 	r.recoveryFault=fn
 	r.recoveryFaultMu.Unlock()
+}
+
+// SetRecoveryControlWriterForTest injects a wire-level write fault into COMMIT.
+func (r *Runtime) SetRecoveryControlWriterForTest(fn func(string, io.Writer, session.RecoveryControl) error) {
+	r.recoveryWriteMu.Lock()
+	r.recoveryWriteForTest=fn
+	r.recoveryWriteMu.Unlock()
 }
 
 func (r *Runtime) SetRecoveryControlHookForTest(fn func(string,*session.RecoveryControl) int) {

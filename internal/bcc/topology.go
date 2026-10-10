@@ -294,7 +294,13 @@ func (s *Store) ReconcileTopology(now time.Time) (TopologyReport, error) {
 	defer s.reconcileMu.Unlock()
 
 	s.mu.Lock()
+	oldBindings := s.st.TopologyBindings
+	// ensureTopologyBindingsLocked may add several entries before an error.
+	// Work on a copy so a failed validation or persistence cannot leak a
+	// partially reconciled topology into memory.
+	s.st.TopologyBindings = cloneTopologyBindings(oldBindings)
 	if err := s.ensureTopologyBindingsLocked(now); err != nil {
+		s.st.TopologyBindings = oldBindings
 		s.mu.Unlock()
 		return TopologyReport{}, err
 	}
@@ -306,6 +312,7 @@ func (s *Store) ReconcileTopology(now time.Time) (TopologyReport, error) {
 		}
 	}
 	if err := s.saveLocked(); err != nil {
+		s.st.TopologyBindings = oldBindings
 		s.mu.Unlock()
 		return TopologyReport{}, err
 	}
