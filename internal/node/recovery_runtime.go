@@ -260,8 +260,17 @@ func (r *Runtime) recoverDialerShard(ctx context.Context,cfg config.Config,tlsCf
 	if err:=r.recoveryFail("before_commit");err!=nil{sh.peer.RecordRecoveryFailure("commit");return fmt.Errorf("before commit: %w",err)}
 	commitCtl:=prepared;commitCtl.Phase=session.RecoveryPhaseCommit
 	commitCopies:=r.recoveryControlCopiesForTest("dialer_commit_send",&commitCtl)
-	if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{return fmt.Errorf("commit send: %w",err)}
+	// Once a COMMIT write is attempted, even an error can mean the peer saw
+	// all or part of it. Fence abort/fresh recovery before touching the wire.
 	if err:=sh.peer.MarkCommitSent(commitCtl);err!=nil{return err}
+	if err:=r.recoveryFail("commit_send_error");err!=nil{
+		_ = sh.peer.MarkCommitUncertain(commitCtl)
+		return fmt.Errorf("%w: commit send: %v",session.ErrCommitUncertain,err)
+	}
+	if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{
+		_ = sh.peer.MarkCommitUncertain(commitCtl)
+		return fmt.Errorf("%w: commit send: %v",session.ErrCommitUncertain,err)
+	}
 	for i:=1;i<commitCopies;i++{
 		if err:=session.EncodeRecoveryControl(o.carrier.Out,commitCtl);err!=nil{
 			_ = sh.peer.MarkCommitUncertain(commitCtl)
