@@ -914,6 +914,42 @@ func TestDistributedCommitWriteErrorRequiresExactResolution(t *testing.T){
 	t.Logf("PASS COMMIT write uncertainty resolved before new epoch=%d hash=%x",ir.Epoch,h)
 }
 
+type partialCommitWriter struct {
+	out io.Writer
+	written *atomic.Int64
+}
+
+func (w partialCommitWriter) Write(p []byte) (int,error) {
+	if len(p)==0{return 0,nil}
+	n,err:=w.out.Write(p[:1])
+	w.written.Add(int64(n))
+	if err!=nil{return n,err}
+	return n,errors.New("injected cut after a partial COMMIT frame write")
+}
+
+func TestDistributedCommitPartialFrameWriteRequiresExactResolution(t *testing.T){
+	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
+	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
+	var injected,statusQueried atomic.Bool
+	var written atomic.Int64
+	p.irRuntime.SetRecoveryControlWriterForTest(func(stage string,out io.Writer,ctl session.RecoveryControl)error{
+		if stage=="dialer_commit"&&injected.CompareAndSwap(false,true){
+			return session.EncodeRecoveryControl(partialCommitWriter{out:out,written:&written},ctl)
+		}
+		return session.EncodeRecoveryControl(out,ctl)
+	})
+	p.irRuntime.SetRecoveryFaultHookForTest(func(stage string)error{
+		if stage=="status_query_after_send"{statusQueried.Store(true)}
+		return nil
+	})
+	p.proxy.CutAll()
+	ir,_,h:=assertResolvedTransactionAndFlow(t,p,c,targetBefore,3)
+	if !injected.Load()||written.Load()==0||!statusQueried.Load(){
+		t.Fatalf("partial COMMIT did not require exact status resolution: injected=%v bytes=%d status_query=%v",injected.Load(),written.Load(),statusQueried.Load())
+	}
+	t.Logf("PASS partial COMMIT frame bytes=%d resolved epoch=%d hash=%x",written.Load(),ir.Epoch,h)
+}
+
 func TestDistributedCommitFaultCCommitACKWriteCutResolves(t *testing.T){
 	p:=startRecoveryRuntimePair(t,1);defer p.close(t)
 	c:=openRecoveryFlow(t,p);defer c.Close();targetBefore:=p.targetAccepts.Load()
