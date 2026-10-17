@@ -91,4 +91,26 @@ cp -r "$work/b" "$work/u"
 expect_fail "uncertified signing key" "certificate is for key" "$tool" sign -dir "$work/u" -version "$version" -commit "$commit" \
   -cert "$work/cert.json" -root-pub "$work/keys/root.pub" -key "$work/keys/other.key"
 
+# Owner flow: sign only the digest list, ship the three metadata files as the
+# base64 tar.gz release-publish.yml takes, and verify them with the artifacts
+# of the other, independent build.
+[[ "$(scripts/release/artifact_listing.sh "$work/b")" == "$(scripts/release/artifact_listing.sh "$work/u")" ]] ||
+  { echo "dry_run: artifact listing differs for identical builds" >&2; exit 1; }
+cp -r "$work/b" "$work/o"
+"$tool" digests -dir "$work/o" -out "$work/candidate-digests.json" >/dev/null
+mkdir "$work/signed"
+BAFT_RELEASE_SIGNING_KEY=$(cat "$work/keys/release.key") \
+  "$tool" sign-digests -digests "$work/candidate-digests.json" -out "$work/signed" -version "$version" -commit "$commit" \
+  -cert "$work/cert.json" -root-pub "$work/keys/root.pub" >/dev/null
+signature=$(tar -C "$work/signed" -czf - SHA256SUMS manifest.json release-key.cert.json | base64 | tr -d '\n')
+mkdir "$work/received"
+printf '%s' "$signature" | base64 -d | tar -xzf - -C "$work/received"
+cp "$work/received/"* "$work/o/"
+"$tool" verify -dir "$work/o" -root-pub "$work/keys/root.pub" -revocations "$work/rev2.json" | grep -q "^OK $version ${commit:0:12}: "
+echo "accepted as expected: release signed from digests only"
+expect_fail "sign-digests into a non-empty directory" "is not empty" "$tool" sign-digests -digests "$work/candidate-digests.json" \
+  -out "$work/signed" -version "$version" -commit "$commit" -cert "$work/cert.json" -root-pub "$work/keys/root.pub" -key "$work/keys/release.key"
+printf 'x' >> "$work/o/baft-pair-linux-arm64"
+expect_fail "artifact differing from the signed digests" "does not match the signed manifest" "$tool" verify -dir "$work/o" -root-pub "$work/keys/root.pub" -revocations "$work/rev2.json"
+
 echo "release dry run passed"

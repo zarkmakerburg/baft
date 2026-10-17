@@ -543,6 +543,7 @@ type Manifest struct {
 var (
 	versionRe = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 	commitRe  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	sha256Re  = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 type SignInput struct {
@@ -560,31 +561,57 @@ type SignInput struct {
 // SignDir hashes every artifact in Dir, writes SHA256SUMS, the signed
 // manifest and a copy of the release key certificate.
 func SignDir(in SignInput) (Manifest, error) {
-	var m Manifest
+	if err := checkSignInput(in); err != nil {
+		return Manifest{}, err
+	}
+	arts, err := scanArtifacts(in.Dir)
+	if err != nil {
+		return Manifest{}, err
+	}
+	return signArtifacts(in, arts, in.Dir)
+}
+
+// SignDigests signs a release from its artifact digests alone, so the signer
+// does not need the artifacts themselves. It writes the same SHA256SUMS,
+// manifest and certificate copy that SignDir would write for files with these
+// names, sizes and hashes into OutDir. in.Dir is ignored. Anyone verifying the
+// result still checks every real artifact against the signed hashes.
+func SignDigests(in SignInput, arts []Artifact, outDir string) (Manifest, error) {
+	if err := checkSignInput(in); err != nil {
+		return Manifest{}, err
+	}
+	if err := ValidateDigests(arts); err != nil {
+		return Manifest{}, err
+	}
+	return signArtifacts(in, append([]Artifact(nil), arts...), outDir)
+}
+
+func checkSignInput(in SignInput) error {
 	if !versionRe.MatchString(in.Version) {
-		return m, fmt.Errorf("version %q is not vMAJOR.MINOR.PATCH[-pre]", in.Version)
+		return fmt.Errorf("version %q is not vMAJOR.MINOR.PATCH[-pre]", in.Version)
 	}
 	if !commitRe.MatchString(in.Commit) {
-		return m, fmt.Errorf("commit %q is not a full SHA-1", in.Commit)
+		return fmt.Errorf("commit %q is not a full SHA-1", in.Commit)
 	}
 	pub := in.Key.Public().(ed25519.PublicKey)
 	certID, err := certKeyID(in.Cert, in.Root)
 	if err != nil {
-		return m, err
+		return err
 	}
 	if certID != KeyID(pub) {
-		return m, fmt.Errorf("certificate is for key %s, signing key is %s", certID, KeyID(pub))
+		return fmt.Errorf("certificate is for key %s, signing key is %s", certID, KeyID(pub))
 	}
-	arts, err := scanArtifacts(in.Dir)
-	if err != nil {
-		return m, err
-	}
+	return nil
+}
+
+func signArtifacts(in SignInput, arts []Artifact, outDir string) (Manifest, error) {
+	pub := in.Key.Public().(ed25519.PublicKey)
 	sums := formatSums(arts)
-	if err := os.WriteFile(filepath.Join(in.Dir, SumsFile), sums, 0644); err != nil {
-		return m, err
+	if err := os.WriteFile(filepath.Join(outDir, SumsFile), sums, 0644); err != nil {
+		return Manifest{}, err
 	}
 	sumsHash := sha256.Sum256(sums)
-	m = Manifest{
+	m := Manifest{
 		SchemaVersion: 1,
 		Product:       Product,
 		Version:       in.Version,
@@ -599,10 +626,76 @@ func SignDir(in SignInput) (Manifest, error) {
 	if err != nil {
 		return m, err
 	}
-	if err := WriteEnvelope(filepath.Join(in.Dir, ManifestFile), Sign(PayloadTypeManifest, payload, in.Key)); err != nil {
+	if err := WriteEnvelope(filepath.Join(outDir, ManifestFile), Sign(PayloadTypeManifest, payload, in.Key)); err != nil {
 		return m, err
 	}
-	return m, WriteEnvelope(filepath.Join(in.Dir, CertFile), in.Cert)
+	return m, WriteEnvelope(filepath.Join(outDir, CertFile), in.Cert)
+}
+
+// MaxDigestArtifacts bounds a digest list; a release has a handful of files.
+const MaxDigestArtifacts = 64
+
+// ScanDigests returns the name, size and SHA-256 of every artifact in dir,
+// exactly as SignDir would record them.
+func ScanDigests(dir string) ([]Artifact, error) { return scanArtifacts(dir) }
+
+// ValidateDigests checks a digest list the way scanArtifacts builds one:
+// allowed names, os/arch taken from the name, a positive size, a lower-case
+// SHA-256, sorted by name and without duplicates.
+func ValidateDigests(arts []Artifact) error {
+	if len(arts) == 0 {
+		return errors.New("no artifacts listed")
+	}
+	if len(arts) > MaxDigestArtifacts {
+		return fmt.Errorf("%d artifacts listed; at most %d allowed", len(arts), MaxDigestArtifacts)
+	}
+	for i, a := range arts {
+		parts := artifactName.FindStringSubmatch(a.Name)
+		if parts == nil {
+			return fmt.Errorf("%q: artifact names must be <binary>-linux-<amd64|arm64>", a.Name)
+		}
+		if isMetaFile(a.Name) || a.OS != parts[1] || a.Arch != parts[2] {
+			return fmt.Errorf("%s: os/arch do not match the name", a.Name)
+		}
+		if a.Size <= 0 || !sha256Re.MatchString(a.SHA256) {
+			return fmt.Errorf("%s: invalid size or sha256", a.Name)
+		}
+		if i > 0 && arts[i-1].Name >= a.Name {
+			return fmt.Errorf("%s: artifacts must be sorted by name without duplicates", a.Name)
+		}
+	}
+	return nil
+}
+
+// ReadDigests reads a digest list written by WriteDigests, strictly.
+func ReadDigests(path string) ([]Artifact, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 64<<10 {
+		return nil, errors.New("digest list is too large")
+	}
+	var arts []Artifact
+	if err := strictUnmarshal(b, &arts); err != nil {
+		return nil, fmt.Errorf("digest list: %w", err)
+	}
+	if err := ValidateDigests(arts); err != nil {
+		return nil, fmt.Errorf("digest list: %w", err)
+	}
+	return arts, nil
+}
+
+// WriteDigests writes arts as indented JSON.
+func WriteDigests(path string, arts []Artifact) error {
+	if err := ValidateDigests(arts); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(arts, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0644)
 }
 
 func certKeyID(e Envelope, root ed25519.PublicKey) (string, error) {

@@ -40,6 +40,8 @@ for forbidden in (
     "contents: write",
     "gh release create",
     "go run ./cmd/baft-release",
+    "sign-digests",
+    " sign -dir",
 ):
     if forbidden in release:
         failures.append(f"release.yml: signing boundary violation: contains {forbidden!r}")
@@ -49,6 +51,29 @@ if "signing_boundary=external-offline" not in release:
     failures.append("release.yml: external/offline signing boundary marker is missing")
 if "signed=false" not in release:
     failures.append("release.yml: candidate is not explicitly marked unsigned")
+
+# release-publish.yml may publish, but only a release the owner signed offline:
+# no secrets, no signing, manual trigger only, and verification before publish.
+publish = Path(".github/workflows/release-publish.yml").read_text()
+for forbidden in (
+    "BAFT_RELEASE_SIGNING_KEY",
+    "secrets.",
+    "sign-digests",
+    " sign -dir",
+    "pull_request",
+    "push:",
+    "schedule:",
+):
+    if forbidden in publish:
+        failures.append(f"release-publish.yml: signing boundary violation: contains {forbidden!r}")
+if "workflow_dispatch:" not in publish:
+    failures.append("release-publish.yml: must be manually dispatched")
+verify_at = publish.find('baft-release" verify')
+create_at = publish.find("gh release create")
+if verify_at < 0 or create_at < 0 or verify_at > create_at:
+    failures.append("release-publish.yml: signature verification must run before gh release create")
+if "release/keys/root.pub" not in publish:
+    failures.append("release-publish.yml: must verify against the pinned root key")
 
 if failures:
     print("CI supply-chain policy violations:", file=sys.stderr)

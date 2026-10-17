@@ -13,6 +13,12 @@ name: release
 # This intentionally trades release automation for key isolation. A future
 # external HSM/KMS/OIDC signer may restore automation without reintroducing
 # long-lived signing authority into this repository's workflow runtime.
+#
+# Owner flow (docs/release/owner-release.md): the `reproduce` job rebuilds the
+# tag on a different runner image and the candidate must match it byte for
+# byte. The owner then signs only candidate-digests.json offline
+# (scripts/release/owner_release.sh), and release-publish.yml publishes after
+# verifying that signature against the pinned root key.
 on:
   push:
     tags: ['v*']
@@ -25,7 +31,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  reproduce:
+    # Independent rebuild on a different runner image. The candidate job only
+    # publishes its artifacts when they match this build byte for byte, so the
+    # owner signs digests that two separate builds agreed on.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      listing: ${{ steps.build.outputs.listing }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Rebuild release artifacts
+        id: build
+        run: |
+          set -euo pipefail
+          scripts/release/build.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/rebuilt" >/dev/null
+          listing=$(scripts/release/artifact_listing.sh "$RUNNER_TEMP/rebuilt")
+          echo "listing=$listing" >> "$GITHUB_OUTPUT"
+          echo "reproduce listing $listing"
+
   candidate:
+    needs: reproduce
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -81,6 +118,22 @@ jobs:
           signing_boundary=external-offline
           EOF
 
+      - name: Record candidate digests
+        env:
+          REPRODUCED: ${{ needs.reproduce.outputs.listing }}
+        run: |
+          set -euo pipefail
+          listing=$(scripts/release/artifact_listing.sh "$RUNNER_TEMP/candidate/dist")
+          if [ -z "$REPRODUCED" ] || [ "$listing" != "$REPRODUCED" ]; then
+            echo "::error::candidate ($listing) differs from the independent rebuild ($REPRODUCED)"
+            exit 1
+          fi
+          echo "REPRODUCED: candidate matches the independent rebuild ($listing)"
+          go build -trimpath -o "$RUNNER_TEMP/tool/baft-release" ./cmd/baft-release
+          mkdir -p "$RUNNER_TEMP/digests"
+          "$RUNNER_TEMP/tool/baft-release" digests -dir "$RUNNER_TEMP/candidate/dist" -out "$RUNNER_TEMP/digests/candidate-digests.json"
+          cp "$RUNNER_TEMP/candidate/CANDIDATE" "$RUNNER_TEMP/digests/CANDIDATE"
+
       - name: Assert candidate is unsigned
         run: |
           set -euo pipefail
@@ -93,7 +146,14 @@ jobs:
           name: unsigned-release-candidate
           path: ${{ runner.temp }}/candidate
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 14
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-digests
+          path: ${{ runner.temp }}/digests
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Release boundary notice
         run: |
@@ -106,3 +166,4 @@ jobs:
             echo "No signing credential was available to this workflow."
             echo "Do not publish these artifacts until an independent/offline trusted signer has signed and verified them."
           } >> "$GITHUB_STEP_SUMMARY"
+

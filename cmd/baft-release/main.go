@@ -13,6 +13,9 @@
 // In CI and on servers:
 //
 //	baft-release sign   -dir dist -version v1.0.0 -commit <sha> -cert release-key.cert.json -root-pub root.pub
+//	baft-release digests -dir dist -out candidate-digests.json
+//	baft-release sign-digests -digests candidate-digests.json -out signed -version v1.0.0 -commit <sha> \
+//	    -cert release-key.cert.json -root-pub root.pub   # signs without the artifacts
 //	baft-release verify -dir dist -root-pub root.pub -revocations revocations.json \
 //	    [-state /var/lib/baft/release-state.json [-update-state] [-allow-downgrade]]
 package main
@@ -44,6 +47,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	cmds := map[string]func([]string, io.Writer) error{
 		"keygen": keygen, "keyid": keyid, "certify": certify, "revoke": revoke, "sign": sign, "verify": verify,
+		"digests": digests, "sign-digests": signDigests,
 	}
 	cmd, ok := cmds[args[0]]
 	if !ok {
@@ -61,7 +65,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: baft-release <keygen|keyid|certify|revoke|sign|verify> [flags]")
+	fmt.Fprintln(w, "usage: baft-release <keygen|keyid|certify|revoke|sign|digests|sign-digests|verify> [flags]")
 }
 
 func newFlags(name string) *flag.FlagSet {
@@ -233,6 +237,78 @@ func revoke(args []string, stdout io.Writer) error {
 func sign(args []string, stdout io.Writer) error {
 	fs := newFlags("sign")
 	dir := fs.String("dir", "", "directory holding the built artifacts")
+	in, parse := signFlags(fs)
+	if err := parse(args, "dir"); err != nil {
+		return err
+	}
+	in.Dir = *dir
+	m, err := release.SignDir(*in)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "signed %s (%d artifacts) with release key %s\n", m.Version, len(m.Artifacts), m.SigningKeyID)
+	return nil
+}
+
+// digests writes the artifact digest list sign-digests signs.
+func digests(args []string, stdout io.Writer) error {
+	fs := newFlags("digests")
+	dir := fs.String("dir", "", "directory holding the built, unsigned artifacts")
+	out := fs.String("out", "", "digest list to write")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := need(fs, "dir", "out"); err != nil {
+		return err
+	}
+	arts, err := release.ScanDigests(*dir)
+	if err != nil {
+		return err
+	}
+	if err := release.WriteDigests(*out, arts); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "wrote %d artifact digests to %s\n", len(arts), *out)
+	return nil
+}
+
+// signDigests signs a digest list. It writes SHA256SUMS, manifest.json and
+// release-key.cert.json into -out; those three files plus the unchanged
+// artifacts form the release.
+func signDigests(args []string, stdout io.Writer) error {
+	fs := newFlags("sign-digests")
+	list := fs.String("digests", "", "artifact digest list from baft-release digests")
+	out := fs.String("out", "", "empty directory for the signed metadata files")
+	in, parse := signFlags(fs)
+	if err := parse(args, "digests", "out"); err != nil {
+		return err
+	}
+	arts, err := release.ReadDigests(*list)
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(*out)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("%s is not empty", *out)
+	}
+	m, err := release.SignDigests(*in, arts, *out)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "signed %s at %s (%d artifacts) with release key %s\n", m.Version, m.Commit, len(m.Artifacts), m.SigningKeyID)
+	for _, a := range m.Artifacts {
+		fmt.Fprintf(stdout, "  %s  %s\n", a.SHA256, a.Name)
+	}
+	return nil
+}
+
+// signFlags registers the flags sign and sign-digests share. The returned
+// parse function parses args, checks the required flags and loads the key,
+// certificate and root key into the SignInput.
+func signFlags(fs *flag.FlagSet) (*release.SignInput, func(args []string, required ...string) error) {
 	version := fs.String("version", "", "release tag, e.g. v1.0.0")
 	commit := fs.String("commit", "", "full commit SHA the artifacts were built from")
 	certPath := fs.String("cert", "", "root-signed release key certificate")
@@ -240,41 +316,38 @@ func sign(args []string, stdout io.Writer) error {
 	rootPub := fs.String("root-pub", "", "pinned root public key; checks the certificate before signing")
 	var flags multi
 	fs.Var(&flags, "build-flag", "build flag to record in provenance (repeatable)")
-	if err := fs.Parse(args); err != nil {
-		return err
+	in := &release.SignInput{}
+	return in, func(args []string, required ...string) error {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if err := need(fs, append(required, "version", "commit", "cert", "root-pub")...); err != nil {
+			return err
+		}
+		var key ed25519.PrivateKey
+		var err error
+		if *keyPath != "" {
+			key, err = release.ReadPrivate(*keyPath)
+		} else if v := os.Getenv(SigningKeyEnv); v != "" {
+			key, err = release.DecodePrivate(v)
+		} else {
+			err = errors.New("no signing key: pass -key or set " + SigningKeyEnv)
+		}
+		if err != nil {
+			return err
+		}
+		cert, err := release.ReadEnvelope(*certPath)
+		if err != nil {
+			return err
+		}
+		root, err := release.ReadPublic(*rootPub)
+		if err != nil {
+			return err
+		}
+		*in = release.SignInput{Version: *version, Commit: *commit, CreatedAt: time.Now(),
+			Provenance: provenance(flags), Key: key, Cert: cert, Root: root}
+		return nil
 	}
-	if err := need(fs, "dir", "version", "commit", "cert", "root-pub"); err != nil {
-		return err
-	}
-	var key ed25519.PrivateKey
-	var err error
-	if *keyPath != "" {
-		key, err = release.ReadPrivate(*keyPath)
-	} else if v := os.Getenv(SigningKeyEnv); v != "" {
-		key, err = release.DecodePrivate(v)
-	} else {
-		err = errors.New("no signing key: pass -key or set " + SigningKeyEnv)
-	}
-	if err != nil {
-		return err
-	}
-	cert, err := release.ReadEnvelope(*certPath)
-	if err != nil {
-		return err
-	}
-	root, err := release.ReadPublic(*rootPub)
-	if err != nil {
-		return err
-	}
-	m, err := release.SignDir(release.SignInput{
-		Dir: *dir, Version: *version, Commit: *commit, CreatedAt: time.Now(),
-		Provenance: provenance(flags), Key: key, Cert: cert, Root: root,
-	})
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "signed %s (%d artifacts) with release key %s\n", m.Version, len(m.Artifacts), m.SigningKeyID)
-	return nil
 }
 
 // provenance records the GitHub Actions run when there is one.

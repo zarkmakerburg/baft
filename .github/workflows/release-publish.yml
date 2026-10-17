@@ -1,0 +1,147 @@
+name: release-publish
+
+# Publishes a release the owner already signed offline.
+#
+# SECURITY BOUNDARY:
+# - This workflow never receives the release signing key or any secret other
+#   than the job's own GITHUB_TOKEN. It cannot sign anything.
+# - The owner signs candidate-digests.json from release.yml offline with
+#   scripts/release/owner_release.sh, which starts this workflow with the three
+#   signed metadata files (SHA256SUMS, manifest.json, release-key.cert.json).
+# - Before publishing, the signed manifest is verified against the root key
+#   pinned in the tagged source and the current revocation list, and every
+#   candidate artifact is checked against it. Servers verify the same
+#   signature again on install, so a release published here without a valid
+#   owner signature would be refused everywhere.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v0.3.5
+        required: true
+        type: string
+      signature:
+        description: base64 tar.gz of the signed metadata from owner_release.sh
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check tag name
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::invalid tag"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Check tag is on main and not yet released
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          [[ "$(git rev-parse HEAD)" == "$commit" ]]
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$commit" origin/main || { echo "::error::$TAG is not on main"; exit 1; }
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists"; exit 1
+          fi
+          echo "COMMIT=$commit" >> "$GITHUB_ENV"
+
+      - name: Download the reproduced candidate
+        run: |
+          set -euo pipefail
+          run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow release.yml --event push --limit 50 \
+            --json databaseId,headSha,headBranch,conclusion \
+            --jq "[.[] | select(.headSha==\"$COMMIT\" and .headBranch==\"$TAG\" and .conclusion==\"success\")][0].databaseId // empty")
+          [[ -n "$run" ]] || { echo "::error::no successful release.yml run for $TAG at $COMMIT (candidate kept 14 days)"; exit 1; }
+          gh run download "$run" -R "$GITHUB_REPOSITORY" -n unsigned-release-candidate -D "$RUNNER_TEMP/candidate"
+          grep -Fxq "tag=$TAG" "$RUNNER_TEMP/candidate/CANDIDATE"
+          grep -Fxq "commit=$COMMIT" "$RUNNER_TEMP/candidate/CANDIDATE"
+          grep -Fxq "signed=false" "$RUNNER_TEMP/candidate/CANDIDATE"
+          cmp -s "$RUNNER_TEMP/candidate/root.pub" release/keys/root.pub
+          cmp -s "$RUNNER_TEMP/candidate/revocations.json" release/keys/revocations.json
+          cmp -s "$RUNNER_TEMP/candidate/install.sh" install.sh
+
+      - name: Add the owner's signature
+        env:
+          SIGNATURE: ${{ inputs.signature }}
+        run: |
+          set -euo pipefail
+          sig="$RUNNER_TEMP/signature"
+          mkdir -p "$sig"
+          printf '%s' "$SIGNATURE" | base64 -d > "$sig.tgz"
+          [[ $(stat -c %s "$sig.tgz") -le 65536 ]] || { echo "::error::signature archive too large"; exit 1; }
+          names=$(tar -tzf "$sig.tgz" | LC_ALL=C sort | tr '\n' ' ')
+          [[ "$names" == "SHA256SUMS manifest.json release-key.cert.json " ]] || { echo "::error::unexpected signature files: $names"; exit 1; }
+          tar -xzf "$sig.tgz" -C "$sig" --no-same-owner --no-same-permissions
+          for f in SHA256SUMS manifest.json release-key.cert.json; do
+            [[ -f "$sig/$f" && ! -L "$sig/$f" ]] || { echo "::error::$f is not a regular file"; exit 1; }
+            [[ ! -e "$RUNNER_TEMP/candidate/dist/$f" ]] || { echo "::error::candidate already contains $f"; exit 1; }
+            install -m 0644 "$sig/$f" "$RUNNER_TEMP/candidate/dist/$f"
+          done
+
+      - name: Verify the signed release against the pinned root key
+        run: |
+          set -euo pipefail
+          go build -trimpath -o "$RUNNER_TEMP/tool/baft-release" ./cmd/baft-release
+          "$RUNNER_TEMP/tool/baft-release" verify -dir "$RUNNER_TEMP/candidate/dist" \
+            -root-pub release/keys/root.pub -revocations release/keys/revocations.json | tee "$RUNNER_TEMP/verify.txt"
+          grep -q "^OK $TAG ${COMMIT:0:12}: " "$RUNNER_TEMP/verify.txt" || { echo "::error::signed manifest is for another tag or commit"; exit 1; }
+          (cd "$RUNNER_TEMP/candidate/dist" && sha256sum --quiet -c SHA256SUMS)
+
+      - name: Build the offline bundle
+        run: |
+          set -euo pipefail
+          c="$RUNNER_TEMP/candidate"
+          bash scripts/release/offline_bundle.sh "$c/dist" "$c/revocations.json" "$c/install.sh" "$RUNNER_TEMP/out" "$c/notices"
+
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/notes.md"
+          if [[ -f "release/notes/$TAG.md" ]]; then
+            cp "release/notes/$TAG.md" "$notes"
+          else
+            awk -v h="## [${TAG#v}]" 'index($0, h) == 1 {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > "$notes"
+          fi
+          [[ -s "$notes" ]] || printf 'BAFT %s\n' "$TAG" > "$notes"
+          key=$(sed -n 's/.*release key \([0-9a-f]*\),.*/\1/p' "$RUNNER_TEMP/verify.txt")
+          printf '\nSigned offline with release key %s. Source commit %s.\n' "$key" "$COMMIT" >> "$notes"
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          c="$RUNNER_TEMP/candidate"
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --title "BAFT $TAG" --notes-file "$RUNNER_TEMP/notes.md" \
+            "$c"/dist/* "$RUNNER_TEMP/out/baft-offline-$TAG.tar.gz" "$RUNNER_TEMP/out/baft-offline-$TAG.tar.gz.sha256" \
+            "$c/notices/LICENSE" "$c/notices/COPYRIGHT" "$c/notices/THIRD_PARTY_LICENSES.md"
+          {
+            echo "### BAFT $TAG published"
+            echo
+            cat "$RUNNER_TEMP/verify.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
